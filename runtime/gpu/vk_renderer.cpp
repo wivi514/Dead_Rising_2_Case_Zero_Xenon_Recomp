@@ -2311,6 +2311,12 @@ struct ShaderMeta
     // the key means "reads no constants" (11 modules); an empty list from one that does
     // not means "we do not know". The copy path must not merge them.
     bool aluListKnown = false;
+    // Part 88: true when EVERY dynamic expression in the sidecar is `N + a0` with N in
+    // [8, 10] — the bone palette. Only these take the write-extent-bounded copy; the
+    // one outlier (`vc(209+a0)`) and any sidecar carrying no exprs keep the full copy,
+    // because the bound is the extent of writes ANCHORED AT c8 and says nothing about
+    // a palette living anywhere else in the window.
+    bool aluDynPalette = false;
     uint8_t blendSlot = 0, blendStrideDw = 0, blendWeightOffDw = 0, blendIndexOffDw = 0;
     uint8_t blendBytes[4] = {};   // which component of each dword, per influence
     uint8_t blendCount = 0;       // 0 = no descriptor; the entry-0 fallback stands
@@ -2534,6 +2540,45 @@ bool LoadShaderMeta(const std::filesystem::path& path, ShaderMeta& meta)
     meta.aluDynamic =
         !(haveAluList && text.find("\"aluDynamic\": false") != std::string::npos);
     meta.aluListKnown = haveAluList;
+    // The dynamic EXPRESSIONS, recorded at cache-build time for exactly this decision
+    // (alu_const_sidecar.py's comment says so). Every element must parse as `N + a0`
+    // with N in [8, 10] or the shader is NOT a palette shader and keeps the full copy —
+    // an unparseable expression fails CLOSED, never into the bounded path.
+    if (meta.aluDynamic)
+    {
+        const size_t dk = text.find("\"aluDynamicExprs\"");
+        if (dk != std::string::npos)
+        {
+            const size_t open = text.find('[', dk);
+            const size_t close = open == std::string::npos ? std::string::npos
+                                                           : text.find(']', open);
+            if (open != std::string::npos && close != std::string::npos)
+            {
+                bool all = false;
+                for (size_t q = text.find('"', open); q != std::string::npos && q < close;
+                     q = text.find('"', q))
+                {
+                    const size_t q2 = text.find('"', q + 1);
+                    if (q2 == std::string::npos || q2 > close)
+                    {
+                        all = false;
+                        break;
+                    }
+                    const std::string e = text.substr(q + 1, q2 - q - 1);
+                    char* endp = nullptr;
+                    const long n = strtol(e.c_str(), &endp, 10);
+                    if (n < 8 || n > 10 || std::string(endp) != " + a0")
+                    {
+                        all = false;
+                        break;
+                    }
+                    all = true;
+                    q = q2 + 1;
+                }
+                meta.aluDynPalette = all;
+            }
+        }
+    }
 
     meta.tfetchConsts = JsonIntArray(text, "tfetchConsts");
     meta.tfetchDims = JsonIntArray(text, "tfetchDims");
@@ -4670,6 +4715,12 @@ struct Renderer
     uint32_t constMemoPsBase = 0;
     VkDeviceSize constMemoVsAt = 0;
     VkDeviceSize constMemoPsAt = 0;
+    // The bound the LAST dynamic VS copy used (0 = it was a full copy). Part 88: the
+    // memo verifier compares the arena against a recompute, and above this bound the
+    // arena deliberately holds residue — a verifier unaware of it would report the
+    // feature working as a memo defect (the exact interaction the gather already
+    // documents for its own verifier).
+    uint32_t constMemoVsDynBound = 0;
 
     uint64_t frame = 0;
     uint64_t drawsThisFrame = 0;
@@ -13727,7 +13778,13 @@ uint64_t g_passCount = 0, g_passDraws = 0, g_passMax = 0;
 
 uint64_t g_gatherFull = 0, g_gatherGathered = 0, g_gatherDwordsCopied = 0,
          g_gatherDwordsFull = 0, g_gatherChecked = 0, g_gatherBad = 0,
-         g_gatherNoList = 0, g_gatherDynamic = 0, g_gatherEmpty = 0;
+         g_gatherNoList = 0, g_gatherDynamic = 0, g_gatherEmpty = 0,
+         g_gatherDynBounded = 0, g_gatherDwordsDynBounded = 0,
+         // Split from g_gatherBad so the BOUNDED poison can be attributed: a positive
+         // control whose firings cannot be told apart from the neighbouring arm's has
+         // not been shown to fire (gotcha 151's shape, met in this exact spot when the
+         // first poison run produced 5.6M shared disagreements).
+         g_gatherBadBounded = 0;
 
 // CZ_VK_PALETTE_EXTENT_CENSUS=1 — WOULD A WRITE-EXTENT-BOUNDED GATHER BE SOUND, AND
 // WHAT WOULD IT SAVE? (part 88 step 0; phase5-notes §6eg, `part88-kickoff.md` §1.)
@@ -13750,6 +13807,65 @@ uint64_t g_gatherFull = 0, g_gatherGathered = 0, g_gatherDwordsCopied = 0,
 // floor. A DIAGNOSTIC ARM: one Take() and a few adds per dynamic VS copy, off by
 // default, and no frame time from a run carrying it is ever quoted.
 bool g_paletteCensus = false;
+
+// THE BOUND ITSELF (part 88 step 1), shared by the fix, the census and every verifier
+// so no two of them can take the (destructive) extent read twice for one copy.
+//
+// The rule the step-0 census validated at the crowd (98.3-98.6% clean-cover, 82% of
+// full-copy bytes saved, `part88-kickoff.md` §1 step 0):
+//   clean cover — a c8-covering burst arrived since the last dynamic copy and no
+//                 partial write reached past it: the bound is that burst's extent.
+//   dirty       — palette-region writes arrived but the per-burst bound is unsound:
+//                 fall back to the running high-water (c255 on every measured run —
+//                 i.e. a full copy — because something at boot writes the whole
+//                 window; ~1.4-2.2% of copies at the crowd).
+//   reuse       — no palette-region write since the last dynamic copy: the file
+//                 content is unchanged and the previous bound still describes it
+//                 (0.0% at the crowd, consistent with §6ef's ~98% constant churn).
+uint32_t g_vsPalSticky = 0;
+struct VsPalTake
+{
+    Pm4VsPaletteWrites w;
+    uint32_t bound;   // the sound bound for THIS copy; 0 = none known, full copy
+    uint8_t kind;     // 0 clean-cover, 1 dirty-fallback, 2 reuse
+};
+
+inline VsPalTake TakeVsPaletteBound()
+{
+    VsPalTake r;
+    r.w = Pm4_TakeVsPaletteWrites();
+    if (r.w.coverBursts && r.w.partialExtent <= r.w.coverExtent)
+    {
+        g_vsPalSticky = r.w.coverExtent;
+        r.kind = 0;
+    }
+    else if (r.w.coverBursts || r.w.partialBursts)
+    {
+        g_vsPalSticky = Pm4_VsPaletteHighWater();
+        r.kind = 1;
+    }
+    else
+        r.kind = 2;
+    r.bound = g_vsPalSticky;
+    return r;
+}
+
+// CZ_VK_NO_BOUNDED_DYNAMIC=1 — the same-binary control arm for the bounded dynamic
+// copy: every dynamic VS copy goes back to the full 4 KB (the part-87 renderer). The
+// take above still runs on both arms, so the two differ by exactly the copy.
+bool NoBoundedDynamic()
+{
+    static const bool o = [] {
+        const bool v = EnvOn("CZ_VK_NO_BOUNDED_DYNAMIC");
+        if (v)
+            fprintf(stderr, "[vk] CZ_VK_NO_BOUNDED_DYNAMIC=1 — dynamic VS copies take "
+                            "the FULL 4 KB again (the part-87 renderer). This is the "
+                            "control arm.\n");
+        return v;
+    }();
+    return o;
+}
+
 namespace palcensus
 {
 struct Tot
@@ -13759,24 +13875,16 @@ struct Tot
              bytesFull = 0, bytesBounded = 0, bytesHighWater = 0;
     uint64_t hist[32] = {};   // per-copy bound, buckets of 8 float4 registers
 } t, last;
-uint32_t sticky = 0;          // the bound the previous dynamic copy established
 
-inline void Record(size_t listN, uint32_t memoVsBase)
+inline void Record(const VsPalTake& pt, size_t listN, uint32_t memoVsBase)
 {
-    const Pm4VsPaletteWrites w = Pm4_TakeVsPaletteWrites();
     ++t.copies;
-    t.coverBursts += w.coverBursts;
-    t.partialBursts += w.partialBursts;
-    if (w.coverBursts && w.partialExtent <= w.coverExtent)
-    {
-        sticky = w.coverExtent;
+    t.coverBursts += pt.w.coverBursts;
+    t.partialBursts += pt.w.partialBursts;
+    if (pt.kind == 0)
         ++t.cleanCover;
-    }
-    else if (w.coverBursts || w.partialBursts)
-    {
-        sticky = Pm4_VsPaletteHighWater();
+    else if (pt.kind == 1)
         ++t.dirtyFallback;
-    }
     else
         ++t.reuse;
     uint64_t boundedRegs;
@@ -13788,20 +13896,21 @@ inline void Record(size_t listN, uint32_t memoVsBase)
         ++t.windowMoved;
         boundedRegs = 256;
     }
-    else if (!sticky)
+    else if (!pt.bound)
     {
         ++t.neverBound;
         boundedRegs = 256;
     }
     else
-        boundedRegs = std::min<uint64_t>(256, 4 + listN + (sticky >= 8 ? sticky - 7 : 0));
+        boundedRegs =
+            std::min<uint64_t>(256, 4 + listN + (pt.bound >= 8 ? pt.bound - 7 : 0));
     t.bytesFull += 256 * 16;
     t.bytesBounded += boundedRegs * 16;
     const uint32_t hw = Pm4_VsPaletteHighWater();
     t.bytesHighWater +=
         16 * std::min<uint64_t>(256, 4 + listN + (hw >= 8 ? hw - 7 : 0));
-    t.extentSum += sticky;
-    ++t.hist[std::min<uint32_t>(sticky, 255) >> 3];
+    t.extentSum += pt.bound;
+    ++t.hist[std::min<uint32_t>(pt.bound, 255) >> 3];
 }
 } // namespace palcensus
 
@@ -13926,8 +14035,27 @@ bool ConstGatherPoison()
     }();
     return on;
 }
+// Promoted out of `CopyConstWindow` in part 88 because a SECOND site now reads it (the
+// bounded dynamic path fills above its bound) — the same reason PatchInArena was
+// promoted in part 75: two sites reading one environment variable independently is how
+// an arm silently half-engages (gotcha 151). The full rationale for the fill and its
+// value stays at the gathered path's use site.
+bool GatherFillOn()
+{
+    static const bool o = [] {
+        const bool v = EnvOn("CZ_VK_GATHER_FILL");
+        if (v)
+            fprintf(stderr, "[vk] CZ_VK_GATHER_FILL=1 — registers NOT in a shader's list "
+                            "(and, for a bounded dynamic copy, above its bound) are "
+                            "filled with a constant instead of arena residue. A "
+                            "DIAGNOSTIC ARM: it writes what the copy exists to skip.\n");
+        return v;
+    }();
+    return o;
+}
 
-void CopyConstWindow(uint32_t* dst, const uint32_t* src, const ShaderMeta& meta, bool isVs)
+void CopyConstWindow(uint32_t* dst, const uint32_t* src, const ShaderMeta& meta, bool isVs,
+                     uint32_t dynBound = 0)
 {
     (void)isVs;
     // NOTE the absence of `aluConsts.empty()` here: an empty list from a sidecar that has
@@ -13936,6 +14064,82 @@ void CopyConstWindow(uint32_t* dst, const uint32_t* src, const ShaderMeta& meta,
     const bool full = ConstGatherOff() || meta.aluDynamic;
     if (full)
     {
+        // Part 88: the write-extent-bounded dynamic copy. `dynBound` is nonzero only for
+        // a palette-shaped dynamic VS whose caller established a sound bound (the take's
+        // clean-cover/high-water rule) — copy `c0..c3 ∪ list ∪ [8, bound]` instead of
+        // 256 registers. Registers above the bound are exactly the ones being left
+        // uncopied on purpose; under CZ_VK_GATHER_FILL they are filled with the
+        // constant instead of arena residue, which is the read-above-bound
+        // discriminator no value compare can see (gotcha 432's shape).
+        if (meta.aluDynamic && dynBound)
+        {
+            const bool verify = ConstGatherVerify();
+            static thread_local std::vector<uint32_t> scratch;
+            if (verify)
+                scratch.assign(src, src + 256 * 4);
+            // The poison arm for the BOUNDED path: shrink the bound by one register, so
+            // the verifier must catch the top register served as residue. The gather's
+            // own poison (drop the first list register) is blind here — these shaders'
+            // lists sit inside the force-copied c0..c3.
+            uint32_t bound = std::min<uint32_t>(dynBound, 255);
+            if (ConstGatherPoison() && bound > 8)
+                --bound;
+            if (GatherFillOn())
+            {
+                static const uint32_t kFill = 0x461C4000u;   // 10000.0f (see below)
+                for (uint32_t i = 0; i < 256 * 4; ++i)
+                    dst[i] = kFill;
+            }
+            // c0..c3 force-copied for the same reason the gathered path does it (the
+            // renderer's own projection patch reads them); under the NO_C0_ALWAYS
+            // positive control they are left as residue THERE TOO, and list registers
+            // below 4 then still come in through the list loop, as on the gathered path.
+            const bool c0Forced = !GatherNoC0Always();
+            if (c0Forced)
+                memcpy(dst, src, 4 * 4 * sizeof(uint32_t));
+            memcpy(dst + 8 * 4, src + 8 * 4, (bound - 7) * 4 * sizeof(uint32_t));
+            uint64_t copied = 4 + (bound - 7);
+            for (uint32_t r : meta.aluConsts)
+            {
+                if (r >= 256 || (r < 4 && c0Forced) || (r >= 8 && r <= bound))
+                    continue;   // already inside the force-copy or the palette span
+                memcpy(dst + r * 4, src + r * 4, 4 * sizeof(uint32_t));
+                ++copied;
+            }
+            ++g_gatherDynBounded;
+            g_gatherDwordsDynBounded += copied * 4;
+            if (verify)
+            {
+                // Compare EVERYTHING the bounded copy claims to deliver — c0..c3, the
+                // palette span at the UNPOISONED bound, and the list — against the full
+                // copy. Under poison the top palette register is deliberately stale and
+                // this must report it.
+                ++g_gatherChecked;
+                const uint32_t vb = std::min<uint32_t>(dynBound, 255);
+                bool bad = (c0Forced &&
+                            memcmp(dst, scratch.data(), 4 * 4 * sizeof(uint32_t)) != 0) ||
+                           memcmp(dst + 8 * 4, scratch.data() + 8 * 4,
+                                  (vb - 7) * 4 * sizeof(uint32_t)) != 0;
+                for (uint32_t r : meta.aluConsts)
+                {
+                    if (bad)
+                        break;
+                    if (r >= 256 || (r < 4 && c0Forced) || (r >= 8 && r <= vb))
+                        continue;
+                    bad = memcmp(dst + r * 4, scratch.data() + r * 4,
+                                 4 * sizeof(uint32_t)) != 0;
+                }
+                if (bad)
+                {
+                    ++g_gatherBad;
+                    if (++g_gatherBadBounded <= 8)
+                        fprintf(stderr,
+                                "[vk] ** bounded dynamic copy differs from the full copy "
+                                "inside its own claim (bound c%u)\n", vb);
+                }
+            }
+            return;
+        }
         if (!meta.aluListKnown)
             ++g_gatherNoList;
         else
@@ -13973,15 +14177,7 @@ void CopyConstWindow(uint32_t* dst, const uint32_t* src, const ShaderMeta& meta,
     //
     // It is a DIAGNOSTIC ARM and never a shipping configuration: it writes the 230 or so
     // registers the gather exists to skip, so it costs the whole item.
-    static const bool fill = [] {
-        const bool o = EnvOn("CZ_VK_GATHER_FILL");
-        if (o)
-            fprintf(stderr, "[vk] CZ_VK_GATHER_FILL=1 — registers NOT in a shader's list "
-                            "are filled with a constant instead of arena residue. A "
-                            "DIAGNOSTIC ARM: it writes what the gather exists to skip.\n");
-        return o;
-    }();
-    if (fill)
+    if (GatherFillOn())
     {
         // A large, finite, obviously-wrong value. NaN would make every arithmetic result
         // NaN and could discard whole surfaces, which changes the picture for a reason
@@ -19430,17 +19626,30 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
         {
             ProfScope _pcv(&g_prof.constVs);
             uint32_t* dst = reinterpret_cast<uint32_t*>(R->arena.mapped + vsConstAt);
+            // Part 88: the write-extent-bounded dynamic copy. The take is UNCONDITIONAL
+            // for every dynamic VS copy — it is the consume that gives "writes since the
+            // last copy" its meaning, and running it on both arms keeps the arms
+            // differing by exactly the copy. Eligibility beyond the bound itself:
+            // palette-shaped dynamics only (the vc(209+a0) outlier keeps the full copy),
+            // a known list to union in, and the window at base 0, where the tracker's
+            // c8 is the window's c8.
+            uint32_t dynBound = 0;
+            if (vs.aluDynamic)
+            {
+                const VsPalTake pt = TakeVsPaletteBound();
+                if (!NoBoundedDynamic() && !ConstGatherOff() && vs.aluDynPalette &&
+                    vs.aluListKnown && memoVsBase == 0)
+                    dynBound = pt.bound;
+                // Step 0's census, consuming the same take (it must not take twice).
+                if (g_paletteCensus)
+                    palcensus::Record(pt, vs.aluConsts.size(), memoVsBase);
+            }
+            R->constMemoVsDynBound = dynBound;
             {
                 ProfScope _pcc(&g_prof.constVsCopy);
                 CopyConstWindow(dst, regs + xenos::kAluConstantBase + memoVsBase * 4, vs,
-                                true);
+                                true, dynBound);
             }
-            // Part 88 step 0: the bounded-gather census consumes the palette write
-            // extent at exactly the point the fix would — the dynamic full copy.
-            // Outside the constVsCopy sub-scope so its own cost never lands in the
-            // number the item is priced on.
-            if (g_paletteCensus && vs.aluDynamic)
-                palcensus::Record(vs.aluConsts.size(), memoVsBase);
             ProfScope _pcpatch(&g_prof.constVsPatch);
             // 21:9 (part 60) and the FOV slider (part 61): patch a recognized scene
             // projection in the copy the shaders will read. Patching HERE means memo
@@ -19638,7 +19847,25 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
             // A shader on the full-copy path (dynamic `a0` indexing, or the gather off)
             // still gets the whole-window compare, which is what it deserves.
             auto cmpStage = [&](const uint32_t* have, const uint32_t* want,
-                                const ShaderMeta& meta) {
+                                const ShaderMeta& meta, uint32_t dynBound) {
+                // Part 88: a bounded dynamic copy leaves the arena above its bound as
+                // residue ON PURPOSE. Compare exactly what it claims — c0..c3, the
+                // palette span, the list — or the feature working reads as a memo
+                // defect, in the exact instrument someone would use to investigate it.
+                if (meta.aluDynamic && dynBound)
+                {
+                    const uint32_t vb = std::min<uint32_t>(dynBound, 255);
+                    if (memcmp(have, want, 4 * 4 * sizeof(uint32_t)) != 0 ||
+                        memcmp(have + 8 * 4, want + 8 * 4,
+                               (vb - 7) * 4 * sizeof(uint32_t)) != 0)
+                        return true;
+                    for (uint32_t r : meta.aluConsts)
+                        if (r < 256 && !(r < 4) && !(r >= 8 && r <= vb) &&
+                            memcmp(have + r * 4, want + r * 4,
+                                   4 * sizeof(uint32_t)) != 0)
+                            return true;
+                    return false;
+                }
                 if (ConstGatherOff() || meta.aluDynamic || meta.aluConsts.empty())
                 {
                     for (uint32_t i = 0; i < 256 * 4; i++)
@@ -19652,8 +19879,8 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
                         return true;
                 return false;
             };
-            bad = cmpStage(haveVs, scratch.data(), vs) ||
-                  cmpStage(havePs, scratch.data() + 256 * 4, ps);
+            bad = cmpStage(haveVs, scratch.data(), vs, R->constMemoVsDynBound) ||
+                  cmpStage(havePs, scratch.data() + 256 * 4, ps, 0);
             if (bad)
             {
                 if (g_constMemoStale < 8)
@@ -22343,6 +22570,11 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
         // Everything above is the draw WITHOUT its ALU constants — the diagnosis
         // channel that says whether the constants are what breaks identity.
         const uint64_t hNoAlu = h;
+        // Part 88 note: for a PALETTE dynamic shader the copy is now bounded, so "the
+        // whole window" hashes MORE than is served there — a draw can read as changed
+        // when its served bytes were identical. Conservative for this census (it can
+        // only under-report reuse, and CW lead 2 is already refuted on its numbers);
+        // it cannot know the per-copy bound because the take is consumed by the copy.
         // The ALU constants as CopyConstWindow serves them: the whole window when the
         // gather is off or the shader is dynamic, else c0..c3 (the renderer itself reads
         // them) plus the sidecar's list. Mirroring the upload path's own semantics is
@@ -27190,11 +27422,12 @@ void VkRenderer_DumpStats()
     // point of the item, plus the two numbers that say whether it is safe: how many stages
     // fell back to the full copy, and what the verifier found if it was armed.
     {
-        const uint64_t tot = g_gatherFull + g_gatherGathered;
+        const uint64_t tot = g_gatherFull + g_gatherGathered + g_gatherDynBounded;
         if (tot)
         {
             const uint64_t wouldBe = tot * 256 * 4;
-            const uint64_t actual = g_gatherDwordsFull + g_gatherDwordsCopied;
+            const uint64_t actual =
+                g_gatherDwordsFull + g_gatherDwordsCopied + g_gatherDwordsDynBounded;
             fprintf(stderr,
                     "[vk]   const gather: %.1f%% of window copies gathered (%llu full — "
                     "dynamic a0 or no list), %.2f GB not copied over the run (%.1f%% of "
@@ -27204,6 +27437,21 @@ void VkRenderer_DumpStats()
                     double(wouldBe - actual) * 4.0 / 1e9,
                     100.0 * double(wouldBe - actual) / double(wouldBe),
                     double(wouldBe) * 4.0 / 1e9);
+            // Part 88's mechanism number: how many dynamic copies took the bounded path
+            // and what they actually moved against the 4 KB each cost before. The
+            // step-3 reading rule wants this beside the frame time, because at the
+            // route's ±2.9% floor the byte count is the number that cannot be argued
+            // with.
+            if (g_gatherDynBounded)
+                fprintf(stderr,
+                        "[vk]     bounded dynamic: %llu copies moved %.2f GB where full "
+                        "copies were %.2f GB (-%.1f%%); %llu dynamic copies still full\n",
+                        (unsigned long long)g_gatherDynBounded,
+                        double(g_gatherDwordsDynBounded) * 4.0 / 1e9,
+                        double(g_gatherDynBounded) * 4096.0 / 1e9,
+                        100.0 * (1.0 - double(g_gatherDwordsDynBounded) /
+                                           (double(g_gatherDynBounded) * 256.0 * 4.0)),
+                        (unsigned long long)g_gatherDynamic);
             if (g_gatherChecked)
                 fprintf(stderr,
                         "[vk]     verified: %llu gathers checked against the full copy, "
@@ -27212,6 +27460,13 @@ void VkRenderer_DumpStats()
                         (unsigned long long)g_gatherBad,
                         ConstGatherPoison()
                             ? "  (POISONED — a zero here means the verifier is BLIND)"
+                            : "");
+            if (g_gatherChecked && g_gatherDynBounded)
+                fprintf(stderr,
+                        "[vk]     ...of which %llu were BOUNDED dynamic copies%s\n",
+                        (unsigned long long)g_gatherBadBounded,
+                        ConstGatherPoison()
+                            ? " (poisoned: zero here means the BOUNDED verifier is blind)"
                             : "");
         }
     }

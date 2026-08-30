@@ -3428,5 +3428,22 @@ CZ_VK_PALETTE_EXTENT_CENSUS=1  **would a write-extent-bounded gather be sound, a
                   full vs bounded vs high-water-only bytes, and the bound histogram.
                   **The pre-registered kill lives here: a sound bound saving < 30% of
                   full-copy bytes kills the item.** A DIAGNOSTIC ARM; never quote a
-                  frame time from a run carrying it.
+                  frame time from a run carrying it. **Step 0's verdict (first crowd
+                  run): clean-cover 98.3-98.6%, 82% of full-copy bytes saved, kill did
+                  not fire** — the census remains as the standing re-check.
+
+CZ_VK_NO_BOUNDED_DYNAMIC=1  **the same-binary control arm for the bounded dynamic copy**
+                  (part 88 step 1): every dynamic VS copy takes the full 4 KB again —
+                  the part-87 renderer. The palette write-extent take still runs on
+                  both arms, so the two differ by exactly the copy. Three existing arms
+                  extend to the bounded path: `CZ_VK_VERIFY_CONST_GATHER=1` does BOTH
+                  copies for bounded dynamics and compares everything the bounded copy
+                  claims (c0..c3, the palette span, the list) — 0 disagreements is the
+                  standing gate; `CZ_VK_GATHER_POISON=1` shrinks the bound by one
+                  register (the list-drop poison is blind here — these lists sit inside
+                  the force-copied c0..c3) and the verifier MUST then report;
+                  `CZ_VK_GATHER_FILL=1` fills above the bound with the constant — the
+                  read-above-bound discriminator no value compare can see (zombies are
+                  the subject, so its reader is a crowd frame dump or the operator's
+                  eye, not the safehouse).
 ```
