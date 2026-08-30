@@ -3337,3 +3337,18 @@ point `tools/release_gate_clean_container.sh` at a microcode blob directory and 
 package; both are REQUIRED by the gate rather than skipped-if-absent, because a gate
 with a weak mode gets run in its weak mode forever. `CZ_DXC_LIB` (already read by the
 translator) doubles as the packaging scripts' override for which libdxcompiler ships.
+
+```
+CZ_SKILL_GRANTS=N  **the extended-level grant mask** (part 86). Bit 1 = grant handler A
+                  (sub_82539890), 2 = grant B (sub_82539908), 4 = frontend event C4A
+                  (the combo-card screen), 8 = event C4B (the skill notification).
+                  **Default 9 — skills ON, combo cards OFF** — after the operator's
+                  bisection sitting: mask 15 granted two skills cleanly at levels 6-7
+                  (grant A + C4B) and crashed from the OTHER pair (grant B planted
+                  combo cards with no objects; the card UI null-dereferenced at guest
+                  0x10C after opening combocards.tex). 0 = part 60's blanket filter.
+                  A second sitting at 9 reached 50: ELEVEN skills granted, every one
+                  with working animation and effects, all from CZ's own data — four
+                  remain '????' (bellyflop, facebreaker, handsoff, upandover); mask 11
+                  is the arm that tests whether they ride grant B.
+```
