@@ -192,9 +192,10 @@ mask; trust the microcode's own swizzles.
     read `phase5-notes.md` §6ba before following anything in it.
   - **THE LIVE HAND-OFF IS ALWAYS THE HIGHEST-NUMBERED `partNN-kickoff.md`**, and it
     supersedes every earlier kickoff on "where the port is". **IT IS
-    `part88-kickoff.md`, AND THE SUBJECT IS PERFORMANCE — THE BONE-PALETTE BOUNDED
-    GATHER** (part 87 refuted all three CW leads by census and found the new lead in the
-    same runs' data; `phase5-notes.md` §6ef-§6eg)
+    `part89-kickoff.md`, AND THE CONSTANTS BLOCK IS DONE — part 88 shipped BOTH §6eg
+    items (the bounded gather and the patch memo) verified and measured in one part
+    (`phase5-notes.md` §6eh); the board's next named item is the CW record-restructure
+    RE-PRICING**
     — the release programme (milestones A, B, D, E) is complete and gated
     (`release-plan.md` §9 is the record), part 86 shipped the launcher, level cap 50,
     all fifteen skills, the save relocation and Case West's pump stack
@@ -960,9 +961,9 @@ findings ledger — it wins on any measured number), `docs/phase1-notes.md`,
 `docs/phase3-notes.md`, `docs/phase5-notes.md` and `docs/d3d-translation-plan.md`.
 
 **SUBJECT: THE RELEASE, 2026-08-27, operator instruction opening part 82:** *"Do the release
-plan."* **`docs/release-plan.md` IS THE PROGRAMME AND `docs/part88-kickoff.md` IS THE LIVE
-HAND-OFF (subject: performance — the bone-palette bounded gather; part 87's CW-lead
-verdicts are `part87-kickoff.md` §0b-§0c).** **MILESTONES A, B, D AND E ARE COMPLETE — both release artifacts exist and are
+plan."* **`docs/release-plan.md` IS THE PROGRAMME AND `docs/part89-kickoff.md` IS THE LIVE
+HAND-OFF (part 88 closed both §6eg performance items — `phase5-notes.md` §6eh; part 87's
+CW-lead verdicts are `part87-kickoff.md` §0b-§0c).** **MILESTONES A, B, D AND E ARE COMPLETE — both release artifacts exist and are
 gated** (`dist/CaseZeroRecomp-linux-x86_64.tar.zst` 26 MB, `CaseZeroRecomp-windows-x86_64.zip`
 21 MB; `release-plan.md` §9.8 has every gate). A player's first run is real end to end:
 in-process STFS extract, disc shader build, a progress window over both, and
@@ -994,40 +995,11 @@ ground is and that PERFORMANCE IS PARKED. (This
 line has now named the wrong plan TWICE — the two-live-pointers defect the block-rotation note at the bottom of this file
 describes, and the reason that note asks for the rule and not just the name; gotcha 13.)
 
-Where the port is, as of 2026-08-30 (**PART 86 CLOSED — FIVE OPERATOR-DRIVEN SUBJECTS
-IN ONE SESSION.** ~~**`docs/part87-kickoff.md` IS THE LIVE HAND-OFF**~~ — it was, for
-one part; it is `part88-kickoff.md`; `part86-kickoff.md` §0b-§0d are the records):
-
-* **THE LAUNCHER** — settings + drag-to-install before boot, a mode of cz_runtime
-  (`CZ_LAUNCHER=1`, shipped default via cz_defaults.env). Three no-hostage guards; the
-  third (SDL's dummy driver passes init in a container and a modal loop under it is a
-  HANG) was added after it took the container gate hostage for 38 minutes.
-* **LEVEL CAP 50 IS THE MAIN-GAME DEFAULT** (`CZ_LEVEL_CAP=5` = stock) — and **ALL
-  FIFTEEN DR2 SKILLS GRANT AND PLAY from Case Zero's own data** (`CZ_SKILL_GRANTS`
-  default 11 + the card-slot widget guard at sub_824F5158). The operator's gameplay
-  knowledge refuted the census's card-texture theory; three bisection sittings split
-  the working skill path from the poison combo-card path. Case West has NOTHING to
-  import (zero skill assets — Frank starts pre-skilled).
-* **SAVES LIVE IN THE OS SAVED-GAMES FOLDER NOW** (`HostPaths::SavedGames()`, per-
-  profile `default/`, one-time copy-migration, `CZ_SAVE_DIR` override) — after a
-  repackage wipe reached the play copy's save dir. Both packaging scripts now preserve
-  player assets THEMSELVES. **The Windows bundle save-squatter bug is still UNFOUND**
-  (three saves eaten; part86-kickoff §0b has the specified repro).
-* **CASE WEST'S PUMP STACK IS IMPORTED AND MEASURED**: mid-walk rptr publication +
-  eager tick + fast-retry backoff applied VERBATIM (CW_→CZ_ rename only) —
-  **+2.3% frame-weighted, +0.5-0.9 ms at the crowd**, GPU column unchanged, 2v2 at the
-  operator's stated budget. Their worker flip is refuted on BOTH ports; their record
-  restructure is the wave-2 candidate and cannot be module-dropped (~10k diverged lines).
-* **Instrument lessons paid for twice**: the crowd rig arms NOTHING itself — pass
-  `CZ_VK_FRAME_TRACE` per run or the campaign measures nothing; never run a campaign
-  `>/dev/null`; czwin's `>nul`-inside-ssh silently breaks the attached command (three
-  incidents — runbook has the rule).
-
 Where the port is, as of 2026-08-30 (**PART 87 CLOSED — PERFORMANCE. ALL THREE CASE WEST
 LEADS REFUTED BY CENSUS, AND THE NEXT LEAD FOUND IN THE SAME RUNS' DATA.**
-**`docs/part88-kickoff.md` IS THE LIVE HAND-OFF and the subject is the BONE-PALETTE
-BOUNDED GATHER**; the records are `phase5-notes.md` §6ef-§6eg and `part87-kickoff.md`
-§0b-§0c):
+~~`docs/part88-kickoff.md` is the live hand-off~~ — it WAS, for one part; part 88
+executed it whole and `part89-kickoff.md` is live; the records are `phase5-notes.md`
+§6ef-§6eg and `part87-kickoff.md` §0b-§0c):
 
 * **CW's three leads all died on measurement, none on argument** (§6ef). Lead 1
   (frustum cull, "20-30% off-frustum"): first crowd run of `CZ_VK_VCULL_CENSUS` reads
@@ -1055,8 +1027,37 @@ BOUNDED GATHER**; the records are `phase5-notes.md` §6ef-§6eg and `part87-kick
   true 0.0 — gotcha 151); all census runs are diagnostic arms and no frame time from
   them was quoted.
 
+Where the port is, as of 2026-08-30 (**PART 88 CLOSED — PERFORMANCE. BOTH §6eg ITEMS
+SHIPPED, VERIFIED AND MEASURED IN ONE PART.** **`docs/part89-kickoff.md` IS THE LIVE
+HAND-OFF**; the record is `phase5-notes.md` §6eh):
+
+* **The bone-palette bounded gather is ON BY DEFAULT** (`CZ_VK_NO_BOUNDED_DYNAMIC=1`
+  the control). Step 0's census first: clean-cover 98.3-98.6% at the crowd, 82% of
+  full-copy bytes addressable, the pre-registered <30% kill did not fire. The fix:
+  `c0..c3 ∪ list ∪ [8, extent]` for the 21 palette-shaped dynamic VS (sidecar exprs
+  parsed, fails closed; the `vc(209+a0)` outlier keeps the full copy), the bound from
+  an always-on PM4 write-extent tracker (two comparisons per ALU-overlapping run).
+  Verified three ways: 65.4M value checks / 0 bad; the poison shown to fire via a
+  SPLIT counter after the shared one proved unattributable (gotcha 151); the
+  read-above-extent question answered by the fill poison AT THE CROWD — intact
+  articulated zombies both arms — because no value compare can see it (gotcha 432).
+  **3v3: dominant band 13.06 → 12.67 ms (−3.0%, −0.39 ms), GPU unchanged; mechanism
+  −84.3% of dynamic-copy bytes, three replicates agreeing to 0.2%.**
+* **The projection-patch memo is ON BY DEFAULT** (`CZ_VK_NO_PATCH_MEMO=1` the
+  control): 4-way MRU on (c0..c3, fov, wide) serving the patched block AND both
+  recognition results. **99.9% of 118-122M patches/run served**; 115.7M verify checks
+  / 0 bad; poison fires on 100% of hits. 3v3: every band ≥4,500 draws negative
+  (−0.19 to −0.53 ms at the crowd), GPU unchanged.
+* Both items' per-band deltas sit AT the route's ±2.9% floor — the reading rule that
+  ships them anyway is the kickoff's own: quote the MECHANISM number beside the
+  milliseconds, and the mechanism (bytes, hit rate, engagement counters both arms) is
+  exact.
+* **The constants block has no mechanism-level lead left.** The board's next named CPU
+  item is the CW serial record-restructure RE-PRICING (not port) — `part89-kickoff.md`
+  §1; §6ec/§6eg's tables predate both fixes, so re-profile before pricing anything.
+
 **Older per-part status blocks (parts 28-54, the superseded mid-part-44 closure and the
-superseded MID-PART-46 block) moved to `docs/port-history.md`, NOW INCLUDING PARTS 60-85's** — part 87 moved part 85's out in the same commit that added its own block, part 86 moved part 84's out in the same commit that added its own block, part 85 moved part 83's out in the same commit that added its own block, part 84 moved part 82's out in the same commit that added its own block, part 83 moved part 81's out in the same commit that added its own block, part 82 moved part 80's out in the same commit that added its own block, part 78 moved part 76's out in the same commit that added its own block, part 76 moved part 74's out in the same commit that added its own block, part 74 moved part 72's out in the same commit that added its own block, part 73 moved part 71's out in the same commit that added its own block, part 72 moved part 70's out in the same commit that added its own block, part 71 moved part 69's out in the same commit that added its own block, part 70 moved part 68's out in the same commit that added its own block, part 69 moved part 67's out in the same commit that added its own block, part 68 moved part 66's out in the same commit that added its own block, part 67 moved part 65's out the same way, part 65 moved part 63's out the same way, part 64 moved parts 61/62's out the same way, part 63 moved part 60's out the same way, part 61 moved part 59's out the same way, part 59 moved part 57's out the same way, part 57 moved part 55's out the same way, part 55 moved part 53's
+superseded MID-PART-46 block) moved to `docs/port-history.md`, NOW INCLUDING PARTS 60-86's** — part 88 moved part 86's out in the same commit that added its own block, part 87 moved part 85's out in the same commit that added its own block, part 86 moved part 84's out in the same commit that added its own block, part 85 moved part 83's out in the same commit that added its own block, part 84 moved part 82's out in the same commit that added its own block, part 83 moved part 81's out in the same commit that added its own block, part 82 moved part 80's out in the same commit that added its own block, part 78 moved part 76's out in the same commit that added its own block, part 76 moved part 74's out in the same commit that added its own block, part 74 moved part 72's out in the same commit that added its own block, part 73 moved part 71's out in the same commit that added its own block, part 72 moved part 70's out in the same commit that added its own block, part 71 moved part 69's out in the same commit that added its own block, part 70 moved part 68's out in the same commit that added its own block, part 69 moved part 67's out in the same commit that added its own block, part 68 moved part 66's out in the same commit that added its own block, part 67 moved part 65's out the same way, part 65 moved part 63's out the same way, part 64 moved parts 61/62's out the same way, part 63 moved part 60's out the same way, part 61 moved part 59's out the same way, part 59 moved part 57's out the same way, part 57 moved part 55's out the same way, part 55 moved part 53's
 out in the same commit that added its own, which is what the rule below asks for. — CLAUDE.md keeps only the
 live part and one part back, per the 2026-08-08 split's rule, and **part 53 moved part
 51's out in the same commit that added its own**, which is what the rule below asks for.

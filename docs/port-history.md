@@ -6381,3 +6381,32 @@ COMPLETE: BOTH RELEASE ARTIFACTS EXIST AND EVERY §5 GATE RAN AGAINST THEM.**
   19.2 s moved out of gameplay). **STILL OWED:** the glibc floor / AppImage; the ~19 s
   cold-boot pre-warm running silently after the progress window closes (§2.3 item 4
   polish); milestone C.
+
+Where the port is, as of 2026-08-30 (**PART 86 CLOSED — FIVE OPERATOR-DRIVEN SUBJECTS
+IN ONE SESSION.** ~~**`docs/part87-kickoff.md` IS THE LIVE HAND-OFF**~~ — it was, for
+one part; it is `part88-kickoff.md`; `part86-kickoff.md` §0b-§0d are the records):
+
+* **THE LAUNCHER** — settings + drag-to-install before boot, a mode of cz_runtime
+  (`CZ_LAUNCHER=1`, shipped default via cz_defaults.env). Three no-hostage guards; the
+  third (SDL's dummy driver passes init in a container and a modal loop under it is a
+  HANG) was added after it took the container gate hostage for 38 minutes.
+* **LEVEL CAP 50 IS THE MAIN-GAME DEFAULT** (`CZ_LEVEL_CAP=5` = stock) — and **ALL
+  FIFTEEN DR2 SKILLS GRANT AND PLAY from Case Zero's own data** (`CZ_SKILL_GRANTS`
+  default 11 + the card-slot widget guard at sub_824F5158). The operator's gameplay
+  knowledge refuted the census's card-texture theory; three bisection sittings split
+  the working skill path from the poison combo-card path. Case West has NOTHING to
+  import (zero skill assets — Frank starts pre-skilled).
+* **SAVES LIVE IN THE OS SAVED-GAMES FOLDER NOW** (`HostPaths::SavedGames()`, per-
+  profile `default/`, one-time copy-migration, `CZ_SAVE_DIR` override) — after a
+  repackage wipe reached the play copy's save dir. Both packaging scripts now preserve
+  player assets THEMSELVES. **The Windows bundle save-squatter bug is still UNFOUND**
+  (three saves eaten; part86-kickoff §0b has the specified repro).
+* **CASE WEST'S PUMP STACK IS IMPORTED AND MEASURED**: mid-walk rptr publication +
+  eager tick + fast-retry backoff applied VERBATIM (CW_→CZ_ rename only) —
+  **+2.3% frame-weighted, +0.5-0.9 ms at the crowd**, GPU column unchanged, 2v2 at the
+  operator's stated budget. Their worker flip is refuted on BOTH ports; their record
+  restructure is the wave-2 candidate and cannot be module-dropped (~10k diverged lines).
+* **Instrument lessons paid for twice**: the crowd rig arms NOTHING itself — pass
+  `CZ_VK_FRAME_TRACE` per run or the campaign measures nothing; never run a campaign
+  `>/dev/null`; czwin's `>nul`-inside-ssh silently breaks the attached command (three
+  incidents — runbook has the rule).
