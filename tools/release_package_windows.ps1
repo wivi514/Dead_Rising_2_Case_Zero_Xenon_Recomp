@@ -110,6 +110,7 @@ Copy-Item (Join-Path $Root "tools\licenses\LICENSE.DXC.txt") (Join-Path $Stage "
 # Defaults for a shipped build. KEY=VALUE, one per line, # comments.
 # Anything you set in the environment overrides these.
 CZ_VKDRAW=1
+CZ_LAUNCHER=1
 "@ | Set-Content -Encoding ascii (Join-Path $Stage "cz_defaults.env")
 
 @"

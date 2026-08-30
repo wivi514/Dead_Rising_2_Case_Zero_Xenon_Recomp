@@ -261,6 +261,22 @@ int main(int argc, char** argv)
                           : getenv("CZ_XEX") ? getenv("CZ_XEX")
                                              : xexDefault.c_str();
 
+    // THE LAUNCHER (part 86, window.h Host_RunLauncher): settings and install before
+    // any boot machinery. CZ_LAUNCHER=1 comes from the shipped cz_defaults.env, so a
+    // player's double-click gets it and no dev recipe changes. The settings need
+    // their home decided before the launcher edits them; the same calls run again
+    // below on the normal path and are idempotent (the migration guards itself).
+    {
+        const char* l = getenv("CZ_LAUNCHER");
+        if (l && *l && strcmp(l, "0") != 0)
+        {
+            ContentSetRootFromGameDir(HostPaths::Game().string());
+            Settings_Load((ContentSettingsDir() / "cz_settings.txt").string());
+            if (!Host_RunLauncher())
+                return 0; // the player closed the launcher: a quit, not an error
+        }
+    }
+
     // THE FIRST-RUN CHECK, before anything else can fail for a reason that no longer
     // names the cause (release-plan A.2, host/first_run.h). It is placed here — after
     // the paths are decided, before the crash reporter, the memory map or any guest

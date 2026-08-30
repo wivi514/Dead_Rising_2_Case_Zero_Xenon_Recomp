@@ -116,6 +116,7 @@ bool Host_WindowActive() { return false; }
 bool Host_ProgressBegin(const char*) { return false; }
 void Host_ProgressUpdate(const char*, float) {}
 void Host_ProgressEnd() {}
+bool Host_RunLauncher() { return true; }
 void Host_Present(uint32_t, uint32_t, uint32_t) {}
 void Host_PresentPixels(const uint8_t*, uint32_t, uint32_t) {}
 void Host_WindowRun() {}
@@ -151,7 +152,10 @@ int Host_DisplayModeList(uint32_t*, int) { return 0; }
 #include <SDL_vulkan.h>
 
 #include "../gpu/vk_renderer.h"
+#include "host_paths.h"
 #include "settings.h"
+#include "stfs_extract.h"
+#include <filesystem>
 
 namespace {
 
@@ -1104,6 +1108,272 @@ void Host_ProgressEnd()
     g_progWindow = nullptr;
     // The video subsystem stays up: the real window is usually created next, and
     // tearing SDL down between the two would only add a flash and a race.
+}
+
+// ---- THE LAUNCHER (part 86) -----------------------------------------------------
+// See window.h. Same construction as the progress window — plain SDL_Renderer, the
+// shared glyphs — but interactive and modal. It deliberately owns no game state:
+// every row reads and writes through the Settings_* API the in-game panel uses, so
+// the two can never disagree about what a setting means, and the install path is
+// the same StfsExtract the automatic first run uses.
+namespace
+{
+// The resolutions the launcher cycles through: the common 16:9 ladder, filtered by
+// the same validity rule the settings system enforces. The display's own size is
+// appended when it is not already present, so "native" is always reachable.
+const uint32_t kLauncherRes[][2] = {
+    { 1280, 720 }, { 1600, 900 }, { 1920, 1080 }, { 2560, 1440 }, { 3840, 2160 },
+};
+
+void LauncherText(SDL_Renderer* r, int tx, int ty, const std::string& str, int scale,
+                  uint8_t cr, uint8_t cg, uint8_t cb)
+{
+    SDL_SetRenderDrawColor(r, cr, cg, cb, 255);
+    for (char c : str)
+    {
+        if (const char* bits = Glyph(c))
+            for (int row = 0; row < 7; ++row)
+                for (int col = 0; col < 5; ++col)
+                    if (bits[row * 5 + col] == '1')
+                    {
+                        SDL_Rect px{tx + col * scale, ty + row * scale, scale, scale};
+                        SDL_RenderFillRect(r, &px);
+                    }
+        tx += 6 * scale;
+    }
+}
+} // namespace
+
+bool Host_RunLauncher()
+{
+    if (getenv("CZ_NO_WINDOW"))
+        return true;
+    if (!SDL_WasInit(SDL_INIT_VIDEO) && SDL_InitSubSystem(SDL_INIT_VIDEO) != 0)
+    {
+        fprintf(stderr, "[launcher] SDL video init failed (%s) — continuing without\n",
+                SDL_GetError());
+        return true;
+    }
+    SDL_Window* win = SDL_CreateWindow("Dead Rising 2: Case Zero",
+                                       SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
+                                       720, 420, SDL_WINDOW_ALLOW_HIGHDPI);
+    if (!win)
+        return true;
+    SDL_Renderer* ren = SDL_CreateRenderer(win, -1, 0);
+    if (!ren)
+    {
+        SDL_DestroyWindow(win);
+        return true;
+    }
+    SDL_EventState(SDL_DROPFILE, SDL_ENABLE);
+
+    // The dropped-package install writes its progress into THIS window; declared
+    // before the loop so the drop handler below can call it.
+    auto drawProgress = [&](const std::string& line, float f) {
+        SDL_SetRenderDrawColor(ren, 20, 22, 26, 255);
+        SDL_RenderClear(ren);
+        LauncherText(ren, 24, 24, "INSTALLING", 3, 245, 235, 200);
+        LauncherText(ren, 24, 80, line, 2, 160, 160, 170);
+        const int bx = 24, by = 130, bw = 720 - 48, bh = 22;
+        SDL_SetRenderDrawColor(ren, 70, 70, 80, 255);
+        SDL_Rect frame{bx, by, bw, bh};
+        SDL_RenderFillRect(ren, &frame);
+        SDL_SetRenderDrawColor(ren, 200, 170, 60, 255);
+        SDL_Rect fill{bx + 2, by + 2, int((bw - 4) * (f < 0 ? 0 : f > 1 ? 1 : f)), bh - 4};
+        if (fill.w > 0)
+            SDL_RenderFillRect(ren, &fill);
+        SDL_RenderPresent(ren);
+        SDL_PumpEvents();
+        SDL_FlushEvents(SDL_FIRSTEVENT, SDL_LASTEVENT);
+    };
+
+    int sel = 0;
+    std::string notice;
+    bool play = false, quit = false;
+    while (!play && !quit)
+    {
+        // ---- state read fresh every frame, through the same API the game uses ----
+        const bool installed = std::filesystem::is_regular_file(HostPaths::GameXex());
+        uint32_t rw = 0, rh = 0;
+        Settings_InternalRes(rw, rh);
+        char resBuf[32];
+        snprintf(resBuf, sizeof resBuf, "%ux%u", rw, rh);
+        char fpsBuf[16];
+        snprintf(fpsBuf, sizeof fpsBuf, "%d", Settings_FpsCap());
+        char fovBuf[16];
+        snprintf(fovBuf, sizeof fovBuf, "+%d", Settings_Fov());
+        static const char* kShadowNames[] = { "LOW", "MEDIUM", "HIGH" };
+        static const char* kDispNames[] = { "WINDOW", "BORDERLESS", "FULLSCREEN" };
+        struct Row { const char* label; std::string value; };
+        const Row rows[] = {
+            { "PLAY", installed ? "" : "(GAME NOT INSTALLED YET)" },
+            { "DISPLAY MODE", kDispNames[int(Settings_DisplayMode()) % 3] },
+            { "RESOLUTION", resBuf },
+            { "VSYNC", Settings_VSync() ? "ON" : "OFF" },
+            { "SHADOWS", kShadowNames[Settings_ShadowTier() % 3] },
+            { "FPS CAP", Settings_FpsCap() ? fpsBuf : "OFF" },
+            { "FOV", Settings_Fov() ? fovBuf : "DEFAULT" },
+        };
+        constexpr int kRows = int(sizeof(rows) / sizeof(rows[0]));
+
+        // ---- draw ----
+        SDL_SetRenderDrawColor(ren, 20, 22, 26, 255);
+        SDL_RenderClear(ren);
+        LauncherText(ren, 24, 20, "DEAD RISING 2 - CASE ZERO", 3, 245, 235, 200);
+        LauncherText(ren, 24, 52, "UP/DOWN SELECT   LEFT/RIGHT CHANGE   ENTER PLAY", 2,
+                     130, 130, 140);
+        for (int i = 0; i < kRows; ++i)
+        {
+            const int y = 96 + i * 34;
+            if (i == sel)
+            {
+                SDL_SetRenderDrawColor(ren, 45, 48, 56, 255);
+                SDL_Rect hi{16, y - 6, 720 - 32, 30};
+                SDL_RenderFillRect(ren, &hi);
+            }
+            LauncherText(ren, 24, y, rows[i].label, 2,
+                         i == sel ? 245 : 190, i == sel ? 235 : 190, i == sel ? 200 : 195);
+            LauncherText(ren, 300, y, rows[i].value, 2, 200, 170, 60);
+        }
+        const std::string foot = notice.empty()
+            ? (installed ? "GAME INSTALLED"
+                         : "DROP YOUR XBLA PACKAGE FILE ONTO THIS WINDOW TO INSTALL")
+            : notice;
+        LauncherText(ren, 24, 96 + kRows * 34 + 14, foot, 2, 160, 160, 170);
+        SDL_RenderPresent(ren);
+
+        // ---- input ----
+        SDL_Event e;
+        if (!SDL_WaitEventTimeout(&e, 250))
+            continue;
+        switch (e.type)
+        {
+        case SDL_QUIT:
+            quit = true;
+            break;
+        case SDL_DROPFILE:
+        {
+            const std::string dropped = e.drop.file;
+            SDL_free(e.drop.file);
+            // Identity first, size second — the same two questions first_run asks.
+            char magic[5] = {};
+            if (FILE* f = fopen(dropped.c_str(), "rb"))
+            {
+                if (fread(magic, 1, 4, f) != 4)
+                    magic[0] = 0;
+                fclose(f);
+            }
+            const std::string m = magic;
+            if (m != "LIVE" && m != "CON " && m != "PIRS")
+            {
+                notice = "NOT AN XBOX 360 PACKAGE - IT BEGINS \"" + m + "\"";
+                break;
+            }
+            // Copy it into assets/package (the layout's contract: your package,
+            // kept, so the game can always be re-extracted), then extract.
+            std::error_code ec;
+            const auto pkgDir = HostPaths::Package() / "dropped";
+            std::filesystem::create_directories(pkgDir, ec);
+            const auto pkgDest = pkgDir / std::filesystem::path(dropped).filename();
+            drawProgress("COPYING PACKAGE...", 0.1f);
+            std::filesystem::copy_file(dropped, pkgDest,
+                std::filesystem::copy_options::overwrite_existing, ec);
+            if (ec)
+            {
+                notice = "COULD NOT COPY THE PACKAGE IN: " + ec.message();
+                break;
+            }
+            std::string err;
+            const bool ok = StfsExtract::Extract(pkgDest, HostPaths::Game(), err,
+                [&](uint64_t done, uint64_t total) {
+                    char l[64];
+                    snprintf(l, sizeof l, "UNPACKING - %u OF %u MB",
+                             unsigned(done >> 20), unsigned(total >> 20));
+                    drawProgress(l, total ? float(double(done) / double(total)) : 1.f);
+                });
+            notice = ok ? "INSTALLED - PRESS ENTER TO PLAY"
+                        : "INSTALL FAILED: " + err.substr(0, 48);
+            break;
+        }
+        case SDL_KEYDOWN:
+        {
+            const SDL_Keycode k = e.key.keysym.sym;
+            const int dir = (k == SDLK_LEFT) ? -1 : (k == SDLK_RIGHT) ? 1 : 0;
+            if (k == SDLK_UP)
+                sel = (sel + kRows - 1) % kRows;
+            else if (k == SDLK_DOWN)
+                sel = (sel + 1) % kRows;
+            else if (k == SDLK_RETURN && sel == 0)
+                play = true;
+            else if (k == SDLK_ESCAPE)
+                quit = true;
+            else if (dir)
+                switch (sel)
+                {
+                case 1:
+                    Settings_SetDisplayMode(
+                        CzDisplayMode((int(Settings_DisplayMode()) + dir + 3) % 3));
+                    break;
+                case 2:
+                {
+                    // Cycle the ladder; the display's own size joins it so "native"
+                    // is always one press away even on odd panels.
+                    std::vector<std::pair<uint32_t, uint32_t>> list;
+                    for (const auto& p : kLauncherRes)
+                        if (Settings_ValidInternalRes(p[0], p[1]))
+                            list.push_back({p[0], p[1]});
+                    uint32_t dw = 0, dh = 0;
+                    if (Host_DisplaySize(&dw, &dh) && Settings_ValidInternalRes(dw, dh))
+                    {
+                        bool have = false;
+                        for (auto& p : list)
+                            if (p.first == dw && p.second == dh)
+                                have = true;
+                        if (!have)
+                            list.push_back({dw, dh});
+                    }
+                    if (list.empty())
+                        break;
+                    int cur = 0;
+                    for (int i = 0; i < int(list.size()); ++i)
+                        if (list[i].first == rw && list[i].second == rh)
+                            cur = i;
+                    const auto& next =
+                        list[(cur + dir + int(list.size())) % int(list.size())];
+                    Settings_SetInternalRes(next.first, next.second);
+                    break;
+                }
+                case 3:
+                    Settings_SetVSync(!Settings_VSync());
+                    break;
+                case 4:
+                    Settings_SetShadowTier((Settings_ShadowTier() + dir + 3) % 3);
+                    break;
+                case 5:
+                {
+                    static const int caps[] = { 0, 30, 60, 120 };
+                    int cur = 0;
+                    for (int i = 0; i < 4; ++i)
+                        if (caps[i] == Settings_FpsCap())
+                            cur = i;
+                    Settings_SetFpsCap(caps[(cur + dir + 4) % 4]);
+                    break;
+                }
+                case 6:
+                    Settings_SetFov(std::clamp(Settings_Fov() + dir * 5, 0, 20));
+                    break;
+                }
+            break;
+        }
+        }
+    }
+
+    if (play)
+        Settings_Save();
+    SDL_DestroyRenderer(ren);
+    SDL_DestroyWindow(win);
+    // Video stays initialized — the progress window or the game window comes next.
+    return play;
 }
 
 bool Host_WindowInit()

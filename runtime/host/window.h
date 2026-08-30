@@ -56,6 +56,17 @@ bool Host_ProgressBegin(const char* title);
 void Host_ProgressUpdate(const char* line, float fraction);
 void Host_ProgressEnd();
 
+// THE LAUNCHER (part 86, operator request): a small pre-boot window where the player
+// picks the visual settings and can install the game by DROPPING their XBLA package
+// onto it — before any of the boot machinery runs. Runs modally on the calling
+// (main) thread, edits the same cz_settings.txt the in-game panel writes, and
+// returns true to continue the boot (PLAY) or false to quit (window closed).
+// Enabled by CZ_LAUNCHER=1 — which the shipped cz_defaults.env sets, so a player's
+// double-click gets it while every dev recipe stays exactly as it was. Headless,
+// CZ_NO_WINDOW or a failed SDL init return true immediately: the launcher must
+// never be able to take a gate run hostage.
+bool Host_RunLauncher();
+
 // True once Host_WindowInit has succeeded. The input path asks this rather than
 // assuming, because "no window" and "window with nothing pressed" are different
 // claims to make to the guest.

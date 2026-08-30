@@ -19,10 +19,11 @@ run turns it into everything else it needs.
 
 ## Quick start
 
-1. Drop your package file into `assets/package/` (copying the whole `58410A8D` folder
-   in also works — the runtime looks recursively).
-2. Run `./cz_runtime`.
-3. The first run does three things, once, with progress printed as it goes:
+1. Run `./cz_runtime`. The **launcher** opens: pick your display mode, resolution and
+   other settings, and **drag your XBLA package file onto the window** to install the
+   game (putting it in `assets/package/` by hand works too).
+2. Press PLAY.
+3. The first run does three things, once, with progress shown as it goes:
    * unpacks the package (825 MB in, ~832 MB out),
    * prepares the game's shaders from its own disc data (1,265 of them, ~10 s),
    * warms up as you play — entering a new area for the first time may translate a

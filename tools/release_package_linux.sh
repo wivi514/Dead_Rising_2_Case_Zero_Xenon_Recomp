@@ -169,6 +169,7 @@ cat > "$STAGE/cz_defaults.env" <<'ENV'
 # Defaults for a shipped build. KEY=VALUE, one per line, # comments.
 # Anything set in your environment overrides these.
 CZ_VKDRAW=1
+CZ_LAUNCHER=1
 ENV
 
 # THIRD_PARTY.md, GENERATED (release-plan E.3). Written from what the binary actually
