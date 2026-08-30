@@ -69,3 +69,26 @@ must show their engagement counters on the `[vkprof] ring latency arms:` line
 (eager ~59% of ticks, ~30 rptr stores/frame, ~2 held-fast naps/frame at the crowd);
 `truncated=0`; and any new perf default ships WITH its off-arm and its measured
 milliseconds in the same commit.
+
+---
+
+## 0b. THE CW LEADS: ALL THREE ANSWERED, SAME DAY (2026-08-30 — the record is `phase5-notes.md` §6ef)
+
+The operator delivered three CW leads at session open. Every one was answered by census
+before any optimisation was written, and **none survives on this title**:
+
+| lead | verdict | number |
+|---|---|---|
+| 1. frustum-cull the crowd (20-30% off-frustum?) | **REFUTED at the crowd** — first crowd run of `CZ_VK_VCULL_CENSUS` | off-frustum **~0.1%** of classified (2.5-2.7 vert + <1 horz per frame, 99.9% on screen); census speaks for 35.7% of the scene, and §6di §5's inversion covers the rest mechanically |
+| 2. cross-frame range reuse (1-2 ms?) | **REFUTED at its mechanism** — `CZ_VK_REUSE_CENSUS` built (ask-first), two runs | full-input identity **1.8-2.1%** at the crowd = **0.09 ms ceiling**; the four-cell diagnosis names the killer: **93% of draws are identical EXCEPT their ALU constants** — the guest churns the constant file, so reuse cannot be memoised on it |
+| 3. per-draw stream-lookup memo (0.2-0.4 ms?) | **already dead on record** (§6ec §4, part 80) | 4.96 lookups/draw, repeats worth ~0.27 ms, under the 2.9% floor — "pure loss" |
+
+The prepass arithmetic transfers (61% depth-only here too — the same engine number CW
+quoted), which is why these leads looked plausible; the pools they need do not exist.
+
+**What this leaves on the board:** CW's 2a/2b record restructure as a SERIAL win (their
+finding 69: +0.35 ms at their crowd), justified independently of reuse and still owed a
+re-pricing against §6ec (record 524 ns/draw, ours 273) before any of its ~10k diverged
+lines are ported. **For CW (send back):** run lead 1's census at your crowd and lead 2's
+four-cell census before building either — this engine leaves no off-frustum pool and
+churns constants on ~98% of draws.

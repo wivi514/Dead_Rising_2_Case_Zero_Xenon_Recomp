@@ -19446,3 +19446,124 @@ Both control arms exist and are one environment variable each
 (`CZ_VK_NO_BIND_BATCH=1`, `CZ_VK_NO_DEVICE_PFN=1`), so if the operator sees anything wrong
 the bisection is two runs. **The honest headline is: the mechanism is verified and the
 milliseconds are owed.**
+
+## §6ef — Part 87: Case West's three leads, all answered by census before anything was built (2026-08-30)
+
+The operator opened the part with Case West's performance leads, to be run against OUR
+recorded route because the crowd is heavier here (`tools/part80_crowdroute.sh`,
+9,300-9,700 draws, vs CW's ~6,800). Three leads arrived; **all three are now answered on
+this title, none of them survive, and two of the three answers were reached without
+writing a line of renderer code.** Every run below passed the route's own crowd gate
+(peaks 8,850 / 9,354 / 9,279 windowed-median draws, 21 windows at >=8,000 each). All
+census runs are DIAGNOSTIC ARMS — no frame time in this section is quotable, and none is
+quoted.
+
+### 1. LEAD 3 (the per-draw stream-lookup memo) was already dead on this title's record
+
+CW's "9.46 lookups per draw against 3-6 streams, a 16-entry memo is maybe 0.2-0.4 ms" is
+this repo's own census three, run in part 80: at the `UploadStream` boundary the real
+rate is **4.96 lookups/draw** (the profiler's 9.46 counts `PersistFind`'s second site),
+47.9% repeats, and a repeat costs only the flat-cache hit — **~0.27 ms, below the crowd
+route's 2.9% floor**. §6ec §4's verdict stands: a per-draw dedup cache would be pure
+loss. Nothing was re-bought. (The two part-80 censuses are now listed in
+`instruments.md` — they had lived only in §6ec, which is how a lead this dead came back
+across the sibling-port channel looking fresh.)
+
+### 2. LEAD 1 (cull off-frustum draws) — the census ran at the crowd for the first time, and there is no pool
+
+The arithmetic transfers exactly: this title double-submits too (233,155 depth-only vs
+148,150 colour draws in the part-9-era census = **61% prepass**, CW's own number), so a
+culled object would kill two draws here as well. And the instrument existed —
+`CZ_VK_VCULL_CENSUS=1`, the fixed post-part-72 census with the placement, the on-screen
+invariant and the offline predicate gate — but it had only ever run on `autoroute.sh`
+(part 73, ~4,300 draws). This is its first crowd run:
+
+```
+[vcull] crowd windows (scene draws 6,956-7,130/frame; peak windowed med 8,850):
+        CLASSIFIED 2,469-2,546/frame (35.5-35.7%)
+        ENTIRELY OFF-SCREEN VERTICALLY: 2.5-2.7 draws/frame (0.10-0.11%)
+        off-screen horizontally: 0.0-0.7/frame (0.00-0.03%)   on screen 99.9%
+```
+
+**Against CW's 20-30% hypothesis, the measurable off-frustum share at the crowd is
+~0.1%** — some three draws a frame, a sub-microsecond saving before any culling code
+exists. The honest bound: the census speaks for the 35.7% of the scene it can classify
+(declines/frame at the crowd: dependent-fetch ~3,600, palette ~340, no-bounds ~430,
+near-plane ~155), so the zombies themselves are outside its population. But zero waste
+across 2,500 classified draws/frame, together with part 73's inversion finding (§6di §5:
+the semantic control ROSE when the projection narrowed — the title submits for its own
+frustum and our widening makes submitted geometry visible), says this engine culls
+before submitting. **Lead 1 is refuted for everything measurable, and the unmeasurable
+remainder has the same engine-level mechanism against it. Do not build a frustum
+cull here.** For CW: run your inherited census at YOUR crowd before believing the
+20-30% — this engine appears to leave no off-frustum pool at all.
+
+### 3. LEAD 2 (cross-frame range reuse) — the ask-first census was built, and the lead dies at its MECHANISM
+
+CW's lead: a range whose inputs (streams, fetch state, constants) hash identical to last
+frame's could replay last frame's recorded commands; "if even a third of crowd draws sit
+in reusable ranges, that's 1-2 ms". This renderer has none of their range/ticket/
+secondary structure (that port is the wave-2 candidate), so per the standing rule the
+hit rate was measured first: **`CZ_VK_REUSE_CENSUS=1`** fingerprints every recorded draw
+— the full PipelineKey, draw args and index identity, the un-baked dynamic state and
+render-target block, both stages' vertex- and texture-fetch constants, and the ALU
+constants folded with `CopyConstWindow`'s own semantics — plus the renderer's own stream
+verdict (dirty = any stream this draw touched was COPIED this frame; a passing sampled
+guard counts unchanged, exactly as the shipping renderer treats it). Instrument details
+and its two stated biases (both toward the null) are in `instruments.md`.
+
+**Run 1 — the arc.** Identical-to-same-ordinal draws: menus **69-77%**, early world
+**24-48%** (~2,500 draws), crowd **1.7-1.9%** (~160/frame of ~9,050) — a **0.085 ms
+ceiling** at §6ec's 524 ns/draw of record. The pool collapses exactly where the frame is
+expensive. The era gradient doubles as the instrument's positive control: it CAN report
+identity, long runs (mean length 17-39) and their absence from one code path
+(gotcha 30).
+
+**Run 2 — WHICH mechanism kills it, because two candidates want opposite responses.**
+Ordinal misalignment (one inserted zombie draw shifts every later ordinal — a
+range-partitioned scheme could resync, the lead survives) versus per-frame constants
+(reuse is dead at its mechanism). Four cells, (ordinal|set) x (full|noALU), at the
+parked soak:
+
+```
+[reuse] diagnosis/frame at the crowd (9,050-9,080 draws):
+        ordinal full   163-167  (1.80-1.83%)     set full    191-193  (2.08-2.12%)
+        ordinal noALU  4,946-5,084 (54.7-56.0%)  set noALU   8,452-8,480 (93.2-93.4%)
+```
+
+**The ALU constants are the killer.** Order-insensitively, 93% of crowd draws are
+identical to a previous-frame draw in everything EXCEPT their constants; matched the
+same way WITH constants, 2.1% are. Alignment costs real coverage too (noALU falls 93%
+-> 56% when matched by ordinal) but it is not the mechanism — even a perfectly
+resyncing range scheme has a **~2% pool, a ~0.09 ms ceiling against the 1-2 ms hope.**
+The stream side confirms from the other end: **0.0 draws/frame** fail on stream content
+alone (the byte-stable geometry §6at measured is genuinely stable — the persist store
+already banked that win), so everything the fingerprint kills, the constants killed.
+
+This is §6ec §5's thesis reached from a fourth direction, now with the sharpest number
+yet: **the guest rewrites the ALU constant file for ~98% of draws every frame** (the
+whole-file version stamp served 3.6-7.1% before the split; census one's version-miss
+column read 47.9% per-shader; now full-input identity reads 2%). A "remember the
+recorded commands" scheme cannot be memoised on a register file the guest churns —
+gotcha 434's shape at the scale of the whole draw.
+
+**What survives for the wave-2 decision:** CW's 2a/2b import was never justified by
+reuse — their finding 69 credits the SERIAL restructure ("each stage of making
+recording distributable also made it cheaper serial", +0.35 ms at their crowd). That
+case is untouched by this refutation and remains the wave-2 candidate, re-priced
+against our own §6ec decomposition (record 524 ns/draw, ours 273). The reuse EXTENSION
+of it is dead here, and for CW: your title is the same engine — run this four-cell
+census (the module is ~150 lines against globals your renderer already has) before
+building reuse on the ticket structure.
+
+### 4. Gates and instrument health
+
+`--smoke` OK on every build. Four route runs, all passing the crowd gate. The census's
+channels each demonstrated movement (era gradient, four-cell splits); the one channel
+that read 0.0 everywhere — draws failing on stream bytes ALONE — got a liveness counter
+(dirty draws at all) rather than a believed zero, per gotcha 151. **Run 3 proved it and
+reproduced the verdict**: at 9,081 draws/frame, **43.9 dirty draws a frame** with the
+conjunction still 0.0 (every stream-dirty draw is constant-dirty too — a true zero, not
+a blind one), and the four cells read ordinal full 1.21% | set full 1.41% | ordinal
+noALU 56.2% | set noALU **94.0%**, ceiling 0.058 ms. Two runs' headline (1.2-2.1% full
+identity, 93-94% noALU) brackets the spawn variance and the conclusion does not move.
