@@ -1154,6 +1154,19 @@ bool Host_RunLauncher()
                 SDL_GetError());
         return true;
     }
+    // A display-less environment (a container, a CI box) can still pass SDL init on
+    // the DUMMY/OFFSCREEN driver — and a modal loop under a driver that can never
+    // deliver input is a hang, not a launcher. Part 86 shipped exactly that hang into
+    // the clean-container gate's first-run refusal step before this check existed:
+    // the header's "must never take a gate run hostage" promise needs all THREE
+    // guards, not two.
+    if (const char* drv = SDL_GetCurrentVideoDriver();
+        drv && (strcmp(drv, "dummy") == 0 || strcmp(drv, "offscreen") == 0))
+    {
+        fprintf(stderr, "[launcher] SDL video driver is '%s' (no real display) — "
+                        "continuing without the launcher\n", drv);
+        return true;
+    }
     SDL_Window* win = SDL_CreateWindow("Dead Rising 2: Case Zero",
                                        SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
                                        720, 420, SDL_WINDOW_ALLOW_HIGHDPI);

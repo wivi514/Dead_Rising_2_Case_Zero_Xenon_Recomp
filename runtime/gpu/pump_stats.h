@@ -64,6 +64,14 @@ struct PumpStats
     // so a reader at present time must add (now - walkStartNs) or it will attribute a
     // hitch to the frame after the one that suffered it.
     uint64_t walkStartNs;
+    // Ticks that skipped the sleep entirely because the walk before them made ring
+    // progress (the eager tick, 2026-08-29). The share eager/ticks is the engagement
+    // gate for CZ_PM4_NO_EAGER_TICK's arm.
+    uint64_t eagerTicks;
+    // Ticks whose sleep was shortened below the tick period because the ring was HELD
+    // at a WAIT_REG_MEM (the held-wait fast retry, 2026-08-29). The engagement gate
+    // for CZ_PM4_NO_FAST_HELD's arm.
+    uint64_t heldFastTicks;
 };
 
 // A snapshot. Like ChainStats_Read these are independent relaxed counters, so the fields

@@ -25481,6 +25481,29 @@ void DoSwapImpl(uint8_t* base, uint32_t frontBuffer, uint32_t width, uint32_t he
                     double(dProgSleep) * 1e-6, double(dSleep) * 1e-6,
                     frames ? double(dProgSleep) * 1e-6 / double(frames) : 0.0);
 
+            // The two 2026-08-29 latency items, each with its engagement counter
+            // (gotcha 151): eager ticks (the sleep skipped after a productive walk) and
+            // mid-walk rptr publication (the guest sees ring consumption per packet).
+            // Zero next to an armed default is a defect; zero under the CZ_PM4_NO_*
+            // control arms is the arms working.
+            static uint64_t lastEager = 0, lastMidwalk = 0, lastHeldFast = 0;
+            const uint64_t dEager = p.eagerTicks - lastEager;
+            const uint64_t dMidwalk = Pm4_RptrMidwalkStores() - lastMidwalk;
+            const uint64_t dHeldFast = p.heldFastTicks - lastHeldFast;
+            lastEager = p.eagerTicks;
+            lastMidwalk += dMidwalk;
+            lastHeldFast = p.heldFastTicks;
+            fprintf(stderr,
+                    "[vkprof]   ring latency arms: eager ticks %llu of %llu (%.1f%%) | "
+                    "mid-walk rptr stores %llu (%.1f/frame) | held-fast naps %llu "
+                    "(%.1f/frame)\n",
+                    (unsigned long long)dEager, (unsigned long long)dTicks,
+                    dTicks ? 100.0 * double(dEager) / double(dTicks) : 0.0,
+                    (unsigned long long)dMidwalk,
+                    frames ? double(dMidwalk) / double(frames) : 0.0,
+                    (unsigned long long)dHeldFast,
+                    frames ? double(dHeldFast) / double(frames) : 0.0);
+
             // ...and the one thing `outside` has never been able to say: how much of it
             // is the pump WORKING and how much is the pump NOT RUNNING AT ALL.
             //

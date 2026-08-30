@@ -102,6 +102,24 @@ uint32_t g_ringBase = 0;   // guest virtual address of the ring
 uint32_t g_ringDwords = 0; // ring size in dwords
 uint32_t g_cursor = 0;     // our read pointer, ring-relative, in dwords
 
+// MID-WALK READ-POINTER PUBLICATION (2026-08-29). The guest's Draw Thread waits for
+// ring space by spinning on the read-pointer writeback (sub_825B5FB8 checks the slot,
+// sub_825B7668 is the nop-backoff body — together 16.7% of the process in the first
+// uninstrumented perf profile, the largest single item in it). Publishing the cursor
+// only at the END of a walk means the guest sees consumption in ~1 ms steps even
+// though the parser frees ring space packet by packet. This slot, when set, is stored
+// after every top-level ring packet, so the guest's spin ends as soon as the space it
+// wants actually exists. Same discipline as the end-of-walk store in vd.cpp: only the
+// parser's real position is ever published, never the write pointer.
+//
+// The value is the guest VIRTUAL address of the writeback slot (vd.cpp's
+// g_rptrWriteback, republished every tick like the fence word so a re-registration
+// cannot leave this watching a stale address). 0 = feature off; vd.cpp keeps it 0
+// under CZ_PM4_NO_MIDWALK_RPTR=1, which restores end-of-walk-only publication and is
+// the control arm. The store counter is the engagement gate (gotcha 151).
+std::atomic<uint32_t> g_rptrPublishSlot{ 0 };
+std::atomic<uint64_t> g_rptrMidwalkStores{ 0 };
+
 // The brake: hold at an unsatisfied WAIT_REG_MEM instead of evaluating it once and
 // carrying on. See the WAIT_REG_MEM case for the mechanism and StallPlan for the
 // resume. Read once; an env lookup per packet would be measurable at 1.27 M packets
@@ -2468,6 +2486,15 @@ uint32_t Pm4_Execute(uint8_t* base, uint32_t writePtr)
             break; // tail packet not fully written yet, or a deliberate wait stall —
                    // either way the cursor stays put and we come back next tick
         g_cursor = (g_cursor + consumed) % g_ringDwords;
+        // Publish the new position immediately (see g_rptrPublishSlot above). One
+        // byte-swapped store per top-level ring packet — invisible next to the 41 ns
+        // the packet itself costs — and it is what ends the Draw Thread's ring-space
+        // spin the moment the space exists rather than at the end of the walk.
+        if (const uint32_t slot = g_rptrPublishSlot.load(std::memory_order_relaxed))
+        {
+            *(volatile uint32_t*)(base + slot) = __builtin_bswap32(g_cursor);
+            g_rptrMidwalkStores.fetch_add(1, std::memory_order_relaxed);
+        }
     }
 
     g_stallNext.pending = g_stallHit;
@@ -2593,6 +2620,14 @@ uint64_t Pm4_HoldStreakMax() { return g_holdStreakMax.load(); }
 // read-back because the guest can re-register the writeback block, and a stale address
 // here would make the experiment arm silently watch nothing.
 void Pm4_SetFenceWord(uint32_t va) { g_fenceWord.store(va, std::memory_order_relaxed); }
+
+// Published by gpu/vd.cpp each pump tick, exactly like the fence word above and for
+// the same reason. See g_rptrPublishSlot for the mechanism.
+void Pm4_SetRptrPublishSlot(uint32_t va)
+{
+    g_rptrPublishSlot.store(va, std::memory_order_relaxed);
+}
+uint64_t Pm4_RptrMidwalkStores() { return g_rptrMidwalkStores.load(); }
 uint64_t Pm4_FenceRegressionCount() { return g_fenceRegressions.load(); }
 
 // The census accessors. Under the atomic arm the globals are the live counters; by

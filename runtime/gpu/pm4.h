@@ -131,6 +131,14 @@ uint64_t Pm4_HoldStreakMax();
 // Only CZ_PM4_FENCE_MONOTONIC (a phase C part 7 EXPERIMENT arm) acts on it; the count
 // of refused backwards stores is free to read either way.
 void Pm4_SetFenceWord(uint32_t va);
+
+// The read-pointer writeback slot (guest VA) the walk publishes to after EVERY
+// top-level ring packet, so the guest's ring-space spin ends when the space exists
+// rather than at the end of the walk. 0 disables (end-of-walk-only publication, the
+// pre-2026-08-29 behaviour). Republished by vd.cpp each tick, like the fence word.
+// Pm4_RptrMidwalkStores is the engagement counter.
+void Pm4_SetRptrPublishSlot(uint32_t va);
+uint64_t Pm4_RptrMidwalkStores();
 uint64_t Pm4_FenceRegressionCount();
 
 // The microcode bound by the last IM_LOAD/IM_LOAD_IMMEDIATE for a stage. `hash` is
