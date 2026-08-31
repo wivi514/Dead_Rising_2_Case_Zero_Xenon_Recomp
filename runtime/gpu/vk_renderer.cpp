@@ -4199,9 +4199,29 @@ struct DrawCapture
     int32_t gateIndxOffset;      // ...and the raw VGT_INDX_OFFSET, pre-folding
 };
 
+// A clear a resolve asked for, LATCHED instead of recorded (part 90). The full design
+// and its arm are at DoResolve's clear block; the one-line version: the title clears
+// EDRAM through the copy block's clear bits, our old mechanism honoured that with a
+// whole-image vkCmdClear*Image (7 Mpix written for the ~0.4 the pass rendered, 94.3% of
+// a 0.615 ms/frame GPU class), and the deferred form emits the clear as a
+// vkCmdClearAttachments rect at the head of the NEXT pass's first instance — an
+// instance that already exists, so it costs no dedicated render-scope cycle, which is
+// what made the part-32 CZ_VK_SCOPED_CLEAR arm a wash on the pump (part 80 §1 item 4).
+struct PendingClear
+{
+    bool isColor;        // false = the depth+stencil aspect
+    VkClearValue value;
+    VkRect2D rect;       // already clamped to the target image's extent at latch time
+};
+
 struct ParRecChunk
 {
     std::vector<DrawCapture> draws;
+    // Deferred clears this chunk must emit BEFORE its first draw — only ever non-empty
+    // on the FIRST instance of a pass (the pump moves them in at handoff). Owned by the
+    // chunk from enqueue to reset, so the worker reads them race-free the same way it
+    // reads `draws`.
+    std::vector<PendingClear> pendingClears;
     std::vector<uint64_t> orderIds;      // filled by the recorder when the gate is armed
     VkCommandBuffer cb = VK_NULL_HANDLE; // filled by whichever recorder claims it
     std::atomic<uint32_t> state{ 0 };    // 0 free, 1 queued, 2 recorded
@@ -4606,6 +4626,12 @@ struct Renderer
     std::vector<DrawCapture> capBuf;  // the pump's accumulating chunk
     VkImageView capColorView = VK_NULL_HANDLE, capDepthView = VK_NULL_HANDLE;
     uint32_t capWidth = 0, capHeight = 0;
+    // --- deferred scoped clears (part 90; the block comment is at PendingClear) ----
+    // Latched at resolve time, emitted at the head of the next pass's first instance,
+    // and FLUSHED early (counted, by reader) if anything reads EDRAM before a pass
+    // opens. May legitimately carry across a frame boundary: nothing reads EDRAM
+    // between frames except the three flush sites. Dropped on EDRAM recreation.
+    std::vector<PendingClear> pendingClears;
     // The frame's command buffers in submission order: (cb, nullptr) for a pump
     // segment, (VK_NULL_HANDLE, chunk) for a worker chunk resolved at submit.
     std::vector<std::pair<VkCommandBuffer, ParRecChunk*>> submitList;
@@ -10871,9 +10897,33 @@ inline uint64_t ParRec_OrderId(const DrawCapture& c)
 // attachment is LOAD/STORE with no clear (the EDRAM model), so an instance split is
 // the identity — see the DrawCapture comment. The BoundState is fresh per instance,
 // exactly like a fresh command buffer: the first draw issues everything.
+// Emit deferred clears into an ALREADY-OPEN rendering instance, one
+// vkCmdClearAttachments per pending — per pending rather than batched into one call
+// because two pendings with different values and overlapping rects must apply in
+// latch order, and separate calls are ordered where one call's rect list is not
+// guaranteed to be. Callable from a worker: it touches only the arguments.
+void EmitPendingClears(VkCommandBuffer cb, const PendingClear* p, size_t n)
+{
+    for (size_t i = 0; i < n; ++i)
+    {
+        VkClearAttachment att{};
+        if (p[i].isColor)
+        {
+            att.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+            att.colorAttachment = 0;
+        }
+        else
+            att.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT;
+        att.clearValue = p[i].value;
+        VkClearRect rect{ p[i].rect, 0, 1 };
+        vkCmdClearAttachments(cb, 1, &att, 1, &rect);
+    }
+}
+
 void ParRec_RecordInstance(VkCommandBuffer cb, const DrawCapture* d, size_t n,
                            VkImageView colorView, VkImageView depthView, uint32_t w,
-                           uint32_t h, std::vector<uint64_t>* ids, ParRecChunk* sk)
+                           uint32_t h, std::vector<uint64_t>* ids, ParRecChunk* sk,
+                           const PendingClear* pend = nullptr, size_t pendN = 0)
 {
     static const bool noStateCache = Env("CZ_VK_NO_STATE_CACHE") != nullptr;
     VkRenderingAttachmentInfo colorAtt{ VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO };
@@ -10894,6 +10944,10 @@ void ParRec_RecordInstance(VkCommandBuffer cb, const DrawCapture* d, size_t n,
     ri.pDepthAttachment = &depthAtt;
     ri.pStencilAttachment = &depthAtt;
     vkCmdBeginRendering(cb, &ri);
+    // The pass's deferred clears, before its first draw — this instance is the first
+    // of its pass whenever `pend` is non-null (the pump only hands them to the first).
+    if (pendN)
+        EmitPendingClears(cb, pend, pendN);
 
     Renderer::BoundState b;
     for (size_t i = 0; i < n; ++i)
@@ -11031,7 +11085,8 @@ void ParRec_RecordChunk(uint32_t rec, ParRecChunk* ch, uint32_t slot)
     vkBeginCommandBuffer(cb, &bi);
     std::vector<uint64_t>* ids = OrderGateArmed() ? &ch->orderIds : nullptr;
     ParRec_RecordInstance(cb, ch->draws.data(), ch->draws.size(), ch->colorView,
-                          ch->depthView, ch->width, ch->height, ids, ch);
+                          ch->depthView, ch->width, ch->height, ids, ch,
+                          ch->pendingClears.data(), ch->pendingClears.size());
     vkEndCommandBuffer(cb);
     ch->cb = cb;
     ch->state.store(2, std::memory_order_release);
@@ -11088,9 +11143,18 @@ void ParRec_Handoff()
             ids = &R->prTailIds.back();
             R->prIdSeq.push_back(ids);
         }
+        const bool carryClears =
+            R->capPassInstances == 0 && !R->pendingClears.empty();
         ParRec_RecordInstance(R->cmd, R->capBuf.data(), R->capBuf.size(),
                               R->capColorView, R->capDepthView, R->capWidth,
-                              R->capHeight, ids, &g_prTailCounters);
+                              R->capHeight, ids, &g_prTailCounters,
+                              carryClears ? R->pendingClears.data() : nullptr,
+                              carryClears ? R->pendingClears.size() : 0);
+        if (carryClears)
+        {
+            R->pendingClears.clear();
+            Count("clear: deferred emitted in an inline-overflow instance");
+        }
         ++R->capPassInstances;
         R->capBuf.clear();
         return;
@@ -11102,6 +11166,15 @@ void ParRec_Handoff()
     ParRecChunk* ch = pool[g_prChunkUsed[slot]++].get();
     ch->draws.swap(R->capBuf);
     R->capBuf.clear();
+    // The pass's deferred clears ride the FIRST instance only; a chunk reused from the
+    // pool must not replay a previous pass's.
+    ch->pendingClears.clear();
+    if (R->capPassInstances == 0 && !R->pendingClears.empty())
+    {
+        ch->pendingClears = std::move(R->pendingClears);
+        R->pendingClears.clear();
+        Count("clear: deferred handed to a chunk instance");
+    }
     ch->orderIds.clear();
     ch->cb = VK_NULL_HANDLE;
     ch->skipPipeline = ch->skipViewport = ch->skipScissor = ch->skipBlend =
@@ -11138,8 +11211,16 @@ void ParRec_FlushTail()
         // instance, preserving the command stream's instance count exactly.
         if (R->capPassInstances == 0)
         {
+            const bool carryClears = !R->pendingClears.empty();
             ParRec_RecordInstance(R->cmd, nullptr, 0, R->capColorView, R->capDepthView,
-                                  R->capWidth, R->capHeight, nullptr, &g_prTailCounters);
+                                  R->capWidth, R->capHeight, nullptr, &g_prTailCounters,
+                                  carryClears ? R->pendingClears.data() : nullptr,
+                                  carryClears ? R->pendingClears.size() : 0);
+            if (carryClears)
+            {
+                R->pendingClears.clear();
+                Count("clear: deferred emitted in an empty-pass instance");
+            }
             ++g_prEmptyInstances;
         }
         return;
@@ -11153,9 +11234,17 @@ void ParRec_FlushTail()
     }
     g_prTailDraws += R->capBuf.size();
     ++g_prTailInstances;
+    const bool carryClears = R->capPassInstances == 0 && !R->pendingClears.empty();
     ParRec_RecordInstance(R->cmd, R->capBuf.data(), R->capBuf.size(), R->capColorView,
                           R->capDepthView, R->capWidth, R->capHeight, ids,
-                          &g_prTailCounters);
+                          &g_prTailCounters,
+                          carryClears ? R->pendingClears.data() : nullptr,
+                          carryClears ? R->pendingClears.size() : 0);
+    if (carryClears)
+    {
+        R->pendingClears.clear();
+        Count("clear: deferred emitted in the pump tail instance");
+    }
     ++R->capPassInstances;
     R->capBuf.clear();
 }
@@ -11423,7 +11512,18 @@ void BeginRendering()
         R->capHeight = R->color.height;
     }
     else
+    {
         vkCmdBeginRendering(R->cmd, &ri);
+        // The serial arm's deferred clears: the instance is open right here, so they
+        // cost one vkCmdClearAttachments each and no extra scope. (Under parRec no
+        // instance exists yet — the pass's FIRST instance emits them instead.)
+        if (!R->pendingClears.empty())
+        {
+            EmitPendingClears(R->cmd, R->pendingClears.data(), R->pendingClears.size());
+            R->pendingClears.clear();
+            Count("clear: deferred emitted at pass open (serial)");
+        }
+    }
     R->rendering = true;
     g_cycPendBeginNs += CycNow() - cycT0;
     // The GPU-side segment for this pass opens AFTER the barriers, so a layout transition
@@ -23610,6 +23710,51 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
 // ===================================================================================
 // Resolve
 // ===================================================================================
+// The deferred clears' EARLY-FLUSH fallback (part 90). Correctness must never depend
+// on the "next pass opens before anything reads EDRAM" ordering, so every EDRAM
+// reader calls this first: pendings still outstanding are emitted NOW through a
+// self-contained mini instance (the part-32 scoped-clear shape, but one instance for
+// ALL pendings, and only on this rare path). The caller names the counter so the
+// census can say WHICH reader forced it — a fallback with no counter is a fallback
+// nobody can tell fired (gotcha 151), and the §1 kill threshold reads these.
+void FlushPendingClears(const char* counterName)
+{
+    if (!R || R->pendingClears.empty())
+        return;
+    // Outside any instance by construction at every call site; if not recording,
+    // nothing that could read EDRAM is being recorded either, so staying latched is
+    // both safe and correct.
+    if (!R->recording || R->rendering)
+        return;
+    GpuSeg _g(kGpResolveClear);
+    Barrier(R->cmd, R->color, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+            VK_IMAGE_ASPECT_COLOR_BIT);
+    Barrier(R->cmd, R->depth, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+            VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT);
+    VkRenderingAttachmentInfo colorAtt{ VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO };
+    colorAtt.imageView = R->color.view;
+    colorAtt.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    colorAtt.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
+    colorAtt.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+    VkRenderingAttachmentInfo depthAtt{ VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO };
+    depthAtt.imageView = R->depth.view;
+    depthAtt.imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+    depthAtt.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
+    depthAtt.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+    VkRenderingInfo ri{ VK_STRUCTURE_TYPE_RENDERING_INFO };
+    ri.renderArea = { { 0, 0 }, { R->color.width, R->color.height } };
+    ri.layerCount = 1;
+    ri.colorAttachmentCount = 1;
+    ri.pColorAttachments = &colorAtt;
+    ri.pDepthAttachment = &depthAtt;
+    ri.pStencilAttachment = &depthAtt;
+    vkCmdBeginRendering(R->cmd, &ri);
+    EmitPendingClears(R->cmd, R->pendingClears.data(), R->pendingClears.size());
+    vkCmdEndRendering(R->cmd);
+    R->pendingClears.clear();
+    Count(counterName);
+}
+
 // A resolve is a DRAW whose RB_MODECONTROL edram_mode is kCopy (6) — not a packet of
 // its own, and not "a draw with a particular shader pair bound". Gating on the shader
 // pair recognises only the one blit the present path happens to use and silently drops
@@ -24098,6 +24243,9 @@ void DoResolve(uint8_t* base, const uint32_t* regs)
                 fromDepth ? VK_IMAGE_ASPECT_DEPTH_BIT : VK_IMAGE_ASPECT_COLOR_BIT;
             BeginFrame();
             EndRendering();
+            // A deferred clear still outstanding here means a clear-then-copy with no
+            // pass in between; the copy must see the cleared pixels, so emit it now.
+            FlushPendingClears("clear: deferred FLUSHED for a resolve copy");
             // The whole resolve's device work is one segment, barriers included. The first
             // version timed only the `vkCmdCopyImage` and left the two layout transitions
             // in the residual, where they are indistinguishable from work nobody wrapped —
@@ -24257,6 +24405,76 @@ void DoResolve(uint8_t* base, const uint32_t* regs)
     BeginFrame();
     EndRendering();
 
+    // DEFERRED SCOPED CLEARS — the part-90 default (perf-plan-part90.md §1). The old
+    // mechanism honoured the copy block's clear bits with a whole-EDRAM
+    // vkCmdClear{Color,DepthStencil}Image: 83.8 clears a frame writing 590 Mpixel for
+    // the 33.9 the passes rendered, 0.615 ms/frame of GPU at the crowd, plus a
+    // TRANSFER_DST layout round-trip each. On Xenos a copy block's clear clears the
+    // tiles of the CURRENT SURFACE, so the scoped rect is the more faithful form, not
+    // less (the part-32 scoped arm measured scoped == full to four decimals on the
+    // cascade statistic). The clear is LATCHED here and emitted as a
+    // vkCmdClearAttachments at the head of the next pass's first instance — an
+    // instance that already exists under both arms, which is what the part-32 arm
+    // lacked (its dedicated mini-scope per clear cost 0.51 ms/frame of pump time, the
+    // wash part 80 §1 item 4 records). Anything that reads EDRAM first flushes the
+    // pendings (see FlushPendingClears); a resolve extent of zero latches the FULL
+    // extent, so the un-scopable case degrades to exactly the old pixels.
+    // CZ_VK_NO_DEFERRED_CLEAR=1 is the same-binary control arm and restores the old
+    // paths byte for byte (including CZ_VK_SCOPED_CLEAR's).
+    static const bool deferredClearOff = [] {
+        const bool off = EnvOn("CZ_VK_NO_DEFERRED_CLEAR");
+        fprintf(stderr,
+                off ? "[vk] CZ_VK_NO_DEFERRED_CLEAR=1 — resolve clears take the OLD "
+                      "whole-EDRAM path (the control arm)\n"
+                    : "[vk] resolve clears are DEFERRED and SCOPED (part 90 default; "
+                      "CZ_VK_NO_DEFERRED_CLEAR=1 is the control arm)\n");
+        return off;
+    }();
+    // CZ_VK_DEFER_FULL_RECT=1 — DIAGNOSTIC: defer the clear (same latch, same emission
+    // point, same ordering) but with the FULL-image rect, i.e. the old pixels through
+    // the new mechanism. This is the two-factor bisection for any picture complaint
+    // against the deferred clears: streaks that vanish under it indict the SCOPING
+    // (a region the whole-image clear covered and the resolve-extent rect does not);
+    // streaks that survive it indict the deferral/ordering itself.
+    static const bool deferFullRect = EnvOn("CZ_VK_DEFER_FULL_RECT");
+    // The scoped rect: the resolve's own extent in host pixels, clamped to the target
+    // image — the same clamp question the part-32 arm answered for Y over-clears.
+    //
+    // THE MSAA FACTOR IS NOT OPTIONAL (the operator's yellow-streak report, same day
+    // this shipped). A 4x surface's window coordinates are in PIXELS while our EDRAM
+    // stand-in is at SAMPLE resolution, twice as wide and twice as tall — the draw
+    // path scales every window coordinate by exactly this factor (the
+    // `window coordinates scaled for a 4x MSAA surface` site, and the incident its
+    // comment records: a half-cleared scene tile from the same missing factor). A
+    // scoped clear built from the unscaled scissor covers ONE QUARTER of a 4x pass's
+    // EDRAM footprint; the whole-image clear had been hiding that for the copy-block
+    // clears since part 5. Bright residue surviving in the other three quarters is
+    // the "meteorite shower" trail the operator saw during camera turns.
+    const uint32_t clearMsaa = (regs[xenos::kRbSurfaceInfo] >> 16) & 3;
+    const uint32_t clearAxisScale = clearMsaa == 2 ? 2u : 1u;
+    const auto scopedRect = [&](const Image& im) {
+        VkRect2D r{};
+        if (copyW && copyH && !deferFullRect)
+        {
+            const int32_t x =
+                std::max(0, RZxi(int32_t(copyX * clearAxisScale)));
+            const int32_t y =
+                std::max(0, RZyi(int32_t(copyY * clearAxisScale)));
+            r.offset = { x, y };
+            r.extent = { std::min(RZx(copyW * clearAxisScale),
+                                  im.width > uint32_t(x) ? im.width - uint32_t(x)
+                                                         : 0u),
+                         std::min(RZ(copyH * clearAxisScale),
+                                  im.height > uint32_t(y) ? im.height - uint32_t(y)
+                                                          : 0u) };
+        }
+        else
+            r.extent = { im.width, im.height };
+        return r;
+    };
+    if (clearMsaa == 2 && (clearColor || clearDepth))
+        COUNT("resolve: clear rect scaled for a 4x MSAA surface");
+
     if (clearColor)
     {
         // RB_COLOR_CLEAR holds the clear value in the render target's own format. It
@@ -24299,6 +24517,25 @@ void DoResolve(uint8_t* base, const uint32_t* regs)
             value.float32[2] = 1.0f;
             value.float32[3] = 1.0f;
         }
+        if (!deferredClearOff)
+        {
+            // The census counters keep their old meaning under both arms: FULL is what
+            // the whole-image mechanism would write, SCOPED what the rect covers.
+            ++g_gpClearN;
+            g_gpClearFullPixels += uint64_t(R->color.width) * uint64_t(R->color.height);
+            const VkRect2D rect = scopedRect(R->color);
+            g_gpClearScopedPixels += uint64_t(rect.extent.width) * rect.extent.height;
+            if (rect.extent.width && rect.extent.height)
+            {
+                PendingClear p{};
+                p.isColor = true;
+                p.value.color = value;
+                p.rect = rect;
+                R->pendingClears.push_back(p);
+            }
+            COUNT("resolve: colour clear deferred (scoped)");
+        }
+        else
         {
             // The transition INTO transfer-dst is inside the segment on purpose: a clear
             // that forces a layout change is not separable from the change, and charging
@@ -24316,8 +24553,8 @@ void DoResolve(uint8_t* base, const uint32_t* regs)
             VkImageSubresourceRange range{ VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
             vkCmdClearColorImage(R->cmd, R->color.image,
                                  VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &value, 1, &range);
+            COUNT("resolve: colour cleared");
         }
-        COUNT("resolve: colour cleared");
     }
     if (clearDepth)
     {
@@ -24348,6 +24585,23 @@ void DoResolve(uint8_t* base, const uint32_t* regs)
                 fprintf(stderr, "[vk] RB_DEPTH_CLEAR = %08X  (depth %.6f, stencil %u)\n",
                         dc, value.depth, value.stencil);
             }
+        }
+        if (!deferredClearOff)
+        {
+            ++g_gpClearN;
+            g_gpClearFullPixels += uint64_t(R->depth.width) * uint64_t(R->depth.height);
+            const VkRect2D rect = scopedRect(R->depth);
+            g_gpClearScopedPixels += uint64_t(rect.extent.width) * rect.extent.height;
+            if (rect.extent.width && rect.extent.height)
+            {
+                PendingClear p{};
+                p.isColor = false;
+                p.value.depthStencil = value;
+                p.rect = rect;
+                R->pendingClears.push_back(p);
+            }
+            COUNT("resolve: depth clear deferred (scoped)");
+            return;
         }
         if (!Barrier(R->cmd, R->depth, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                      VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT))
@@ -25523,6 +25777,13 @@ void DoSwapImpl(uint8_t* base, uint32_t frontBuffer, uint32_t width, uint32_t he
     if (frontSnap == R->snapshots.end())
         R->haveFrontSnapshot = false;
     Image& source = R->haveFrontSnapshot ? frontSnap->second.image : R->color;
+    // The present consumes the front-buffer snapshot's last copy.
+    if (g_copyCensusOn && R->haveFrontSnapshot)
+        CopyCensusSampled(R->frontBuffer & 0x1FFFFFFF);
+    // The raw-EDRAM fallback is one of the three EDRAM readers, so a deferred clear
+    // still pending must land before the blit/readback samples it.
+    if (!R->haveFrontSnapshot)
+        FlushPendingClears("clear: deferred FLUSHED for the EDRAM present fallback");
     // The raw-EDRAM fallback presents the FRAME's extent, not the EDRAM image's. Those
     // stopped being the same number when the EDRAM grew to hold the 1024-row shadow
     // cascade, and reading back the whole image would hand the window a 1280x1024
@@ -27907,6 +28168,9 @@ void ApplyPendingRenderScale()
         im = Image{};
     };
     const uint32_t before = ResScale();
+    // Deferred clears latched against the OLD images' extents; the content they were
+    // scoped to is being destroyed with the images.
+    R->pendingClears.clear();
     destroyImage(R->color);
     destroyImage(R->depth);
     // The parked live path speaks integer scales; preserve the current aspect.
@@ -28347,14 +28611,18 @@ void VkRenderer_DumpStats()
                 R->color.width, R->color.height);
         if (g_gpClearN)
             fprintf(stderr,
-                    "[vk]     resolve clears wrote %.2f Mpixel/frame over %.1f clears, "
-                    "where the passes they follow rendered only %.2f Mpixel — SCOPING "
-                    "THEM WOULD REMOVE %.1f%% OF THE CLEAR CLASS\n",
+                    "[vk]     resolve clears: full-image mechanism would write %.2f "
+                    "Mpixel/frame over %.1f clears; the scoped rects cover %.2f Mpixel "
+                    "(%.1f%% of the class %s)\n",
                     double(g_gpClearFullPixels) / 1e6 / f, double(g_gpClearN) / f,
                     double(g_gpClearScopedPixels) / 1e6 / f,
                     g_gpClearFullPixels ? 100.0 * (1.0 - double(g_gpClearScopedPixels) /
                                                              double(g_gpClearFullPixels))
-                                        : 0.0);
+                                        : 0.0,
+                    EnvOn("CZ_VK_NO_DEFERRED_CLEAR")
+                        ? "WOULD BE REMOVED by the deferred-scoped default (this run "
+                          "carries the CZ_VK_NO_DEFERRED_CLEAR control arm)"
+                        : "REMOVED by the deferred-scoped mechanism, part 90");
         // THE PASS EXTENT CENSUS (part 79 item 2). `pass: 1 draw` is ~30 passes a frame at
         // ~28 us and this project has never listed what they ARE. Sorted by total time, so
         // the first rows are the ones worth designing against, and each row carries its own

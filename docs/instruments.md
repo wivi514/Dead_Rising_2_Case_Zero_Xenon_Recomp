@@ -1338,7 +1338,40 @@ CZ_VK_SCOPED_CLEAR=1  clear only the region the pass rendered, not the whole EDR
                    stand-in — closer to what a Xenos copy block does, which clears the
                    tiles of the CURRENT surface. Off by default because it was measured
                    and it moves nothing (phase5-notes §6bf: 46.8750% zero in both arms,
-                   to four decimals), so it is not the shadow defect
+                   to four decimals), so it is not the shadow defect. **UNREACHABLE under
+                   the part-90 deferred-clear default** — it only applies inside the
+                   CZ_VK_NO_DEFERRED_CLEAR control arm, where the old paths run byte for
+                   byte
+CZ_VK_NO_DEFERRED_CLEAR=1  **the control arm for part 90's deferred scoped clears** (ON
+                   by default). The default latches each resolve's clear bits as a
+                   pending rect and emits it as a vkCmdClearAttachments at the head of
+                   the NEXT pass's first instance (worker chunk or pump tail — an
+                   instance that already exists), with a counted flush-before-read
+                   fallback wherever EDRAM is read first; the arm restores the old
+                   whole-EDRAM vkCmdClear*Image path (83.8 clears/frame, 590 Mpixel
+                   written for 33.9 rendered, 0.615 ms/frame of GPU at the crowd). Both
+                   arms print the line that proves which is running. The engagement
+                   counters: `resolve: colour/depth clear deferred (scoped)` and the
+                   `clear: deferred ...` family (emitted-at/handed-to/FLUSHED-for rows).
+                   CZ_VK_CLEAR_POISON is the positive control that the deferred clears
+                   actually execute. **The scoped rect carries the draw path's 4x-MSAA
+                   sample-space factor** — 4.4 clears/frame sit on 4x-declared surfaces
+                   and an unscaled rect covers a QUARTER of their EDRAM footprint
+                   (the operator's yellow-streak report, same day; phase5-notes §6ek's
+                   addendum). perf-plan-part90.md §1; phase5-notes §6ek
+CZ_VK_DEFER_FULL_RECT=1  DIAGNOSTIC for the deferred clears: defer (same latch, same
+                   emission point, same ordering) but with the FULL-image rect — the old
+                   pixels through the new mechanism. The two-factor bisection for any
+                   picture complaint against them: an artifact that vanishes under it
+                   indicts the SCOPING; one that survives indicts the deferral/ordering
+CZ_VK_COPY_CENSUS=1  the resolve-copy produced-vs-sampled census (part 90 item 2): how
+                   many of the ~50 resolve copies a frame are DEAD — the same
+                   (snapshot, rect) copied again with no consumer in between. Consumers
+                   marked at the draw fetch (before the right-sized-view early return),
+                   the present, the frame-stats surface and the cube-face assembly;
+                   conservative toward LIVE, so a large dead share is real. A DIAGNOSTIC
+                   ARM, off by default, one bool test per site when off. Prints totals
+                   and the top keys at exit. perf-plan-part90.md §2
 CZ_VK_RECT_TRACE=<surfacePitch>  the CORNERS of every distinct rect-list clear on one
                    EDRAM surface, named by its RB_SURFACE_INFO pitch (1040 is this
                    title's shadow cascade, 640 a scene tile). A rect-list draw at the
