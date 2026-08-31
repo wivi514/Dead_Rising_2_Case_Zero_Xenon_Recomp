@@ -29,16 +29,42 @@ submitted as one ordered `vkQueueSubmit`. Passes under the chunk size never spli
 1-in-16 UploadStream split inside record) and the guard pool's always-on occupancy
 line under `CZ_VK_PROFILE`. Both are positive-controlled (§6ei).
 
+## 0b. THE PRICING FRAME FOR THIS PART — the regime is about to flip, and that is the lead
+
+Read the fix arm's own 3v3 numbers before choosing anything: at the dominant crowd
+band, **wall 11.20 ms vs GPU median 10.62 ms, fence 0.00**. Two consequences, and
+they are the whole shape of part 90:
+
+* **Only ~0.6 ms of CPU saving can still CONVERT at the crowd.** Beyond that the
+  frame is GPU-bound and the fence absorbs every further CPU win (the same regime
+  arithmetic that killed part 80's GPU items, now pointed the other way). There is
+  no known CPU lead ≥1 ms anyway; the realistic CPU take is ≤0.6 ms.
+* **The GPU items part 80 killed ON REGIME — never on measurement — come back to
+  life the moment that gap closes**: the resolve clears (0.601 ms ceiling) and the
+  resolve copies (0.723 ms), ~1.3 ms combined, plus whatever a fresh look at the
+  10.6 ms GPU frame finds — it has had exactly one optimization pass (part 78's
+  barriers, −11.9%). `CZ_VK_GPU_PASSES=1` is the instrument and its bill is nil.
+
+Realistic expectation for the whole part: **0.5-1.5 ms (4-12% at the crowd),
+assembled from two or three sub-milli-second pieces** — each near the route's ±2.9%
+floor (~0.33 ms), so they ship on mechanism numbers, part 88's way, not on wall time,
+part 89's way. And the operator-facing framing: at 11.2 ms the crowd already holds a
+locked 60 fps with 5.5 ms of margin — further wins buy headroom and resolution, not
+felt frame rate. Surface that before spending sessions here; parking again is an
+honest outcome.
+
 ## 1. THE BOARD (in order)
 
 0. **Every pre-part-89 CPU decomposition now overstates `record` by ~30%** (625 → ~430
    ns/draw on the pump). Any new performance question starts with a fresh
-   `CZ_VK_PROFILE` crowd decomposition, not §6ec/§6eg/§6ei's tables.
+   `CZ_VK_PROFILE` crowd decomposition, not §6ec/§6eg/§6ei's tables — one run, and it
+   also says (via `submit`/fence and the GPU column) whether §0b's flip has already
+   happened.
 1. **There is NO known CPU lead ≥1 ms left.** The serial residue is the PM4 walk
    (~3.1 ms instrumented share) and the resolve half (~162 ns/draw) — the
    change-detector class (gotchas 474, 4). If the operator wants more CPU, the next
-   bar is ~0.5 ms and the first step is the fresh decomposition above. Otherwise this
-   is where performance parks again, honestly.
+   bar is ~0.5 ms and the first step is the fresh decomposition above; §0b says at
+   most ~0.6 ms of it can convert. The GPU side (§0b) is the larger open surface.
 2. **The CW 2a/2b serial record-restructure item is SUBSUMED** — part 89's §0a note
    said it would be if the maximal design shipped; it did. Dead without a port.
 3. The Windows bundle save-squatter hunt (`part86-kickoff.md` §0b repro; needs czwin).
