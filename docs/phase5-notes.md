@@ -20138,3 +20138,23 @@ GPU work bought headroom below 7,000 draws and re-opened ~1.4 ms of convertible 
 at the crowd for any future CPU saving — but no known CPU lead ≥0.5 ms exists (§1),
 so the practical statement is unchanged: further wins need new evidence, and parking
 is honest.
+
+### 8. SECOND ADDENDUM, same day — the operator captured it, and the report is RE-CHARACTERIZED
+
+The operator played the MSAA-corrected build, pressed F9 on the artifact, and
+corrected the first report: **not a transient streak — a VIEW-DEPENDENT blow-out**
+("depends on where the camera is placed"). `play_0831_1458/capture_012456` holds it
+live: a geometry-shaped white-yellow over-exposure over the foreground zombies, sun
+behind them, gone from nearly the same view two seconds later (capture_013440).
+
+From the capture's own resolve snapshots: the blob boundary follows CHARACTER
+SILHOUETTES (a material/lighting term, not a scissor-shaped clear artifact); the cube
+faces are normal; the luminance chain reads HIGHER in the defect frame (reacting to
+the blown scene, not causing it); the bloom bright-pass carries the mass downstream.
+**The artifact therefore SURVIVES the MSAA rect correction and its attribution is
+OPEN** — a view-dependent character-material term (specular/rim into the sun) is as
+much part 88's constants territory as part 90's clears, and may be the title's own
+look at this in-game hour. The A/B at that camera is defined and owed
+(`part91-kickoff.md` §0b); the operator left for work before running it. §6/§7's
+"plausibly-fixed" reading is superseded by this one: the MSAA factor was a real
+divergence worth fixing either way, but it did not fix THIS.

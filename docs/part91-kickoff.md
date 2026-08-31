@@ -23,22 +23,38 @@ resolve copies are dead (13.1% of pixels — the bloom pyramid family at 22,139 
 each, the shadow atlas, the scene depth), worth ~0.1-0.28 ms, mechanism is
 prediction-only with a silent-stale failure mode. §6el.
 
-## 0b. THE OPERATOR'S YELLOW-STREAK REPORT — the one thing OWED, and the first bisection
+## 0b. THE OPERATOR'S VISUAL-ISSUE REPORT — the one thing OWED, RE-CHARACTERIZED same day, and the first bisection
 
-Mid-part the operator saw a transient "yellow streak / meteorite shower" during a
-camera turn, absent in the previous run they watched. **It never reproduced in 20,000
-dumped frames** (two routes, dense dumps, detector + contact sheets), but code reading
-found a real divergence in exactly the right class: the scoped rect was missing the
-draw path's **4x-MSAA sample-space factor** — 4.4 clears a frame covered ONE QUARTER
-of their pass's EDRAM footprint (the whole-image clear had hidden the missing factor
-since phase 5). Fixed in the same commit; counter
-`resolve: clear rect scaled for a 4x MSAA surface`.
+Mid-part the operator reported a "yellow streak / meteorite shower" during a camera
+turn. **It never reproduced in 20,000 dumped frames**, but code reading found a real
+divergence in the right class: the scoped rect was missing the draw path's **4x-MSAA
+sample-space factor** — 4.4 clears a frame covered ONE QUARTER of their pass's EDRAM
+footprint. Fixed in the same commit (`resolve: clear rect scaled for a 4x MSAA
+surface` is the counter).
 
-**Status: UNEXPLAINED-BUT-PLAUSIBLY-FIXED, not closed** (gotcha 506). The operator's
-next session is the verdict. **The bisection order for ANY new picture complaint is
-now: (1) `CZ_VK_NO_DEFERRED_CLEAR=1`, (2) `CZ_VK_DEFER_FULL_RECT=1` (scoping vs
-ordering), (3) `CZ_VK_NO_PAR_RECORD=1`.** A recurrence under (1) exonerates part 90
-entirely; a vanish under (2) says scoping and the MSAA fix was incomplete.
+**Then the operator played the CORRECTED build, captured the artifact with F9, and
+corrected the report: it is NOT a transient streak — it is VIEW-DEPENDENT** ("depends
+on where the camera is placed"). The evidence is
+`~/DR2CZ-troubleshooting/play/play_0831_1458/` — **capture_012456 is the defect
+live**: a huge geometry-shaped white-yellow blow-out over the foreground zombies with
+the sun behind them; capture_013440 is nearly the same view CLEAN seconds later.
+Established from the frame's own resolve snapshots: **the blob boundary follows
+character silhouettes** (material/lighting, not a scissor-shaped clear rectangle);
+**cube faces normal**; **luminance chain higher in the defect frame** (reacting, not
+causing); the bloom bright-pass carries the blown mass downstream. So the artifact
+SURVIVES the MSAA correction, and whether it is part 90's at all is UNKNOWN — it may
+equally be part 88's constants work (a specular/rim term is exactly a constants-fed,
+view-dependent thing), part 89's, or the title's own sun-behind rim look the operator
+never met at this hour of the in-game clock.
+
+**Status: OPEN, UNATTRIBUTED. The A/B protocol is defined and OWED** — the operator
+left for work before running it: play at that spot (by the van, sun behind the
+crowd) under (1) `CZ_VK_NO_DEFERRED_CLEAR=1`, then the default, F9 in each.
+Seen-in-both exonerates part 90 → bisect next on `CZ_VK_NO_PATCH_MEMO=1` /
+`CZ_VK_NO_BOUNDED_DYNAMIC=1` (part 88) and `CZ_VK_NO_PAR_RECORD=1` (part 89);
+seen-only-in-default → `CZ_VK_DEFER_FULL_RECT=1` splits scoping from ordering. The
+in-game clock moves the sun between sessions — match the VIEW, not the wall time.
+The `.pose` for the defect camera is beside the capture.
 
 ## 1. THE BOARD (in order)
 
