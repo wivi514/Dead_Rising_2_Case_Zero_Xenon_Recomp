@@ -24929,18 +24929,21 @@ bool InitCommon()
     g_constMemoOff = EnvOn("CZ_VK_NO_CONST_MEMO");
     g_fetchMemoCensus = EnvOn("CZ_VK_FETCH_MEMO_CENSUS");
     g_resolveSplitCensus = EnvOn("CZ_VK_RESOLVE_SPLIT_CENSUS");
-    // PARALLEL RECORD (part 89). An ARM until its 3v3 exists (part 87 §3's rule). It
-    // refuses two combinations out loud rather than half-engaging: no workers means
-    // the pump would capture and replay everything itself for pure overhead, and
-    // CZ_VK_NO_DRIVER_RECORD's measurement would be silently distorted by a path
-    // whose whole point is moving those calls.
-    if (EnvOn("CZ_VK_PAR_RECORD"))
+    // PARALLEL RECORD (part 89). ON BY DEFAULT since its 3v3 (dominant crowd band
+    // 13.00 -> 11.20 ms, −13.9% / −1.80 ms; §6ej) — CZ_VK_NO_PAR_RECORD=1 is the
+    // same-binary control arm, per part 87 §3's rule. It refuses two combinations
+    // out loud rather than half-engaging: no workers means the pump would capture
+    // and replay everything itself for pure overhead, and CZ_VK_NO_DRIVER_RECORD's
+    // measurement would be silently distorted by a path whose whole point is moving
+    // those calls. (CZ_VK_PAR_RECORD=1 is accepted and redundant, kept so the 3v3's
+    // arm spelling still means what it meant.)
+    if (!EnvOn("CZ_VK_NO_PAR_RECORD"))
     {
         if (NoDriverRecord())
-            fprintf(stderr, "[vk] CZ_VK_PAR_RECORD REFUSED: CZ_VK_NO_DRIVER_RECORD is "
+            fprintf(stderr, "[vk] parallel record OFF: CZ_VK_NO_DRIVER_RECORD is "
                             "set and the two instruments measure the same calls\n");
         else if (!GuardPoolWorkers())
-            fprintf(stderr, "[vk] CZ_VK_PAR_RECORD REFUSED: no worker pool "
+            fprintf(stderr, "[vk] parallel record OFF: no worker pool "
                             "(CZ_WORKERS=0 or CZ_VK_NO_PARALLEL_GUARD) — the serial "
                             "path is the control arm, not a degraded mode\n");
         else
@@ -24951,12 +24954,16 @@ bool InitCommon()
                 R->parRecChunk = uint32_t(atoi(cs));
             R->capBuf.reserve(R->parRecChunk);
             fprintf(stderr,
-                    "[vk] CZ_VK_PAR_RECORD=1 — parallel command recording ON: chunks "
-                    "of %u draws to %u shared guard-pool workers, resolve stays "
-                    "serial, order gated. CZ_VK_RECORD_CHUNK=N tunes it.\n",
+                    "[vk] parallel command recording ON (default since part 89): "
+                    "chunks of %u draws to %u shared guard-pool workers, resolve "
+                    "serial, order gated. CZ_VK_NO_PAR_RECORD=1 is the control arm; "
+                    "CZ_VK_RECORD_CHUNK=N tunes.\n",
                     R->parRecChunk, GuardPoolWorkers());
         }
     }
+    else
+        fprintf(stderr, "[vk] CZ_VK_NO_PAR_RECORD=1 — parallel record OFF (the "
+                        "part-88 serial recorder, same binary)\n");
     g_bindRunCensus = EnvOn("CZ_VK_BIND_RUN_CENSUS");
     g_guardCensus = EnvOn("CZ_VK_GUARD_CENSUS");
     g_noBindBatch = EnvOn("CZ_VK_NO_BIND_BATCH");
@@ -28587,7 +28594,10 @@ void VkRenderer_DumpStats()
                 (unsigned long long)R->orderDrawsLogged,
                 Env("CZ_VK_ORDER_POISON")
                     ? "  (POISONED — a zero here means the gate is BLIND)"
-                    : "  (serial recording: zero is the only correct result)");
+                    : (R && R->parRec
+                           ? "  (PARALLEL recording: the replayed instances' own ids "
+                             "against the capture order — zero is the claim)"
+                           : "  (serial recording: zero is the only correct result)"));
     // Part 72 item 1. Printed HERE as well as on the census's own cadence, so a soak
     // that ends off a 600-frame boundary still lands the number — the same defect the
     // stencil skip counter had for fifteen parts (collected since part 56, printed by
@@ -28698,6 +28708,28 @@ void VkRenderer_DumpStats()
                 100.0 * double(R->skips.scissor) / double(d),
                 100.0 * double(R->skips.blend) / double(d),
                 100.0 * double(R->skips.sets) / double(d), (unsigned long long)d);
+    // PARALLEL RECORD's engagement at exit, UNCONDITIONAL when the feature is on —
+    // the [vkprof] line only exists under the profiler, and a timed run (correctly)
+    // does not carry one, which left the 3v3's fix arms provable only through the
+    // skip aggregation. This line is the direct statement (gotcha 151).
+    if (R->parRec)
+    {
+        uint64_t chunks = 0;
+        for (uint32_t rec = 0; rec < kPrMaxRecorders; ++rec)
+            chunks += g_prChunksRecorded[rec];
+        fprintf(stderr,
+                "[vk]   parallel record: %llu chunks (%llu by the pump at the wait), "
+                "%llu draws captured, %llu tail draws in %llu tail instances, %llu "
+                "empty instances, submit wait %.1f ms total, overflow-inline %llu, "
+                "bind overflow %llu%s\n",
+                (unsigned long long)chunks, (unsigned long long)g_prPumpHelped,
+                (unsigned long long)g_prCaptured, (unsigned long long)g_prTailDraws,
+                (unsigned long long)g_prTailInstances,
+                (unsigned long long)g_prEmptyInstances, double(g_prWaitNs) / 1e6,
+                (unsigned long long)g_prOverflowInline,
+                (unsigned long long)g_prBindOverflow,
+                g_prBindOverflow ? "  *** CAPTURES TRUNCATED — picture suspect ***" : "");
+    }
     // THE CEILING PROBE's own engagement. Printed only when it fired, but printed with the
     // per-draw rate rather than the raw total, because the number the item's arithmetic
     // needs is "driver calls per draw" — that is what a secondary command buffer carries,

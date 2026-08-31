@@ -3416,6 +3416,25 @@ CZ_VK_RESOLVE_SPLIT_CENSUS=1  **part 89 step 0a — how much of the record phase
                   DIAGNOSTIC ARM; free when off (one global bool per draw).
 ```
 
+```
+CZ_VK_PAR_RECORD=1  **parallel command recording (part 89, design (b): resolve serial,
+                  record parallel).** The pump keeps every shared-mutable structure —
+                  UploadStream's flat cache / guard / store, the arena, the pipeline
+                  map — and deposits per-draw DrawCaptures; chunks of 512 replay as
+                  self-contained dynamic-rendering instances (LOAD/LOAD attachments
+                  make an instance split the identity) on the guard pool's workers,
+                  each into its own primary command buffer from its own pool, and the
+                  frame submits as ONE ordered vkQueueSubmit. The pump HELPS at the
+                  submit wait, so a starved pool cannot deadlock a frame. Engagement:
+                  the `[vkprof] par record:` line (chunks/frame per worker, tail,
+                  wait). Gated by the part-72 order gate (0 fails / 22.1M draws;
+                  poison fails 100%) and sync validation (0 hazards). Refused loudly
+                  under CZ_VK_NO_DRIVER_RECORD or with no workers.
+CZ_VK_RECORD_CHUNK=N  the chunk size (default 512). Smaller = more parallelism and
+                  more per-instance state re-establishment; the default is ~16 worker
+                  chunks in a 9,000-draw crowd frame.
+```
+
 The guard pool's occupancy line (part 89 step 0c) is not an arm — two unconditional
 clock reads per worker per dispatch accumulate `busyNs` always, and `CZ_VK_PROFILE`
 prints the windowed share (`guard pool occupancy: N% busy`). It exists because "552
