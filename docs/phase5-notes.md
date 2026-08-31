@@ -19756,3 +19756,92 @@ bounded gather ~0.4 ms and the patch memo ~0.2-0.5 ms at the crowd, each with it
 off-arm, verify arm and proven poison. The constants block's two largest addressable
 items are closed; what remains inside it is the vs residual (0.61 ms), shared (0.65)
 and the block residual (0.73) — none of which currently has a mechanism-level lead.
+
+## §6ei — Part 89 step 0: the maximal parallel record PRICED — the kill does not fire (2026-08-31)
+
+`docs/perf-plan-part89.md` §1's three measurements, taken before any fix code exists,
+exactly as part 88 took its census. Two instruments were built for it (commit 4499b3e),
+both with positive controls shown to fire before their numbers were believed
+(gotcha 30):
+
+* **`CZ_VK_RESOLVE_SPLIT_CENSUS=1`** — samples 1 draw in 16 with raw clock pairs around
+  the record phase's three `UploadStream` call sites. Sampled, not scoped: UploadStream
+  runs ~45k times a crowd frame and a per-call ProfScope is ~2 ms/frame by the
+  FlatCache comment's own arithmetic — the instrument would have replaced the function
+  (gotchas 7, 223). It prints its own clock bill (~21.2 ns lands inside each pair —
+  measured, and it matches the startup calibration line exactly: 107/5.05 calls =
+  21.2). **Positive control**: under `CZ_VK_NO_FLAT_CACHE=1` true resolve rose 162 →
+  274 ns/draw while the record total rose by the same ~112 — the split attributes the
+  unordered_map's cost to the resolve half and nowhere else.
+* **The guard pool's occupancy counter** (always on, two clock reads per worker per
+  dispatch, printed under `CZ_VK_PROFILE`) — because "348 dispatches, 0 blocked" is a
+  dispatch count, not an occupancy figure (gotcha 151's shape). **Positive control**:
+  `CZ_VK_GUARD_WORKERS=1` reads 36.0% busy where 3 workers read 13-16% — the channel
+  moves in the right direction by roughly the expected factor.
+
+### 1. The measurements (crowd band ≥8,000 draws, 21-22 windows per run)
+
+Two census runs (peaks 9,162/9,179), one no-driver run, one failed no-driver run kept
+for its band-matched low-draw windows:
+
+| arm | record ns/draw (instrumented) | = state + vertex + index + guard + residual | resolve TRUE |
+|---|---|---|---|
+| null 1 | 619 | 155 + 178 + 157 + 10 + 117 | 160 |
+| null 2 | 632 | 161 + 180 + 162 + 10 + 119 | 165 |
+| `CZ_VK_NO_DRIVER_RECORD=1` (60 fps cap) | 390 | 27 + 147 + 94 + 9 + 112 | 138 |
+
+* **0a, the serial half**: UploadStream (flat-cache lookup + content guard + cross-frame
+  store — the change-detector half that cannot be raced, gotcha 474) is **162 ns/draw
+  true** (measured 267/273 raw minus the measured 107 bill), 5.05 calls/draw
+  (4.1 vertex + 0.9 index).
+* **The driver share, bill-free by subtraction**: 625 − 390 = **235 ns/draw at the
+  crowd** — state −131, index −66, vertex −32, guard and residual unchanged to within
+  a few ns (the probe's own control, the same signature as §6eb §3). Part 80's 251 is
+  corroborated and slightly reduced, which is part 81's bind batch showing up where it
+  should. THE FIRST no-driver run desynced the analog route (parked at 2,554 draws —
+  unthrottled, the title's movement drifts from the recorded steering); `CZ_FPS_CAP=60`
+  matches the null arms' actual crowd rate (~55 fps) and the route then lands at 9,720.
+  Its low-draw windows band-matched at 2,300-2,800 read driver = 298 ns/draw there —
+  per-draw record cost falls with draw count, as §6ec said.
+* **0c, the workers**: guard pool occupancy at the crowd is **13-16% busy across 3
+  workers** — ~85% of the pool's worker-time is free. The plan's own criterion
+  (<~50% busy → record chunks can share the pool) is met with 3x margin. **W = 3
+  without touching the one-budget policy.**
+* The PM4 walk (`pm4` in the pump line): 17.0-17.1% of an 18.1 ms instrumented frame ≈
+  3.1 ms — serial residue, unchanged by this item, and far larger than movable/W
+  (~0.85 ms), so the workers can never become the critical path; the bound is
+  pump-side.
+
+### 2. The 0a/0b classification and the pre-registered arithmetic
+
+True record ≈ 625 instrumented − ~148 ns of in-record scope bill (4 scopes × the
+measured 21.2 ns, one read into the own column and one into the enclosing residual —
+the ProfScope comment's model) ≈ **477 ns/draw**, decomposing as:
+
+| side | term | ns/draw |
+|---|---|---|
+| (i) stays serial | UploadStream resolve | 162 |
+| (i) stays serial | DecodeVertexFetch (the pump needs it to CALL UploadStream) | ~45 (half the ~80-104 ns "ours" remainder; bounded above by it) |
+| (ii) movable | driver `vkCmd*` | 235 |
+| (ii) movable | ours: state compares, bind-cache updates, queue appends | ~45 |
+
+**Movable ≈ 270-290 ns/draw ≈ 2.4-2.6 ms/frame at 9,000 draws.**
+
+The pre-registered formula, evaluated: `saving = movable × (W−1)/W − overhead` with
+W = 3 and overhead ≈ 0.5 ms (capture ~30 ns/draw ≈ 0.27 ms + ~40 chunk begins/executes
+≈ 0.15 + re-establishment and wake ≈ 0.1):
+
+* central: **2.5 × 2/3 − 0.5 = 1.17 ms**; range 1.12-1.24 across the movable bracket.
+* the harshest defensible stacking (W_eff = 2.5 from the pool's 15% busy share,
+  overhead 0.5): 1.0 ms — AT the bar, not under it.
+* the schedule-bound reading (§1 0b's own wording: the movable work leaves the pump's
+  critical path entirely, workers at 15% busy absorb it): **~2.2 ms**.
+
+**THE KILL DOES NOT FIRE** — saving ≥ 1.0 ms on the formula as pre-registered — **and
+the margin on the conservative reading is thin and is recorded as such**: if the built
+thing's measured overhead exceeds ~0.7 ms, the 3v3 will read below 1 ms and the §5
+"park it behind its arm" outcome is the planned one, not a surprise. Design fork:
+**(b) resolve serial, record parallel**, as the plan recommends — the serial side
+keeps UploadStream and the decode, the capture carries resolved handles + offsets +
+derived state, and the workers turn captures into secondary command buffers on the
+guard pool's 85% idle time.
