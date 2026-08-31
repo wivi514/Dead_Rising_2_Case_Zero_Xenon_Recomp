@@ -1849,7 +1849,12 @@ void GuardRunJob(const GuardJob& j, GuardOut& o)
     o.done.store(1, std::memory_order_release);
 }
 
-void GuardWorker()
+// The parallel-record queue's worker hooks — defined with the rest of the machinery
+// after the Renderer (they record Vulkan commands); the pool only needs these two.
+bool ParRec_PendingChunks();
+void ParRec_WorkerDrain(uint32_t workerIdx);
+
+void GuardWorker(unsigned workerIdx)
 {
     GuardPool& gp = *g_gp;
     uint64_t seen = 0;
@@ -1857,10 +1862,14 @@ void GuardWorker()
     {
         {
             std::unique_lock<std::mutex> lk(gp.mx);
-            gp.wake.wait(lk, [&] { return gp.generation != seen; });
+            gp.wake.wait(lk,
+                         [&] { return gp.generation != seen || ParRec_PendingChunks(); });
             seen = gp.generation;
         }
         const uint64_t busy0 = NowNs();
+        // Record chunks FIRST: a chunk blocks THIS frame's submit where a guard job
+        // is a prediction for the next frame — the priorities are not symmetric.
+        ParRec_WorkerDrain(workerIdx);
         for (;;)
         {
             const size_t i = gp.next.fetch_add(1, std::memory_order_relaxed);
@@ -1874,6 +1883,10 @@ void GuardWorker()
                 std::lock_guard<std::mutex> lk(gp.mx);
                 gp.idle.notify_all();
             }
+            // ...and between guard jobs, so a chunk never waits behind a whole
+            // dispatch of hashes.
+            if (ParRec_PendingChunks())
+                ParRec_WorkerDrain(workerIdx);
         }
         // A worker that woke to an already-drained list adds its ~0, which is correct:
         // that IS its busy time for the dispatch.
@@ -1980,7 +1993,7 @@ void GuardPoolDispatch()
     {
         gp.started = true;
         for (unsigned i = 0; i < n; ++i)
-            std::thread(GuardWorker).detach();
+            std::thread(GuardWorker, i).detach();
     }
 }
 
@@ -4074,6 +4087,80 @@ struct RetiredImage
     Image image;
 };
 
+// ===================================================================================
+// PARALLEL COMMAND RECORDING (part 89) — design (b): RESOLVE serial, RECORD parallel
+// ===================================================================================
+//
+// The pump keeps everything that touches shared mutable state — the PM4 walk, the
+// register decode, `UploadStream`'s flat cache / content guard / cross-frame store,
+// the bump arena, the pipeline lookup — and deposits, per draw, a `DrawCapture`:
+// resolved handles, offsets and derived state, nothing that needs re-resolving.
+// Chunks of captures become SELF-CONTAINED dynamic-rendering instances recorded by
+// the guard pool's workers (13-16% busy at the crowd, §6ei) into their own primary
+// command buffers; the frame submits as one ordered `vkQueueSubmit` of many buffers.
+//
+// WHY INSTANCE SPLITS ARE FREE HERE, and why this needs neither secondaries nor
+// suspend/resume: every attachment in the main scope is LOAD_OP_LOAD / STORE_OP_STORE
+// with no clears (the EDRAM model — the title clears with draws), so ending a
+// rendering instance and beginning another over the same attachments is semantically
+// the identity. A pass under the chunk size therefore never splits and costs nothing
+// beyond the capture write; the crowd pass yields ~16 worker chunks.
+//
+// ORDER IS PRESERVED BY CONSTRUCTION — chunks enter the submit list in capture order
+// and draws within a chunk replay in capture order — and it is GATED, not assumed:
+// the part-72 order gate's "submitted" side is now built from the replayed
+// instances' own ids (each recomputed from the capture a worker actually consumed),
+// and CZ_VK_ORDER_POISON still must fail it.
+//
+// CZ_VK_PAR_RECORD=1 is the arm (OFF by default until its 3v3 exists — part 87 §3's
+// rule); CZ_VK_RECORD_CHUNK=N sets the chunk size (default 512). Inert without
+// workers, and refused (loudly) under CZ_VK_NO_DRIVER_RECORD, whose measurement this
+// path would silently distort.
+struct DrawCapture
+{
+    static constexpr uint32_t kMaxBinds = 16;   // == BoundState::kMaxTrackedBindings
+    VkPipeline pipeline;
+    VkViewport viewport;
+    VkRect2D scissor;
+    float blend[4];
+    uint32_t stencilOn, stencilRef, stencilMask, stencilWriteMask;
+    struct { uint64_t vs, ps, shared; uint32_t drawIndex, pad; } push;
+    uint32_t bindCount;
+    VkBuffer vb[kMaxBinds];
+    VkDeviceSize vo[kMaxBinds];
+    VkBuffer ib;                 // VK_NULL_HANDLE = non-indexed draw
+    VkDeviceSize io;
+    VkIndexType it;
+    uint32_t drawCount;          // index count (indexed) or vertex count (auto)
+    int32_t baseVertex;          // VGT_INDX_OFFSET, already folded to 0 where the
+                                 // resolve folded it (rect synth, expansions)
+    // The order gate's raw material, filled only when the gate is armed: the replay
+    // recomputes the id from THESE — the fields it actually consumed — so a capture
+    // scrambled across draws fails the gate rather than passing on a precomputed id.
+    uint64_t vsHash, psHash;
+    uint32_t primType, indexVa;
+    uint32_t gateCount;          // the RAW index count the capture-side id mixed
+    int32_t gateIndxOffset;      // ...and the raw VGT_INDX_OFFSET, pre-folding
+};
+
+struct ParRecChunk
+{
+    std::vector<DrawCapture> draws;
+    std::vector<uint64_t> orderIds;      // filled by the recorder when the gate is armed
+    VkCommandBuffer cb = VK_NULL_HANDLE; // filled by whichever recorder claims it
+    std::atomic<uint32_t> state{ 0 };    // 0 free, 1 queued, 2 recorded
+    // The pass's attachments, snapshotted at enqueue: stable for the pass by
+    // construction, and a chunk must not read R->color at record time — the worker
+    // runs concurrently with the pump opening the NEXT pass.
+    VkImageView colorView = VK_NULL_HANDLE, depthView = VK_NULL_HANDLE;
+    uint32_t width = 0, height = 0;
+    // Replay-side skip counters, aggregated into R->skips by the pump at the wait —
+    // workers must not race plain uint64 fields (gotcha 151 needs the counters, the
+    // aggregation keeps them honest).
+    uint64_t skipPipeline = 0, skipViewport = 0, skipScissor = 0, skipBlend = 0,
+             skipStencil = 0, skipSets = 0, skipVertex = 0, skipIndex = 0;
+};
+
 struct FrameSlot
 {
     VkCommandBuffer cmd = VK_NULL_HANDLE;
@@ -4455,6 +4542,23 @@ struct Renderer
         VkIndexType indexType = VK_INDEX_TYPE_MAX_ENUM;
         bool haveIndex = false;
     } bound;
+    // --- parallel record (part 89; the block comment is at DrawCapture) -----------
+    bool parRec = false;              // CZ_VK_PAR_RECORD=1 and workers exist
+    uint32_t parRecChunk = 512;       // CZ_VK_RECORD_CHUNK
+    bool capActive = false;           // the OPEN pass is being captured, not recorded
+    uint32_t capPassInstances = 0;    // instances this pass has produced so far
+    std::vector<DrawCapture> capBuf;  // the pump's accumulating chunk
+    VkImageView capColorView = VK_NULL_HANDLE, capDepthView = VK_NULL_HANDLE;
+    uint32_t capWidth = 0, capHeight = 0;
+    // The frame's command buffers in submission order: (cb, nullptr) for a pump
+    // segment, (VK_NULL_HANDLE, chunk) for a worker chunk resolved at submit.
+    std::vector<std::pair<VkCommandBuffer, ParRecChunk*>> submitList;
+    // The order gate's submitted side: every replayed instance's id vector, appended
+    // on the pump thread in submission order (chunk at enqueue, tail at replay).
+    std::vector<const std::vector<uint64_t>*> prIdSeq;
+    // A deque ON PURPOSE: prIdSeq holds pointers into it, and a vector's growth
+    // would silently invalidate every earlier pointer.
+    std::deque<std::vector<uint64_t>> prTailIds;
     // How often each bind was skipped, across the whole run. An arm needs a counter or
     // its absence proves nothing (gotcha 151) — but the counter must not cost more than
     // the thing it measures. The first version used Count(), which is a
@@ -10603,11 +10707,443 @@ void PersistMaintenance()
     ++R->persistStats.flushes;
 }
 
+// ===================================================================================
+// PARALLEL RECORD — the machinery (part 89; the design comment is at DrawCapture)
+// ===================================================================================
+bool OrderGateArmed();   // the gate is defined further down; the replay feeds it
+
+// Command pools per (frame slot, recorder). Recorder indices 0..N-1 are the guard
+// pool's workers; index kPrPumpRecorder is the pump, which claims chunks at the
+// submit wait rather than idling (and is the reason a starved pool cannot deadlock:
+// the pump can always finish the list alone).
+constexpr uint32_t kPrMaxRecorders = 9;              // budget cap 6 + margin + pump
+constexpr uint32_t kPrPumpRecorder = kPrMaxRecorders - 1;
+constexpr uint32_t kPrMaxChunks = 256;               // ~12k draws / 512 = 24; margin 10x
+VkCommandPool g_prPools[kMaxFramesInFlight][kPrMaxRecorders] = {};
+std::vector<VkCommandBuffer> g_prCbs[kMaxFramesInFlight][kPrMaxRecorders];
+uint32_t g_prCbUsed[kMaxFramesInFlight][kPrMaxRecorders] = {};
+std::vector<std::unique_ptr<ParRecChunk>> g_prChunkPool[kMaxFramesInFlight];
+uint32_t g_prChunkUsed[kMaxFramesInFlight] = {};
+
+// The frame's chunk list and the worker protocol: the pump publishes at `queued`,
+// recorders claim by CAS on `claim`, completion is `done`. All reset at BeginFrame,
+// when no chunk can be outstanding (the previous submit waited for them all).
+ParRecChunk* g_prList[kPrMaxChunks];
+std::atomic<uint32_t> g_prQueued{ 0 }, g_prClaim{ 0 }, g_prDone{ 0 };
+
+// Engagement counters (gotcha 151: an arm with no counter cannot be shown to have
+// engaged) and the pump's one bill, the submit wait.
+uint64_t g_prChunksRecorded[kPrMaxRecorders] = {};   // each written by ONE recorder
+uint64_t g_prCaptured = 0, g_prTailDraws = 0, g_prTailInstances = 0,
+         g_prEmptyInstances = 0, g_prWaitNs = 0, g_prPumpHelped = 0,
+         g_prBindOverflow = 0, g_prOverflowInline = 0;
+ParRecChunk g_prTailCounters;   // pump-tail replay skips, pump thread only
+
+bool ParRec_PendingChunks()
+{
+    return g_prClaim.load(std::memory_order_relaxed) <
+           g_prQueued.load(std::memory_order_acquire);
+}
+
+VkCommandBuffer ParRec_AcquireCb(uint32_t slot, uint32_t rec)
+{
+    // Failures ABORT rather than return: a recorder that cannot get a command buffer
+    // has no honest partial result, and a silent null would fault in the driver with
+    // the cause erased.
+    if (!g_prPools[slot][rec])
+    {
+        VkCommandPoolCreateInfo pi{ VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO };
+        pi.queueFamilyIndex = R->queueFamily;
+        const VkResult r = vkCreateCommandPool(R->device, &pi, nullptr,
+                                               &g_prPools[slot][rec]);
+        if (r != VK_SUCCESS)
+        {
+            fprintf(stderr, "[vk] parallel record: vkCreateCommandPool failed: %d\n",
+                    int(r));
+            abort();
+        }
+    }
+    auto& cbs = g_prCbs[slot][rec];
+    uint32_t& used = g_prCbUsed[slot][rec];
+    if (used == cbs.size())
+    {
+        VkCommandBuffer batch[8];
+        VkCommandBufferAllocateInfo ai{ VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO };
+        ai.commandPool = g_prPools[slot][rec];
+        ai.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+        ai.commandBufferCount = 8;
+        const VkResult r = vkAllocateCommandBuffers(R->device, &ai, batch);
+        if (r != VK_SUCCESS)
+        {
+            fprintf(stderr,
+                    "[vk] parallel record: vkAllocateCommandBuffers failed: %d\n",
+                    int(r));
+            abort();
+        }
+        cbs.insert(cbs.end(), batch, batch + 8);
+    }
+    return cbs[used++];
+}
+
+// The order gate's id for a REPLAYED draw, recomputed from the fields the replay
+// actually consumed — precomputing it at capture would compare the capture with
+// itself. Must mix exactly what the capture-side log mixes.
+inline uint64_t ParRec_OrderId(const DrawCapture& c)
+{
+    auto mixq = [](uint64_t h, uint64_t v) {
+        h ^= v;
+        return h * 0x100000001B3ull;
+    };
+    uint64_t id = 0xCBF29CE484222325ull;
+    id = mixq(id, uint64_t(c.push.drawIndex));
+    id = mixq(id, uint64_t(uintptr_t(c.pipeline)));
+    id = mixq(id, (uint64_t(c.primType) << 32) | c.gateCount);
+    id = mixq(id, (uint64_t(uint32_t(c.gateIndxOffset)) << 32) | c.indexVa);
+    id = mixq(id, c.vsHash);
+    id = mixq(id, c.psHash);
+    return id;
+}
+
+// Replay a run of captures as ONE self-contained dynamic-rendering instance. Every
+// attachment is LOAD/STORE with no clear (the EDRAM model), so an instance split is
+// the identity — see the DrawCapture comment. The BoundState is fresh per instance,
+// exactly like a fresh command buffer: the first draw issues everything.
+void ParRec_RecordInstance(VkCommandBuffer cb, const DrawCapture* d, size_t n,
+                           VkImageView colorView, VkImageView depthView, uint32_t w,
+                           uint32_t h, std::vector<uint64_t>* ids, ParRecChunk* sk)
+{
+    static const bool noStateCache = Env("CZ_VK_NO_STATE_CACHE") != nullptr;
+    VkRenderingAttachmentInfo colorAtt{ VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO };
+    colorAtt.imageView = colorView;
+    colorAtt.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    colorAtt.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
+    colorAtt.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+    VkRenderingAttachmentInfo depthAtt{ VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO };
+    depthAtt.imageView = depthView;
+    depthAtt.imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+    depthAtt.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
+    depthAtt.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+    VkRenderingInfo ri{ VK_STRUCTURE_TYPE_RENDERING_INFO };
+    ri.renderArea = { { 0, 0 }, { w, h } };
+    ri.layerCount = 1;
+    ri.colorAttachmentCount = 1;
+    ri.pColorAttachments = &colorAtt;
+    ri.pDepthAttachment = &depthAtt;
+    ri.pStencilAttachment = &depthAtt;
+    vkCmdBeginRendering(cb, &ri);
+
+    Renderer::BoundState b;
+    for (size_t i = 0; i < n; ++i)
+    {
+        const DrawCapture& c = d[i];
+        if (noStateCache || c.pipeline != b.pipeline)
+        {
+            vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, c.pipeline);
+            // Same rule as the inline path: a pipeline bind makes the stencil
+            // dynamic state undefined (it is dynamic only on stencil pipelines).
+            b.haveStencil = false;
+            b.pipeline = c.pipeline;
+        }
+        else
+            ++sk->skipPipeline;
+        if (noStateCache || !b.haveViewport ||
+            memcmp(&c.viewport, &b.viewport, sizeof b.viewport) != 0)
+        {
+            vkCmdSetViewport(cb, 0, 1, &c.viewport);
+            b.viewport = c.viewport;
+            b.haveViewport = true;
+        }
+        else
+            ++sk->skipViewport;
+        if (noStateCache || !b.haveScissor ||
+            memcmp(&c.scissor, &b.scissor, sizeof b.scissor) != 0)
+        {
+            vkCmdSetScissor(cb, 0, 1, &c.scissor);
+            b.scissor = c.scissor;
+            b.haveScissor = true;
+        }
+        else
+            ++sk->skipScissor;
+        if (noStateCache || !b.haveBlend ||
+            memcmp(c.blend, b.blend, sizeof b.blend) != 0)
+        {
+            vkCmdSetBlendConstants(cb, c.blend);
+            memcpy(b.blend, c.blend, sizeof b.blend);
+            b.haveBlend = true;
+        }
+        else
+            ++sk->skipBlend;
+        if (c.stencilOn)
+        {
+            if (noStateCache || !b.haveStencil || b.stencilRef != c.stencilRef ||
+                b.stencilMask != c.stencilMask || b.stencilWriteMask != c.stencilWriteMask)
+            {
+                vkCmdSetStencilReference(cb, VK_STENCIL_FACE_FRONT_AND_BACK, c.stencilRef);
+                vkCmdSetStencilCompareMask(cb, VK_STENCIL_FACE_FRONT_AND_BACK,
+                                           c.stencilMask);
+                vkCmdSetStencilWriteMask(cb, VK_STENCIL_FACE_FRONT_AND_BACK,
+                                         c.stencilWriteMask);
+                b.stencilRef = c.stencilRef;
+                b.stencilMask = c.stencilMask;
+                b.stencilWriteMask = c.stencilWriteMask;
+                b.haveStencil = true;
+            }
+            else
+                ++sk->skipStencil;
+        }
+        if (noStateCache || !b.setsBound)
+        {
+            vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, R->pipeLayout, 0,
+                                    5, R->sets, 0, nullptr);
+            b.setsBound = true;
+        }
+        else
+            ++sk->skipSets;
+        vkCmdPushConstants(cb, R->pipeLayout,
+                           VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
+                           32, &c.push);
+        // Vertex binds: contiguous CHANGED runs become one call, exactly what the
+        // inline bind batch produces.
+        {
+            VkBuffer bufs[DrawCapture::kMaxBinds];
+            VkDeviceSize offs[DrawCapture::kMaxBinds];
+            uint32_t runFirst = 0, cnt = 0;
+            for (uint32_t bd = 0; bd < c.bindCount; ++bd)
+            {
+                const bool changed = noStateCache || !b.haveVertex[bd] ||
+                                     b.vertexBuffer[bd] != c.vb[bd] ||
+                                     b.vertexOffset[bd] != c.vo[bd];
+                if (changed)
+                {
+                    if (cnt == 0)
+                        runFirst = bd;
+                    bufs[cnt] = c.vb[bd];
+                    offs[cnt] = c.vo[bd];
+                    ++cnt;
+                    b.vertexBuffer[bd] = c.vb[bd];
+                    b.vertexOffset[bd] = c.vo[bd];
+                    b.haveVertex[bd] = true;
+                }
+                else
+                {
+                    ++sk->skipVertex;
+                    if (cnt)
+                    {
+                        vkCmdBindVertexBuffers(cb, runFirst, cnt, bufs, offs);
+                        cnt = 0;
+                    }
+                }
+            }
+            if (cnt)
+                vkCmdBindVertexBuffers(cb, runFirst, cnt, bufs, offs);
+        }
+        if (c.ib != VK_NULL_HANDLE)
+        {
+            if (noStateCache || !b.haveIndex || b.indexBuffer != c.ib ||
+                b.indexOffset != c.io || b.indexType != c.it)
+            {
+                vkCmdBindIndexBuffer(cb, c.ib, c.io, c.it);
+                b.indexBuffer = c.ib;
+                b.indexOffset = c.io;
+                b.indexType = c.it;
+                b.haveIndex = true;
+            }
+            else
+                ++sk->skipIndex;
+            vkCmdDrawIndexed(cb, c.drawCount, 1, 0, c.baseVertex, 0);
+        }
+        else
+            vkCmdDraw(cb, c.drawCount, 1, uint32_t(c.baseVertex), 0);
+        if (ids)
+            ids->push_back(ParRec_OrderId(c));
+    }
+    vkCmdEndRendering(cb);
+}
+
+void ParRec_RecordChunk(uint32_t rec, ParRecChunk* ch, uint32_t slot)
+{
+    VkCommandBuffer cb = ParRec_AcquireCb(slot, rec);
+    VkCommandBufferBeginInfo bi{ VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO };
+    bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+    vkBeginCommandBuffer(cb, &bi);
+    std::vector<uint64_t>* ids = OrderGateArmed() ? &ch->orderIds : nullptr;
+    ParRec_RecordInstance(cb, ch->draws.data(), ch->draws.size(), ch->colorView,
+                          ch->depthView, ch->width, ch->height, ids, ch);
+    vkEndCommandBuffer(cb);
+    ch->cb = cb;
+    ch->state.store(2, std::memory_order_release);
+    ++g_prChunksRecorded[rec];
+}
+
+// The frame slot chunks were enqueued under — stamped at enqueue because a WORKER
+// must not read R->frameSlot (it advances on the pump; a chunk is always consumed
+// before its frame submits, but the stamp makes that true by construction).
+uint32_t g_prSlot = 0;
+
+void ParRec_WorkerDrain(uint32_t workerIdx)
+{
+    for (;;)
+    {
+        uint32_t c = g_prClaim.load(std::memory_order_relaxed);
+        const uint32_t q = g_prQueued.load(std::memory_order_acquire);
+        if (c >= q)
+            return;
+        if (!g_prClaim.compare_exchange_weak(c, c + 1, std::memory_order_acq_rel))
+            continue;
+        ParRec_RecordChunk(workerIdx, g_prList[c], g_prSlot);
+        g_prDone.fetch_add(1, std::memory_order_release);
+    }
+}
+
+// Close the pump's current segment, append the chunk after it, open a new segment.
+void ParRec_CutPumpSegment(ParRecChunk* ch)
+{
+    vkEndCommandBuffer(R->cmd);
+    R->submitList.emplace_back(R->cmd, nullptr);
+    R->submitList.emplace_back(VK_NULL_HANDLE, ch);
+    VkCommandBuffer next = ParRec_AcquireCb(R->frameSlot, kPrPumpRecorder);
+    VkCommandBufferBeginInfo bi{ VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO };
+    bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+    vkBeginCommandBuffer(next, &bi);
+    R->cmd = next;
+}
+
+void ParRec_Handoff()
+{
+    if (R->capBuf.empty())
+        return;
+    const uint32_t q = g_prQueued.load(std::memory_order_relaxed);
+    if (q >= kPrMaxChunks || !GuardPoolWorkers() || !g_gp)
+    {
+        // No queue room or no pool: replay inline as a pump instance. Counted — a
+        // fallback with no counter is a fallback nobody can tell fired (gotcha 151).
+        ++g_prOverflowInline;
+        std::vector<uint64_t>* ids = nullptr;
+        if (OrderGateArmed())
+        {
+            R->prTailIds.emplace_back();
+            ids = &R->prTailIds.back();
+            R->prIdSeq.push_back(ids);
+        }
+        ParRec_RecordInstance(R->cmd, R->capBuf.data(), R->capBuf.size(),
+                              R->capColorView, R->capDepthView, R->capWidth,
+                              R->capHeight, ids, &g_prTailCounters);
+        ++R->capPassInstances;
+        R->capBuf.clear();
+        return;
+    }
+    const uint32_t slot = R->frameSlot;
+    auto& pool = g_prChunkPool[slot];
+    if (g_prChunkUsed[slot] == pool.size())
+        pool.emplace_back(new ParRecChunk);
+    ParRecChunk* ch = pool[g_prChunkUsed[slot]++].get();
+    ch->draws.swap(R->capBuf);
+    R->capBuf.clear();
+    ch->orderIds.clear();
+    ch->cb = VK_NULL_HANDLE;
+    ch->skipPipeline = ch->skipViewport = ch->skipScissor = ch->skipBlend =
+        ch->skipStencil = ch->skipSets = ch->skipVertex = ch->skipIndex = 0;
+    ch->colorView = R->capColorView;
+    ch->depthView = R->capDepthView;
+    ch->width = R->capWidth;
+    ch->height = R->capHeight;
+    g_prSlot = slot;
+    if (OrderGateArmed())
+        R->prIdSeq.push_back(&ch->orderIds);
+    ch->state.store(1, std::memory_order_relaxed);
+    ParRec_CutPumpSegment(ch);
+    g_prList[q] = ch;
+    g_prQueued.store(q + 1, std::memory_order_release);
+    ++R->capPassInstances;
+    // The empty lock section orders the store above with the workers' predicate
+    // evaluation — without it a worker can check, miss the store, and sleep through
+    // the notify (a lost wakeup, not a deadlock: the pump helps at the submit wait,
+    // but the chunk would ride the frame's critical path for nothing).
+    {
+        std::lock_guard<std::mutex> lk(g_gp->mx);
+    }
+    g_gp->wake.notify_all();
+}
+
+// The pass is closing: replay whatever the chunk cut left over, on the pump, into
+// the current segment — so an unsplit pass records exactly one instance, as today.
+void ParRec_FlushTail()
+{
+    if (R->capBuf.empty())
+    {
+        // A pass that opened and closed with no draws still records its (empty)
+        // instance, preserving the command stream's instance count exactly.
+        if (R->capPassInstances == 0)
+        {
+            ParRec_RecordInstance(R->cmd, nullptr, 0, R->capColorView, R->capDepthView,
+                                  R->capWidth, R->capHeight, nullptr, &g_prTailCounters);
+            ++g_prEmptyInstances;
+        }
+        return;
+    }
+    std::vector<uint64_t>* ids = nullptr;
+    if (OrderGateArmed())
+    {
+        R->prTailIds.emplace_back();
+        ids = &R->prTailIds.back();
+        R->prIdSeq.push_back(ids);
+    }
+    g_prTailDraws += R->capBuf.size();
+    ++g_prTailInstances;
+    ParRec_RecordInstance(R->cmd, R->capBuf.data(), R->capBuf.size(), R->capColorView,
+                          R->capDepthView, R->capWidth, R->capHeight, ids,
+                          &g_prTailCounters);
+    ++R->capPassInstances;
+    R->capBuf.clear();
+}
+
+// The submit wait: the pump HELPS rather than spins — a starved or busy pool can
+// never deadlock the frame, and the helped-chunk counter says how often it happened.
+void ParRec_WaitChunks()
+{
+    const uint32_t q = g_prQueued.load(std::memory_order_acquire);
+    if (!q)
+        return;
+    const uint64_t t0 = NowNs();
+    for (;;)
+    {
+        uint32_t c = g_prClaim.load(std::memory_order_relaxed);
+        if (c >= q)
+            break;
+        if (!g_prClaim.compare_exchange_weak(c, c + 1, std::memory_order_acq_rel))
+            continue;
+        ParRec_RecordChunk(kPrPumpRecorder, g_prList[c], g_prSlot);
+        g_prDone.fetch_add(1, std::memory_order_release);
+        ++g_prPumpHelped;
+    }
+    while (g_prDone.load(std::memory_order_acquire) < q)
+        std::this_thread::yield();
+    g_prWaitNs += NowNs() - t0;
+    // Aggregate the replay-side skip counters, single-threaded here by construction.
+    auto add = [&](const ParRecChunk& s) {
+        R->skips.pipeline += s.skipPipeline;
+        R->skips.viewport += s.skipViewport;
+        R->skips.scissor += s.skipScissor;
+        R->skips.blend += s.skipBlend;
+        R->skips.stencil += s.skipStencil;
+        R->skips.sets += s.skipSets;
+        R->skips.vertexBindRepeats += s.skipVertex;
+        R->skips.indexBindRepeats += s.skipIndex;
+    };
+    for (uint32_t i = 0; i < q; ++i)
+        add(*g_prList[i]);
+    add(g_prTailCounters);
+    // ParRecChunk carries an atomic and is not assignable; zero the counters by hand.
+    g_prTailCounters.skipPipeline = g_prTailCounters.skipViewport =
+        g_prTailCounters.skipScissor = g_prTailCounters.skipBlend =
+            g_prTailCounters.skipStencil = g_prTailCounters.skipSets =
+                g_prTailCounters.skipVertex = g_prTailCounters.skipIndex = 0;
+}
+
 // Defined with the gate itself further down; declared here because the frame
 // boundary is above it and moving eighty lines to satisfy an ordering rule would make
 // the gate harder to find, not easier.
 void OrderGateCheck();
-bool OrderGateArmed();
 
 void BeginFrame()
 {
@@ -10734,6 +11270,29 @@ void BeginFrame()
     // complete statement.
     OrderGateCheck();
     R->orderLog.clear();
+    // The parallel-record frame state, reset AFTER the gate has read the finished
+    // frame's replayed ids. No chunk can be outstanding here: the previous submit
+    // waited for them all, so the pool resets and counter zeroing race nothing.
+    if (R->parRec)
+    {
+        const uint32_t slot = R->frameSlot;
+        for (uint32_t rec = 0; rec < kPrMaxRecorders; ++rec)
+        {
+            if (g_prPools[slot][rec])
+                vkResetCommandPool(R->device, g_prPools[slot][rec], 0);
+            g_prCbUsed[slot][rec] = 0;
+        }
+        g_prChunkUsed[slot] = 0;
+        g_prQueued.store(0, std::memory_order_relaxed);
+        g_prClaim.store(0, std::memory_order_relaxed);
+        g_prDone.store(0, std::memory_order_relaxed);
+        R->submitList.clear();
+        R->prIdSeq.clear();
+        R->prTailIds.clear();
+        R->capBuf.clear();
+        R->capActive = false;
+        R->capPassInstances = 0;
+    }
     R->lastFrameDraws = R->drawsThisFrame;
     R->drawsThisFrame = 0;
     // The scene-camera pick is PER FRAME. Left latched, it would hold the largest draw
@@ -10787,7 +11346,21 @@ void BeginRendering()
     ri.pColorAttachments = &colorAtt;
     ri.pDepthAttachment = &depthAtt;
     ri.pStencilAttachment = &depthAtt;
-    vkCmdBeginRendering(R->cmd, &ri);
+    if (R->parRec)
+    {
+        // Capture mode: the pass opens LOGICALLY here (barriers above are already in
+        // the pump's segment, which precedes every chunk of this pass in submission
+        // order), but no instance is begun — each chunk and the pump tail record
+        // their own self-contained instance over these attachments.
+        R->capActive = true;
+        R->capPassInstances = 0;
+        R->capColorView = colorAtt.imageView;
+        R->capDepthView = depthAtt.imageView;
+        R->capWidth = R->color.width;
+        R->capHeight = R->color.height;
+    }
+    else
+        vkCmdBeginRendering(R->cmd, &ri);
     R->rendering = true;
     g_cycPendBeginNs += CycNow() - cycT0;
     // The GPU-side segment for this pass opens AFTER the barriers, so a layout transition
@@ -10802,6 +11375,16 @@ void EndRendering()
 {
     if (!R->rendering)
         return;
+    // Capture mode: replay the tail BEFORE the pass's closing GPU timestamp below,
+    // so the timestamp still brackets every draw of the pass (the chunks precede
+    // this segment in submission order; the tail instance precedes the timestamp
+    // within it).
+    const bool wasCapture = R->capActive;
+    if (wasCapture)
+    {
+        ParRec_FlushTail();
+        R->capActive = false;
+    }
     // Close the pass's GPU segment BEFORE vkCmdEndRendering, and classify it by how many
     // draws it actually held — the bucket is the whole point, because "the crowd" and "the
     // 39 near-empty passes a frame" are different answers to where the device's time is.
@@ -10817,7 +11400,8 @@ void EndRendering()
                   g_gpPassExt, d);
         g_gpPassSeg = -1;
     }
-    vkCmdEndRendering(R->cmd);
+    if (!wasCapture)
+        vkCmdEndRendering(R->cmd);
     R->rendering = false;
 }
 
@@ -10938,6 +11522,14 @@ void SubmitFrame()
 
     vkEndCommandBuffer(R->cmd);
     R->recording = false;
+    // The parallel-record frame closes here: the final pump segment joins the list,
+    // and the wait below is the design's ONE synchronization point — the pump helps
+    // record rather than spinning, so a starved pool cannot deadlock the frame.
+    if (R->parRec)
+    {
+        R->submitList.emplace_back(R->cmd, nullptr);
+        ParRec_WaitChunks();
+    }
 
     // CZ_VK_NO_SUBMIT=1 — record the whole frame and then DO NOT EXECUTE IT.
     //
@@ -11008,6 +11600,17 @@ void SubmitFrame()
     VkSubmitInfo si{ VK_STRUCTURE_TYPE_SUBMIT_INFO };
     si.commandBufferCount = 1;
     si.pCommandBuffers = &fs.cmd;
+    // One ordered submit of every segment and chunk. The chunk handles were filled by
+    // whichever recorder claimed them; ParRec_WaitChunks above guaranteed they exist.
+    static std::vector<VkCommandBuffer> prCbs;
+    if (R->parRec)
+    {
+        prCbs.clear();
+        for (const auto& e : R->submitList)
+            prCbs.push_back(e.second ? e.second->cb : e.first);
+        si.commandBufferCount = uint32_t(prCbs.size());
+        si.pCommandBuffers = prCbs.data();
+    }
     // The swapchain arm's two semaphores. The wait is at TRANSFER, not at the top of the
     // pipe: the only thing in this command buffer that touches the acquired image is the
     // blit at the very end, so everything before it — the whole frame — may run before
@@ -14371,10 +14974,19 @@ void OrderGateCheck()
     for (uint64_t v : R->orderLog)
         want = mixq(want, v);
 
-    // THE SUBMITTED ORDER. Identical to the log today; a parallel path will build this
-    // from its secondaries instead, and nothing else here has to change.
+    // THE SUBMITTED ORDER. On the serial path this is the log itself; under
+    // CZ_VK_PAR_RECORD it is rebuilt from the replayed instances' own ids — each
+    // recomputed by the recorder from the capture fields it actually consumed, in the
+    // submit list's order — which is exactly what this gate was shipped waiting for.
     static std::vector<uint64_t> submitted;
-    submitted = R->orderLog;
+    if (R->parRec)
+    {
+        submitted.clear();
+        for (const std::vector<uint64_t>* v : R->prIdSeq)
+            submitted.insert(submitted.end(), v->begin(), v->end());
+    }
+    else
+        submitted = R->orderLog;
     static const long poison = [] {
         const char* e = Env("CZ_VK_ORDER_POISON");
         const long n = e ? atol(e) : -1;
@@ -21537,6 +22149,11 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
     if (resolveSample)
         ++g_resolveSampledDraws;
 
+    // PARALLEL RECORD's capture (part 89, design (b)) — declared here because the
+    // vertex and index sections below fill it too; see the block in recordState.
+    DrawCapture cap;
+    const bool capturing = R->capActive;
+
     ProfScope _pRecord(&g_prof.record);
     {
     ProfScope _pState(&g_prof.recordState);
@@ -21549,6 +22166,26 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
         F32(regs[xenos::kRbBlendRed]), F32(regs[xenos::kRbBlendRed + 1]),
         F32(regs[xenos::kRbBlendRed + 2]), F32(regs[xenos::kRbBlendRed + 3])
     };
+    // PARALLEL RECORD's capture (part 89, design (b)): everything below that would
+    // talk to the driver instead fills this, and the replay — a worker's chunk or the
+    // pump's tail — issues the calls with its own per-instance state cache. The
+    // resolve side (UploadStream, decode, arena writes, every census) runs UNCHANGED
+    // either way; only the vkCmd* work moves.
+    if (capturing)
+    {
+        cap.pipeline = pipeline;
+        cap.viewport = viewport;
+        cap.scissor = scissor;
+        memcpy(cap.blend, blendConstants, sizeof cap.blend);
+        cap.bindCount = 0;
+        cap.ib = VK_NULL_HANDLE;
+        cap.io = 0;
+        cap.it = VK_INDEX_TYPE_UINT16;
+        cap.drawCount = 0;
+        cap.baseVertex = 0;
+    }
+    if (!capturing)
+    {
     if (noStateCache || pipeline != R->bound.pipeline)
     {
         if (!NoDriverRecord())
@@ -21604,6 +22241,7 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
     }
     else
         ++R->skips.blend;
+    }   // end !capturing (pipeline/viewport/scissor/blend)
 
     // The polygon offset lives in the PIPELINE now, not here — see PipelineKey. The
     // counter stays, because an arm with no counter cannot be shown to have engaged.
@@ -21630,13 +22268,20 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
         const bool stencilOn = !noStencil && (regs[xenos::kRbDepthControl] & 1);
         if (stencilOn)
             ++g_stencilDraws;
+        if (capturing)
+        {
+            cap.stencilOn = stencilOn ? 1u : 0u;
+            cap.stencilRef = ref;
+            cap.stencilMask = mask;
+            cap.stencilWriteMask = wmask;
+        }
         // ONLY WHEN THE BOUND PIPELINE DECLARES THEM DYNAMIC, which is exactly when the
         // stencil test is on. Calling a dynamic-state setter for state a pipeline
         // specifies STATICALLY is illegal in the other direction — `VUID-vkCmdDraw-None-
         // 08608`, 40 of them, and the message says so plainly once read rather than
         // guessed at: "doesn't set up VK_DYNAMIC_STATE_STENCIL_*, but since the
         // vkCmdBindPipeline, the related dynamic state commands have been called".
-        if (stencilOn &&
+        if (!capturing && stencilOn &&
             (noStateCache || !R->bound.haveStencil || R->bound.stencilRef != ref ||
              R->bound.stencilMask != mask || R->bound.stencilWriteMask != wmask))
         {
@@ -21653,13 +22298,15 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
             R->bound.stencilWriteMask = wmask;
             R->bound.haveStencil = true;
         }
-        else if (stencilOn)
+        else if (!capturing && stencilOn)
             ++R->skips.stencil;
     }
 
     // The five bindless heaps never change address, so this is once per command
     // buffer rather than once per draw — and it is the most expensive of the five.
-    if (noStateCache || !R->bound.setsBound)
+    // (Captured draws bind them once per INSTANCE instead — the replay's fresh
+    // BoundState makes its first draw issue them.)
+    if (!capturing && (noStateCache || !R->bound.setsBound))
     {
         if (!NoDriverRecord())
             vkCmdBindDescriptorSets(R->cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, R->pipeLayout,
@@ -21668,7 +22315,7 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
             ++g_noDriverRecordSkipped;
         R->bound.setsBound = true;
     }
-    else
+    else if (!capturing)
         ++R->skips.sets;
 
     // The three constant-buffer addresses, then THE DRAW INDEX at offset 24 for the
@@ -21680,7 +22327,9 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
         uint64_t(R->arena.address + psConstAt),
         uint64_t(R->arena.address + sharedAt),
         uint32_t(R->drawsThisFrame), 0 };
-    if (!NoDriverRecord())
+    if (capturing)
+        memcpy(&cap.push, &pushConstants, sizeof cap.push);
+    else if (!NoDriverRecord())
         vkCmdPushConstants(R->cmd, R->pipeLayout,
                            VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, 32,
                            &pushConstants);
@@ -22120,7 +22769,19 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
                 break;
             }
             const VkDeviceSize offset = four + uint64_t(a.offsetDwords) * 4;
-            BindVertexBufferCached(binding, R->arena.buffer, offset);
+            if (capturing)
+            {
+                if (binding < DrawCapture::kMaxBinds)
+                {
+                    cap.vb[binding] = R->arena.buffer;
+                    cap.vo[binding] = offset;
+                    cap.bindCount = binding + 1;
+                }
+                else
+                    ++g_prBindOverflow;   // cannot happen per the bind census; screams
+            }
+            else
+                BindVertexBufferCached(binding, R->arena.buffer, offset);
             ++binding;
             continue;
         }
@@ -22134,7 +22795,19 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
         if (rangeCensus && a.strideDwords && rangeAttrCount < 32)
             rangeAttrs[rangeAttrCount++] = { a.strideDwords, a.offsetDwords,
                                              uint32_t(a.format), bytes, loc.bytes() };
-        BindVertexBufferCached(binding, loc.handle(), offset);
+        if (capturing)
+        {
+            if (binding < DrawCapture::kMaxBinds)
+            {
+                cap.vb[binding] = loc.handle();
+                cap.vo[binding] = offset;
+                cap.bindCount = binding + 1;
+            }
+            else
+                ++g_prBindOverflow;
+        }
+        else
+            BindVertexBufferCached(binding, loc.handle(), offset);
         ++binding;
     }
     if (!streamsOk)
@@ -22144,7 +22817,7 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
         BindBatchDiscard();
         return;
     }
-    if (!g_noBindBatch)
+    if (!capturing && !g_noBindBatch)
     {
         BindBatchFlush();
         ++g_bindBatchDraws;
@@ -22538,14 +23211,26 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
         const VkDeviceSize at = ExpandIndices(base, draw, expand, expandedCount);
         if (at == VkDeviceSize(-1))
             return;
-        BindIndexBufferCached(R->arena.buffer, at, VK_INDEX_TYPE_UINT32);
         // rectSynth already folded the base vertex into its three corners, and its
         // expanded indices name a private four-vertex stream — so offsetting again
         // would apply it twice.
-        if (!NoDriverRecord())
-            vkCmdDrawIndexed(R->cmd, expandedCount, 1, 0, rectSynth ? 0 : indxOffset, 0);
+        if (capturing)
+        {
+            cap.ib = R->arena.buffer;
+            cap.io = at;
+            cap.it = VK_INDEX_TYPE_UINT32;
+            cap.drawCount = expandedCount;
+            cap.baseVertex = rectSynth ? 0 : indxOffset;
+        }
         else
-            ++g_noDriverRecordSkipped;
+        {
+            BindIndexBufferCached(R->arena.buffer, at, VK_INDEX_TYPE_UINT32);
+            if (!NoDriverRecord())
+                vkCmdDrawIndexed(R->cmd, expandedCount, 1, 0, rectSynth ? 0 : indxOffset,
+                                 0);
+            else
+                ++g_noDriverRecordSkipped;
+        }
     }
     else if (draw.indexed)
     {
@@ -22610,11 +23295,22 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
         }
         const VkIndexType itype =
             draw.index32 ? VK_INDEX_TYPE_UINT32 : VK_INDEX_TYPE_UINT16;
-        BindIndexBufferCached(loc.handle(), loc.at, itype);
-        if (!NoDriverRecord())
-            vkCmdDrawIndexed(R->cmd, draw.indexCount, 1, 0, indxOffset, 0);
+        if (capturing)
+        {
+            cap.ib = loc.handle();
+            cap.io = loc.at;
+            cap.it = itype;
+            cap.drawCount = draw.indexCount;
+            cap.baseVertex = indxOffset;
+        }
         else
-            ++g_noDriverRecordSkipped;
+        {
+            BindIndexBufferCached(loc.handle(), loc.at, itype);
+            if (!NoDriverRecord())
+                vkCmdDrawIndexed(R->cmd, draw.indexCount, 1, 0, indxOffset, 0);
+            else
+                ++g_noDriverRecordSkipped;
+        }
         COUNT("draw: indexed");
     }
     else
@@ -22623,12 +23319,38 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
         // question is identical, with maxIdx implicit.
         if (rangeCensus && rangeAttrCount && draw.indexCount)
             RangeCensusEval(draw.indexCount - 1);
-        if (!NoDriverRecord())
+        if (capturing)
+        {
+            cap.ib = VK_NULL_HANDLE;
+            cap.drawCount = draw.indexCount;
+            cap.baseVertex = indxOffset;
+        }
+        else if (!NoDriverRecord())
             vkCmdDraw(R->cmd, draw.indexCount, 1, uint32_t(indxOffset), 0);
         else
             ++g_noDriverRecordSkipped;
         COUNT("draw: auto-index");
     }
+    // The capture is complete: deposit it and cut a chunk when one is full. The order
+    // gate's raw fields are filled only when the gate is armed — the replay recomputes
+    // the id from them, so a capture scrambled across draws fails the gate.
+    if (capturing)
+    {
+        if (OrderGateArmed())
+        {
+            cap.vsHash = vsBind.hash;
+            cap.psHash = psBind.hash;
+            cap.primType = uint32_t(draw.primType);
+            cap.indexVa = uint32_t(draw.indexVa);
+            cap.gateCount = draw.indexCount;
+            cap.gateIndxOffset = indxOffset;
+        }
+        R->capBuf.push_back(cap);
+        ++g_prCaptured;
+        if (R->capBuf.size() >= R->parRecChunk)
+            ParRec_Handoff();
+    }
+
     // Fingerprint the draw. Order matters and is included by construction, because the
     // accumulator is sequential — two frames with the same draws in a different order
     // are correctly different frames.
@@ -24207,6 +24929,34 @@ bool InitCommon()
     g_constMemoOff = EnvOn("CZ_VK_NO_CONST_MEMO");
     g_fetchMemoCensus = EnvOn("CZ_VK_FETCH_MEMO_CENSUS");
     g_resolveSplitCensus = EnvOn("CZ_VK_RESOLVE_SPLIT_CENSUS");
+    // PARALLEL RECORD (part 89). An ARM until its 3v3 exists (part 87 §3's rule). It
+    // refuses two combinations out loud rather than half-engaging: no workers means
+    // the pump would capture and replay everything itself for pure overhead, and
+    // CZ_VK_NO_DRIVER_RECORD's measurement would be silently distorted by a path
+    // whose whole point is moving those calls.
+    if (EnvOn("CZ_VK_PAR_RECORD"))
+    {
+        if (NoDriverRecord())
+            fprintf(stderr, "[vk] CZ_VK_PAR_RECORD REFUSED: CZ_VK_NO_DRIVER_RECORD is "
+                            "set and the two instruments measure the same calls\n");
+        else if (!GuardPoolWorkers())
+            fprintf(stderr, "[vk] CZ_VK_PAR_RECORD REFUSED: no worker pool "
+                            "(CZ_WORKERS=0 or CZ_VK_NO_PARALLEL_GUARD) — the serial "
+                            "path is the control arm, not a degraded mode\n");
+        else
+        {
+            R->parRec = true;
+            const char* cs = Env("CZ_VK_RECORD_CHUNK");
+            if (cs && atoi(cs) > 0)
+                R->parRecChunk = uint32_t(atoi(cs));
+            R->capBuf.reserve(R->parRecChunk);
+            fprintf(stderr,
+                    "[vk] CZ_VK_PAR_RECORD=1 — parallel command recording ON: chunks "
+                    "of %u draws to %u shared guard-pool workers, resolve stays "
+                    "serial, order gated. CZ_VK_RECORD_CHUNK=N tunes it.\n",
+                    R->parRecChunk, GuardPoolWorkers());
+        }
+    }
     g_bindRunCensus = EnvOn("CZ_VK_BIND_RUN_CENSUS");
     g_guardCensus = EnvOn("CZ_VK_GUARD_CENSUS");
     g_noBindBatch = EnvOn("CZ_VK_NO_BIND_BATCH");
@@ -26184,6 +26934,44 @@ void DoSwapImpl(uint8_t* base, uint32_t frontBuffer, uint32_t width, uint32_t he
                                 double(dvn + din) / double(dsd),
                                 double(dvc + dic) / double(dsd) *
                                     (double(g_profNowNs10) / 10.0));
+                }
+                // PARALLEL RECORD's engagement, windowed (gotcha 151: the arm and its
+                // control must both be provably what they claim; the control prints
+                // nothing because the counters never move).
+                if (R->parRec)
+                {
+                    static uint64_t lc = 0, lt = 0, lw = 0, lh = 0, lo = 0;
+                    static uint64_t lrec[kPrMaxRecorders] = {};
+                    uint64_t chunksNow = 0;
+                    char per[128];
+                    size_t pn = 0;
+                    for (uint32_t rIdx = 0; rIdx < kPrMaxRecorders; ++rIdx)
+                    {
+                        const uint64_t dr2 = g_prChunksRecorded[rIdx] - lrec[rIdx];
+                        lrec[rIdx] = g_prChunksRecorded[rIdx];
+                        chunksNow += dr2;
+                        if (dr2 && pn < sizeof per - 16)
+                            pn += size_t(snprintf(per + pn, sizeof per - pn, " %s%u:%llu",
+                                                  rIdx == kPrPumpRecorder ? "pump" : "w",
+                                                  rIdx, (unsigned long long)dr2));
+                    }
+                    const uint64_t dc2 = g_prCaptured - lc, dt2 = g_prTailDraws - lt;
+                    const uint64_t dw2 = g_prWaitNs - lw, dh2 = g_prPumpHelped - lh;
+                    const uint64_t do2 = g_prOverflowInline - lo;
+                    lc = g_prCaptured; lt = g_prTailDraws; lw = g_prWaitNs;
+                    lh = g_prPumpHelped; lo = g_prOverflowInline;
+                    fprintf(stderr,
+                            "[vkprof] par record: %.1f chunks/frame (%s ), tail %.0f "
+                            "draws/frame, %.0f captured/frame, submit wait %.0f "
+                            "us/frame (pump helped %llu), overflow-inline %llu%s\n",
+                            frames ? double(chunksNow) / double(frames) : 0.0, per,
+                            frames ? double(dt2) / double(frames) : 0.0,
+                            frames ? double(dc2) / double(frames) : 0.0,
+                            frames ? double(dw2) / 1e3 / double(frames) : 0.0,
+                            (unsigned long long)dh2, (unsigned long long)do2,
+                            g_prBindOverflow ? "  *** BIND OVERFLOW — captures "
+                                               "truncated, picture suspect ***"
+                                             : "");
                 }
                 // WHY `GUARD` IS INSIDE `record` AND WHAT IT MEANS FOR THE PLAN. It is
                 // the stream content hash, and it was ALWAYS in this column — it just
