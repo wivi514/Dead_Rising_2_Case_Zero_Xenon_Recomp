@@ -192,10 +192,11 @@ mask; trust the microcode's own swizzles.
     read `phase5-notes.md` §6ba before following anything in it.
   - **THE LIVE HAND-OFF IS ALWAYS THE HIGHEST-NUMBERED `partNN-kickoff.md`**, and it
     supersedes every earlier kickoff on "where the port is". **IT IS
-    `part89-kickoff.md`, AND THE CONSTANTS BLOCK IS DONE — part 88 shipped BOTH §6eg
-    items (the bounded gather and the patch memo) verified and measured in one part
-    (`phase5-notes.md` §6eh); the board's next named item is the CW record-restructure
-    RE-PRICING**
+    `part89-kickoff.md`, AND THE SUBJECT IS THE MAXIMAL PARALLEL RECORD — operator-
+    chosen, ~3.2 ms ceiling, left unpriced (NOT refuted) by part 80; the plan is
+    `docs/perf-plan-part89.md` and its step 0 is pricing with a pre-registered <1.0 ms
+    kill. Part 88 shipped BOTH §6eg constants items verified and measured in one part
+    (`phase5-notes.md` §6eh)**
     — the release programme (milestones A, B, D, E) is complete and gated
     (`release-plan.md` §9 is the record), part 86 shipped the launcher, level cap 50,
     all fifteen skills, the save relocation and Case West's pump stack
@@ -1052,9 +1053,14 @@ HAND-OFF**; the record is `phase5-notes.md` §6eh):
   ships them anyway is the kickoff's own: quote the MECHANISM number beside the
   milliseconds, and the mechanism (bytes, hit rate, engagement counters both arms) is
   exact.
-* **The constants block has no mechanism-level lead left.** The board's next named CPU
-  item is the CW serial record-restructure RE-PRICING (not port) — `part89-kickoff.md`
-  §1; §6ec/§6eg's tables predate both fixes, so re-profile before pricing anything.
+* **The constants block has no mechanism-level lead left**, and the post-part-88
+  question "any lead ≥1 ms?" has exactly one honest answer: **the MAXIMAL parallel
+  record (~3.2 ms ceiling), which part 80 left UNPRICED, not refuted** — the operator
+  chose it as part 89's subject (*"start the plan with that"*).
+  **`docs/perf-plan-part89.md` IS THE LIVE PLAN**; its step 0 is pricing with a
+  pre-registered <1.0 ms kill, and NO fix code precedes that arithmetic. §6ec/§6eg's
+  tables predate part 88's fixes — a fresh profiled decomposition from part 88's close
+  is quoted in the plan itself.
 
 **Older per-part status blocks (parts 28-54, the superseded mid-part-44 closure and the
 superseded MID-PART-46 block) moved to `docs/port-history.md`, NOW INCLUDING PARTS 60-86's** — part 88 moved part 86's out in the same commit that added its own block, part 87 moved part 85's out in the same commit that added its own block, part 86 moved part 84's out in the same commit that added its own block, part 85 moved part 83's out in the same commit that added its own block, part 84 moved part 82's out in the same commit that added its own block, part 83 moved part 81's out in the same commit that added its own block, part 82 moved part 80's out in the same commit that added its own block, part 78 moved part 76's out in the same commit that added its own block, part 76 moved part 74's out in the same commit that added its own block, part 74 moved part 72's out in the same commit that added its own block, part 73 moved part 71's out in the same commit that added its own block, part 72 moved part 70's out in the same commit that added its own block, part 71 moved part 69's out in the same commit that added its own block, part 70 moved part 68's out in the same commit that added its own block, part 69 moved part 67's out in the same commit that added its own block, part 68 moved part 66's out in the same commit that added its own block, part 67 moved part 65's out the same way, part 65 moved part 63's out the same way, part 64 moved parts 61/62's out the same way, part 63 moved part 60's out the same way, part 61 moved part 59's out the same way, part 59 moved part 57's out the same way, part 57 moved part 55's out the same way, part 55 moved part 53's

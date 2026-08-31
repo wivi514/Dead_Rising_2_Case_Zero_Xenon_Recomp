@@ -1,7 +1,22 @@
-# Part 89 kickoff — the constants block is done; the board decides what's next
+# Part 89 kickoff — the maximal parallel record, priced before built
 
 **THIS IS THE LIVE HAND-OFF**, superseding `part88-kickoff.md` (kept as the record of
 part 88's step list — every step in it ran and every pre-registered threshold held).
+
+## 0a. THE SUBJECT IS CHOSEN, and the plan exists — start there
+
+Closing part 88's conversation the operator asked for any lead worth **1 ms or more**;
+the answer was that exactly one exists — the MAXIMAL parallel record, ~3.2 ms ceiling,
+explicitly left *unpriced, not refuted* by part 80 — and the instruction was: *"we'll
+do that in a new conversation start the plan with that."*
+
+**`docs/perf-plan-part89.md` IS THE LIVE PLAN. Read its §0 before anything else**: it
+draws the exact boundary between what part 80 refuted (the minimal, driver-call-only
+design — dead, do not re-buy) and this item, lists what already exists for it (the
+poison-proven order gate, the thread budget, part 88's fresh sub-scope decomposition),
+and its §1 step 0 is PRICING with a pre-registered kill at the operator's own bar:
+**saving < 1.0 ms at the crowd → the item dies for the cost of two diagnostic runs.**
+No fix code before step 0's arithmetic is on the table.
 
 ## 0. What part 88 established (`phase5-notes.md` §6eh is the record and wins on numbers)
 
@@ -29,12 +44,14 @@ value compare can see it (gotcha 432).
 **No mechanism-level lead remains inside it.** Re-profile before believing these
 numbers — they are §6eg's, taken before both fixes.
 
-## 1. THE BOARD (carried from part 88 §4, in order)
+## 1. THE BOARD (behind §0a's subject, in order)
 
-1. **The CW 2a/2b serial record-restructure re-pricing** — the one remaining named
-   CPU item (+0.35 ms at THEIR crowd, ~10k diverged lines; re-price against §6ec's
-   524 ns/draw before porting anything). If the re-price says <0.3 ms here, it dies
-   without a port.
+1. **The CW 2a/2b serial record-restructure re-pricing** (+0.35 ms at THEIR crowd,
+   ~10k diverged lines; re-price against a fresh decomposition before porting
+   anything). NOTE: if §0a's maximal design ships, this item is SUBSUMED — the
+   restructure and the parallel record touch the same phase; re-price only if the
+   maximal item dies in step 0. If the re-price says <0.3 ms here, it dies without a
+   port.
 2. **The Windows bundle save-squatter hunt** — three saves eaten;
    `part86-kickoff.md` §0b has the specified repro. Needs czwin.
 3. A natural level-up check (`part86-kickoff.md` §0b(b)); the glibc floor / AppImage;
