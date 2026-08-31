@@ -1791,6 +1791,12 @@ struct GuardPool
     uint64_t generation = 0;
     std::atomic<size_t> next{ 0 };
     std::atomic<size_t> finished{ 0 };
+    // Wall time the workers spent CHEWING, summed across the pool — part 89 step 0c's
+    // occupancy input. Two unconditional clock reads per worker per DISPATCH (once a
+    // frame, like the drain's), because "552 dispatches and 0 blocked" is a dispatch
+    // count, not an occupancy figure, and the record-sharing question needs the second
+    // (gotcha 151's shape: an idle-LOOKING count is not a measurement of idleness).
+    std::atomic<uint64_t> busyNs{ 0 };
     unsigned workers = 0;
     bool started = false;
 };
@@ -1854,6 +1860,7 @@ void GuardWorker()
             gp.wake.wait(lk, [&] { return gp.generation != seen; });
             seen = gp.generation;
         }
+        const uint64_t busy0 = NowNs();
         for (;;)
         {
             const size_t i = gp.next.fetch_add(1, std::memory_order_relaxed);
@@ -1868,6 +1875,9 @@ void GuardWorker()
                 gp.idle.notify_all();
             }
         }
+        // A worker that woke to an already-drained list adds its ~0, which is correct:
+        // that IS its busy time for the dispatch.
+        gp.busyNs.fetch_add(NowNs() - busy0, std::memory_order_relaxed);
     }
 }
 
@@ -2871,6 +2881,24 @@ uint64_t g_fetchMemoShaderMiss = 0, g_fetchMemoVersionMiss = 0;
 uint64_t g_fetchMemoExactHits = 0, g_fetchMemoExactMisses = 0;
 bool g_streamDedupCensus = false;
 uint64_t g_dedupLookups = 0, g_dedupRepeats = 0, g_dedupOverflow = 0;
+
+// ---- CZ_VK_RESOLVE_SPLIT_CENSUS=1 — part 89 step 0a: how much of `recordVertex` and
+// `recordIndex` is UploadStream (the RESOLVE half — flat-cache lookup, content guard,
+// cross-frame store: shared mutable state that must stay serial in any parallel-record
+// design) versus the pure per-draw work around it (decode + bind recording, which is
+// what secondary command buffers could move to workers)?
+//
+// SAMPLED, 1 DRAW IN 16, because the per-call instrument is disqualified by this
+// file's own FlatCache comment: UploadStream runs ~40-50k times a crowd frame and a
+// ProfScope per call is ~2 ms/frame of clock reads — larger than the split it would
+// be measuring (gotchas 7, 223). Raw NowNs() pairs on every 16th draw cost ~0.13 ms
+// and are unbiased across draws; the census prints its own clock bill per draw so the
+// reader subtracts it rather than trusting the raw number (gotcha 7's discipline).
+// A DIAGNOSTIC ARM: never quote a frame time from a run carrying it.
+bool g_resolveSplitCensus = false;
+uint64_t g_resolveVNs = 0, g_resolveINs = 0;        // sampled UploadStream ns, by side
+uint64_t g_resolveVCalls = 0, g_resolveICalls = 0;  // sampled call counts
+uint64_t g_resolveSampledDraws = 0;
 
 // ---- CZ_VK_REUSE_CENSUS=1 — WOULD CROSS-FRAME COMMAND REUSE BE SERVED? (part 87) ----
 //
@@ -21502,6 +21530,13 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
 
     _pTail.Close();
 
+    // The resolve-split census's per-draw sample decision, made once here so all three
+    // UploadStream call sites below agree on which draws are sampled.
+    const bool resolveSample =
+        g_resolveSplitCensus && ((R->drawsThisFrame & 15) == 0);
+    if (resolveSample)
+        ++g_resolveSampledDraws;
+
     ProfScope _pRecord(&g_prof.record);
     {
     ProfScope _pState(&g_prof.recordState);
@@ -21774,7 +21809,16 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
             Count("draw: dependent fetch stream outside the physical arena");
             continue;
         }
-        const StreamLoc loc = UploadStream(base, sva, bytes, vf.endian, 2);
+        StreamLoc loc;
+        if (resolveSample)
+        {
+            const uint64_t rs0 = NowNs();
+            loc = UploadStream(base, sva, bytes, vf.endian, 2);
+            g_resolveVNs += NowNs() - rs0;
+            ++g_resolveVCalls;
+        }
+        else
+            loc = UploadStream(base, sva, bytes, vf.endian, 2);
         if (!loc.ok())
             continue;
         // {deviceAddress.lo, deviceAddress.hi, sizeDwords, 0} — the layout the
@@ -21973,7 +22017,16 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
                 break;
             }
         }
-        const StreamLoc loc = UploadStream(base, va, bytes, vf.endian, 0);
+        StreamLoc loc;
+        if (resolveSample)
+        {
+            const uint64_t rs0 = NowNs();
+            loc = UploadStream(base, va, bytes, vf.endian, 0);
+            g_resolveVNs += NowNs() - rs0;
+            ++g_resolveVCalls;
+        }
+        else
+            loc = UploadStream(base, va, bytes, vf.endian, 0);
         if (!loc.ok())
         {
             streamsOk = false;
@@ -22526,7 +22579,16 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
             }
             ++*slots[draw.indexEndian & 3];
         }
-        const StreamLoc loc = UploadStream(base, draw.indexVa, bytes, endian, 1);
+        StreamLoc loc;
+        if (resolveSample)
+        {
+            const uint64_t rs0 = NowNs();
+            loc = UploadStream(base, draw.indexVa, bytes, endian, 1);
+            g_resolveINs += NowNs() - rs0;
+            ++g_resolveICalls;
+        }
+        else
+            loc = UploadStream(base, draw.indexVa, bytes, endian, 1);
         if (!loc.ok())
             return;
         // The CZ_VK_RANGE_CENSUS read-out. The index copy is little-endian by here, so
@@ -24144,6 +24206,7 @@ bool InitCommon()
     // `std::unordered_map` exactly and the verify arm runs both and compares.
     g_constMemoOff = EnvOn("CZ_VK_NO_CONST_MEMO");
     g_fetchMemoCensus = EnvOn("CZ_VK_FETCH_MEMO_CENSUS");
+    g_resolveSplitCensus = EnvOn("CZ_VK_RESOLVE_SPLIT_CENSUS");
     g_bindRunCensus = EnvOn("CZ_VK_BIND_RUN_CENSUS");
     g_guardCensus = EnvOn("CZ_VK_GUARD_CENSUS");
     g_noBindBatch = EnvOn("CZ_VK_NO_BIND_BATCH");
@@ -26092,6 +26155,36 @@ void DoSwapImpl(uint8_t* base, uint32_t frontBuffer, uint32_t width, uint32_t he
                         d ? double(g_prof.recordIndex) / d : 0.0,
                         d ? double(g_prof.streamGuard) / d : 0.0,
                         d ? double(g_prof.record) / d : 0.0);
+                // THE RESOLVE SPLIT (part 89 step 0a), printed beside the record split
+                // it decomposes. ns/draw here means "per SAMPLED draw", which is the
+                // same population scaled 1/16, so the two lines compare directly. The
+                // census's own clock bill is printed so the reader subtracts it —
+                // ~one NowNs() call lands inside each measured pair (see ProfScope's
+                // bill note for the arithmetic).
+                if (g_resolveSplitCensus)
+                {
+                    static uint64_t lvn = 0, lin = 0, lvc = 0, lic = 0, lsd = 0;
+                    const uint64_t dvn = g_resolveVNs - lvn, din = g_resolveINs - lin;
+                    const uint64_t dvc = g_resolveVCalls - lvc,
+                                   dic = g_resolveICalls - lic;
+                    const uint64_t dsd = g_resolveSampledDraws - lsd;
+                    lvn = g_resolveVNs; lin = g_resolveINs;
+                    lvc = g_resolveVCalls; lic = g_resolveICalls;
+                    lsd = g_resolveSampledDraws;
+                    if (dsd)
+                        fprintf(stderr,
+                                "[vkprof] resolve split (1 draw in 16, %llu sampled): "
+                                "vertex UploadStream %.0f ns/draw (%.2f calls/draw) + "
+                                "index UploadStream %.0f ns/draw (%.2f calls/draw) = "
+                                "resolve %.0f of the record ns above; clock bill inside "
+                                "those ~%.0f ns/draw — subtract it\n",
+                                (unsigned long long)dsd, double(dvn) / double(dsd),
+                                double(dvc) / double(dsd), double(din) / double(dsd),
+                                double(dic) / double(dsd),
+                                double(dvn + din) / double(dsd),
+                                double(dvc + dic) / double(dsd) *
+                                    (double(g_profNowNs10) / 10.0));
+                }
                 // WHY `GUARD` IS INSIDE `record` AND WHAT IT MEANS FOR THE PLAN. It is
                 // the stream content hash, and it was ALWAYS in this column — it just
                 // had no name, because `ProfScope(streams)` wraps only the copy so a
@@ -26508,6 +26601,25 @@ void DoSwapImpl(uint8_t* base, uint32_t frontBuffer, uint32_t width, uint32_t he
                         double(s.drainNs) / 1e6,
                         s.mixups ? "  *** SLOT MIX-UPS, see [vk] above ***" : "",
                         s.verifyChecked ? "" : "");
+                // THE POOL'S OCCUPANCY — part 89 step 0c. The dispatch/blocked counts
+                // above say the pool KEEPS UP; only this says how much worker-time is
+                // left over for a record pool to share. Windowed like every rate here
+                // (gotcha 428): a cumulative mean would blend the boot's empty frames
+                // into the crowd's.
+                if (g_gp)
+                {
+                    static uint64_t lastBusy = 0;
+                    const uint64_t busy = g_gp->busyNs.load(std::memory_order_relaxed);
+                    const uint64_t dBusy = busy - lastBusy;
+                    lastBusy = busy;
+                    const double poolNs = dt * 1e9 * double(GuardPoolWorkers());
+                    fprintf(stderr,
+                            "[vkprof] guard pool occupancy: %.2f%% busy (%.1f ms of "
+                            "work across %u workers in a %.1f s window; the rest is "
+                            "worker-time a shared record pool could take)\n",
+                            poolNs > 0 ? 100.0 * double(dBusy) / poolNs : 0.0,
+                            double(dBusy) / 1e6, GuardPoolWorkers(), dt);
+                }
                 if (s.verifyChecked)
                     fprintf(stderr,
                             "[vkprof] guard prehash VERIFY: %llu of %llu served guards "

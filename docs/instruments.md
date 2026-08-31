@@ -3403,6 +3403,26 @@ CZ_VK_STREAM_DEDUP_CENSUS=1  does one draw look the same stream key up twice? AN
 ```
 
 ```
+CZ_VK_RESOLVE_SPLIT_CENSUS=1  **part 89 step 0a — how much of the record phase is the
+                  RESOLVE half (UploadStream: flat-cache lookup, content guard,
+                  cross-frame store — shared mutable state that stays serial in any
+                  parallel-record design) versus the movable per-draw work around it?**
+                  Samples 1 draw in 16 with raw NowNs() pairs around the record phase's
+                  three UploadStream call sites (dependent-fetch, vertex loop, index),
+                  because a per-call ProfScope would cost ~2 ms/frame — larger than the
+                  split it measures (the FlatCache comment's own arithmetic; gotchas 7,
+                  223). Prints per window beside the record split under CZ_VK_PROFILE,
+                  WITH its own clock bill per draw so the reader subtracts it. A
+                  DIAGNOSTIC ARM; free when off (one global bool per draw).
+```
+
+The guard pool's occupancy line (part 89 step 0c) is not an arm — two unconditional
+clock reads per worker per dispatch accumulate `busyNs` always, and `CZ_VK_PROFILE`
+prints the windowed share (`guard pool occupancy: N% busy`). It exists because "552
+dispatches, 0 blocked" is a dispatch count, not an occupancy figure (gotcha 151's
+shape), and the parallel-record item's worker question is decided by the second.
+
+```
 CZ_PM4_ALU_WRITE_CENSUS=1  **where do the guest's constant writes land?** (part 87). A
                   per-float4-register write histogram over both ALU halves, bumped on
                   both PM4 write paths (the bulk path loops only its ALU-overlapped
