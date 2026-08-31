@@ -5745,3 +5745,22 @@ From phase C part 18 (the frame rate — and none of it was work):
      is scoped to the one TU: include `<unknwn.h>`/`<objidl.h>` by name and re-point
      `FAR`/`NEAR` at nothing. Transferable to Case West with the same file: any TU that
      talks COM after win_compat.h will need the same three lines.
+
+504. **AN ARM THAT CHANGES FRAME PACING CHANGES THE ROUTE.** Part 89's first
+     `CZ_VK_NO_DRIVER_RECORD` crowd run parked at 2,554 draws where every null run
+     reached 9,000+ — the arm draws nothing, the uncapped frame rate tripled, and the
+     ANALOG replay's wall-clock steering diverged from what the operator recorded at
+     ~55 fps: Chuck walked into a different world. `CZ_FPS_CAP=60` (matching the null
+     arms' actual crowd rate) restored the route to 9,720 draws — and made the arms
+     BETTER matched, not worse, since per-draw numbers do not depend on the cap. Any
+     destructive or load-shedding arm on a time-replayed route needs its pacing pinned
+     to the arm it is compared with (gotchas 75/78's shape, through the physics).
+
+505. **`grep` WITHOUT `-a` ON THIS RUNTIME'S LOGS CAN RETURN EMPTY — NOT ZERO,
+     EMPTY.** The crowd logs carry stray bytes that make GNU grep classify them as
+     binary; a plain `grep -c pattern log` then prints NOTHING on some invocations,
+     which a script or a reader silently treats as "no matches". Part 89 nearly
+     recorded its own engagement line as missing this way — the line was present and
+     `grep -a` found it. The route scripts already use `grep -a` throughout; every
+     ad-hoc grep against a runtime log must too (gotcha 25's shape: first ask whether
+     the grep CAN match).
