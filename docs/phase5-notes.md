@@ -20120,3 +20120,21 @@ inline fallback (the data is gone). That is gotcha 432's shape with a worse reco
 story. Recorded as open-items material with the census as its standing instrument; a
 future part that makes the crowd GPU-bound by a margin larger than the floor can
 re-ask it.
+
+### 7. The clean wall pair (1v1, no frame-stats bill), and a CORRECTION to §5's "balanced"
+
+`p90msaafix` (final build) vs step 0's pre-fix census run, same light instruments,
+banded:
+
+| band | wall base→fix | GPU base→fix | fence | reading |
+|---|---|---|---|---|
+| 2,000-3,000 | 7.37-7.40 → 6.78-6.79 (**−0.6 ms**) | 7.32 → 6.72-6.75 | 3.1-3.3 | GPU-bound: the saving CONVERTS |
+| 8,000-8,500 | 9.96 → 10.08 (noise) | 9.37 → 8.52 | 0.00 | |
+| 9,000-9,500 | 11.09 → 11.23 (noise, half the ±2.9% floor) | **10.60 → 9.83** | 0.00 | CPU-bound: converts 0 |
+
+**§5's "the two sides are now balanced" is corrected here**: with the clears saving
+in, the crowd reads wall ~11.2 vs GPU ~9.8 — **CPU-bound by ~1.3-1.4 ms again**. The
+GPU work bought headroom below 7,000 draws and re-opened ~1.4 ms of convertible room
+at the crowd for any future CPU saving — but no known CPU lead ≥0.5 ms exists (§1),
+so the practical statement is unchanged: further wins need new evidence, and parking
+is honest.

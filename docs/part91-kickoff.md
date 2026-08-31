@@ -45,13 +45,14 @@ entirely; a vanish under (2) says scoping and the MSAA fix was incomplete.
 0. **The operator verdict on §0b** — one play session, no instruments needed beyond
    their eyes; if they see it, the bisection above, ideally with
    `CZ_VK_FRAME_DUMP_EVERY=8` armed so the streak lands on disk.
-1. **The regime after part 90**: the crowd is ~BALANCED (CPU ≈ GPU ≈ 11.2-11.5 ms
-   instrumented-lite). Any further win needs BOTH sides or converts half. The GPU
+1. **The regime after part 90**: the crowd is **CPU-bound by ~1.3-1.4 ms again**
+   (wall ~11.2 vs GPU ~9.8, fence 0.00 — §6ek's clean-pair addendum corrected the
+   first "balanced" reading), so the clears re-opened convertible room for any future
+   CPU saving; the GPU-bound bands below 7,000 draws banked −0.6 ms of wall. The GPU
    side's remaining named items: the resolve copies' dead share (§6el, ~0.1-0.28 ms,
    risky mechanism), the post chain (REFUTED — title's own work), the big passes (the
    game). The CPU side: unchanged from §6ej §4 — PM4 walk and the resolve half,
-   change-detector class. **No known lead ≥0.5 ms on either side.** The honest
-   framing from part 90's kickoff stands stronger now: at ~11 ms the crowd holds a
+   change-detector class. **No known lead ≥0.5 ms on either side.** At ~11 ms the crowd holds a
    locked 60 fps with margin; further work buys headroom and resolution, not felt
    frame rate. **Parking again is an honest outcome; surface it to the operator.**
 2. The Windows bundle save-squatter hunt (`part86-kickoff.md` §0b; needs czwin) — and

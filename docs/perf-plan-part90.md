@@ -105,6 +105,6 @@ stale texture) gets asked with a number in hand.
 * **§2 EXECUTED, item NAMED NOT BUILT**: 36.4% of copies dead, 13.1% of pixels,
   ~0.1-0.28 ms — at/under the route floor with a prediction-only mechanism whose
   failure is a silent stale texture. `phase5-notes.md` §6el.
-* The §0 wall claim to carry forward: with the fix, GPU at the crowd ≈ 9.9-11.5 in
-  band (was 10.6-12.4), so the crowd is now ~balanced CPU/GPU; the sub-7,000 bands
-  bank the full GPU saving as fence headroom.
+* The §0 wall claim to carry forward (corrected by §6ek's clean-pair addendum): GPU
+  at the crowd 10.60 → 9.83, wall unchanged — the crowd is CPU-BOUND BY ~1.3-1.4 ms
+  again; the GPU-bound bands below 3,000 draws converted −0.6 ms of wall.

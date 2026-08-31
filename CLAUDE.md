@@ -1070,10 +1070,11 @@ census); `perf-plan-part90.md` §4 is the executed plan):
 * **The copy census** (`CZ_VK_COPY_CENSUS=1`): 36.4% of resolve copies dead (13.1% of
   pixels — the bloom pyramid, the shadow atlas), worth ~0.1-0.28 ms, prediction-only
   mechanism with a silent-stale failure mode — NAMED, PARKED (§6el).
-* **The board after this: no known lead ≥0.5 ms on either side.** The crowd is
-  ~balanced CPU/GPU at ~11 ms — a locked 60 fps with margin — and further wins buy
-  headroom and resolution, not felt frame rate. Parking is an honest outcome;
-  surface it to the operator before spending more sessions here.
+* **The board after this: no known lead ≥0.5 ms on either side.** The crowd reads
+  wall ~11.2 vs GPU ~9.8 (CPU-bound by ~1.3-1.4 ms again — the clears re-opened
+  convertible room, §6ek addendum 7), a locked 60 fps with margin either way;
+  further wins buy headroom and resolution, not felt frame rate. Parking is an
+  honest outcome; surface it to the operator before spending more sessions here.
 
 **Older per-part status blocks (parts 28-54, the superseded mid-part-44 closure and the
 superseded MID-PART-46 block) moved to `docs/port-history.md`, NOW INCLUDING PARTS 60-88's** — part 90 moved part 88's out in the same commit that added its own block, part 89 moved part 87's out in the same commit that added its own block, part 88 moved part 86's out in the same commit that added its own block, part 87 moved part 85's out in the same commit that added its own block, part 86 moved part 84's out in the same commit that added its own block, part 85 moved part 83's out in the same commit that added its own block, part 84 moved part 82's out in the same commit that added its own block, part 83 moved part 81's out in the same commit that added its own block, part 82 moved part 80's out in the same commit that added its own block, part 78 moved part 76's out in the same commit that added its own block, part 76 moved part 74's out in the same commit that added its own block, part 74 moved part 72's out in the same commit that added its own block, part 73 moved part 71's out in the same commit that added its own block, part 72 moved part 70's out in the same commit that added its own block, part 71 moved part 69's out in the same commit that added its own block, part 70 moved part 68's out in the same commit that added its own block, part 69 moved part 67's out in the same commit that added its own block, part 68 moved part 66's out in the same commit that added its own block, part 67 moved part 65's out the same way, part 65 moved part 63's out the same way, part 64 moved parts 61/62's out the same way, part 63 moved part 60's out the same way, part 61 moved part 59's out the same way, part 59 moved part 57's out the same way, part 57 moved part 55's out the same way, part 55 moved part 53's
