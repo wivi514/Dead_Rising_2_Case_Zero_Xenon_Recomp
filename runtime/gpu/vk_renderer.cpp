@@ -226,6 +226,62 @@ uint64_t* CounterSlot(const char* name) { return &g_stats[name]; }
 // session. Defined here rather than as a local static because the readers live several
 // thousand lines apart and must agree; set once in VkRenderer_Init.
 bool g_passInputsWanted = false;
+
+// CZ_VK_COPY_CENSUS=1 — the resolve-copy produced-vs-sampled census (part 90 item 2,
+// perf-plan-part90.md §2). The question part 80 §1 item 5 left unasked: how many of
+// the 50.4 resolve copies a frame (0.741 ms of GPU) are DEAD — their destination
+// region overwritten by the next copy of the same (snapshot, rect) before anything
+// consumed it? Consumption is marked at every snapshot reader: the draw-path fetch
+// (BEFORE the right-sized-view early return, which the pass-inputs list misses), the
+// present, the frame-stats surface, and the cube-face assembly. The count is
+// CONSERVATIVE toward "live": a sample of the snapshot marks all its rects even
+// though it may have read only one, so a large dead share is real. A DIAGNOSTIC ARM,
+// off by default; one bool test per site when off.
+bool g_copyCensusOn = false;
+struct CcRect
+{
+    int32_t x, y;
+    uint32_t w, h;
+    bool sampled;
+    uint64_t px;
+    uint64_t deadN, deadPx;   // cumulative, for the per-key verdict rows
+};
+std::unordered_map<uint32_t, std::vector<CcRect>> g_ccMap;
+uint64_t g_ccCopies = 0, g_ccDead = 0, g_ccPixels = 0, g_ccDeadPixels = 0;
+uint64_t g_ccSampleMarks = 0;
+
+void CopyCensusCopy(uint32_t key, int32_t x, int32_t y, uint32_t w, uint32_t h,
+                    uint64_t px)
+{
+    auto& rects = g_ccMap[key];
+    ++g_ccCopies;
+    g_ccPixels += px;
+    for (auto& r : rects)
+        if (r.x == x && r.y == y && r.w == w && r.h == h)
+        {
+            if (!r.sampled)
+            {
+                ++g_ccDead;
+                g_ccDeadPixels += r.px;
+                ++r.deadN;
+                r.deadPx += r.px;
+            }
+            r.sampled = false;
+            r.px = px;
+            return;
+        }
+    rects.push_back(CcRect{ x, y, w, h, false, px, 0, 0 });
+}
+
+void CopyCensusSampled(uint32_t key)
+{
+    auto it = g_ccMap.find(key);
+    if (it == g_ccMap.end())
+        return;
+    ++g_ccSampleMarks;
+    for (auto& r : it->second)
+        r.sampled = true;
+}
 #define COUNT(lit)                                                                     \
     do                                                                                 \
     {                                                                                  \
@@ -8655,6 +8711,13 @@ uint32_t UploadTexture(uint8_t* base, const uint32_t* regs, uint32_t constIdx,
                 COUNT("texture: served from a DEPTH resolve snapshot");
             else
                 COUNT("texture: served from a resolve snapshot");
+            // The copy census's consumption mark sits BEFORE the right-sized-view
+            // early return below — a view sample consumes the same copied pixels, and
+            // the pass-inputs list (which sits after) misses exactly those.
+            if (g_copyCensusOn)
+                CopyCensusSampled(
+                    (t.address & 0x1FFFFFFF) |
+                    (snap->second.fromDepth ? kSnapshotDepthBit : 0u));
             // MEASUREMENT ONLY, and the thing it measures is a real defect with a
             // quantitative fit — see docs/phase5-notes.md §6ao.
             //
@@ -24068,6 +24131,10 @@ void DoResolve(uint8_t* base, const uint32_t* regs)
             // designable once you know how many pixels it moves — 48.9 resolves a frame at
             // an unknown extent is not a number anyone can act on.
             g_gpResolvePixels += uint64_t(RZx(copyW)) * uint64_t(RZ(copyH));
+            if (g_copyCensusOn)
+                CopyCensusCopy(key, RZxi(int32_t(dstX)), RZyi(int32_t(dstY)),
+                               RZx(copyW), RZ(copyH),
+                               uint64_t(RZx(copyW)) * uint64_t(RZ(copyH)));
             vkCmdCopyImage(R->cmd, src.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
                            it->second.image.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                            1, &copy);
@@ -24162,6 +24229,10 @@ void DoResolve(uint8_t* base, const uint32_t* regs)
                     if (cube != R->cubeSnapshots.end())
                     {
                         GpuSeg _gc(kGpCubeFace);
+                        // The cube assembly consumes this face's copy (the cube's own
+                        // sampling is a separate question the census does not fold in).
+                        if (g_copyCensusOn)
+                            CopyCensusSampled(key);
                         CopyFaceIntoCube(R->cmd, it->second, cube->second,
                                          owner->second.second);
                         cube->second.frameSeen = R->frame;
@@ -24899,6 +24970,10 @@ bool InitCommon()
     // column from exactly the captures an operator takes.
     g_passInputsWanted = Env("CZ_VK_PSBIND") || Env("CZ_VK_DRAW_CENSUS") ||
                          Env("CZ_VK_RESOLVE_TRACE") || Env("CZ_CAPTURE_KEY");
+    g_copyCensusOn = EnvOn("CZ_VK_COPY_CENSUS");
+    if (g_copyCensusOn)
+        fprintf(stderr, "[vk] CZ_VK_COPY_CENSUS=1 — resolve-copy produced-vs-sampled "
+                        "census ARMED (part 90 item 2; a diagnostic arm)\n");
     if (const char* n = Env("CZ_VK_DIM_DISAGREE"))
     {
         g_dimDisagree = true;
@@ -26366,6 +26441,8 @@ void DoSwapImpl(uint8_t* base, uint32_t frontBuffer, uint32_t width, uint32_t he
         auto sit = R->snapshots.find(statsSurface);
         if (sit != R->snapshots.end())
         {
+            if (g_copyCensusOn)
+                CopyCensusSampled(statsSurface);
             const uint64_t n =
                 uint64_t(sit->second.image.width) * sit->second.image.height * 4;
             if (n <= R->readback.size)
@@ -28692,6 +28769,40 @@ void VkRenderer_DumpStats()
                 "a whole frame of PUMP time and it is the hitch class §6dy §3 names\n",
                 (unsigned long long)g_persistGrowN, double(g_persistGrowNs) / 1e6,
                 double(g_persistGrowNs) / 1e6 / double(g_persistGrowN));
+    if (g_ccCopies)
+    {
+        fprintf(stderr,
+                "[vk]   copy census: %llu resolve copies, %llu DEAD (%.1f%%) — "
+                "%.2f of %.2f Gpixel dead (%.1f%%), %llu sample marks; dead = the "
+                "same (snapshot, rect) copied again with no consumer in between, "
+                "counted conservatively toward LIVE\n",
+                (unsigned long long)g_ccCopies, (unsigned long long)g_ccDead,
+                100.0 * double(g_ccDead) / double(g_ccCopies),
+                double(g_ccDeadPixels) / 1e9, double(g_ccPixels) / 1e9,
+                g_ccPixels ? 100.0 * double(g_ccDeadPixels) / double(g_ccPixels) : 0.0,
+                (unsigned long long)g_ccSampleMarks);
+        // The keys carrying the dead pixels, so a verdict names surfaces, not a share.
+        std::vector<std::tuple<uint64_t, uint64_t, uint32_t, size_t>> byDead;
+        for (const auto& kv : g_ccMap)
+        {
+            uint64_t dPx = 0, dN = 0;
+            for (const auto& r : kv.second)
+            {
+                dPx += r.deadPx;
+                dN += r.deadN;
+            }
+            byDead.emplace_back(dPx, dN, kv.first, kv.second.size());
+        }
+        std::sort(byDead.rbegin(), byDead.rend());
+        for (size_t i = 0; i < byDead.size() && i < 10; ++i)
+            fprintf(stderr,
+                    "[vk]     copy census: %08X%s  %llu dead copies, %.2f Gpixel dead, "
+                    "%zu distinct rects\n",
+                    std::get<2>(byDead[i]) & 0x1FFFFFFF,
+                    (std::get<2>(byDead[i]) & kSnapshotDepthBit) ? " (depth)" : "",
+                    (unsigned long long)std::get<1>(byDead[i]),
+                    double(std::get<0>(byDead[i])) / 1e9, std::get<3>(byDead[i]));
+    }
     fprintf(stderr, "[vk]   pipelines=%zu shaders=%zu textures=%zu arenaHighWater=%llu KB\n",
             R->pipelines.size(), R->shadersMap.size(), TexSize(),
             (unsigned long long)(R->arenaHighWater >> 10));
