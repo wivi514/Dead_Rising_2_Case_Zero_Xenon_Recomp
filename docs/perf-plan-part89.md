@@ -130,3 +130,29 @@ part 88's, can be read from wall time directly.
   intermittently: park it behind its arm and keep the capture/secondary machinery —
   that is how RT shadows were parked, and it is a fine outcome compared to shipping a
   transposition.
+
+---
+
+## 6. EXECUTED — part 89 ran this plan end to end in one part (2026-08-31)
+
+* **Step 0 PASSED, the kill did not fire** (`phase5-notes.md` §6ei): movable 270-290
+  ns/draw ≈ 2.4-2.6 ms at 9,000 draws; formula saving 1.0-1.24 ms conservative,
+  ~2.2 ms schedule-bound; W = 3 (pool 13-16% busy, the <50% criterion met 3x over).
+  Both step-0 instruments were positive-controlled before belief (resolve census
+  +112 ns under NO_FLAT_CACHE; occupancy 36% on 1 worker vs 13-16% on 3). The driver
+  share was re-measured bill-free at 235 ns/draw (part 80's 251 corroborated; the
+  first no-driver run desynced the analog route until CZ_FPS_CAP=60 matched pacing).
+* **§2's fork (b) BUILT** — with one simplification the plan did not anticipate: no
+  secondaries and no suspend/resume. LOAD/LOAD attachments make an instance split
+  the identity, so chunks are self-contained dynamic-rendering instances in plain
+  per-worker PRIMARY buffers, submitted as one ordered vkQueueSubmit. §6ej §1.
+* **§3's verification all ran and all passed**: order gate 0 fails / 22.1M draws,
+  poison fails 100% naming the transposed draw; sync validation 0 hazards; picture
+  era medians inside the null (4 runs); engagement counters live in the timed runs.
+* **§4's measurement**: 3v3, dominant crowd band **13.00 → 11.20 ms, −13.9%,
+  −1.80 ms** — above the operator's ≥1.0 ms bar and above step 0's conservative
+  bracket. GPU-bound sub-5,000 bands +0.09-0.22 ms (instance splits), fence-covered.
+* **§5's failure modes**: none fired. The pool shared without starvation (prehash
+  held 98.3%), the pump never had to help, and no policy decision needed surfacing.
+* **SHIPPED ON BY DEFAULT**, `CZ_VK_NO_PAR_RECORD=1` the control arm, milliseconds
+  in the same commit (part 87 §3's rule).

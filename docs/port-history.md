@@ -6410,3 +6410,35 @@ one part; it is `part88-kickoff.md`; `part86-kickoff.md` §0b-§0d are the recor
   `CZ_VK_FRAME_TRACE` per run or the campaign measures nothing; never run a campaign
   `>/dev/null`; czwin's `>nul`-inside-ssh silently breaks the attached command (three
   incidents — runbook has the rule).
+
+Where the port is, as of 2026-08-30 (**PART 87 CLOSED — PERFORMANCE. ALL THREE CASE WEST
+LEADS REFUTED BY CENSUS, AND THE NEXT LEAD FOUND IN THE SAME RUNS' DATA.**
+~~`docs/part88-kickoff.md` is the live hand-off~~ — it WAS, for one part; part 88
+executed it whole and `part89-kickoff.md` is live; the records are `phase5-notes.md`
+§6ef-§6eg and `part87-kickoff.md` §0b-§0c):
+
+* **CW's three leads all died on measurement, none on argument** (§6ef). Lead 1
+  (frustum cull, "20-30% off-frustum"): first crowd run of `CZ_VK_VCULL_CENSUS` reads
+  **~0.1% off-frustum, 99.9% on screen** — the engine culls its own submissions. Lead 2
+  (cross-frame range reuse, "1-2 ms"): the new ask-first census `CZ_VK_REUSE_CENSUS`
+  reads **1.2-2.1% full-input identity at the crowd = ~0.09 ms ceiling**, and its
+  four-cell diagnosis names the mechanism — **93-94% of draws are identical EXCEPT
+  their ALU constants**; the guest churns the constant file on ~98% of draws. Lead 3
+  (stream-lookup memo): already dead on §6ec §4's record. The prepass arithmetic
+  transfers (61% depth-only here too); the pools do not exist.
+* **THE NEW LEAD** (§6eg, mined from the same logs): 22 bone-palette vertex shaders
+  (`vc({8,9,10}+a0)`) force a full 4 KB constant copy per draw — **87.3% of all
+  constant-copy bytes**, `constVsCopy` 0.48 ms at the crowd — while the new
+  `CZ_PM4_ALU_WRITE_CENSUS` histogram shows the **mean palette upload is ~18 float4
+  registers** in whole-span bursts. A write-extent-bounded gather is a **~0.4 ms
+  ceiling, the largest addressable CPU item known**; the projection-patch memo
+  (`constVsPatch` 0.51 ms, 64-byte input) is the ~0.3 ms second. `part88-kickoff.md`
+  §1 is the step list and its step 0 is a correctness census with a pre-registered
+  <30% kill.
+* **Closed without a run**: the texture guard's 8.6 MB/frame of hashing is already
+  97-98% served by the prehash pool. Do not chase.
+* **Instrument discipline paid forward**: every census printed WINDOW rates (never a
+  cumulative mean, gotcha 428); the one channel that read 0.0 everywhere got a
+  liveness counter before its zero was believed (43.9 dirty draws/frame, conjunction a
+  true 0.0 — gotcha 151); all census runs are diagnostic arms and no frame time from
+  them was quoted.

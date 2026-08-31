@@ -19845,3 +19845,104 @@ thing's measured overhead exceeds ~0.7 ms, the 3v3 will read below 1 ms and the 
 keeps UploadStream and the decode, the capture carries resolved handles + offsets +
 derived state, and the workers turn captures into secondary command buffers on the
 guard pool's 85% idle time.
+
+## §6ej — Part 89: parallel command recording BUILT, GATED and MEASURED — the crowd frame −13.9% (2026-08-31)
+
+Step 0 (§6ei) priced the maximal design at 1.0-1.24 ms conservative and ~2.2 ms
+schedule-bound against the operator's pre-registered ≥1.0 ms bar; the build then
+landed **−1.80 ms at the dominant crowd band**, above even the schedule-bound
+bracket's floor. `docs/perf-plan-part89.md` §2's recommended fork (b) — RESOLVE
+serial, RECORD parallel — is what shipped, and it is **ON BY DEFAULT**
+(`CZ_VK_NO_PAR_RECORD=1` the same-binary control, measured milliseconds in the same
+commit, part 87 §3's rule).
+
+### 1. The design as built, and the one insight that made it small
+
+The pump keeps everything that touches shared mutable state — the PM4 walk, register
+decode, `UploadStream`'s flat cache / content guard / cross-frame store, the bump
+arena, the pipeline map — and deposits a ~240-byte `DrawCapture` per draw (resolved
+buffer handles + offsets, derived viewport/scissor/blend/stencil, the 32-byte push
+block). Chunks of 512 captures replay on the guard pool's workers, each into its own
+primary command buffer from its own per-(slot,worker) pool; the frame submits as ONE
+ordered `vkQueueSubmit` of pump segments and worker chunks interleaved in capture
+order.
+
+**The insight: no secondaries and no suspend/resume.** Every main-scope attachment is
+`LOAD_OP_LOAD`/`STORE_OP_STORE` with no clears (the EDRAM model — this title clears
+with draws), so ending a dynamic-rendering instance and beginning another over the
+same attachments is semantically the identity. A chunk is therefore a SELF-CONTAINED
+instance in a plain primary buffer — no inheritance info, no
+`CONTENTS_SECONDARY_COMMAND_BUFFERS` all-or-nothing, no suspend/resume ordering
+rules. Passes under the chunk size never split (the 36 post passes pay one deferred
+replay and nothing else); the crowd pass yields ~16 worker chunks. Each instance's
+replay starts a fresh `BoundState`, so its first draw re-issues everything — the
+re-establishment cost the plan budgeted, visible below as the small GPU-bound-band
+price.
+
+Two structural choices that kept it safe: **the pump helps at the submit wait**
+(claims unrecorded chunks itself, so a starved pool cannot deadlock a frame — the
+counter reads 0 helped in every run, the workers always kept up), and the enqueue
+takes the pool mutex empty-then-notifies (the classic lost-wakeup fix; without it a
+chunk could sleep until the frame's wait for nothing).
+
+### 2. Verification — every §3 arm from the plan, all passing
+
+* **The order gate, fed for real**: the part-72 gate's "submitted" side — shipped as
+  a placeholder waiting for exactly this item — is now rebuilt from the replayed
+  instances' ids, each RECOMPUTED by the recorder from the capture fields it actually
+  consumed (precomputing at capture would compare the capture with itself).
+  **10,887 frames / 22.1M draws through the parallel path, 0 failures**; and
+  `CZ_VK_ORDER_POISON=5` fails **6,905 of 6,905 frames**, naming the transposed draw.
+* **Sync validation**: 0 hazards on the 5,434-draw route (standing gate). The six
+  `VUID-...topology-08773` creation-time messages PRE-EXIST — same VUID in part 77's
+  validation logs — and are a separate, older item, noted not chased.
+* **Picture**: era medians over 4 crowd runs (2 fix, 2 base, alternated) — every
+  statistic on both fix runs INSIDE the base pair's null (coverage 0.00%, meanLuma
+  0.65-1.31% vs null 1.89%, distinct colours 1.23-2.28% vs null 2.22%). Plus the
+  title frame read by eye (intact, one sample, gotcha 133) and `no translated
+  shader` = 0.
+* **Engagement, from the timed runs themselves** (gotcha 151): under the arm the
+  `R->skips` counters are written ONLY by the replay aggregation — 68.4% pipeline
+  skips over 136M draws in fix run 1 is the replay running. The profiled run's exit
+  line is the direct statement: **140,479 chunks (0 by the pump), 95.6M of 119.4M
+  draws replayed on workers (80%), submit wait 0.6 ms TOTAL per run, overflow-inline
+  0, bind overflow 0.**
+
+### 3. The milliseconds (3v3, part80_crowdroute, trace-banded, part 88's protocol)
+
+Six runs alternated, all passing the route gate (peaks 9,226-9,824), arms differing
+by exactly the feature, `CZ_VK_FRAME_TRACE` + `CZ_VK_STATS=2000` in both:
+
+| band (draws) | base ms | fix ms | delta | n base/fix |
+|---|---|---|---|---|
+| 8,000-8,500 | 11.06 | 10.07 | **−9.0% (−0.99)** | 1,248 / 1,276 |
+| 8,500-9,000 | 12.03 | 10.82 | **−10.0% (−1.20)** | 1,840 / 5,515 |
+| **9,000-9,500 (dominant)** | **13.00** | **11.20** | **−13.9% (−1.80)** | 12,886 / 25,715 |
+| 9,500-10,000 | 13.34 | 11.63 | **−12.8% (−1.71)** | 12,633 / 1,051 |
+
+The saving GROWS with draw count exactly as a per-draw CPU item must; GPU medians in
+the crowd bands are unchanged (10.55 vs 10.62 ms) and the fence is 0.00 there, so the
+CPU saving converts 1:1 to wall time. −13.9% is 4.8x the route's ±2.9% floor — the
+first item since part 77 readable from wall time directly, as the plan predicted a
+≥1 ms effect would be. **The honest cost**: the GPU-bound sub-5,000 bands read +1.4
+to +3.1% (+0.09-0.22 ms) — the instance-split price on the device — where the fence
+is 1.5-3.1 ms and frames run at 130+ fps, so nothing converts to felt frame rate; at
+the operator's 60 fps cap it is invisible. Frame-weighted mean across all bands
+−6.2%, not monotone, for exactly that two-regime reason.
+
+Mechanism, profiled (diagnostic run, crowd windows): the pump's `record` fell
+**619-632 → 426-436 ns/draw** (state 157→26, vertex 178→125, index 158→147); pool
+occupancy rose only 15.5 → 17-20% busy absorbing all 140k chunks; **guard prehash
+served held at 98.2-98.4%** — the shared pool serves both masters with no
+starvation, which is what §6ei's 0c measurement predicted.
+
+### 4. What this closes and what it leaves
+
+The item the operator chose — the last known lead ≥1 ms — is SHIPPED, measured
+−1.80 ms at their crowd against a pre-registered ≥1.0 bar. What remains on the CPU
+board is what §6ec said: no single large item, and the serial residue is now the PM4
+walk (~3.1 ms instrumented share) plus the resolve half (~162 ns/draw, §6ei), both
+of which are the change-detector class that cannot be memoised or raced (gotchas
+474, 4). The next honest question is whether ANY remaining lead clears 0.5 ms — and
+the answer should start from a fresh profiled decomposition, because every table
+before this part now overstates `record` by ~30%.

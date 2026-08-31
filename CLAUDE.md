@@ -192,11 +192,11 @@ mask; trust the microcode's own swizzles.
     read `phase5-notes.md` §6ba before following anything in it.
   - **THE LIVE HAND-OFF IS ALWAYS THE HIGHEST-NUMBERED `partNN-kickoff.md`**, and it
     supersedes every earlier kickoff on "where the port is". **IT IS
-    `part89-kickoff.md`, AND THE SUBJECT IS THE MAXIMAL PARALLEL RECORD — operator-
-    chosen, ~3.2 ms ceiling, left unpriced (NOT refuted) by part 80; the plan is
-    `docs/perf-plan-part89.md` and its step 0 is pricing with a pre-registered <1.0 ms
-    kill. Part 88 shipped BOTH §6eg constants items verified and measured in one part
-    (`phase5-notes.md` §6eh)**
+    `part90-kickoff.md`. Part 89 priced, built, gated and MEASURED the maximal
+    parallel record in one part — the crowd frame 13.00 → 11.20 ms, −13.9%, ON BY
+    DEFAULT with `CZ_VK_NO_PAR_RECORD=1` the control (`phase5-notes.md` §6ei-§6ej;
+    `perf-plan-part89.md` §6 is the executed plan's record). NO KNOWN CPU LEAD ≥1 ms
+    REMAINS, and every pre-part-89 decomposition overstates `record` by ~30%**
     — the release programme (milestones A, B, D, E) is complete and gated
     (`release-plan.md` §9 is the record), part 86 shipped the launcher, level cap 50,
     all fifteen skills, the save relocation and Case West's pump stack
@@ -962,7 +962,7 @@ findings ledger — it wins on any measured number), `docs/phase1-notes.md`,
 `docs/phase3-notes.md`, `docs/phase5-notes.md` and `docs/d3d-translation-plan.md`.
 
 **SUBJECT: THE RELEASE, 2026-08-27, operator instruction opening part 82:** *"Do the release
-plan."* **`docs/release-plan.md` IS THE PROGRAMME AND `docs/part89-kickoff.md` IS THE LIVE
+plan."* **`docs/release-plan.md` IS THE PROGRAMME AND `docs/part90-kickoff.md` IS THE LIVE
 HAND-OFF (part 88 closed both §6eg performance items — `phase5-notes.md` §6eh; part 87's
 CW-lead verdicts are `part87-kickoff.md` §0b-§0c).** **MILESTONES A, B, D AND E ARE COMPLETE — both release artifacts exist and are
 gated** (`dist/CaseZeroRecomp-linux-x86_64.tar.zst` 26 MB, `CaseZeroRecomp-windows-x86_64.zip`
@@ -996,41 +996,10 @@ ground is and that PERFORMANCE IS PARKED. (This
 line has now named the wrong plan TWICE — the two-live-pointers defect the block-rotation note at the bottom of this file
 describes, and the reason that note asks for the rule and not just the name; gotcha 13.)
 
-Where the port is, as of 2026-08-30 (**PART 87 CLOSED — PERFORMANCE. ALL THREE CASE WEST
-LEADS REFUTED BY CENSUS, AND THE NEXT LEAD FOUND IN THE SAME RUNS' DATA.**
-~~`docs/part88-kickoff.md` is the live hand-off~~ — it WAS, for one part; part 88
-executed it whole and `part89-kickoff.md` is live; the records are `phase5-notes.md`
-§6ef-§6eg and `part87-kickoff.md` §0b-§0c):
-
-* **CW's three leads all died on measurement, none on argument** (§6ef). Lead 1
-  (frustum cull, "20-30% off-frustum"): first crowd run of `CZ_VK_VCULL_CENSUS` reads
-  **~0.1% off-frustum, 99.9% on screen** — the engine culls its own submissions. Lead 2
-  (cross-frame range reuse, "1-2 ms"): the new ask-first census `CZ_VK_REUSE_CENSUS`
-  reads **1.2-2.1% full-input identity at the crowd = ~0.09 ms ceiling**, and its
-  four-cell diagnosis names the mechanism — **93-94% of draws are identical EXCEPT
-  their ALU constants**; the guest churns the constant file on ~98% of draws. Lead 3
-  (stream-lookup memo): already dead on §6ec §4's record. The prepass arithmetic
-  transfers (61% depth-only here too); the pools do not exist.
-* **THE NEW LEAD** (§6eg, mined from the same logs): 22 bone-palette vertex shaders
-  (`vc({8,9,10}+a0)`) force a full 4 KB constant copy per draw — **87.3% of all
-  constant-copy bytes**, `constVsCopy` 0.48 ms at the crowd — while the new
-  `CZ_PM4_ALU_WRITE_CENSUS` histogram shows the **mean palette upload is ~18 float4
-  registers** in whole-span bursts. A write-extent-bounded gather is a **~0.4 ms
-  ceiling, the largest addressable CPU item known**; the projection-patch memo
-  (`constVsPatch` 0.51 ms, 64-byte input) is the ~0.3 ms second. `part88-kickoff.md`
-  §1 is the step list and its step 0 is a correctness census with a pre-registered
-  <30% kill.
-* **Closed without a run**: the texture guard's 8.6 MB/frame of hashing is already
-  97-98% served by the prehash pool. Do not chase.
-* **Instrument discipline paid forward**: every census printed WINDOW rates (never a
-  cumulative mean, gotcha 428); the one channel that read 0.0 everywhere got a
-  liveness counter before its zero was believed (43.9 dirty draws/frame, conjunction a
-  true 0.0 — gotcha 151); all census runs are diagnostic arms and no frame time from
-  them was quoted.
-
 Where the port is, as of 2026-08-30 (**PART 88 CLOSED — PERFORMANCE. BOTH §6eg ITEMS
-SHIPPED, VERIFIED AND MEASURED IN ONE PART.** **`docs/part89-kickoff.md` IS THE LIVE
-HAND-OFF**; the record is `phase5-notes.md` §6eh):
+SHIPPED, VERIFIED AND MEASURED IN ONE PART.** ~~`docs/part89-kickoff.md` is the live
+hand-off~~ — it WAS, for one part; part 89 executed its plan whole and
+`part90-kickoff.md` is live; the record is `phase5-notes.md` §6eh):
 
 * **The bone-palette bounded gather is ON BY DEFAULT** (`CZ_VK_NO_BOUNDED_DYNAMIC=1`
   the control). Step 0's census first: clean-cover 98.3-98.6% at the crowd, 82% of
@@ -1057,13 +1026,50 @@ HAND-OFF**; the record is `phase5-notes.md` §6eh):
   question "any lead ≥1 ms?" has exactly one honest answer: **the MAXIMAL parallel
   record (~3.2 ms ceiling), which part 80 left UNPRICED, not refuted** — the operator
   chose it as part 89's subject (*"start the plan with that"*).
-  **`docs/perf-plan-part89.md` IS THE LIVE PLAN**; its step 0 is pricing with a
-  pre-registered <1.0 ms kill, and NO fix code precedes that arithmetic. §6ec/§6eg's
-  tables predate part 88's fixes — a fresh profiled decomposition from part 88's close
-  is quoted in the plan itself.
+  ~~**`docs/perf-plan-part89.md` IS THE LIVE PLAN**~~ — EXECUTED WHOLE in part 89; its
+  §6 records the execution in place. §6ec/§6eg's tables predate part 88's fixes, and
+  as of part 89 every pre-part-89 table overstates `record` by ~30% besides.
+
+Where the port is, as of 2026-08-31 (**PART 89 CLOSED — PERFORMANCE. THE MAXIMAL
+PARALLEL RECORD: PRICED, BUILT, GATED AND MEASURED IN ONE PART — THE CROWD FRAME
+−13.9%.** **`docs/part90-kickoff.md` IS THE LIVE HAND-OFF**; the records are
+`phase5-notes.md` §6ei (step 0) and §6ej (the build and the 3v3)):
+
+* **Step 0 first, no fix code before the arithmetic** (§6ei): two new instruments,
+  both positive-controlled before belief — `CZ_VK_RESOLVE_SPLIT_CENSUS=1` (sampled
+  1-in-16 raw clock pairs, because a per-call ProfScope is ~2 ms/frame by the
+  FlatCache comment's own arithmetic; +112 ns under `CZ_VK_NO_FLAT_CACHE`, attributed
+  to the right half) and the guard pool's always-on occupancy line (13-16% busy at
+  the crowd; 36% on one worker). The driver share re-measured bill-free by
+  subtraction: **235 ns/draw** (part 80's 251 corroborated, part 81's bind batch
+  visible). Movable 2.4-2.6 ms; formula saving 1.0-1.24 ms conservative, ~2.2
+  schedule-bound; **the pre-registered <1.0 ms kill did not fire**.
+* **The build is design (b) — resolve serial, record parallel — with one
+  simplification the plan did not anticipate: NO secondaries, NO suspend/resume.**
+  LOAD/LOAD attachments make a dynamic-rendering instance split the identity, so
+  chunks of 512 captures are self-contained instances in per-worker PRIMARY buffers,
+  one ordered `vkQueueSubmit` per frame. Passes under the chunk size never split;
+  the pump HELPS at the submit wait so a starved pool cannot deadlock (helped 0 in
+  every run).
+* **Gated on every §3 arm**: order gate **0 fails / 22.1M draws** with the replayed
+  instances' ids rebuilt from what each recorder actually consumed, poison fails
+  6,905/6,905 frames; sync validation 0 hazards (`topology-08773` pre-exists, part
+  77 logs); picture era medians INSIDE the null both fix runs; engagement 140,479
+  chunks/run, 80% of draws on workers, submit wait 0.6 ms per RUN, guard prehash
+  HELD at 98.3%.
+* **3v3 (part 88's protocol): dominant crowd band 13.00 → 11.20 ms, −13.9%,
+  −1.80 ms** — above the operator's ≥1 ms bar, growing with draw count as a per-draw
+  CPU item must, GPU medians unchanged, fence 0.00 there. Honest cost: GPU-bound
+  sub-5,000 bands +0.09-0.22 ms of instance splits, fence-covered, invisible at the
+  60 fps cap. **ON BY DEFAULT; `CZ_VK_NO_PAR_RECORD=1` is the control arm and the
+  FIRST bisection for any new picture complaint.**
+* **The CPU board after this**: no known lead ≥1 ms remains — the serial residue is
+  the PM4 walk and the resolve/change-detector half. The CW record-restructure item
+  is SUBSUMED. Any new performance question starts with a fresh profiled
+  decomposition, because every earlier table overstates `record` by ~30%.
 
 **Older per-part status blocks (parts 28-54, the superseded mid-part-44 closure and the
-superseded MID-PART-46 block) moved to `docs/port-history.md`, NOW INCLUDING PARTS 60-86's** — part 88 moved part 86's out in the same commit that added its own block, part 87 moved part 85's out in the same commit that added its own block, part 86 moved part 84's out in the same commit that added its own block, part 85 moved part 83's out in the same commit that added its own block, part 84 moved part 82's out in the same commit that added its own block, part 83 moved part 81's out in the same commit that added its own block, part 82 moved part 80's out in the same commit that added its own block, part 78 moved part 76's out in the same commit that added its own block, part 76 moved part 74's out in the same commit that added its own block, part 74 moved part 72's out in the same commit that added its own block, part 73 moved part 71's out in the same commit that added its own block, part 72 moved part 70's out in the same commit that added its own block, part 71 moved part 69's out in the same commit that added its own block, part 70 moved part 68's out in the same commit that added its own block, part 69 moved part 67's out in the same commit that added its own block, part 68 moved part 66's out in the same commit that added its own block, part 67 moved part 65's out the same way, part 65 moved part 63's out the same way, part 64 moved parts 61/62's out the same way, part 63 moved part 60's out the same way, part 61 moved part 59's out the same way, part 59 moved part 57's out the same way, part 57 moved part 55's out the same way, part 55 moved part 53's
+superseded MID-PART-46 block) moved to `docs/port-history.md`, NOW INCLUDING PARTS 60-87's** — part 89 moved part 87's out in the same commit that added its own block, part 88 moved part 86's out in the same commit that added its own block, part 87 moved part 85's out in the same commit that added its own block, part 86 moved part 84's out in the same commit that added its own block, part 85 moved part 83's out in the same commit that added its own block, part 84 moved part 82's out in the same commit that added its own block, part 83 moved part 81's out in the same commit that added its own block, part 82 moved part 80's out in the same commit that added its own block, part 78 moved part 76's out in the same commit that added its own block, part 76 moved part 74's out in the same commit that added its own block, part 74 moved part 72's out in the same commit that added its own block, part 73 moved part 71's out in the same commit that added its own block, part 72 moved part 70's out in the same commit that added its own block, part 71 moved part 69's out in the same commit that added its own block, part 70 moved part 68's out in the same commit that added its own block, part 69 moved part 67's out in the same commit that added its own block, part 68 moved part 66's out in the same commit that added its own block, part 67 moved part 65's out the same way, part 65 moved part 63's out the same way, part 64 moved parts 61/62's out the same way, part 63 moved part 60's out the same way, part 61 moved part 59's out the same way, part 59 moved part 57's out the same way, part 57 moved part 55's out the same way, part 55 moved part 53's
 out in the same commit that added its own, which is what the rule below asks for. — CLAUDE.md keeps only the
 live part and one part back, per the 2026-08-08 split's rule, and **part 53 moved part
 51's out in the same commit that added its own**, which is what the rule below asks for.
