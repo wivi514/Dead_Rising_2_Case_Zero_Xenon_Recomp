@@ -5764,3 +5764,27 @@ From phase C part 18 (the frame rate — and none of it was work):
      `grep -a` found it. The route scripts already use `grep -a` throughout; every
      ad-hoc grep against a runtime log must too (gotcha 25's shape: first ask whether
      the grep CAN match).
+
+506. **A SCOPED REGION INHERITS EVERY COORDINATE-SPACE FACTOR THE DRAW PATH APPLIES —
+     AUDIT THEM ALL BEFORE SHRINKING ANY WRITE.** Part 90 replaced whole-EDRAM resolve
+     clears with rects scoped to the resolve extent; the draw path multiplies window
+     coordinates ×2 in both axes on a 4x-MSAA-declared surface (the stand-in is at
+     SAMPLE resolution) and the new rect did not, so 4.4 clears a frame covered one
+     quarter of their pass's real footprint. The whole-image clear had hidden the
+     missing factor for the copy-block path since phase 5 began — an over-broad
+     operation is a blanket over every narrower operation's coordinate bugs, and
+     narrowing it uncovers them all at once. The operator's transient "yellow streak"
+     report the same day is the plausible symptom. Corollary: when a report against a
+     day-old default cannot be reproduced in 20,000 frames, the honest closure is
+     "unexplained but plausibly fixed, control arm is the bisection" — not "could not
+     reproduce, closed" (gotcha 13's shelf life applies to exonerations too).
+
+507. **A PICTURE GATE MADE OF MEDIANS PASSES A TRANSIENT DEFECT.** Part 90's deferred
+     clears sat INSIDE the era-median null on two fix runs while the operator saw a
+     few-frame streak during a camera turn the same day. Era medians exist because
+     matched frames are unsatisfiable outdoors (gotcha 254) — but a median over 7,000
+     frames is arithmetic to a 20-frame artifact. The operator's eye is the only
+     standing instrument for transient shape defects; the headless complement is a
+     dense frame dump (CZ_VK_FRAME_DUMP_EVERY=4) with a temporal-anomaly detector and
+     contact sheets, and BOTH returning clean still does not outrank the report
+     (memory: operator report outranks the headless number).

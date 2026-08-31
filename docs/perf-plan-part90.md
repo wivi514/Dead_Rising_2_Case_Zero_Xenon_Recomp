@@ -92,3 +92,19 @@ stale texture) gets asked with a number in hand.
    3v3 only if wall claims are made).
 2. Item 2 census + verdict.
 3. Docs: phase5-notes §6ek, kickoff for part 91.
+
+## §4 EXECUTED (2026-08-31) — records in place
+
+* **§1 SHIPPED ON** (clear class 0.66 → 0.009-0.010 ms, −91.7% of the class's pixels
+  after the MSAA rect correction; whole device frame −0.8 to −0.95 ms in every band;
+  flush share 13-15% — the kill did not fire; all gates passed twice, once per build).
+  The record is `phase5-notes.md` §6ek, including the addendum on the operator's
+  mid-part yellow-streak report (unexplained-but-plausibly-fixed: the scoped rect was
+  missing the draw path's 4x-MSAA sample-space factor — 4.4 clears/frame
+  quarter-covered — found by code reading after 20k dumped frames reproduced nothing).
+* **§2 EXECUTED, item NAMED NOT BUILT**: 36.4% of copies dead, 13.1% of pixels,
+  ~0.1-0.28 ms — at/under the route floor with a prediction-only mechanism whose
+  failure is a silent stale texture. `phase5-notes.md` §6el.
+* The §0 wall claim to carry forward: with the fix, GPU at the crowd ≈ 9.9-11.5 in
+  band (was 10.6-12.4), so the crowd is now ~balanced CPU/GPU; the sub-7,000 bands
+  bank the full GPU saving as fence headroom.

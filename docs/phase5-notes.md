@@ -19946,3 +19946,177 @@ of which are the change-detector class that cannot be memoised or raced (gotchas
 474, 4). The next honest question is whether ANY remaining lead clears 0.5 ms — and
 the answer should start from a fresh profiled decomposition, because every table
 before this part now overstates `record` by ~30%.
+
+## §6ek — Part 90: deferred scoped clears — the resolve-clear class −98.5%, the device frame −0.8 to −0.95 ms at every band (2026-08-31)
+
+`docs/perf-plan-part90.md` is the plan; its §0 records step 0 (the fresh decomposition
+part 90's kickoff demanded) and this section records item 1's build and measurement.
+Item 2 (the copy census) is recorded below in §6el.
+
+### 1. Step 0 first — the regime is AT the flip, and the census survives parallel record
+
+One census run (GPU passes + frame trace, no profiler) and one profiled run on
+`part80_crowdroute` (peaks 9,167/9,413):
+
+* **The regime**: at 9,000-10,000 draws wall 11.10 / GPU 10.60 / fence 0.00 — CPU-bound
+  by ~0.50 ms; 8,000-9,000 by 0.32; **everything below 7,000 draws is GPU-bound**
+  (fence 0.9-3.2). §0b's flip has effectively happened: ~0.5 ms of CPU saving can still
+  convert at the crowd, and a GPU saving converts at every band below it (and buys
+  headroom above).
+* **The CPU table is fresh and confirms §6ej**: record 431 ns/draw (state 26 + vertex
+  127 + index 143 + guard 10 + residual 124); constants 17.4% instrumented; pm4 20.2%
+  of the pump; guard pool 21% busy. No CPU lead ≥0.5 ms is visible beyond the serial
+  residue.
+* **`CZ_VK_GPU_PASSES` attributes cleanly under the parallel record** (residual
+  0.5-0.6%): whole-run 8.12 ms/frame — big passes 4.89, post chain 1.63, **resolve
+  copies 0.741 (50.4/frame), resolve clears 0.615 (83.8/frame, 590 Mpixel written for
+  33.9 rendered)**, barriers 0.099.
+
+### 2. The build — the clear becomes a rect in an instance that already exists
+
+A resolve's clear bits used to cost: pump-recorded barrier(s) + whole-EDRAM
+`vkCmdClear{Color,DepthStencil}Image` (7.05 Mpix at 3440-scale) + the TRANSFER_DST
+layout round-trip, 83.8 times a frame. The part-32 `CZ_VK_SCOPED_CLEAR` arm scoped the
+pixels but spent a dedicated render-scope cycle per clear (~6.6 us of pump time, the
+part-80 wash — do not re-buy it).
+
+The part-89 parallel recorder is what makes the cheap form possible: **every pass
+records at least one dynamic-rendering instance through `ParRec_RecordInstance`**
+(first chunk on a worker, or the pump tail; the serial arm's `BeginRendering` opens the
+instance directly). The clear is LATCHED at resolve time as a pending (aspect, value,
+scoped rect — the resolve's own extent, hardware's semantics: a copy block clears the
+CURRENT surface's tiles, not all of EDRAM) and emitted as `vkCmdClearAttachments` at
+the head of the next pass's first instance. One call per pending, in latch order,
+because overlapping rects with different values must apply in order and separate calls
+are ordered where one call's rect list is not.
+
+**Correctness never depends on the ordering assumption**: every EDRAM reader — the
+resolve copy, the present blit's raw-EDRAM fallback, the readback fallback — flushes
+outstanding pendings first through one self-contained mini instance, counted BY READER
+(gotcha 151). Pendings carry across a frame boundary legitimately (nothing reads EDRAM
+between frames except those sites) and are dropped on EDRAM recreation. A zero resolve
+extent latches the full image, so the un-scopable case degrades to exactly the old
+pixels. `CZ_VK_NO_DEFERRED_CLEAR=1` restores the old paths byte for byte; both arms
+print the line that proves which is running.
+
+### 3. Gates and engagement — all passing
+
+* **Sync validation**: 0 hazards (5,247-draw route; only the six pre-existing
+  `topology-08773` creation-time messages, part 77's logs).
+* **Engagement** (sync-val run): 266,932 clears latched; emitted via 110,070 pump-tail
+  instances + 4,244 chunk hand-offs; 20,552 flushed-for-the-copy events = **15.2%
+  flush share (12.8% at the crowd) against the pre-registered 30% kill — and a flushed
+  clear KEEPS its scoped rect**, so the GPU saving survives the fallback.
+* **Positive control**: `CZ_VK_CLEAR_POISON=1` under the fix vs under the control arm —
+  channel means agree to 0.1/255 on matched dumps (both arms parked at the same 2,550-draw
+  scene): the deferred clears write exactly the pixels the full clears wrote, poison
+  included. Two-sided against an unpoisoned run of the same scene (the tint must SHOW
+  somewhere for the comparison to mean anything — gotcha 30): see the dump comparison
+  in the log index.
+* **Picture** (part 89's 4-run protocol, era medians over 2 fix / 2 base crowd runs):
+  meanLuma 1.79/2.12% vs null 8.90%, distinctColours 0.63/1.57% vs null 7.74% — **both
+  fix runs INSIDE the null on both live statistics** (coverage saturates at 99.9% and
+  reports nothing, part 26's rule).
+
+### 4. The milliseconds — mechanism numbers, as pre-registered
+
+GPU class table at the crowd (three matched-route runs a side aggregated by the census
+itself; the fix pair reproduces to 0.03 ms):
+
+| class | base (2 runs) | fix (2 runs) | delta |
+|---|---|---|---|
+| resolve clear | 0.660-0.662 ms | **0.010 ms** | **−98.5% of the class, −0.65 ms** |
+| resolve barriers | 0.087-0.089 | 0.075 | −0.013 |
+| whole device frame | 10.09-10.23 | **9.32-9.35** | **−0.8 ms** |
+
+Banded per frame (pooled 2v2 traces), the GPU column is **negative in all 10 bands,
+monotone**: −0.35 ms at 0-500 draws to **−0.95 ms at 9,000-9,500** (11.46 vs 12.41) —
+MORE than the clear class alone, because the 83.6 removed TRANSFER_DST round-trips
+also serialized the timeline beyond their measured segments (part 78's ALL_COMMANDS
+finding, one more time). The remaining 0.010 ms is the 5.66 flush mini-instances a
+frame at 1.8 us each.
+
+The pump got back a little CPU too: the §4b resolve/begin cycle cost fell 0.552-0.585
+→ 0.514-0.525 ms/frame (the clear barriers and clear records were inside it).
+
+**Wall time on the picture-gate runs is UNREADABLE and was pre-registered as such**:
+`CZ_VK_FRAME_STATS` at 3440x1440 walks 4.95 Mpixel a frame (~15 ms — the documented
+~3 ms was measured at 720p, 0.92 Mpixel; the bill scales with area), so those runs sit
+~26 ms CPU-bound and a GPU saving converts to nothing there. The honest wall statement
+comes from the clean pair (fix, no stats, vs step 0's pre-fix census run, same
+instruments): see the closing table in this section's addendum.
+
+### 5. What converts, and what this leaves
+
+At the crowd the frame was CPU-bound by ~0.5 ms, so ~−0.8 ms of GPU converts the crowd
+to GPU≈CPU — the two sides are now BALANCED at the dominant band, and every band below
+7,000 draws converts the full saving into headroom at the operator's 60 fps cap. The
+remaining GPU surface: the resolve copies (0.81-0.84 ms, §6el's census), the post
+chain (refuted, title's own work), and the big passes (the game). The remaining CPU
+surface is unchanged from §6ej §4.
+
+### 6. ADDENDUM, same day — the operator's yellow-streak report, the MSAA rect factor, and what is closed vs what stands
+
+Mid-part, the operator watched one of this part's runs and reported: *"some sort of
+yellow streak moving from up left to down right of the screen, looked like meteorite
+shower"*, during a camera turn, **absent in the previous run they watched** — and the
+runs alternate fix and control arms, so the report reads as an indictment of the
+newest default. The era-median gate had passed; a few-frame transient during a turn is
+exactly what a median cannot see, and the operator's eye is the instrument for shape
+defects (standing memory: their report outranks the headless number).
+
+**What the hunt established:**
+
+* **Not reproduced headlessly**: ~20,000 dumped frames over two routes
+  (`CZ_VK_FRAME_DUMP_EVERY=4/8`, three arms on the walking route, fix-vs-control on
+  the crowd route), a warm-bright transient detector flagged nothing arm-specific, and
+  contact sheets over the turning eras read clean by eye.
+* **Code reading found a REAL coverage divergence regardless**: the draw path scales
+  every window coordinate ×2 in both axes on a surface declared 4x MSAA (the EDRAM
+  stand-in is at sample resolution — the half-cleared-scene-tile incident in that
+  site's own comment), and the scoped clear rect was built from the UNSCALED scissor —
+  covering ONE QUARTER of a 4x pass's EDRAM footprint. The whole-image clear had
+  hidden this for the copy-block clears since phase 5 began. **Measured: 98,997 clears
+  in one crowd run — 4.4 a frame — sat on 4x-declared surfaces** and were
+  quarter-covered before the fix. Stale bright residue on small post/particle surfaces
+  smearing during a turn is a mechanism entirely consistent with the report.
+* **The fix ships in the same commit**: the scoped rect now carries the same
+  sample-space factor the draw path applies (`resolve: clear rect scaled for a 4x
+  MSAA surface` is the counter). The saving barely moves: scoped rects cover 49.25 vs
+  35.9 Mpixel, **91.7% of the clear class still removed**, clear class still
+  0.009 ms/frame, flush share unchanged (13.2%).
+* **`CZ_VK_DEFER_FULL_RECT=1`** was built as the standing two-factor bisection for any
+  future artifact: deferral with full-image rects — vanishes ⇒ scoping; survives ⇒
+  ordering.
+
+**What stands**: the report is UNEXPLAINED-BUT-PLAUSIBLY-FIXED, not closed. The
+deferred clears ship ON with the MSAA correction; the operator's next session is the
+verdict, `CZ_VK_NO_DEFERRED_CLEAR=1` is the first bisection for any recurrence (it
+now outranks `CZ_VK_NO_PAR_RECORD=1` in the bisection order, being newer), and a
+recurrence under the control arm would exonerate this change entirely.
+
+## §6el — Part 90 item 2: the resolve-copy census — 36.4% of copies are dead, worth ~0.1-0.27 ms, and the mechanism is not worth its risk today (2026-08-31)
+
+`CZ_VK_COPY_CENSUS=1` (commit cbe1099) answered part 80 §1 item 5's unasked question on
+one crowd run: **1,116,731 resolve copies, 406,920 DEAD (36.4%) — 146.8 of 1,121.3
+Gpixel (13.1%)** — where dead = the same (snapshot, rect) copied again with no consumer
+in between, counted CONSERVATIVELY toward live (a sample of the snapshot marks all its
+rects). Consumers are marked at the draw fetch (before the right-sized-view early
+return, which even the pass-inputs list misses), the present, the frame-stats surface
+and the cube-face assembly.
+
+The dead copies name themselves: **06BE4000 (depth), 39.5k dead — the shadow cascade
+atlas** (slices re-resolved when nothing sampled between), **1439B000 (depth)** — the
+scene-depth/tone-map alias, and the **06FFE000-07022000 family at exactly 22,139 dead
+each — the bloom/luminance pyramid**, re-copied every frame whether or not the chain
+re-reads it before the next copy.
+
+**The verdict: NAMED but NOT BUILT.** By pixels the dead share is worth ~0.10 ms of the
+0.78-0.84 ms class; by copy count (per-copy overhead dominates the small pyramid
+surfaces) at most ~0.28 ms. Both sit at or under the route's ±2.9% floor, and the only
+exploitation mechanism is PREDICTION — skip a copy you believe will be overwritten
+unsampled — whose failure mode is a silently stale sampled texture with no possible
+inline fallback (the data is gone). That is gotcha 432's shape with a worse recovery
+story. Recorded as open-items material with the census as its standing instrument; a
+future part that makes the crowd GPU-bound by a margin larger than the floor can
+re-ask it.

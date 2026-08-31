@@ -6442,3 +6442,37 @@ executed it whole and `part89-kickoff.md` is live; the records are `phase5-notes
   liveness counter before its zero was believed (43.9 dirty draws/frame, conjunction a
   true 0.0 — gotcha 151); all census runs are diagnostic arms and no frame time from
   them was quoted.
+
+Where the port is, as of 2026-08-30 (**PART 88 CLOSED — PERFORMANCE. BOTH §6eg ITEMS
+SHIPPED, VERIFIED AND MEASURED IN ONE PART.** ~~`docs/part89-kickoff.md` is the live
+hand-off~~ — it WAS, for one part; part 89 executed its plan whole and
+`part90-kickoff.md` is live; the record is `phase5-notes.md` §6eh):
+
+* **The bone-palette bounded gather is ON BY DEFAULT** (`CZ_VK_NO_BOUNDED_DYNAMIC=1`
+  the control). Step 0's census first: clean-cover 98.3-98.6% at the crowd, 82% of
+  full-copy bytes addressable, the pre-registered <30% kill did not fire. The fix:
+  `c0..c3 ∪ list ∪ [8, extent]` for the 21 palette-shaped dynamic VS (sidecar exprs
+  parsed, fails closed; the `vc(209+a0)` outlier keeps the full copy), the bound from
+  an always-on PM4 write-extent tracker (two comparisons per ALU-overlapping run).
+  Verified three ways: 65.4M value checks / 0 bad; the poison shown to fire via a
+  SPLIT counter after the shared one proved unattributable (gotcha 151); the
+  read-above-extent question answered by the fill poison AT THE CROWD — intact
+  articulated zombies both arms — because no value compare can see it (gotcha 432).
+  **3v3: dominant band 13.06 → 12.67 ms (−3.0%, −0.39 ms), GPU unchanged; mechanism
+  −84.3% of dynamic-copy bytes, three replicates agreeing to 0.2%.**
+* **The projection-patch memo is ON BY DEFAULT** (`CZ_VK_NO_PATCH_MEMO=1` the
+  control): 4-way MRU on (c0..c3, fov, wide) serving the patched block AND both
+  recognition results. **99.9% of 118-122M patches/run served**; 115.7M verify checks
+  / 0 bad; poison fires on 100% of hits. 3v3: every band ≥4,500 draws negative
+  (−0.19 to −0.53 ms at the crowd), GPU unchanged.
+* Both items' per-band deltas sit AT the route's ±2.9% floor — the reading rule that
+  ships them anyway is the kickoff's own: quote the MECHANISM number beside the
+  milliseconds, and the mechanism (bytes, hit rate, engagement counters both arms) is
+  exact.
+* **The constants block has no mechanism-level lead left**, and the post-part-88
+  question "any lead ≥1 ms?" has exactly one honest answer: **the MAXIMAL parallel
+  record (~3.2 ms ceiling), which part 80 left UNPRICED, not refuted** — the operator
+  chose it as part 89's subject (*"start the plan with that"*).
+  ~~**`docs/perf-plan-part89.md` IS THE LIVE PLAN**~~ — EXECUTED WHOLE in part 89; its
+  §6 records the execution in place. §6ec/§6eg's tables predate part 88's fixes, and
+  as of part 89 every pre-part-89 table overstates `record` by ~30% besides.
