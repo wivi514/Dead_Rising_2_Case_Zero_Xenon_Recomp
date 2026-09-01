@@ -1,5 +1,26 @@
 # Part 92 kickoff — the native KB/M build is the commissioned work; the release waits behind it
 
+## 0-live. PART 92 PROGRESS (updated in place as the part runs)
+
+**Phases A, B and C of `docs/native-kbm-plan.md` are BUILT and headlessly
+proven; `docs/native-kbm-phaseA.md` is the complete record** (the recon, the
+executed build-out, its three paid-for parser findings, and one retraction in
+place). The shape that shipped is NOT the plan's phase-B shape — the plan's
+port-2 keyboard-controller connect was built, worked to the point of
+engagement, and crashed in the title's dormant profile machinery; the shipped
+design splices the DR2-PC key defaults into PORT 0's live binding records and
+feeds the pad-0 controller's sources directly (key events through the title's
+own setter; WASD overriding the stick post-conversion, curve-free; mouse
+deltas ADDITIVE and UNCLAMPED on the right-stick sources; mouse buttons on the
+pad's own face-button sources, which is why DR2's mousemap lines need no
+splice at all). 86 of 93 key bindings land; `CZ_NO_NATIVE_KBM=1` restores v1
+wholly; the headless proof is ENTER taps (`CZ_KBM_TEST_KEYS`) advancing the
+title into the main menu where the control arm parks at file #84.
+
+**Owed on this**: the operator's feel session (crispness, camera speed vs DR2
+PC on their own hand — B.4/C.3 acceptance), and phase D (the key-cap prompt
+icons) which was not started tonight.
+
 **THIS IS THE LIVE HAND-OFF**, superseding `part91-kickoff.md` (kept as part 91's
 record: the live-resolution apply, KB/M v1, and the §0b/§0c/§0d performance-parking
 and visual-report closures).

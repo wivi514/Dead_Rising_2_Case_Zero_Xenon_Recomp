@@ -31,10 +31,16 @@ needed to supply those three from the host is identified below.**
   84/85/86, thumb-halves 87..94. The 360 table has **no MOUSE_RAW_*,
   MOUSE_WHEEL_*, F-keys, EQUALS/MINUS**, and the escape token is `KEY_ESCAPE`
   (DR2 PC's keymap writes `KEY_ESC` — a rename our generator must apply).
-* **The mode/combiner table** is one shared enum, names at `0x829EF8CC`:
-  **NONE=0, AND=1, NOT=2, OR=3, HELD=4, PRESSED=5, RELEASED=6, REPEAT=7,
-  ACCELREPEAT=8, TAP1=9, TAP2=10, QUICKTIMEDRELEASE=11.** Parsing is
-  case-insensitive (the shipped padmap mixes `HELD` and `held`).
+* **The mode/combiner vocabulary** is one string array at `0x829EF8CC`, but
+  ~~one shared enum (NONE=0, AND=1, NOT=2, OR=3, HELD=4, ...)~~ — **RETRACTED
+  the same night**: the parser's two lookups start at DIFFERENT offsets into
+  that array, so there are TWO enums. Modes (`sub_828039F0`, table at
+  `0x829EF8DC`): **HELD=0, PRESSED=1, RELEASED=2, REPEAT=3, ACCELREPEAT=4,
+  TAP1=5, TAP2=6, QUICKTIMEDRELEASE=7, NONE=8**. Combiners (`sub_82803A68`,
+  table at `0x829EF8CC`): **NONE=0, AND=1, NOT=2, OR=3**. Verified against the
+  pad's own parsed records (FRONTEND_A_BUTTON reads mode1=1/PRESSED,
+  mode2=8/NONE, comb=0/NONE). Parsing is case-insensitive (the shipped padmap
+  mixes `HELD` and `held`).
 * **The command registry** is a flat 305-entry name table at `0x829DC810`,
   **command ID = table index**. IDs that matter:
   `COMMAND_KBOARD_EMULATE_LTHUMB_UP/DOWN/LEFT/RIGHT` = **113..116**,
@@ -176,13 +182,54 @@ needed to supply those three from the host is identified below.**
    command and token tables.
 6. `CZ_NO_NATIVE_KBM=1` = whole-feature arm → v1 exactly as shipped.
 
-## Open questions, deliberately left to the first live run
+## ~~Open questions, deliberately left to the first live run~~ — ANSWERED THE
+## SAME NIGHT (phases B+C executed; this section is now the record)
 
-* Does gameplay read the manager's keyboard slot (+0x154) alongside the
-  primary controller (simultaneous kb+pad), or must the keyboard become
-  primary via engagement (device-follow)? Both are acceptable; the CONTROLLER
-  log lines (`CZ_GUEST_LOG` + diag byte) will say which on the first boot.
-* Whether the frontend's press-START accepts `COMMAND_FRONTEND_START_BUTTON`
-  from the keyboard port at the title screen (engagement path).
-* How often `sub_82806F60` and the manager rescan run (expected per-frame from
-  their two caller sites; confirmed live).
+The plan above was BUILT, worked end to end, and was then REPLACED by a better
+design its own evidence pointed to. Keep both halves: the port-2 findings are
+what make the port-0 design trustworthy.
+
+* **The port-2 keyboard controller chain WORKS**: verify → claim slot → bind →
+  the title's parser resolved all 133 generated bindings for port 2, the
+  context pass set their active flags, and a synthetic ENTER
+  (`CZ_KBM_TEST_KEYS`) fired `COMMAND_FRONTEND_A_BUTTON` into the title's own
+  ENGAGEMENT scan (`sub_827F85F8`, reached from the manager update at
+  `0x828016B0`) — which then **crashed on a null** in profile machinery
+  (`[0x82AD5EF8]`-rooted) that the 360 build never expected to run for a
+  class-0 controller. The keyboard support is compiled out one level FURTHER UP
+  than the connect. Do not resurrect the port-2 connect without fixing that.
+* **Engagement is COMMAND-driven and scans every port** — the query histogram
+  (`CZ_KBM_TRACE=1` hooks on `0x828053C8`/`0x82805510`) shows bool/float
+  command queries against all 16 ports continuously. Port 0's engagement path
+  is exercised by every pad press of every boot — the fully-supported road.
+* **The shipped design (runtime/cpu/native_kbm.cpp) therefore rides PORT 0**:
+  key bindings SPLICED directly into port 0's live binding records (the layout
+  is proven — see the corrections below), key sources fed into the pad-0
+  controller object, stick sources overridden AFTER the pad's own conversion
+  (a strong hook on `sub_828070E0`), mouse buttons riding the pad's
+  face-button/trigger sources (left→BUTTON_3/X, right→BUTTON_R2, middle→
+  BUTTON_4/Y — DR2 PC's mousemap semantics through the pad's own two-source
+  lines, which is why the mousemap lines need no splice at all). Headless
+  proof: ENTER taps advance the title into the main menu (save file +
+  casefiles.tex open) where the control arm parks at file #84.
+
+Three parser/record findings from the build-out, each paid for in a failed run:
+
+* **A delimiter must be followed by WHITESPACE.** The parser advances past a
+  delimiter by skipping characters UNTIL whitespace, so `CMD(KEY_TAB, ...`
+  swallows `KEY_TAB` whole. The shipped padmap always has a tab after `(`;
+  a generated map without it loses EVERY line ("305 commands, 0 parsed" with
+  the pad port's own parse as the oracle proving the call was fine).
+* **Binding-record byte +0 is CONTEXT-MAINTAINED, not a parse product** — the
+  pad port's own census of it oscillated 115↔248 across one boot. Gate a parse
+  on src1 (+4) being non-zero, never on the flag.
+* The mode-enum retraction recorded in §A.1 above.
+
+Still genuinely open (operator session):
+
+* Feel acceptance — A/S/D crispness (the override bypasses the deadzone
+  rescale entirely) and camera speed parity with DR2 PC (raw deltas are
+  unclamped; the MOUSE SENS row scales them).
+* Whether the title ever re-parses padmap mid-session (the splice re-applies
+  via its sentinel if so — the log line says when).
+* `DlgKeyboard` typing through the now-real `XamInputGetKeystrokeEx`.

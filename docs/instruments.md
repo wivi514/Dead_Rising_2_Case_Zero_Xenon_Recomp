@@ -3544,3 +3544,31 @@ CZ_VK_VERIFY_PATCH_MEMO_POISON=1  perturb the compare side of one served float (
                   served data is untouched) so the verifier MUST report; implies the
                   verify arm. Measured: fires on 100% of hits.
 ```
+
+## Part 92 — the native keyboard/mouse (docs/native-kbm-phaseA.md is the record)
+
+```
+CZ_NO_NATIVE_KBM=1  the whole-feature control arm: no splice into port 0's
+                  bindings, no key-source feed, no stick/camera overrides, and
+                  XamInputGetKeystrokeEx returns empty as before — the part-91
+                  v1 keyboard->pad-0 merge carries the input exactly as
+                  shipped. The v1 merge also comes back automatically (both
+                  builds) while the host settings panel is up, so panel
+                  navigation never depends on the native path.
+CZ_KBM_TRACE=1    the diagnosis bundle: the splice's per-record dumps, the
+                  per-line skip census ("no free slot for cmd N"), and the
+                  command-query histogram — hooks on the two on-demand query
+                  functions (bool 0x828053C8, float 0x82805510) counting
+                  queries PER PORT, dumped every 10 s. That histogram is what
+                  established that engagement scans every port's commands.
+                  Hot-path counters when on; never quote a frame time from it.
+CZ_KBM_TEST_KEYS=ms:vkhex[,ms:vkhex...]  synthetic key taps through the same
+                  queue real SDL events use (e.g. 30000:0D taps ENTER at 30 s)
+                  — the headless proof of the whole native chain, and the arm
+                  that caught the port-2 engagement crash. MANUFACTURES
+                  PROGRESS: never a gate configuration for anything but itself.
+```
+
+The player-facing knob is not an env var: `<root>/kbmap.txt` (DR2-PC map-file
+format) overrides the built-in DR2-PC-default bindings; the defaults are
+generated and validated by `tools/gen_kbm_map.py`.
