@@ -6476,3 +6476,42 @@ hand-off~~ — it WAS, for one part; part 89 executed its plan whole and
   ~~**`docs/perf-plan-part89.md` IS THE LIVE PLAN**~~ — EXECUTED WHOLE in part 89; its
   §6 records the execution in place. §6ec/§6eg's tables predate part 88's fixes, and
   as of part 89 every pre-part-89 table overstates `record` by ~30% besides.
+
+Where the port is, as of 2026-08-31 (**PART 89 CLOSED — PERFORMANCE. THE MAXIMAL
+PARALLEL RECORD: PRICED, BUILT, GATED AND MEASURED IN ONE PART — THE CROWD FRAME
+−13.9%.** ~~`docs/part90-kickoff.md` is the live hand-off~~ — it WAS, for one part;
+part 90 executed its plan whole and `part91-kickoff.md` is live; the records are
+`phase5-notes.md` §6ei (step 0) and §6ej (the build and the 3v3)):
+
+* **Step 0 first, no fix code before the arithmetic** (§6ei): two new instruments,
+  both positive-controlled before belief — `CZ_VK_RESOLVE_SPLIT_CENSUS=1` (sampled
+  1-in-16 raw clock pairs, because a per-call ProfScope is ~2 ms/frame by the
+  FlatCache comment's own arithmetic; +112 ns under `CZ_VK_NO_FLAT_CACHE`, attributed
+  to the right half) and the guard pool's always-on occupancy line (13-16% busy at
+  the crowd; 36% on one worker). The driver share re-measured bill-free by
+  subtraction: **235 ns/draw** (part 80's 251 corroborated, part 81's bind batch
+  visible). Movable 2.4-2.6 ms; formula saving 1.0-1.24 ms conservative, ~2.2
+  schedule-bound; **the pre-registered <1.0 ms kill did not fire**.
+* **The build is design (b) — resolve serial, record parallel — with one
+  simplification the plan did not anticipate: NO secondaries, NO suspend/resume.**
+  LOAD/LOAD attachments make a dynamic-rendering instance split the identity, so
+  chunks of 512 captures are self-contained instances in per-worker PRIMARY buffers,
+  one ordered `vkQueueSubmit` per frame. Passes under the chunk size never split;
+  the pump HELPS at the submit wait so a starved pool cannot deadlock (helped 0 in
+  every run).
+* **Gated on every §3 arm**: order gate **0 fails / 22.1M draws** with the replayed
+  instances' ids rebuilt from what each recorder actually consumed, poison fails
+  6,905/6,905 frames; sync validation 0 hazards (`topology-08773` pre-exists, part
+  77 logs); picture era medians INSIDE the null both fix runs; engagement 140,479
+  chunks/run, 80% of draws on workers, submit wait 0.6 ms per RUN, guard prehash
+  HELD at 98.3%.
+* **3v3 (part 88's protocol): dominant crowd band 13.00 → 11.20 ms, −13.9%,
+  −1.80 ms** — above the operator's ≥1 ms bar, growing with draw count as a per-draw
+  CPU item must, GPU medians unchanged, fence 0.00 there. Honest cost: GPU-bound
+  sub-5,000 bands +0.09-0.22 ms of instance splits, fence-covered, invisible at the
+  60 fps cap. **ON BY DEFAULT; `CZ_VK_NO_PAR_RECORD=1` is the control arm and the
+  FIRST bisection for any new picture complaint.**
+* **The CPU board after this**: no known lead ≥1 ms remains — the serial residue is
+  the PM4 walk and the resolve/change-detector half. The CW record-restructure item
+  is SUBSUMED. Any new performance question starts with a fresh profiled
+  decomposition, because every earlier table overstates `record` by ~30%.

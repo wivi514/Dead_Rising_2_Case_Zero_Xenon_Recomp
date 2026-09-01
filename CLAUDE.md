@@ -192,7 +192,14 @@ mask; trust the microcode's own swizzles.
     read `phase5-notes.md` §6ba before following anything in it.
   - **THE LIVE HAND-OFF IS ALWAYS THE HIGHEST-NUMBERED `partNN-kickoff.md`**, and it
     supersedes every earlier kickoff on "where the port is". **IT IS
-    `part91-kickoff.md`. Part 90 shipped DEFERRED SCOPED CLEARS ON BY DEFAULT
+    `part92-kickoff.md`. Part 91 shipped the LIVE-RESOLUTION APPLY
+    (operator-verified; the part-60 freeze was the apply's mid-frame placement —
+    §6em) and KEYBOARD/MOUSE v1 (merged into pad 0, mouse camera, panel rows —
+    §6en), censused the PC input vocabulary ALREADY IN THE XEX, and left the
+    commissioned work: `docs/native-kbm-plan.md`, the DR2-PC-exact native input +
+    our-own-art key-cap icons, with DR2 PC installed as the living reference.
+    THE RELEASE BOARD WAITS BEHIND IT (part91-kickoff §1). Part 90's record:
+    deferred scoped clears ON BY DEFAULT
     (`CZ_VK_NO_DEFERRED_CLEAR=1` the control): the resolve-clear class 0.66 →
     0.009 ms, the device frame −0.8 to −0.95 ms in every band (`phase5-notes.md`
     §6ek; `perf-plan-part90.md` §4 the executed plan). THE VISUAL REPORT AGAINST IT IS
@@ -970,12 +977,12 @@ findings ledger — it wins on any measured number), `docs/phase1-notes.md`,
 
 **SUBJECT CHANGE, 2026-09-01, operator instruction closing part 90's arc:** *"Save
 everything on performance we'll switch to something else so we can get a release really
-soon."* **PERFORMANCE IS PARKED AGAIN — `part91-kickoff.md` §0c is the parking record,
-its §0d the ordered resume list, and its §1 the board: the operator has A FEW SMALL
-FIXES to name FIRST (*"Do not want you to proceed with stuff for release yet"*), and
-the RELEASE board follows them — top items the Windows leg rebuild (the shipped
-bundle predates parts 87-90 entirely), the bundle save verification, and the
-repackage + re-gate of both artifacts.**
+soon."* **PERFORMANCE IS PARKED AGAIN — `part91-kickoff.md` §0c is the parking record and
+its §0d the ordered resume list. The live work is the COMMISSIONED NATIVE KB/M BUILD
+(`docs/native-kbm-plan.md`, part92-kickoff §1 item 0); the RELEASE board follows it —
+top items the Windows leg rebuild (the shipped bundle predates parts 87-91 entirely,
+including new SDL-side input code), the bundle save verification, and the repackage +
+re-gate of both artifacts.**
 
 **SUBJECT: THE RELEASE, 2026-08-27, operator instruction opening part 82:** *"Do the release
 plan."* **`docs/release-plan.md` IS THE PROGRAMME AND `docs/part91-kickoff.md` IS THE LIVE
@@ -1012,48 +1019,10 @@ ground is and that PERFORMANCE IS PARKED. (This
 line has now named the wrong plan TWICE — the two-live-pointers defect the block-rotation note at the bottom of this file
 describes, and the reason that note asks for the rule and not just the name; gotcha 13.)
 
-Where the port is, as of 2026-08-31 (**PART 89 CLOSED — PERFORMANCE. THE MAXIMAL
-PARALLEL RECORD: PRICED, BUILT, GATED AND MEASURED IN ONE PART — THE CROWD FRAME
-−13.9%.** ~~`docs/part90-kickoff.md` is the live hand-off~~ — it WAS, for one part;
-part 90 executed its plan whole and `part91-kickoff.md` is live; the records are
-`phase5-notes.md` §6ei (step 0) and §6ej (the build and the 3v3)):
-
-* **Step 0 first, no fix code before the arithmetic** (§6ei): two new instruments,
-  both positive-controlled before belief — `CZ_VK_RESOLVE_SPLIT_CENSUS=1` (sampled
-  1-in-16 raw clock pairs, because a per-call ProfScope is ~2 ms/frame by the
-  FlatCache comment's own arithmetic; +112 ns under `CZ_VK_NO_FLAT_CACHE`, attributed
-  to the right half) and the guard pool's always-on occupancy line (13-16% busy at
-  the crowd; 36% on one worker). The driver share re-measured bill-free by
-  subtraction: **235 ns/draw** (part 80's 251 corroborated, part 81's bind batch
-  visible). Movable 2.4-2.6 ms; formula saving 1.0-1.24 ms conservative, ~2.2
-  schedule-bound; **the pre-registered <1.0 ms kill did not fire**.
-* **The build is design (b) — resolve serial, record parallel — with one
-  simplification the plan did not anticipate: NO secondaries, NO suspend/resume.**
-  LOAD/LOAD attachments make a dynamic-rendering instance split the identity, so
-  chunks of 512 captures are self-contained instances in per-worker PRIMARY buffers,
-  one ordered `vkQueueSubmit` per frame. Passes under the chunk size never split;
-  the pump HELPS at the submit wait so a starved pool cannot deadlock (helped 0 in
-  every run).
-* **Gated on every §3 arm**: order gate **0 fails / 22.1M draws** with the replayed
-  instances' ids rebuilt from what each recorder actually consumed, poison fails
-  6,905/6,905 frames; sync validation 0 hazards (`topology-08773` pre-exists, part
-  77 logs); picture era medians INSIDE the null both fix runs; engagement 140,479
-  chunks/run, 80% of draws on workers, submit wait 0.6 ms per RUN, guard prehash
-  HELD at 98.3%.
-* **3v3 (part 88's protocol): dominant crowd band 13.00 → 11.20 ms, −13.9%,
-  −1.80 ms** — above the operator's ≥1 ms bar, growing with draw count as a per-draw
-  CPU item must, GPU medians unchanged, fence 0.00 there. Honest cost: GPU-bound
-  sub-5,000 bands +0.09-0.22 ms of instance splits, fence-covered, invisible at the
-  60 fps cap. **ON BY DEFAULT; `CZ_VK_NO_PAR_RECORD=1` is the control arm and the
-  FIRST bisection for any new picture complaint.**
-* **The CPU board after this**: no known lead ≥1 ms remains — the serial residue is
-  the PM4 walk and the resolve/change-detector half. The CW record-restructure item
-  is SUBSUMED. Any new performance question starts with a fresh profiled
-  decomposition, because every earlier table overstates `record` by ~30%.
-
 Where the port is, as of 2026-08-31 (**PART 90 CLOSED — PERFORMANCE. THE REVIVED GPU
 SURFACE: DEFERRED SCOPED CLEARS SHIPPED ON BY DEFAULT, THE COPY CENSUS NAMED AND
-PARKED ITS ITEM.** **`docs/part91-kickoff.md` IS THE LIVE HAND-OFF**; the records are
+PARKED ITS ITEM.** ~~`docs/part91-kickoff.md` is the live hand-off~~ — it WAS, for
+one part; part 91 delivered its fixes and `part92-kickoff.md` is live; the records are
 `phase5-notes.md` §6ek (the clears, with the yellow-streak addendum) and §6el (the
 census); `perf-plan-part90.md` §4 is the executed plan):
 
@@ -1088,8 +1057,39 @@ census); `perf-plan-part90.md` §4 is the executed plan):
   further wins buy headroom and resolution, not felt frame rate. Parking is an
   honest outcome; surface it to the operator before spending more sessions here.
 
+Where the port is, as of 2026-09-01 (**PART 91 CLOSED — THE OPERATOR'S SMALL FIXES:
+LIVE RESOLUTION APPLY SHIPPED AND VERIFIED; KEYBOARD/MOUSE v1 SHIPPED; THE NATIVE
+KB/M PLAN COMMISSIONED.** **`docs/part92-kickoff.md` IS THE LIVE HAND-OFF**; the
+records are `phase5-notes.md` §6em and §6en; the commissioned plan is
+`docs/native-kbm-plan.md`):
+
+* **Live internal-resolution apply, operator-verified** ("It is perfect tried
+  multiple resolution and it worked"): the panel's Resolution row steps a PENDING
+  value, **X saves + applies live** at the frame boundary, B/reopen discards. The
+  part-60 live path's freeze was its MID-FRAME apply placement (wait-idle cannot
+  cover recorded-but-unsubmitted references); relocated to BeginFrame's
+  non-recording entry. `CZ_VK_LIVE_RES_TEST=<frame>:<w>x<h>` is the headless gate,
+  run both directions under validation. §6em.
+* **Keyboard/mouse v1 (e8fe508)**: merged into PAD 0 (keyboard-as-pad-2 was
+  structurally dead — the title binds the player AND the panel pump to pad 0), the
+  drifting-pad guard (their pad idles at 18% deflection), mouse→right-stick camera
+  behind the panel's MOUSE CAMERA/MOUSE SENS rows. Two honest gaps the operator
+  felt: A/S/D tap delay and the stick turn-rate ceiling on the camera. §6en.
+* **The census that reshapes the follow-up**: Case Zero's XEX SHIPS most of the PC
+  input vocabulary (74 KEY_ tokens, BUTTON_1..4, the four KBOARD_EMULATE_LTHUMB
+  commands, the USER_CAM consumers, a padmap line-identical to DR2 PC's). The
+  operator installed DR2 PC (Steam 45740, Proton) as the living reference: movement
+  is the same stick-emulation idea, the camera is RAW deltas into the same commands
+  (no ceiling), prompts are generic key-cap chips — **no Capcom assets needed or
+  shipped; the copyright question they asked is retired**. The commissioned work is
+  `docs/native-kbm-plan.md` (A recon → B native keyboard → C raw mouse-look → D
+  our-own-art icons), with v1 as the standing fallback arm.
+* **The release board waits behind the fixes** (their instruction), and the Windows
+  leg now trails by parts 87-91 INCLUDING new SDL-side input code — build czwin
+  before any operator session there.
+
 **Older per-part status blocks (parts 28-54, the superseded mid-part-44 closure and the
-superseded MID-PART-46 block) moved to `docs/port-history.md`, NOW INCLUDING PARTS 60-88's** — part 90 moved part 88's out in the same commit that added its own block, part 89 moved part 87's out in the same commit that added its own block, part 88 moved part 86's out in the same commit that added its own block, part 87 moved part 85's out in the same commit that added its own block, part 86 moved part 84's out in the same commit that added its own block, part 85 moved part 83's out in the same commit that added its own block, part 84 moved part 82's out in the same commit that added its own block, part 83 moved part 81's out in the same commit that added its own block, part 82 moved part 80's out in the same commit that added its own block, part 78 moved part 76's out in the same commit that added its own block, part 76 moved part 74's out in the same commit that added its own block, part 74 moved part 72's out in the same commit that added its own block, part 73 moved part 71's out in the same commit that added its own block, part 72 moved part 70's out in the same commit that added its own block, part 71 moved part 69's out in the same commit that added its own block, part 70 moved part 68's out in the same commit that added its own block, part 69 moved part 67's out in the same commit that added its own block, part 68 moved part 66's out in the same commit that added its own block, part 67 moved part 65's out the same way, part 65 moved part 63's out the same way, part 64 moved parts 61/62's out the same way, part 63 moved part 60's out the same way, part 61 moved part 59's out the same way, part 59 moved part 57's out the same way, part 57 moved part 55's out the same way, part 55 moved part 53's
+superseded MID-PART-46 block) moved to `docs/port-history.md`, NOW INCLUDING PARTS 60-89's** — part 91 moved part 89's out in the same commit that added its own block, part 90 moved part 88's out in the same commit that added its own block, part 89 moved part 87's out in the same commit that added its own block, part 88 moved part 86's out in the same commit that added its own block, part 87 moved part 85's out in the same commit that added its own block, part 86 moved part 84's out in the same commit that added its own block, part 85 moved part 83's out in the same commit that added its own block, part 84 moved part 82's out in the same commit that added its own block, part 83 moved part 81's out in the same commit that added its own block, part 82 moved part 80's out in the same commit that added its own block, part 78 moved part 76's out in the same commit that added its own block, part 76 moved part 74's out in the same commit that added its own block, part 74 moved part 72's out in the same commit that added its own block, part 73 moved part 71's out in the same commit that added its own block, part 72 moved part 70's out in the same commit that added its own block, part 71 moved part 69's out in the same commit that added its own block, part 70 moved part 68's out in the same commit that added its own block, part 69 moved part 67's out in the same commit that added its own block, part 68 moved part 66's out in the same commit that added its own block, part 67 moved part 65's out the same way, part 65 moved part 63's out the same way, part 64 moved parts 61/62's out the same way, part 63 moved part 60's out the same way, part 61 moved part 59's out the same way, part 59 moved part 57's out the same way, part 57 moved part 55's out the same way, part 55 moved part 53's
 out in the same commit that added its own, which is what the rule below asks for. — CLAUDE.md keeps only the
 live part and one part back, per the 2026-08-08 split's rule, and **part 53 moved part
 51's out in the same commit that added its own**, which is what the rule below asks for.

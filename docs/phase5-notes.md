@@ -20231,3 +20231,40 @@ the picture 4,000 frames later fully correct, only the six pre-existing
 `topology-08773` messages; the upward leg (readback growth) gated the same way. And
 **by the operator, same sitting: "It is perfect tried multiple resolution and it
 worked"** — multiple live switches in one session through the real menu.
+
+## §6en — Part 91 fix 2: keyboard/mouse v1, the input-census night, and the DR2-PC reference (2026-09-01)
+
+The operator's commission: PC controls + icons, "implement our own if not there".
+**The census answered "not there, but the skeleton ships"**: zero KB/M assets in
+12,481 package entries and the handlers compiled out (part 60's verb-hash proof
+extends to the input family) — yet the XEX carries 74 `KEY_*` tokens, mouse
+`BUTTON_1..4`, all four `COMMAND_KBOARD_EMULATE_LTHUMB_*` names, the
+`COMMAND_USER_CAM_*` consumers, and loads a `padmap.txt` line-identical to DR2 PC's.
+
+**v1 shipped host-side (e8fe508)** at the existing pad seam, with three lessons paid
+for in operator sittings the same night: (1) **keyboard-as-pad-2 was structurally
+dead** — the title binds the player to pad 0 and the settings-panel pump reads pad-0
+polls only, so the merge into pad 0 is the load-bearing change; (2) **a drifting
+physical pad fights the keyboard** (theirs idled at 18% deflection — sub-deadzone
+axes now zeroed while kb/mouse contributes, pad-only untouched); (3) **the input
+trace beats theorising** — `CZ_INPUT_TRACE=1` showed every key publishing instantly
+at full deflection, which moved the residual A/S/D delay question into the title's
+own stick processing (`Stick_SensitivityHermite` ships in the image).
+
+**Then the operator installed DR2 PC (Steam 45740, Proton) as the living reference**
+and its control files settled the architecture: movement is the official port's own
+`KBOARD_EMULATE_LTHUMB` stick emulation (crisp there — the delay is beatable), the
+camera is `MOUSE_RAW_X/Y` into the same `USER_CAM` commands the pad binds (no stick
+turn-rate ceiling — theirs is "way faster" than any stick mapping can be), and the
+prompt icons are plain dark key-cap chips with white legends (their F9 screenshots)
+— **reproducible as our own original art, which retires the bundle-Capcom-assets
+question they asked: we neither need nor ship DR2 PC's files**.
+
+**The follow-up is commissioned and planned: `docs/native-kbm-plan.md`** (phases:
+A recon of the parser/key-state/command-value/glyph seams; B native keyboard through
+the title's own layer via a VFS-served augmented padmap + a real
+`XamInputGetKeystrokeEx`; C raw mouse-look injected at the command seam; D our-own
+key-cap prompt icons). v1 stays as the fallback arm (`CZ_NO_NATIVE_KBM=1` once the
+native path exists); the operator's two feel complaints are the acceptance tests.
+Owed: their pad-flick test (splits our-values vs title-curve for the A/S/D delay;
+the plan's A.3 answers it from the code side regardless).
