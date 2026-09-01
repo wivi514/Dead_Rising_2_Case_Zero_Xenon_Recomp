@@ -55,6 +55,7 @@
 
 #include "../cpu/crash_report.h"
 #include "../cpu/guest_thread.h"
+#include "../cpu/native_kbm.h"
 // For CZ_TIMEBASE_HZ, so KeQueryPerformanceFrequency and the guest's own `mftb`
 // cannot drift apart — the header says they must agree, and sharing the constant is
 // what makes that enforceable rather than aspirational. Including it here is safe
@@ -3696,6 +3697,12 @@ static uint32_t XamInputGetCapabilities_x(uint32_t userIndex, uint32_t flags,
     if (!caps)
         return STATUS_INVALID_PARAMETER;
     memset(caps, 0, sizeof(*caps));
+    // Part 92 note: an earlier native-KB/M build reported a Type-2 keyboard
+    // device here on port 2 so the title's own keyboard controller class would
+    // connect — the chain worked end to end, but ENGAGING a class-0 controller
+    // crashed in profile machinery the 360 build never expected to run for a
+    // keyboard. The native path now rides the player's own port 0
+    // (cpu/native_kbm.cpp), so this HLE reports gamepads only again.
     if (userIndex >= kLocalPadCount)
         return ERROR_DEVICE_NOT_CONNECTED;
     caps->type = 1;      // XINPUT_DEVTYPE_GAMEPAD
@@ -4476,26 +4483,17 @@ static uint32_t XamInputSetState_x(uint32_t userIndex, uint32_t unk,
     return 0;
 }
 
-// No keyboard is attached, and ERROR_EMPTY is the defined way to say "no keystroke
-// is queued" — not a failure, the normal answer on a console with no chatpad.
-struct GuestInputKeystroke    // 8 bytes
+// The keystroke import is REAL as of part 92: cpu/native_kbm.cpp queues SDL key
+// events (translated to Windows VK codes by host/window.cpp) for the title's own
+// keyboard controller, whose Update polls this once per controller tick. With the
+// native path off or inactive it answers exactly as the old stub did — ERROR_EMPTY,
+// the defined "no keystroke is queued", the normal answer on a console with no
+// chatpad. The handler also carries the per-tick analog/button source feed,
+// because this call IS the keyboard controller's tick (native_kbm.cpp).
+PPC_FUNC(__imp__XamInputGetKeystrokeEx)
 {
-    be<uint16_t> virtualKey;
-    be<uint16_t> unicode;
-    be<uint16_t> flags;
-    uint8_t userIndex;
-    uint8_t hidCode;
-};
-
-static uint32_t XamInputGetKeystrokeEx_x(be<uint32_t>* userIndex, uint32_t flags,
-                                         GuestInputKeystroke* keystroke)
-{
-    (void)flags;
-    if (keystroke)
-        memset(keystroke, 0, sizeof(*keystroke));
-    if (userIndex)
-        *userIndex = 0;
-    return ERROR_EMPTY;
+    KCALL("__imp__XamInputGetKeystrokeEx");
+    NativeKbm_HandleKeystroke(ctx, base);
 }
 
 GUEST_FUNCTION_HOOK(__imp__XamInputGetCapabilities, XamInputGetCapabilities_x)
@@ -4522,6 +4520,11 @@ PPC_FUNC(__imp__XamInputGetState)
     // This game has a ControllerDisconnected screen and polls capabilities ~1,100
     // times a boot per user, so that is a claim it acts on.
     const uint64_t result = ctx.r3.u64;
+
+    // Part 92: the native keyboard's one-time verify + connect. Runs here because
+    // this seam is on a guest thread every frame from boot, which is what the
+    // connect's guest calls need (docs/native-kbm-phaseA.md "What Phase B/C build").
+    NativeKbm_Pump(ctx, base);
 
     if (Host_ConsumeDebugJumpPressed())
         DebugTunables_RequestDebugJump(ctx, base);
@@ -4559,7 +4562,6 @@ PPC_FUNC(__imp__XamInputGetState)
     ctx.r3.u64 = result;
 }
 GUEST_FUNCTION_HOOK(__imp__XamInputSetState, XamInputSetState_x)
-GUEST_FUNCTION_HOOK(__imp__XamInputGetKeystrokeEx, XamInputGetKeystrokeEx_x)
 
 // ---------------------------------------------------------------------------
 // The content licence — finding 1, arriving in the runtime

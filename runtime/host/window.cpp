@@ -154,6 +154,7 @@ int Host_DisplayModeList(uint32_t*, int) { return 0; }
 #include "../gpu/vk_renderer.h"
 #include "host_paths.h"
 #include "settings.h"
+#include "../cpu/native_kbm.h"
 #include "stfs_extract.h"
 #include <filesystem>
 
@@ -878,6 +879,80 @@ int16_t PadAxisY(SDL_GameController* c, SDL_GameControllerAxis axis)
     return int16_t(v < -32768 ? -32768 : v > 32767 ? 32767 : v);
 }
 
+// SDL scancode -> Windows VK, covering exactly the 62 keys the title's own
+// source-token table names (docs/native-kbm-phaseA.md A.1). Anything else — and
+// in particular the F-keys, which are host debug edges — returns 0 and is never
+// pushed to the guest.
+uint16_t ScancodeToVk(SDL_Scancode sc)
+{
+    if (sc >= SDL_SCANCODE_A && sc <= SDL_SCANCODE_Z)
+        return uint16_t(0x41 + (sc - SDL_SCANCODE_A));
+    if (sc >= SDL_SCANCODE_1 && sc <= SDL_SCANCODE_9)
+        return uint16_t(0x31 + (sc - SDL_SCANCODE_1));
+    if (sc >= SDL_SCANCODE_KP_1 && sc <= SDL_SCANCODE_KP_9)
+        return uint16_t(0x61 + (sc - SDL_SCANCODE_KP_1));
+    switch (sc)
+    {
+        case SDL_SCANCODE_0:        return 0x30;
+        case SDL_SCANCODE_KP_0:     return 0x60;
+        case SDL_SCANCODE_LEFT:     return 0x25;
+        case SDL_SCANCODE_UP:       return 0x26;
+        case SDL_SCANCODE_RIGHT:    return 0x27;
+        case SDL_SCANCODE_DOWN:     return 0x28;
+        case SDL_SCANCODE_SPACE:    return 0x20;
+        case SDL_SCANCODE_LSHIFT:   return 0xA0;
+        case SDL_SCANCODE_RSHIFT:   return 0xA1;
+        case SDL_SCANCODE_LCTRL:    return 0xA2;
+        case SDL_SCANCODE_RCTRL:    return 0xA3;
+        case SDL_SCANCODE_LALT:     return 0xA4;
+        case SDL_SCANCODE_RALT:     return 0xA5;
+        case SDL_SCANCODE_ESCAPE:   return 0x1B;
+        case SDL_SCANCODE_RETURN:   return 0x0D;
+        case SDL_SCANCODE_KP_ENTER: return 0x0D;
+        case SDL_SCANCODE_COMMA:    return 0xBC;
+        case SDL_SCANCODE_PERIOD:   return 0xBE;
+        case SDL_SCANCODE_TAB:      return 0x09;
+        default:                    return 0;
+    }
+}
+
+// One SDL key event into the native path (part 92): the WASD level mask always
+// tracks reality (a release must land even if a panel opened mid-hold), the
+// keystroke QUEUE is gated on focus and on the overlays owning the keyboard.
+void NativeKbmKeyEvent(const SDL_KeyboardEvent& e, bool down)
+{
+    const SDL_Scancode sc = e.keysym.scancode;
+    static uint32_t wasd = 0;
+    uint32_t bit = 0;
+    switch (sc)
+    {
+        case SDL_SCANCODE_W: bit = 1u << 0; break;
+        case SDL_SCANCODE_S: bit = 1u << 1; break;
+        case SDL_SCANCODE_A: bit = 1u << 2; break;
+        case SDL_SCANCODE_D: bit = 1u << 3; break;
+        default: break;
+    }
+    if (bit)
+    {
+        wasd = down ? (wasd | bit) : (wasd & ~bit);
+        NativeKbm_MoveKeys(wasd);
+    }
+    if (!g_keyboardFocus ||
+        g_debugOverlayVisible.load(std::memory_order_acquire) ||
+        Settings_OverlayVisible())
+        return;
+    const uint16_t vk = ScancodeToVk(sc);
+    if (!vk)
+        return;
+    const SDL_Keymod mod = SDL_Keymod(e.keysym.mod);
+    uint16_t mods = 0;
+    if (mod & KMOD_SHIFT) mods |= 0x8;
+    if (mod & KMOD_CTRL)  mods |= 0x10;
+    if (mod & KMOD_ALT)   mods |= 0x20;
+    NativeKbm_PushKey(vk, uint16_t(e.keysym.sym < 0x80 ? e.keysym.sym : 0), down,
+                      e.repeat != 0, mods);
+}
+
 HostPadState ReadKeyboard()
 {
     HostPadState s{};
@@ -918,6 +993,18 @@ HostPadState ReadKeyboard()
         // While the host overlay owns the keyboard, do not also hand its navigation
         // presses to the game as controller-2 input.
         if (g_debugOverlayVisible.load(std::memory_order_acquire))
+            return s;
+
+        // Part 92: with the NATIVE keyboard live — key bindings spliced into
+        // port 0's own command layer and the sources fed there — the v1
+        // keyboard->pad merge below must stand down, or every key would arrive
+        // twice through two different paths. EXCEPTION: while the host settings
+        // panel is up it is driven from pad-0 button state, so the merge comes
+        // back for the panel's lifetime (the panel zeroes what the guest sees
+        // anyway). The F-key debug edges above stay host-side either way.
+        // CZ_NO_NATIVE_KBM=1 (or a declined splice) keeps everything below
+        // exactly as part 91 shipped it.
+        if (NativeKbm_Active() && !Settings_OverlayVisible())
             return s;
 
         for (const auto& k : kKeyMap)
@@ -2043,11 +2130,34 @@ void Host_WindowRun()
                 case SDL_MOUSEMOTION:
                     // Relative deltas only — absolute positions mean nothing to a
                     // stick. Accumulated here, consumed (and zeroed) by the pad
-                    // assembly below in this same loop iteration.
+                    // assembly below in this same loop iteration. The native path
+                    // (part 92) keeps its own accumulator so neither consumer can
+                    // starve the other.
                     g_mouseDX.fetch_add(e.motion.xrel, std::memory_order_relaxed);
                     g_mouseDY.fetch_add(e.motion.yrel, std::memory_order_relaxed);
+                    NativeKbm_MouseDelta(e.motion.xrel, e.motion.yrel);
+                    break;
+                case SDL_MOUSEBUTTONDOWN:
+                case SDL_MOUSEBUTTONUP:
+                {
+                    // Level state for the native path's BUTTON_1/2/3 sources.
+                    const uint32_t mb = SDL_GetMouseState(nullptr, nullptr);
+                    uint32_t mask = 0;
+                    if (mb & SDL_BUTTON(SDL_BUTTON_LEFT))   mask |= 1;
+                    if (mb & SDL_BUTTON(SDL_BUTTON_RIGHT))  mask |= 2;
+                    if (mb & SDL_BUTTON(SDL_BUTTON_MIDDLE)) mask |= 4;
+                    NativeKbm_MouseButtons(mask);
+                    break;
+                }
+                case SDL_MOUSEWHEEL:
+                    if (e.wheel.y != 0)
+                        NativeKbm_MouseWheel(e.wheel.y);
+                    break;
+                case SDL_KEYUP:
+                    NativeKbmKeyEvent(e.key, false);
                     break;
                 case SDL_KEYDOWN:
+                    NativeKbmKeyEvent(e.key, true);
                     if (!e.key.repeat)
                     {
                         std::lock_guard<std::mutex> lock(g_debugOverlayMutex);
