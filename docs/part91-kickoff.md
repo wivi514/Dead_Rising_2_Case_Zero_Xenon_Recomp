@@ -85,7 +85,46 @@ re-asks it). Every arm is in `docs/instruments.md`; the picture-complaint bisect
 order is §0b's. Whoever resumes: fresh profiled decomposition first (a recorded
 number has a shelf life), and `tools/part80_crowdroute.sh` is still the route.
 
-## 1. THE BOARD — THE SUBJECT IS THE RELEASE ("really soon"), in order
+## 0d. WHAT TO TRY LATER TO IMPROVE PERFORMANCE — the resume list, in order of promise
+
+Written at parking time so resuming costs a read, not a re-derivation. Every number
+here has a shelf life (gotcha 13): re-profile at the crowd before pricing anything.
+
+1. **The arithmetic that governs everything**: the crowd is CPU-bound by ~1.3-1.4 ms
+   (wall ~11.2 / GPU ~9.8, fence 0.00) — a CPU saving converts 1:1 up to ~1.4 ms
+   there; a GPU saving converts NOTHING at the crowd until the CPU falls, but is
+   wall time in every band below ~7,000 draws and headroom/resolution everywhere.
+2. **The resolve copies' dead share** (§6el) — the only NAMED item: 36.4% of copies
+   dead, ~0.1-0.28 ms of GPU. Mechanism is prediction (skip a copy expected to be
+   overwritten unsampled) with a SILENT-STALE failure mode and no inline fallback —
+   build it only with an exact verifier (part 88's way: predict + verify + poison),
+   and `CZ_VK_COPY_CENSUS=1` re-asks the number first.
+3. **The PM4 walk** — ~3.1 ms instrumented share, the largest single serial term.
+   It is a register-write change-detector loop (gotchas 474/4): memoisation is
+   refuted, but nobody has tried (a) batching register-window writes into wider
+   memcpys, or (b) a second walk thread speculating ahead on packet BOUNDARIES only
+   (the order stays semantic). Both are research, not items — price the walk fresh
+   first; it has never had its own decomposition.
+4. **The resolve half of UploadStream** (162 ns/draw true, §6ei) — change-detector
+   class, same caveat. The flat-cache lookup is the measured majority; a
+   perfect-hash over the stable working set was never tried.
+5. **Resolution scaling as the headroom spender** (memory: it was measured FREE in
+   crowds at 1440p in part 51's era) — with ~1.4+ ms of GPU headroom at the crowd
+   and more below it, CZ_VK_RES up a notch is the cheapest visible win the parked
+   state supports. An operator preference question, not an engineering item.
+6. **The instruments to trust**: `tools/part80_crowdroute.sh` (±2.9% floor, 3v3,
+   band by draws), `CZ_VK_GPU_PASSES=1` (bill nil, residual first),
+   `CZ_VK_PROFILE` (~806 ns/draw bill — mechanism only, never wall),
+   `CZ_VK_FRAME_TRACE` + `part80_trace_band.py` for regime tables. FRAME_STATS
+   costs ~15 ms/frame at 3440x1440 — picture gates only.
+
+## 1. THE BOARD — a few small fixes first (operator's list, to be named), THEN the release
+
+**2026-09-01, operator:** *"Do not want you to proceed with stuff for release yet I
+want you to fix a few small things before we work on release."* The release board
+below is NEXT AFTER those fixes, not the live work. The operator names the fixes.
+
+### The release board, for when the fixes are done ("really soon"), in order
 
 0. **Rebuild the Windows leg** — the shipped bundle's binaries predate the ENTIRE
    performance arc (parts 87-90: constants, parallel record, deferred clears).

@@ -970,10 +970,12 @@ findings ledger — it wins on any measured number), `docs/phase1-notes.md`,
 
 **SUBJECT CHANGE, 2026-09-01, operator instruction closing part 90's arc:** *"Save
 everything on performance we'll switch to something else so we can get a release really
-soon."* **PERFORMANCE IS PARKED AGAIN — `part91-kickoff.md` §0c is the parking record
-and the state that resumes it; its §1 is the RELEASE board ("really soon"), whose top
-items are the Windows leg rebuild (the shipped bundle predates parts 87-90 entirely),
-the bundle save verification, and the repackage + re-gate of both artifacts.**
+soon."* **PERFORMANCE IS PARKED AGAIN — `part91-kickoff.md` §0c is the parking record,
+its §0d the ordered resume list, and its §1 the board: the operator has A FEW SMALL
+FIXES to name FIRST (*"Do not want you to proceed with stuff for release yet"*), and
+the RELEASE board follows them — top items the Windows leg rebuild (the shipped
+bundle predates parts 87-90 entirely), the bundle save verification, and the
+repackage + re-gate of both artifacts.**
 
 **SUBJECT: THE RELEASE, 2026-08-27, operator instruction opening part 82:** *"Do the release
 plan."* **`docs/release-plan.md` IS THE PROGRAMME AND `docs/part91-kickoff.md` IS THE LIVE
