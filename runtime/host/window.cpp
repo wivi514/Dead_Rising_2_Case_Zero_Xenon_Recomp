@@ -424,6 +424,20 @@ HostPadState g_pads[2] = {
 // is deliberately NOT gated: a pad works whatever window is focused, which is what
 // every other application on the machine does.
 bool g_keyboardFocus = true;
+// MOUSE -> RIGHT-STICK CAMERA (part 91). The census answered the operator's "is PC
+// input already in the files?" with a clean no on both halves: the engine carries
+// PC-era leftovers (a MOUSE SENSITIVITY row in options_pc.txt, `always_show_mouse`
+// in the image) but the 360 XEX compiled the keyboard/mouse handlers out (part 60's
+// verb-hash proof covers "Mouse" by name), and the package ships zero KB/M assets —
+// no bindings, no key-name table, no prompt icons in 12,481 archive entries. So the
+// mouse lives HERE, at the same host seam the keyboard fallback has always used:
+// relative-mode deltas become right-stick deflection (velocity-scaled, EMA-smoothed),
+// LMB = X (attack), RMB = RT (aim), MMB = Y, and the side buttons LB/RB. Off unless
+// the panel's MOUSE CAMERA row says on, so a pad player's build changes nothing.
+// Deltas are accumulated by the event loop and consumed by ReadKeyboard — both on
+// the window thread, the atomics are belt and braces.
+std::atomic<int> g_mouseDX{ 0 }, g_mouseDY{ 0 };
+bool g_relativeMouse = false;
 // g_debugJumpPressed / Enter / Menu are defined at the top of this file, outside the
 // CZ_HAVE_SDL split AND outside this anonymous namespace — the keyboard below is one
 // SOURCE of those edges, no longer the only one. The `::` is load-bearing: an unqualified
@@ -535,8 +549,9 @@ const char* Glyph(char c)
 template <typename Rect>
 void EmitSettingsOverlay(int w, int h, Rect&& rect)
 {
-    const int panelW = 640, panelH = 380;   // 380: six rows — part 64 merged the RT
-                                            // tiers INTO the shadow row
+    const int panelW = 640, panelH = 460;   // 460: eight rows — part 91 added the
+                                            // MOUSE CAMERA pair (part 64 had merged
+                                            // the RT tiers INTO the shadow row)
     const int panelX = (w - panelW) / 2, panelY = (h - panelH) / 2 - 30;
     if (panelW <= 0 || panelH <= 0)
         return;
@@ -613,16 +628,22 @@ void EmitSettingsOverlay(int w, int h, Rect&& rect)
     // stored value is not touched, so unparking restores the player's choice.
     const int shadowRow =
         VkRenderer_RtAvailable() ? Settings_ShadowRow() : Settings_ShadowTier();
-    const char* rows[6][2] = {
+    // The mouse pair (part 91): the census found no PC input in the package, so
+    // the mouse is host-made (window.cpp's ReadKeyboard) and these are its knobs.
+    char sensName[4];
+    snprintf(sensName, sizeof sensName, "%d", Settings_MouseSens());
+    const char* rows[8][2] = {
         { "RESOLUTION", resName },
         { "DISPLAY MODE", kModeNames[int(Settings_DisplayMode()) % 3] },
         { "VSYNC", kOnOff[Settings_VSync() ? 1 : 0] },
         { "SHADOW", kShadowRow[shadowRow % 6] },
         { "FRAME CAP", capName },
         { "FIELD OF VIEW", fovName },
+        { "MOUSE CAMERA", kOnOff[Settings_MouseCam() ? 1 : 0] },
+        { "MOUSE SENS", sensName },
     };
     const int sel = Settings_OverlaySelection();
-    for (int i = 0; i < 6; ++i)
+    for (int i = 0; i < 8; ++i)
     {
         const int y = panelY + 86 + i * 40;
         if (i == sel)
@@ -796,11 +817,13 @@ const PadBinding kPadMap[] = {
 
 void PrintKeyMap()
 {
-    fprintf(stderr, "[host] keyboard -> pad 2:");
+    fprintf(stderr, "[host] keyboard -> pad 1 (merged with the controller):");
     for (const auto& k : kKeyMap)
         fprintf(stderr, "  %s=%s", k.keyName, k.padName);
     fprintf(stderr, "\n[host] keyboard -> sticks:  WASD=left stick  IJKL=right stick  "
-                    "1/3=LT/RT\n");
+                    "1/3=LT/RT  (positions, not letters — ZQSD on AZERTY)\n");
+    fprintf(stderr, "[host] mouse (when MOUSE CAMERA is ON in Visuals): camera=right "
+                    "stick  LMB=X  RMB=RT  MMB=Y  side=LB/RB\n");
     fprintf(stderr, "[host] the window must have keyboard FOCUS for any of this to "
                     "reach the guest.\n");
 }
@@ -909,6 +932,67 @@ HostPadState ReadKeyboard()
             s.leftTrigger = 255;
         if (keys[SDL_SCANCODE_3])
             s.rightTrigger = 255;
+
+        // THE MOUSE (part 91) — see the g_mouseDX comment for why this exists at
+        // all. A mouse is a VELOCITY device and a stick is a DEFLECTION device, so
+        // the deltas since the last loop become px/s, scale into deflection by the
+        // panel's sensitivity, and pass through a short EMA so per-loop delta
+        // granularity does not read as jitter. A stopped mouse decays hard toward
+        // zero — a camera that keeps drifting after the hand stops is the one thing
+        // every first mouse-look implementation ships.
+        if (g_relativeMouse)
+        {
+            static auto lastPoll = std::chrono::steady_clock::now();
+            static float emaX = 0.0f, emaY = 0.0f;
+            const auto now = std::chrono::steady_clock::now();
+            float dt = std::chrono::duration<float>(now - lastPoll).count();
+            lastPoll = now;
+            if (dt <= 0.0f || dt > 0.25f)
+                dt = 1.0f / 250.0f;
+            const int dx = g_mouseDX.exchange(0, std::memory_order_relaxed);
+            const int dy = g_mouseDY.exchange(0, std::memory_order_relaxed);
+            // Full deflection at ~32767/k px/s of hand speed. The first scale
+            // (sens*6.5, ~1000 px/s at 5) read as "too slow even at max" on the
+            // operator's 3440 monitor: through a stick API the camera can never
+            // exceed the game's full-deflection turn rate, so the only useful
+            // mapping is one where ordinary hand speed PEGS the stick and the
+            // knob decides how ordinary. Quadratic so the top rungs get properly
+            // hot: sens 5 pegs at ~520 px/s, sens 10 at ~130.
+            const float sensV = float(Settings_MouseSens());
+            const float k = sensV * sensV * 2.5f;
+            const float alpha = std::min(1.0f, dt * 45.0f);
+            if (dx == 0 && dy == 0)
+            {
+                emaX *= 0.5f;
+                emaY *= 0.5f;
+            }
+            else
+            {
+                emaX += ((float(dx) / dt) * k - emaX) * alpha;
+                emaY += ((float(dy) / dt) * k - emaY) * alpha;
+            }
+            auto clampStick = [](float v) {
+                return int16_t(v > 32767.0f ? 32767.0f
+                                            : (v < -32767.0f ? -32767.0f : v));
+            };
+            if (emaX != 0.0f)
+                s.thumbRX = clampStick(float(s.thumbRX) + emaX);
+            if (emaY != 0.0f)
+                s.thumbRY = clampStick(float(s.thumbRY) - emaY);   // screen-down = look down
+            // Buttons: attack, aim, the two spares on LB/RB. SDL's mouse state is
+            // maintained by the same event pump this loop just ran.
+            const uint32_t mb = SDL_GetMouseState(nullptr, nullptr);
+            if (mb & SDL_BUTTON(SDL_BUTTON_LEFT))
+                s.buttons |= XI_X;
+            if (mb & SDL_BUTTON(SDL_BUTTON_RIGHT))
+                s.rightTrigger = 255;
+            if (mb & SDL_BUTTON(SDL_BUTTON_MIDDLE))
+                s.buttons |= XI_Y;
+            if (mb & SDL_BUTTON(SDL_BUTTON_X1))
+                s.buttons |= XI_LEFT_SHOULDER;
+            if (mb & SDL_BUTTON(SDL_BUTTON_X2))
+                s.buttons |= XI_RIGHT_SHOULDER;
+        }
     }
 
     return s;
@@ -1956,6 +2040,13 @@ void Host_WindowRun()
                              e.window.event == SDL_WINDOWEVENT_DISPLAY_CHANGED)
                         PublishDrawableSize();
                     break;
+                case SDL_MOUSEMOTION:
+                    // Relative deltas only — absolute positions mean nothing to a
+                    // stick. Accumulated here, consumed (and zeroed) by the pad
+                    // assembly below in this same loop iteration.
+                    g_mouseDX.fetch_add(e.motion.xrel, std::memory_order_relaxed);
+                    g_mouseDY.fetch_add(e.motion.yrel, std::memory_order_relaxed);
+                    break;
                 case SDL_KEYDOWN:
                     if (!e.key.repeat)
                     {
@@ -2038,8 +2129,75 @@ void Host_WindowRun()
             }
         }
 
-        PublishPad(0, ReadController());
-        PublishPad(1, ReadKeyboard());
+        // Mouse capture tracks the setting, the focus and the overlays — captured
+        // only while the mouse is actually driving the camera, released the moment
+        // a panel wants a visible cursor context or focus leaves. State-change
+        // only: SDL_SetRelativeMouseMode is not free.
+        {
+            const bool wantRel =
+                Settings_MouseCam() && g_keyboardFocus &&
+                !g_debugOverlayVisible.load(std::memory_order_acquire) &&
+                !Settings_OverlayVisible();
+            if (wantRel != g_relativeMouse)
+            {
+                SDL_SetRelativeMouseMode(wantRel ? SDL_TRUE : SDL_FALSE);
+                g_relativeMouse = wantRel;
+                g_mouseDX.store(0, std::memory_order_relaxed);
+                g_mouseDY.store(0, std::memory_order_relaxed);
+                fprintf(stderr, "[host] mouse camera %s\n",
+                        wantRel ? "CAPTURED (relative mode)" : "released");
+            }
+        }
+
+        // THE KEYBOARD/MOUSE MERGE INTO PAD 0 (part 91). The keyboard published as
+        // pad 2 from the day the fallback was written, and the operator's first real
+        // keyboard-only sitting showed what that costs: the title binds the PLAYER
+        // to pad 0, so keyboard input half-works at best, and the settings panel's
+        // input pump reads pad-0 polls ONLY — a keyboard-only player could not even
+        // reach the MOUSE CAMERA row that would have turned their mouse on. Keyboard
+        // and mouse now merge into pad 0 alongside the physical controller (buttons
+        // OR, triggers/axes by larger magnitude, so either device can drive and
+        // neither can pin a stick the other is using); pad 1 reports idle-connected.
+        {
+            HostPadState merged = ReadController();
+            const HostPadState kb = ReadKeyboard();
+            // A DRIFTING PAD MUST NOT FIGHT THE KEYBOARD (the operator's first
+            // keyboard sitting: their idle controller sat at L=(5539,5956) — 18%
+            // deflection — so key releases fell back to the drift vector and every
+            // press carried it on the other axis). ONLY while the keyboard/mouse is
+            // actually contributing, the controller's sub-deadzone axes are zeroed
+            // (7849 = the XInput reference deadzone). Pad-only input is untouched
+            // byte-for-byte — the no-deadzone principle at KeyAxis still governs
+            // the solo-pad path, where the game applies its own.
+            const bool kbActive = kb.buttons || kb.leftTrigger || kb.rightTrigger ||
+                                  kb.thumbLX || kb.thumbLY || kb.thumbRX || kb.thumbRY;
+            if (kbActive)
+            {
+                auto dz = [](int16_t& v) {
+                    if (v > -7849 && v < 7849)
+                        v = 0;
+                };
+                dz(merged.thumbLX);
+                dz(merged.thumbLY);
+                dz(merged.thumbRX);
+                dz(merged.thumbRY);
+            }
+            merged.buttons |= kb.buttons;
+            if (kb.leftTrigger > merged.leftTrigger)
+                merged.leftTrigger = kb.leftTrigger;
+            if (kb.rightTrigger > merged.rightTrigger)
+                merged.rightTrigger = kb.rightTrigger;
+            auto biggerAxis = [](int16_t& dst, int16_t src) {
+                if ((src < 0 ? -int(src) : int(src)) > (dst < 0 ? -int(dst) : int(dst)))
+                    dst = src;
+            };
+            biggerAxis(merged.thumbLX, kb.thumbLX);
+            biggerAxis(merged.thumbLY, kb.thumbLY);
+            biggerAxis(merged.thumbRX, kb.thumbRX);
+            biggerAxis(merged.thumbRY, kb.thumbRY);
+            PublishPad(0, merged);
+            PublishPad(1, HostPadState{});
+        }
 
         const uint64_t seq = g_swapSeq.load(std::memory_order_acquire);
         if (seq != presented)
