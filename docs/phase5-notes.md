@@ -20197,3 +20197,37 @@ validation 0 hazards; clear class still 0.009-0.010 ms/frame; scoped rects cover
 57.85 of 588.65 Mpixel — **90.2% of the class removed** (window rects were 91.7%,
 so hardware-faithful coverage cost 1.5 points); flush share unchanged (~13.5%);
 census residual 0.1%. The class table and band deltas in §4 stand.
+
+## §6em — Part 91 fix 1: LIVE internal-resolution apply from the Visuals panel — the part-60 freeze was the apply's PLACEMENT (2026-09-01)
+
+The operator's spec, verbatim: *"change resolution and other settings in the visuals
+menu and that we can save and apply in game so we change internal resolution without
+restarting. Do not change resolution live everytime the player change resolution only
+change when the player apply it when pressing X."*
+
+**The unparking finding**: the live-rescale path (part 60) was parked because "it
+froze the operator's machine twice" — and the freeze was its CALL SITE, not its body.
+`ApplyPendingRenderScale` ran in `VkRenderer_OnSwap`, MID-FRAME: the frame's draws
+were recorded but not yet submitted, and its `vkDeviceWaitIdle` covers only SUBMITTED
+work — so the submit that followed referenced destroyed EDRAM handles, the exact
+wedge the `RetiredImage` comment documents for the part-60 shadow-tier freeze (the
+snapshot-flush fix in the same function had only removed the STUTTER half). **The
+apply now runs at the top of `BeginFrame`'s non-recording entry** — the one moment
+every prior frame is submitted and nothing of the new frame is recorded, where the
+wait-idle actually covers every referencing command buffer.
+
+The rest of the build: `VkRenderer_RequestInternalRes(w,h)` (the explicit W×H form
+the part-60 integer-scale entry could not express — the store went rational in
+revision 3); a PENDING resolution in the settings store (one atomic word, shared by
+the input pump and the drawer); the panel's Resolution row steps ONLY the pending
+(starred value, footer flips to "PRESS X TO APPLY"), **X persists + live-applies, B
+or reopening discards**; every other row keeps its existing live-on-step behavior.
+`CZ_VK_LIVE_RES_TEST=<frame>:<w>x<h>` is the headless gate arm. The CZ_VK_RES pin
+still refuses the menu (the measurement arm wins).
+
+**Verified**: headless — a mid-route 3440x1440 → 1920x1080 switch at frame 1500 under
+validation: the LIVE line printed, dump extents flipped at exactly the switch frame,
+the picture 4,000 frames later fully correct, only the six pre-existing
+`topology-08773` messages; the upward leg (readback growth) gated the same way. And
+**by the operator, same sitting: "It is perfect tried multiple resolution and it
+worked"** — multiple live switches in one session through the real menu.

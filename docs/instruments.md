@@ -1364,6 +1364,15 @@ CZ_VK_DEFER_FULL_RECT=1  DIAGNOSTIC for the deferred clears: defer (same latch, 
                    pixels through the new mechanism. The two-factor bisection for any
                    picture complaint against them: an artifact that vanishes under it
                    indicts the SCOPING; one that survives indicts the deferral/ordering
+CZ_VK_LIVE_RES_TEST=<frame>:<w>x<h>  inject the settings panel's APPLY-resolution
+                   request at a chosen frame — the headless gate for the live internal-
+                   resolution switch (part 91), so a scripted route can cross a rescale
+                   without a human at the menu. The apply lands at the next frame
+                   BOUNDARY (BeginFrame), which is the placement that fixed the part-60
+                   freeze: mid-frame, a wait-idle cannot cover the recorded-but-
+                   unsubmitted references to the images the rescale destroys. A
+                   DIAGNOSTIC ARM. Refused (like the panel's own request) when
+                   CZ_VK_RES/CZ_VK_RES_SCALE pin the resolution
 CZ_VK_COPY_CENSUS=1  the resolve-copy produced-vs-sampled census (part 90 item 2): how
                    many of the ~50 resolve copies a frame are DEAD — the same
                    (snapshot, rect) copied again with no consumer in between. Consumers

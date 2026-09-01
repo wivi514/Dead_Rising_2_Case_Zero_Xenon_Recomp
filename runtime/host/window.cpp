@@ -561,21 +561,27 @@ void EmitSettingsOverlay(int w, int h, Rect&& rect)
     };
 
     text(panelX + 20, panelY + 16, "PC SETTINGS", 3, 245, 235, 200);
-    text(panelX + 20, panelY + 46, "UP/DOWN ROW   LEFT/RIGHT CHANGE   B CLOSE", 2,
-         160, 160, 170);
+    text(panelX + 20, panelY + 46, "UP/DOWN ROW   LEFT/RIGHT CHANGE   X APPLY   B CLOSE",
+         2, 160, 160, 170);
 
     static const char* kModeNames[] = { "WINDOW", "BORDERLESS", "FULLSCREEN" };
     static const char* kOnOff[] = { "OFF", "ON" };
     static const char* kTiers[] = { "LOW", "MEDIUM", "HIGH" };
     const uint32_t scale = Settings_RenderScale();
-    // The Resolution row shows the persisted internal resolution directly (operator
-    // revision 3: the value IS a width x height, stepped through the display's own
-    // mode list in pc_options.cpp).
-    char resName[20];
+    // The Resolution row shows the PENDING value when one exists (stepped but not
+    // yet applied — part 91's apply-button flow), starred so "shown" and "running"
+    // cannot be confused; otherwise the persisted internal resolution.
+    char resName[26];
+    bool resPending = false;
     {
-        uint32_t rw = 0, rh = 0;
+        uint32_t rw = 0, rh = 0, pw = 0, ph = 0;
         Settings_InternalRes(rw, rh);
-        snprintf(resName, sizeof resName, "%u X %u", rw, rh);
+        Settings_PendingInternalRes(pw, ph);
+        resPending = pw && (pw != rw || ph != rh);
+        if (resPending)
+            snprintf(resName, sizeof resName, "%u X %u *", pw, ph);
+        else
+            snprintf(resName, sizeof resName, "%u X %u", rw, rh);
     }
     // The frame cap's display name. Values come from the validated set in
     // settings.cpp, so the fallback only fires on a hand-edited file mid-run.
@@ -635,16 +641,21 @@ void EmitSettingsOverlay(int w, int h, Rect&& rect)
     // a device without ray query cannot be fixed by the user, a missing shader variant
     // cache is one build command away (tools/patch_rt_shadow_hlsl.py).
     const int rtWhy = VkRenderer_RtUnavailableReason();
+    // The footer leads with the pending-apply hint when one exists — the one moment
+    // the player needs telling what X does — and the resolution note otherwise says
+    // LIVE, because it is (part 91: applied at the frame boundary on the X press).
     text(panelX + 20, panelY + panelH - 30,
-         rtWhy == 3
-             ? "RESOLUTION: NEXT LAUNCH - RT SHADOWS ARE OFF IN THIS BUILD"
+         resPending
+             ? "PRESS X TO APPLY THE NEW RESOLUTION"
+         : rtWhy == 3
+             ? "RESOLUTION: X APPLIES LIVE - RT SHADOWS ARE OFF IN THIS BUILD"
          : rtWhy == 1
-             ? "RESOLUTION: NEXT LAUNCH - NO RAY QUERY: RT SHADOWS UNAVAILABLE"
+             ? "RESOLUTION: X APPLIES LIVE - NO RAY QUERY: RT UNAVAILABLE"
          : rtWhy == 2
-             ? "RESOLUTION: NEXT LAUNCH - NO RT SHADER CACHE: SEE THE LOG"
-             : (scale > 1 ? "RESOLUTION: NEXT LAUNCH - SHADOW: LIVE"
-                          : "RESOLUTION: NEXT LAUNCH - SHADOW INERT AT 720P"),
-         2, 150, 140, 120);
+             ? "RESOLUTION: X APPLIES LIVE - NO RT SHADER CACHE: SEE THE LOG"
+             : (scale > 1 ? "RESOLUTION: X APPLIES LIVE - SHADOW: LIVE"
+                          : "RESOLUTION: X APPLIES LIVE - SHADOW INERT AT 720P"),
+         2, resPending ? 255 : 150, resPending ? 220 : 140, resPending ? 120 : 120);
 }
 
 template <typename Rect>

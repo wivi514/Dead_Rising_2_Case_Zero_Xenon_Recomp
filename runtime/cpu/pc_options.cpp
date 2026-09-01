@@ -709,7 +709,7 @@ void PcOptions_Pump(PPCContext& ctx, uint8_t* base, uint32_t buttons)
             return;
         lastAction = now;
         constexpr uint32_t kUp = 0x0001, kDown = 0x0002, kLeft = 0x0004,
-                           kRight = 0x0008, kB = 0x2000, kA = 0x1000;
+                           kRight = 0x0008, kB = 0x2000, kA = 0x1000, kX = 0x4000;
         // One applier for both input styles (Left/Right and the console-style A
         // step): the first version was two hand-copied switch blocks, which is how
         // a fifth row lands in one and not the other. `dir` is +1 or -1.
@@ -723,9 +723,15 @@ void PcOptions_Pump(PPCContext& ctx, uint8_t* base, uint32_t buttons)
                     // renderer can produce — 1920x1080 and friends included, which
                     // no integer multiple of 1280x720 could express. Fallback when
                     // no display list exists (headless, or SDL said nothing): the
-                    // synthesized 16:9 ladder, so the row still steps. Selecting
-                    // persists the size; applies at the next launch (the live path
-                    // froze the operator's machine twice and stays parked).
+                    // synthesized 16:9 ladder, so the row still steps.
+                    //
+                    // STEPPING MOVES ONLY THE PENDING VALUE (part 91, the
+                    // operator's spec: "do not change resolution live every time
+                    // the player changes it — only when they apply"). The X press
+                    // below persists it and hands it to the renderer's live-apply
+                    // seam; leaving the panel discards it. The live path's part-60
+                    // freeze was the mid-frame apply placement, fixed with the
+                    // relocation to the frame boundary (BeginFrame's note).
                     uint32_t modes[64];
                     int count = Host_DisplayModeList(modes, 32);
                     if (count == 0)
@@ -736,7 +742,9 @@ void PcOptions_Pump(PPCContext& ctx, uint8_t* base, uint32_t buttons)
                             ++count;
                         }
                     uint32_t cw = 0, ch = 0;
-                    Settings_InternalRes(cw, ch);
+                    Settings_PendingInternalRes(cw, ch);
+                    if (!cw)
+                        Settings_InternalRes(cw, ch);
                     int at = 0;
                     for (int i = 0; i < count; ++i)
                         if (modes[i * 2] == cw && modes[i * 2 + 1] == ch)
@@ -750,8 +758,8 @@ void PcOptions_Pump(PPCContext& ctx, uint8_t* base, uint32_t buttons)
                         at = 0;
                     if (at >= count)
                         at = count - 1;
-                    Settings_SetInternalRes(modes[at * 2], modes[at * 2 + 1]);
-                    fprintf(stderr, "[pcopt] resolution %ux%u — next launch\n",
+                    Settings_SetPendingInternalRes(modes[at * 2], modes[at * 2 + 1]);
+                    fprintf(stderr, "[pcopt] resolution %ux%u PENDING — X applies\n",
                             modes[at * 2], modes[at * 2 + 1]);
                     break;
                 }
@@ -839,10 +847,32 @@ void PcOptions_Pump(PPCContext& ctx, uint8_t* base, uint32_t buttons)
             applyRow(sel, (pressed & kRight) ? 1 : -1);
         else if (pressed & kA)
             applyRow(sel, 1);   // A steps the selected value forward, console-style
+        else if (pressed & kX)
+        {
+            // X APPLIES the pending resolution (part 91): persist it (every setter
+            // saves, so a crash after this loses nothing) and hand it to the
+            // renderer's frame-boundary live-apply seam. A press with nothing
+            // pending says so instead of doing nothing silently.
+            uint32_t pw = 0, ph = 0;
+            Settings_PendingInternalRes(pw, ph);
+            uint32_t cw = 0, ch = 0;
+            Settings_InternalRes(cw, ch);
+            if (pw && (pw != cw || ph != ch) && Settings_ValidInternalRes(pw, ph))
+            {
+                Settings_SetInternalRes(pw, ph);
+                VkRenderer_RequestInternalRes(pw, ph);
+                Settings_SetPendingInternalRes(0, 0);
+                fprintf(stderr, "[pcopt] resolution %ux%u APPLIED LIVE (and saved)\n",
+                        pw, ph);
+            }
+            else
+                fprintf(stderr, "[pcopt] X: nothing pending to apply\n");
+        }
         else if (pressed & kB)
         {
             // B closes. The hub underneath never saw any of this input; it
-            // resumes untouched.
+            // resumes untouched — and an unapplied pending resolution is
+            // discarded by SetOverlayVisible itself.
             Settings_SetOverlayVisible(false);
             fprintf(stderr, "[pcopt] settings panel closed\n");
         }

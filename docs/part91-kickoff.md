@@ -118,11 +118,17 @@ here has a shelf life (gotcha 13): re-profile at the crowd before pricing anythi
    `CZ_VK_FRAME_TRACE` + `part80_trace_band.py` for regime tables. FRAME_STATS
    costs ~15 ms/frame at 3440x1440 — picture gates only.
 
-## 1. THE BOARD — a few small fixes first (operator's list, to be named), THEN the release
+## 1. THE BOARD — a few small fixes first (operator's list), THEN the release
 
 **2026-09-01, operator:** *"Do not want you to proceed with stuff for release yet I
 want you to fix a few small things before we work on release."* The release board
 below is NEXT AFTER those fixes, not the live work. The operator names the fixes.
+
+**Fix 1 — DONE, operator-verified** (*"It is perfect tried multiple resolution and
+it worked"*): live internal-resolution apply from the Visuals panel, pending-until-X
+(`phase5-notes.md` §6em — the part-60 freeze was the apply's mid-frame placement,
+fixed by relocating it to BeginFrame's non-recording entry). Further fixes as the
+operator names them.
 
 ### The release board, for when the fixes are done ("really soon"), in order
 

@@ -1344,6 +1344,9 @@ std::atomic<uint32_t> g_internalW{ 0 }, g_internalH{ 0 };
 // requests are refused loudly rather than silently overriding an A/B.
 bool g_resScaleLocked = false;
 std::atomic<uint32_t> g_resScalePending{ 0 };
+// The explicit W x H form of the same request (part 91) — one word so a torn
+// half-update cannot exist. 0 = nothing pending.
+std::atomic<uint64_t> g_resWHPending{ 0 };
 
 void InternalRes(uint32_t& w, uint32_t& h)
 {
@@ -11297,10 +11300,38 @@ void ParRec_WaitChunks()
 // the gate harder to find, not easier.
 void OrderGateCheck();
 
+void ApplyPendingRenderScale();   // defined with the other public-seam appliers below
+
 void BeginFrame()
 {
     if (R->recording)
         return;
+    // A pending internal-resolution change (the panel's APPLY press) lands HERE and
+    // nowhere else: this is the one moment where every prior frame has been
+    // SUBMITTED and nothing of the new frame is recorded, so the wait-idle inside
+    // actually covers every command buffer that references the images it destroys.
+    // Applying anywhere mid-frame is the part-60 freeze shape (see the RetiredImage
+    // comment and the note in VkRenderer_OnSwap).
+    //
+    // CZ_VK_LIVE_RES_TEST=<frame>:<w>x<h> — the headless gate for the live path:
+    // inject the panel's request at a chosen frame so a scripted route can cross a
+    // live rescale without a human at the menu. A DIAGNOSTIC ARM.
+    {
+        struct LiveResTest { uint64_t frame; uint32_t w, h; };
+        static const LiveResTest t = [] {
+            LiveResTest v{ 0, 0, 0 };
+            if (const char* e = Env("CZ_VK_LIVE_RES_TEST"))
+            {
+                unsigned long long f = 0; unsigned w = 0, h = 0;
+                if (sscanf(e, "%llu:%ux%u", &f, &w, &h) == 3)
+                    v = LiveResTest{ f, w, h };
+            }
+            return v;
+        }();
+        if (t.frame && R->frame == t.frame)
+            VkRenderer_RequestInternalRes(t.w, t.h);
+    }
+    ApplyPendingRenderScale();
     // The slot this frame will record into. It was advanced at the previous swap, AFTER
     // that swap waited on this slot's fence — so `vkResetCommandBuffer` below is legal
     // and this slot's arena region is provably not being read. There is no wait here on
@@ -28137,6 +28168,13 @@ void VkRenderer_RequestRenderScale(uint32_t scale)
         g_resScalePending.store(scale, std::memory_order_release);
 }
 
+// See vk_renderer.h — the panel's APPLY press (part 91).
+void VkRenderer_RequestInternalRes(uint32_t w, uint32_t h)
+{
+    if (w && h)
+        g_resWHPending.store((uint64_t(w) << 32) | h, std::memory_order_release);
+}
+
 namespace
 {
 
@@ -28150,13 +28188,24 @@ namespace
 void ApplyPendingRenderScale()
 {
     const uint32_t want = g_resScalePending.exchange(0, std::memory_order_acq_rel);
-    if (!want || !R || want == ResScale())
+    const uint64_t wantWH = g_resWHPending.exchange(0, std::memory_order_acq_rel);
+    uint32_t wantW = uint32_t(wantWH >> 32), wantH = uint32_t(wantWH);
+    if ((!want && !wantWH) || !R)
         return;
+    {
+        uint32_t cw, ch;
+        InternalRes(cw, ch);
+        if (wantWH && wantW == cw && wantH == ch)
+            wantW = wantH = 0;
+        const bool scaleChange = want != 0 && want != ResScale();
+        if (!scaleChange && !wantW)
+            return;
+    }
     if (g_resScaleLocked)
     {
-        fprintf(stderr, "[vk] render-scale change to %ux REFUSED: CZ_VK_RES/"
-                        "CZ_VK_RES_SCALE pin the scale for this run (the "
-                        "measurement arm wins over the menu)\n", want);
+        fprintf(stderr, "[vk] internal-resolution change REFUSED: CZ_VK_RES/"
+                        "CZ_VK_RES_SCALE pin it for this run (the "
+                        "measurement arm wins over the menu)\n");
         return;
     }
     vkDeviceWaitIdle(R->device);
@@ -28176,7 +28225,14 @@ void ApplyPendingRenderScale()
     R->pendingClears.clear();
     destroyImage(R->color);
     destroyImage(R->depth);
-    // The parked live path speaks integer scales; preserve the current aspect.
+    // The explicit W x H form (part 91: the panel's APPLY press) wins; the legacy
+    // integer-scale form preserves the current aspect at 720*scale.
+    if (wantW)
+    {
+        g_internalW.store(wantW & ~1u, std::memory_order_relaxed);
+        g_internalH.store(wantH, std::memory_order_relaxed);
+    }
+    else
     {
         uint32_t w, h;
         InternalRes(w, h);
@@ -28261,9 +28317,15 @@ void ApplyPendingRenderScale()
         growBuffer(R->frames[i].present, "present readback");
     R->presentPixels.resize(size_t(RSX(R->targetWidth)) * RS(R->targetHeight) * 4);
 
-    fprintf(stderr, "[vk] render scale %ux -> %ux LIVE (%ux%u); snapshots and the "
-                    "cube map rebuild lazily over the next frames\n",
-            before, want, RSX(R->targetWidth), RS(R->targetHeight));
+    (void)before;
+    {
+        uint32_t nw, nh;
+        InternalRes(nw, nh);
+        fprintf(stderr, "[vk] internal resolution -> %ux%u LIVE (EDRAM stand-in "
+                        "%ux%u); snapshots and the cube map rebuild lazily over the "
+                        "next frames\n",
+                nw, nh, RSX(R->targetWidth), RS(R->edramHeight));
+    }
 }
 
 } // namespace
@@ -28273,7 +28335,13 @@ void VkRenderer_OnSwap(uint8_t* base, uint32_t frontBuffer, uint32_t width,
 {
     if (!g_active || g_d3dMode)
         return;
-    ApplyPendingRenderScale();
+    // NOTE (part 91): the pending internal-resolution change is applied at the TOP of
+    // BeginFrame, not here. Here sits MID-FRAME — the frame's draws are recorded but
+    // not submitted, and destroying the EDRAM images a recorded-but-unsubmitted
+    // command buffer references is the exact part-60 freeze shape ("a wait-idle only
+    // covers SUBMITTED work", the RetiredImage comment). This mid-frame placement is
+    // the likely reason the live path froze the operator's machine twice and spent
+    // 31 parts parked.
     DoSwapImpl(base, frontBuffer, width, height);
 }
 

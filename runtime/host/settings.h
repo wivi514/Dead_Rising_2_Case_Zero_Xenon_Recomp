@@ -83,6 +83,16 @@ bool Settings_ValidInternalRes(uint32_t w, uint32_t h);
 void Settings_InternalRes(uint32_t& w, uint32_t& h);
 void Settings_SetInternalRes(uint32_t w, uint32_t h);
 
+// THE PENDING RESOLUTION (part 91) — what the panel's Resolution row is SHOWING but
+// the player has not APPLIED yet. Stepping the row moves only this; the X press
+// persists it (Settings_SetInternalRes) and hands it to the renderer's live-apply
+// seam; leaving the panel discards it. 0,0 = nothing pending (the row shows the
+// persisted value). NOT saved to the file — it is UI state that happens to be
+// shared between the input pump (cpu/pc_options.cpp) and the drawer
+// (host/window.cpp), which is the same reason the overlay selection lives here.
+void Settings_PendingInternalRes(uint32_t& w, uint32_t& h);
+void Settings_SetPendingInternalRes(uint32_t w, uint32_t h);
+
 void Settings_SetDisplayMode(CzDisplayMode m);
 void Settings_SetRenderScale(uint32_t s);
 void Settings_SetVSync(bool on);

@@ -86,6 +86,13 @@ void VkRenderer_RequestSwapchainRebuild();
 // CZ_VK_RES/CZ_VK_RES_SCALE pin the scale for a measurement run.
 void VkRenderer_RequestRenderScale(uint32_t scale);
 
+// Change the internal resolution to an explicit WIDTH x HEIGHT at the next frame
+// boundary — the panel's APPLY press (part 91: the operator's "change internal
+// resolution without restarting", applied on the button and never per step). The
+// caller validates with Settings_ValidInternalRes; the same CZ_VK_RES pin refusal
+// as the scale form applies. Callable from any thread.
+void VkRenderer_RequestInternalRes(uint32_t w, uint32_t h);
+
 // RT stage 2 (part 64): true when the device was created with ray query (probe
 // passed and CZ_VK_RT did not veto). The settings panel's RT SHADOWS row consults
 // it to show UNSUPPORTED and refuse to move — a row that pretends is the gamma

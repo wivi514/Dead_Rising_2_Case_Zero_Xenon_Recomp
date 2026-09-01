@@ -382,6 +382,8 @@ namespace
 {
 std::atomic<bool> g_overlayVisible{ false };
 std::atomic<int> g_overlaySelection{ 0 };
+// One word so a torn W/H pair cannot exist between the pump and the drawer.
+std::atomic<uint64_t> g_pendingRes{ 0 };
 }
 
 bool Settings_OverlayVisible()
@@ -394,6 +396,23 @@ void Settings_SetOverlayVisible(bool on)
     g_overlayVisible.store(on, std::memory_order_release);
     if (on)
         g_overlaySelection.store(0, std::memory_order_release);
+    // Opening OR closing the panel discards an unapplied resolution — the row must
+    // never come up showing a stale pending from a previous visit, and leaving
+    // without X means "keep what I have" (part 91, the operator's apply-button spec).
+    g_pendingRes.store(0, std::memory_order_release);
+}
+
+void Settings_PendingInternalRes(uint32_t& w, uint32_t& h)
+{
+    const uint64_t v = g_pendingRes.load(std::memory_order_acquire);
+    w = uint32_t(v >> 32);
+    h = uint32_t(v);
+}
+
+void Settings_SetPendingInternalRes(uint32_t w, uint32_t h)
+{
+    g_pendingRes.store(w && h ? (uint64_t(w) << 32) | h : 0,
+                       std::memory_order_release);
 }
 
 int Settings_OverlaySelection()
