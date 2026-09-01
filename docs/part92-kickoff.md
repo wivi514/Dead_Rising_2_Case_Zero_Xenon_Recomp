@@ -17,9 +17,21 @@ splice at all). 86 of 93 key bindings land; `CZ_NO_NATIVE_KBM=1` restores v1
 wholly; the headless proof is ENTER taps (`CZ_KBM_TEST_KEYS`) advancing the
 title into the main menu where the control arm parks at file #84.
 
-**Owed on this**: the operator's feel session (crispness, camera speed vs DR2
-PC on their own hand — B.4/C.3 acceptance), and phase D (the key-cap prompt
-icons) which was not started tonight.
+**Phase D shipped the same night**: all 25 pad glyphs live in fecmn.tex
+(nested in preload4.big — evicted onto the loose-file road part 60 proved,
+served from a new `assets/game_kbm` overlay only while the native keyboard is
+on); `tools/gen_kbm_icons.py` draws our own key-cap chips, compresses them
+with the real LZX encoder (the guest crashes on degenerate streams — part
+60), pads to layout.bin's 501,900-byte pin, and gates everything (identity
+repack, hash identity, round-trip). The game-identical decode of every chip
+was rendered and looked at; the boot serves and decodes the bank clean.
+
+**THE WHOLE PLAN IS EXECUTED. Owed: the operator's session** — feel
+acceptance (A/S/D crispness, camera speed vs DR2 PC — B.4/C.3), the first
+on-screen sighting of the chips at a prompt-bearing surface, and legend
+refinements from their read. `CZ_NO_NATIVE_KBM=1` = v1 wholly;
+`CZ_NO_KB_PROMPTS=1` = pad art with the keyboard live; the picture-complaint
+bisection order gains `CZ_NO_PATCHED_ASSETS=1` for anything frontend.
 
 **THIS IS THE LIVE HAND-OFF**, superseding `part91-kickoff.md` (kept as part 91's
 record: the live-resolution apply, KB/M v1, and the §0b/§0c/§0d performance-parking

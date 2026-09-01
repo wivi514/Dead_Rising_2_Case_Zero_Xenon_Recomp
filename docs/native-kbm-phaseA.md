@@ -225,11 +225,49 @@ Three parser/record findings from the build-out, each paid for in a failed run:
   on src1 (+4) being non-zero, never on the flag.
 * The mode-enum retraction recorded in §A.1 above.
 
+## Phase D — the prompt icons, executed the same night
+
+`tools/gen_kbm_icons.py` is the tool and its module comment is the format
+record; the short form:
+
+* **All 25 pad-glyph bitmaps live in ONE bank, `data/frontend/fecmn.tex`**:
+  `06050403` container, 28-byte entries {nameOff, H33(lowercase-name) hash,
+  size, 0x4030, payloadOff, 4, 2}, payloads 4-byte aligned. Entry payloads are
+  the familiar LZX framing ({BE decompSize, BE window 0x8000} + FF-chunks);
+  decompressed = 48-byte `05 01 01 E6` texture record (used-extent at +4) +
+  **DXT5, swap16, Xenos-tiled with the address taken MODULO the storage's
+  block count** — the 64×64 glyphs live in 512-slot storages and the mod-512
+  read is the one that renders the shipped green A cleanly. Canvases: 16384
+  bytes = 128×128, 8192 = 64×64.
+* **The game never reads the loose fecmn.tex** — it ships nested in
+  preload4.big (the part-60 finding, again). Delivery rides part 60's proven
+  eviction: gen_pc_options.py flips the nested entry's index hash (a null for
+  pad players — the loose fallback is the shipped bytes), and a NEW
+  `assets/game_kbm` VFS overlay serves the chip bank only while the native
+  keyboard is enabled (`CZ_NO_KB_PROMPTS=1` opts out).
+* **Two part-60 constraints bind here and both are honoured**: the guest
+  decoder crashes on degenerate LZX (so the chips are compressed with
+  gen_pc_options.py's real verbatim-block encoder — every entry is under its
+  32 KB single-chunk limit), and layout.bin pins the file at 501,900 bytes
+  (the patched bank compresses to 495,548 and is padded to exactly the pin,
+  so one layout record serves both overlay states).
+* Gates, all fatal and all run every build: zero-patch byte-identity repack;
+  H33 hash identity; big_decompress round-trip per patched entry. Live: the
+  boot opens the loose bank from the KB-PROMPT overlay, zero guest faults,
+  and the game-identical decode of every patched entry was rendered and
+  LOOKED AT (key caps, mouse silhouettes with the lit button, WASD cluster).
+* Legends are curated from the stock padmap's own bindings (the tool's module
+  comment carries the table); `L3` and `y_button_ig` stay pad art because
+  nothing keyboard-side binds their commands.
+
 Still genuinely open (operator session):
 
 * Feel acceptance — A/S/D crispness (the override bypasses the deadzone
   rescale entirely) and camera speed parity with DR2 PC (raw deltas are
   unclamped; the MOUSE SENS row scales them).
+* The chips ON SCREEN at a prompt-bearing surface (pause legend bar, tutorial
+  cards, HUD prompts) — the texture level is proven; the first sighting is
+  the operator's. Legend refinements will follow their read.
 * Whether the title ever re-parses padmap mid-session (the splice re-applies
   via its sentinel if so — the log line says when).
 * `DlgKeyboard` typing through the now-real `XamInputGetKeystrokeEx`.

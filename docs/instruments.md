@@ -3572,3 +3572,18 @@ CZ_KBM_TEST_KEYS=ms:vkhex[,ms:vkhex...]  synthetic key taps through the same
 The player-facing knob is not an env var: `<root>/kbmap.txt` (DR2-PC map-file
 format) overrides the built-in DR2-PC-default bindings; the defaults are
 generated and validated by `tools/gen_kbm_map.py`.
+
+Phase D (the prompt icons) adds:
+
+```
+CZ_NO_KB_PROMPTS=1  keep the PAD glyph art while the native keyboard is live —
+                  the gate on the assets/game_kbm overlay that serves
+                  tools/gen_kbm_icons.py's key-cap chip bank (fecmn.tex).
+                  CZ_NO_PATCHED_ASSETS=1 disables this overlay too, along with
+                  everything else patched. Pad players need nothing: with
+                  CZ_NO_NATIVE_KBM=1 the overlay never engages.
+```
+
+`tools/big_decompress --force` (part 92) writes the decompressed bytes even when
+the .bct oracle fails, SAYING SO — the frontend .tex banks carry the same LZX
+framing around 05 01 01 E6 texture records that are not .bct files.
