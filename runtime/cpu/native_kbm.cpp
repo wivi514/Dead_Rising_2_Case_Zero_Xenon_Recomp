@@ -103,6 +103,7 @@
 extern "C" PPC_FUNC(__imp__sub_828053C8);
 extern "C" PPC_FUNC(__imp__sub_82805510);
 extern "C" PPC_FUNC(__imp__sub_828070E0);
+extern "C" PPC_FUNC(__imp__sub_82804AF8);
 
 namespace
 {
@@ -159,6 +160,31 @@ std::deque<Keystroke> g_srcQueue;              // for the key-source feed
 std::atomic<uint32_t> g_wasd{ 0 };
 std::atomic<int> g_mouseDX{ 0 }, g_mouseDY{ 0 };
 std::atomic<uint32_t> g_mouseButtons{ 0 };
+// camera surplus in stick units, XInput sign; bit-cast into int32 atomics
+std::atomic<int32_t> g_camSurX{ 0 }, g_camSurY{ 0 };
+
+void AtomicAddFloat(std::atomic<int32_t>& a, float v)
+{
+    int32_t oldBits = a.load(std::memory_order_relaxed);
+    for (;;)
+    {
+        float f;
+        memcpy(&f, &oldBits, 4);
+        f += v;
+        int32_t newBits;
+        memcpy(&newBits, &f, 4);
+        if (a.compare_exchange_weak(oldBits, newBits, std::memory_order_relaxed))
+            return;
+    }
+}
+
+float AtomicTakeFloat(std::atomic<int32_t>& a)
+{
+    const int32_t bits = a.exchange(0, std::memory_order_relaxed);
+    float f;
+    memcpy(&f, &bits, 4);
+    return f;
+}
 
 bool TraceOn()
 {
@@ -216,11 +242,6 @@ void SetSource(PPCContext& ctx, uint8_t* base, uint32_t obj, uint32_t idx,
     ctx.f1.f64 = double(value);
     ctx.f2.f64 = double(dt);
     GuestCall(ctx, base, kFnSetSource, "set-source");
-}
-
-float SourceValue(uint8_t* base, uint32_t obj, uint32_t idx)
-{
-    return LoadF32(base, obj + 0x11D8 + idx * 0x30 + 8);
 }
 
 // ---- the map: our own reader of the DR2-PC line format -----------------------
@@ -520,65 +541,14 @@ void PostConversionFeed(PPCContext& ctx, uint8_t* base, uint32_t obj)
         SetSource(ctx, base, obj, kSrcRAlt, (ks.flags & 0x20) ? 1.0f : 0.0f, 0.0f);
     }
 
-    // WASD -> left stick, full deflection, normalized diagonals, overriding the
-    // pad's converted values only while keys are held (the conversion rewrites
-    // every tick, so releasing the keys hands the stick straight back). Signs:
-    // the conversion negates Y between XInput and the source, and DIR is
-    // atan2(x, yForward) with MAG deadzone-rescaled — all transcribed from
-    // 0x828074A0..0x828074F0.
-    const uint32_t wasd = live ? g_wasd.load(std::memory_order_acquire) : 0;
-    if (wasd)
-    {
-        float x = float((wasd >> 3) & 1) - float((wasd >> 2) & 1);   // D - A
-        float yFwd = float(wasd & 1) - float((wasd >> 1) & 1);       // W - S
-        const float len = std::sqrt(x * x + yFwd * yFwd);
-        if (len > 0.0f)
-        {
-            x /= len;
-            yFwd /= len;
-        }
-        SetSource(ctx, base, obj, kSrcLtX, x, dt);
-        SetSource(ctx, base, obj, kSrcLtY, -yFwd, dt);
-        SetSource(ctx, base, obj, kSrcLtDir,
-                  len > 0.0f ? std::atan2(x, yFwd) : 0.0f, dt);
-        SetSource(ctx, base, obj, kSrcLtMag, len > 0.0f ? 1.0f : 0.0f, dt);
-        SetSource(ctx, base, obj, kSrcLtUp, yFwd > 0.5f ? 1.0f : 0.0f, 0.0f);
-        SetSource(ctx, base, obj, kSrcLtRight, x > 0.5f ? 1.0f : 0.0f, 0.0f);
-        SetSource(ctx, base, obj, kSrcLtDown, yFwd < -0.5f ? 1.0f : 0.0f, 0.0f);
-        SetSource(ctx, base, obj, kSrcLtLeft, x < -0.5f ? 1.0f : 0.0f, 0.0f);
-    }
-
-    // Mouse -> right stick sources, ADDITIVE with the pad's converted value and
-    // deliberately unclamped (raw pixels x sensitivity — the DR2 PC camera).
-    // Screen-down-positive matches the engine's source convention (the pad path
-    // negates XInput's Y).
-    if (live && Settings_MouseCam())
-    {
-        const int dx = g_mouseDX.exchange(0, std::memory_order_relaxed);
-        const int dy = g_mouseDY.exchange(0, std::memory_order_relaxed);
-        const float sens = float(Settings_MouseSens());
-        const float s = sens * sens * 0.0045f;
-        if (dx || dy)
-        {
-            SetSource(ctx, base, obj, kSrcRtX,
-                      SourceValue(base, obj, kSrcRtX) + float(dx) * s, dt);
-            SetSource(ctx, base, obj, kSrcRtY,
-                      SourceValue(base, obj, kSrcRtY) + float(dy) * s, dt);
-        }
-    }
-
-    // Mouse buttons onto the pad's own sources: left = quick attack/fire
-    // (BUTTON_3/X), right = aim (the BUTTON_R2 trigger source), middle =
-    // heavy attack / camera reset (BUTTON_R3 — the stock padmap binds both to
-    // the stick press, and the R3 prompt glyph shows the middle-mouse chip).
-    // OR with the pad: only override while pressed.
-    const uint32_t mb = live ? g_mouseButtons.load(std::memory_order_acquire) : 0;
-    if (mb & 1)
-        SetSource(ctx, base, obj, kSrcBtn3, 1.0f, 0.0f);
-    if (mb & 2)
-        SetSource(ctx, base, obj, kSrcBtnR2, 1.0f, 0.0f);
-    if (mb & 4)
-        SetSource(ctx, base, obj, kSrcBtnR3, 1.0f, 0.0f);
+    // SECOND ITERATION: the stick/button/camera writes that used to live here
+    // raced the title's own conversion (two writers into the RAW source array,
+    // whichever landed last at the per-frame publish won — aim on a HELD
+    // binding died outright). Everything the conversion owns now arrives
+    // through the XInput state (window.cpp's reduced merge: WASD sticks, mouse
+    // buttons, the clamped camera), and the camera's unclamped remainder is
+    // added AFTER the title's publish (the sub_82804AF8 hook below). Only the
+    // KEY sources are fed here, because nothing else writes their cells.
 
     // CZ_KBM_TEST_KEYS=ms:vkhex[,...] — synthetic taps through the same queue
     // real SDL events use; the headless proof of the whole chain. Manufactures
@@ -665,6 +635,34 @@ PPC_FUNC(sub_82805510)
             g_queryByPort[1][ctx.r4.u32].fetch_add(1, std::memory_order_relaxed);
     }
     __imp__sub_82805510(ctx, base);
+}
+
+// The per-frame source PUBLISH (memcpy of the raw array into the EFFECTIVE
+// array the queries read, at this+8). After the title's own copy, the camera's
+// unclamped remainder is added straight into the effective right-stick cells —
+// past the publish there is no other writer until the next frame, which is
+// what makes this race-free where the post-conversion write was not. Sign: the
+// effective cells carry the engine's convention (Y negated vs XInput).
+PPC_FUNC(sub_82804AF8)
+{
+    const uint32_t self = ctx.r3.u32;
+    __imp__sub_82804AF8(ctx, base);
+    if (!NativeKbm_Active() || !self || self != LoadU32(base, kPortMap))
+        return;
+    const float sx = AtomicTakeFloat(g_camSurX);
+    const float sy = AtomicTakeFloat(g_camSurY);
+    if (sx == 0.0f && sy == 0.0f)
+        return;
+    const uint32_t cellX = self + 8 + kSrcRtX * 0x30;
+    const uint32_t cellY = self + 8 + kSrcRtY * 0x30;
+    uint32_t bits;
+    float v;
+    v = LoadF32(base, cellX) + sx;
+    memcpy(&bits, &v, 4);
+    StoreU32(base, cellX, bits);
+    v = LoadF32(base, cellY) - sy;          // engine negates Y vs XInput
+    memcpy(&bits, &v, 4);
+    StoreU32(base, cellY, bits);
 }
 
 // The pad state-to-source conversion: the title's own conversion first, then
@@ -811,4 +809,12 @@ void NativeKbm_MouseWheel(int steps)
 void NativeKbm_MoveKeys(uint32_t wasdMask)
 {
     g_wasd.store(wasdMask, std::memory_order_release);
+}
+
+void NativeKbm_CameraSurplus(float sx, float sy)
+{
+    if (sx != 0.0f)
+        AtomicAddFloat(g_camSurX, sx);
+    if (sy != 0.0f)
+        AtomicAddFloat(g_camSurY, sy);
 }

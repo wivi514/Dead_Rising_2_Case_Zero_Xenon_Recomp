@@ -996,16 +996,57 @@ HostPadState ReadKeyboard()
             return s;
 
         // Part 92: with the NATIVE keyboard live — key bindings spliced into
-        // port 0's own command layer and the sources fed there — the v1
-        // keyboard->pad merge below must stand down, or every key would arrive
-        // twice through two different paths. EXCEPTION: while the host settings
-        // panel is up it is driven from pad-0 button state, so the merge comes
-        // back for the panel's lifetime (the panel zeroes what the guest sees
-        // anyway). The F-key debug edges above stay host-side either way.
-        // CZ_NO_NATIVE_KBM=1 (or a declined splice) keeps everything below
-        // exactly as part 91 shipped it.
+        // port 0's own command layer and the KEY sources fed there — the merge
+        // below runs in a REDUCED form. The first native build wrote sticks and
+        // mouse buttons into the source records AFTER the pad's own conversion,
+        // and that raced the title's per-frame publish (two writers, whichever
+        // landed last at the copy won): aim on a HELD binding died outright and
+        // movement flickered. So everything the pad conversion owns goes back
+        // THROUGH the XInput state — one writer, real edge semantics, the
+        // v1-proven channel: WASD -> left stick, mouse left -> X (attack),
+        // mouse right -> the right trigger (aim), mouse middle -> R3 (heavy
+        // attack). Keys stay native-only (their source cells have no other
+        // writer), so no key arrives twice. The camera feeds the right stick
+        // CLAMPED here and hands the unclamped remainder to the native layer,
+        // which adds it after the title's own publish — that is what keeps the
+        // DR2-PC no-ceiling feel without re-introducing the race.
+        // EXCEPTION: while the host settings panel is up the full v1 merge
+        // comes back for the panel's lifetime (the panel zeroes what the guest
+        // sees anyway). CZ_NO_NATIVE_KBM=1 keeps the full v1 merge always.
         if (NativeKbm_Active() && !Settings_OverlayVisible())
+        {
+            s.thumbLX = KeyAxis(keys, SDL_SCANCODE_A, SDL_SCANCODE_D);
+            s.thumbLY = KeyAxis(keys, SDL_SCANCODE_S, SDL_SCANCODE_W);
+            if (g_relativeMouse)
+            {
+                const int dx = g_mouseDX.exchange(0, std::memory_order_relaxed);
+                const int dy = g_mouseDY.exchange(0, std::memory_order_relaxed);
+                // RAW per-poll pixels -> stick units; deliberately no EMA and
+                // no px/s conversion — DR2 PC's camera is displacement-shaped.
+                const float sens = float(Settings_MouseSens());
+                const float unitsPerPx = sens * sens * 140.0f;
+                const float rx = float(dx) * unitsPerPx;
+                const float ry = float(-dy) * unitsPerPx;   // screen-down = look down
+                auto clampStick = [](float v) {
+                    return v > 32767.0f ? 32767.0f : (v < -32767.0f ? -32767.0f : v);
+                };
+                const float cx = clampStick(float(s.thumbRX) + rx);
+                const float cy = clampStick(float(s.thumbRY) + ry);
+                // the remainder above the stick's ceiling rides the native path
+                NativeKbm_CameraSurplus((float(s.thumbRX) + rx - cx) / 32767.0f,
+                                        (float(s.thumbRY) + ry - cy) / 32767.0f);
+                s.thumbRX = int16_t(cx);
+                s.thumbRY = int16_t(cy);
+                const uint32_t mb = SDL_GetMouseState(nullptr, nullptr);
+                if (mb & SDL_BUTTON(SDL_BUTTON_LEFT))
+                    s.buttons |= XI_X;
+                if (mb & SDL_BUTTON(SDL_BUTTON_RIGHT))
+                    s.rightTrigger = 255;
+                if (mb & SDL_BUTTON(SDL_BUTTON_MIDDLE))
+                    s.buttons |= XI_RIGHT_THUMB;
+            }
             return s;
+        }
 
         for (const auto& k : kKeyMap)
             if (keys[k.scancode])

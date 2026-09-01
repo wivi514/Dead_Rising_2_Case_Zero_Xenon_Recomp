@@ -23,8 +23,9 @@ THE CONTAINER, all measured on the shipped bank and gated below:
     order (XGAddress2DTiledOffset with the width-in-blocks clamped up to 32),
     the whole payload 16-bit byte-swapped, and the tiled address taken MODULO
     the surface's block count (the y&8 bank bit wraps on surfaces half a macro
-    row tall). Canvases: 16384 bytes = 128x128, 8192 = 64x64 — the art occupies
-    the used-extent region (extent x2) top-left.
+    row tall). Canvases: 16384 bytes = 128x128, 8192 = 64x64 — the WIDGET
+    SAMPLES ONLY THE USED-EXTENT REGION (+4 of the header), so the art must
+    fit inside (uw, uh) at the top-left.
 
 THE LZX WE WRITE is gen_pc_options.py's real verbatim-block encoder
 (lzx_encode_stream) — part 60's ladder established that the guest decoder
@@ -85,7 +86,7 @@ FONT = "/usr/share/fonts/dejavu-sans-fonts/DejaVuSans-Bold.ttf"
 
 # glyph base name -> legend spec: ("key", text) | ("mouse", button) | ("wasd",)
 LEGENDS = {
-    "a_button": ("key", "ENTER"),
+    "a_button": ("key", "↵"),   # ENTER as the return symbol — the 32-px slot cannot fit the word
     "a_button_ig": ("key", "SPACE"),
     "b_button": ("key", "ESC"),
     "b_button_ig": ("key", "E"),
@@ -377,21 +378,20 @@ def main():
             sys.exit(1)
         w, h = (128, 128) if len(texels) == 16384 else (64, 64)
         uw, uh = struct.unpack(">HH", hdr[4:8])
-        # draw into the glyph's own used region so HUD scaling matches
+        # THE WIDGET SAMPLES ONLY THE USED-EXTENT REGION of the canvas — the
+        # first build drew chips at extent x2 and the operator's F9 showed
+        # exactly the top-left quarter of one. Art fits INSIDE (uw, uh).
         canvas = Image.new("RGBA", (w, h), (0, 0, 0, 0))
-        aw = min(w, int(uw * 2 * 0.92))
-        ah = min(h, int(uh * 2 * 0.92))
+        aw = min(w, max(8, int(uw * 0.96)))
+        ah = min(h, max(8, int(uh * 0.96)))
         if spec[0] == "key":
             text = spec[1]
-            # wide legends get a wide cap
-            if len(text) > 1:
-                aw = min(w, max(aw, int(ah * 0.62 * (len(text) + 1))))
             chip = draw_key_chip((aw, ah), text)
         elif spec[0] == "mouse":
             chip = draw_mouse_chip((aw, ah), spec[1])
         else:
             chip = draw_wasd_chip((aw, ah))
-        canvas.alpha_composite(chip, (2, 2))
+        canvas.alpha_composite(chip, (1, 1))
         if args.preview:
             previews.append((base, canvas.copy()))
         raw = hdr + encode_dxt5_tiled(canvas, len(texels) // 16)
@@ -410,6 +410,26 @@ def main():
         pdir.mkdir(parents=True, exist_ok=True)
         for base, img in previews:
             img.save(pdir / f"{base}.png")
+
+    # THE TITLE-SCREEN STRING: with the keyboard live the title should say
+    # PRESS ENTER, the way DR2 PC's shell does. Two spellings ship — a
+    # PRESS\0START id pair (the title screen) and one "PRESS START" — and both
+    # replacements are SAME-LENGTH in-place edits of the game_patched bank (the
+    # str banks are layout-pinned like everything else), served from this
+    # overlay only while the keyboard is the input path.
+    sbank = (REPO / "assets/game_patched/data/frontend/str_en.bcs").read_bytes()
+    for old, new in ((b"PRESS\x00START\x00", b"PRESS\x00ENTER\x00"),
+                     (b"PRESS START\x00", b"PRESS ENTER\x00")):
+        n = sbank.count(old)
+        if n != 1:
+            print(f"GATE FAILED: str_en.bcs holds {n} of {old!r}, expected 1",
+                  file=sys.stderr)
+            sys.exit(1)
+        sbank = sbank.replace(old, new)
+    sout = OUT.parent / "str_en.bcs"
+    OUT.parent.mkdir(parents=True, exist_ok=True)
+    sout.write_bytes(sbank)
+    print(f"wrote {sout} (2 same-length PRESS ENTER edits)")
 
     out = rebuild(data, entries, patches)
     # THE SIZE PIN (see the module comment): the loader reads this file at

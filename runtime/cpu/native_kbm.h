@@ -44,6 +44,13 @@ void NativeKbm_MouseButtons(uint32_t mask);
 void NativeKbm_MouseWheel(int steps);
 
 // Movement key state from the window thread: bit0=W bit1=S bit2=A bit3=D.
-// Fed into LEFT_THUMBSTICK sources on the keyboard controller (curve-free —
-// the DR2 PC crispness; docs/native-kbm-phaseA.md A.3).
+// (Second iteration: movement rides the XInput merge — window.cpp — so this is
+// currently informational only; kept because the event plumbing feeds it.)
 void NativeKbm_MoveKeys(uint32_t wasdMask);
+
+// The camera's unclamped remainder, in stick units (±1.0 = full deflection),
+// XInput sign convention. window.cpp feeds the clamped part through the XInput
+// right stick; this surplus is added into the title's EFFECTIVE source cells
+// after its own per-frame publish — the race-free spelling of the DR2-PC
+// no-turn-rate-ceiling camera.
+void NativeKbm_CameraSurplus(float sx, float sy);
