@@ -127,8 +127,21 @@ below is NEXT AFTER those fixes, not the live work. The operator names the fixes
 **Fix 1 — DONE, operator-verified** (*"It is perfect tried multiple resolution and
 it worked"*): live internal-resolution apply from the Visuals panel, pending-until-X
 (`phase5-notes.md` §6em — the part-60 freeze was the apply's mid-frame placement,
-fixed by relocating it to BeginFrame's non-recording entry). Further fixes as the
-operator names them.
+fixed by relocating it to BeginFrame's non-recording entry).
+
+**Fix 2 — keyboard/mouse v1 SHIPPED (e8fe508), and the FOLLOW-UP IS PLANNED:
+`docs/native-kbm-plan.md`** — the operator installed DR2 PC as the living reference
+and commissioned the exact-parity implementation (*"prepare a plan to implement it
+exactly like dead rising 2 PC install and implement the icons"*). The plan is built
+on tonight's censuses: Case Zero's XEX SHIPS the PC command vocabulary (74 KEY_
+tokens, BUTTON_1..4, all four KBOARD_EMULATE_LTHUMB commands, the USER_CAM command
+consumers, a loaded padmap.txt line-identical to DR2 PC's) — phases: A recon (the
+binding parser, key-state source, command value seam, prompt-glyph mechanism), B
+native keyboard via the title's own layer, C raw mouse-look into COMMAND_USER_CAM
+(the PC port's own two-source design), D our-own-art key-cap prompt icons (DR2 PC's
+chips are generic — the copyright question is retired: nothing needs importing).
+v1's two open complaints (A/S/D tap delay, camera speed ceiling) are the acceptance
+tests. Further fixes as the operator names them.
 
 ### The release board, for when the fixes are done ("really soon"), in order
 
