@@ -1,5 +1,7 @@
 #include "vfs.h"
 
+#include "../cpu/native_kbm.h"
+
 #include <algorithm>
 #include <cctype>
 #include <cstdio>
@@ -177,6 +179,39 @@ std::string VfsResolveExisting(const std::string& guestPath)
             {
                 KLOG("VFS: '%s' served from the PATCHED overlay -> %s "
                      "(CZ_NO_PATCHED_ASSETS=1 restores the shipped file)\n",
+                     guestPath.c_str(), patched.c_str());
+                std::lock_guard lock(g_mutex);
+                g_resolved.emplace(guestPath, patched);
+                return patched;
+            }
+        }
+    }
+
+    // THE KEYBOARD-PROMPT OVERLAY (part 92). assets/game_kbm/ holds the banks
+    // tools/gen_kbm_icons.py generates — fecmn.tex with the pad-button glyphs
+    // replaced by our own key-cap chip art — and is a SEPARATE layer from
+    // game_patched because it should exist only while the native keyboard is
+    // the input path: a pad player (CZ_NO_NATIVE_KBM=1) keeps pad prompts, and
+    // CZ_NO_KB_PROMPTS=1 keeps them with the keyboard live too.
+    static const bool kbPromptsOn = NativeKbm_Enabled() &&
+                                    getenv("CZ_NO_KB_PROMPTS") == nullptr;
+    if (!overlayOff && kbPromptsOn)
+    {
+        std::string gameRoot;
+        {
+            std::lock_guard lock(g_mutex);
+            auto it = g_mounts.find("game");
+            if (it != g_mounts.end())
+                gameRoot = it->second;
+        }
+        if (!gameRoot.empty() && direct.rfind(gameRoot + "/", 0) == 0)
+        {
+            const std::string patched =
+                gameRoot + "_kbm/" + direct.substr(gameRoot.size() + 1);
+            if (fs::exists(patched, ec))
+            {
+                KLOG("VFS: '%s' served from the KB-PROMPT overlay -> %s "
+                     "(CZ_NO_KB_PROMPTS=1 restores the pad glyphs)\n",
                      guestPath.c_str(), patched.c_str());
                 std::lock_guard lock(g_mutex);
                 g_resolved.emplace(guestPath, patched);

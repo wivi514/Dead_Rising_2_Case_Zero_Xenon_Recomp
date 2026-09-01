@@ -109,6 +109,20 @@ int main(int argc, char** argv)
                 "  the input is what `tools/big_list.py --extract` wrote\n");
         return 2;
     }
+    // --force (part 92): write the decompressed bytes even when the .bct oracle
+    // fails, SAYING SO. The frontend .tex banks (fecmn.tex etc.) carry the same
+    // LZX framing around texture records that are NOT .bct — the oracle is right
+    // to refuse by default and right to be overridable by an explicit ask.
+    bool force = false;
+    for (int i = 1; i < argc; ++i)
+        if (strcmp(argv[i], "--force") == 0)
+        {
+            force = true;
+            for (int j = i; j + 1 < argc; ++j)
+                argv[j] = argv[j + 1];
+            --argc;
+            break;
+        }
     std::vector<uint8_t> in = Read(argv[1]);
     if (in.size() < 16)
     {
@@ -162,6 +176,9 @@ int main(int argc, char** argv)
     if (okA && produced == uncompressed && OracleOk(out))
         printf("  per-chunk LZX (0xFF u16 u16 header): OK, %zu bytes, .bct magic present\n",
                produced);
+    else if (force && okA && produced == uncompressed)
+        printf("  per-chunk LZX decoded %zu bytes but the .bct oracle FAILED — writing "
+               "anyway (--force)\n", produced);
     else
     {
         printf("  per-chunk LZX: no (%zu of %u bytes%s)\n", produced, uncompressed,
@@ -180,6 +197,9 @@ int main(int argc, char** argv)
                                      window, nullptr, 0);
         if (rc == 0 && OracleOk(out))
             printf("  concatenated LZX (the XEX loader's shape): OK, .bct magic present\n");
+        else if (force && rc == 0)
+            printf("  concatenated LZX decoded but the .bct oracle FAILED — writing "
+                   "anyway (--force)\n");
         else
         {
             printf("  concatenated LZX: no (rc=%d%s)\n", rc,

@@ -831,18 +831,26 @@ def main():
     raw_p, ds_p, no_p, entries_p = read_big(src_pre)
     fec = next(e for e in entries_p if e['name'] == 'fecmn.big')
     fec['hash'] ^= 0xDEADBEEF
+    # Part 92: the nested fecmn.tex is evicted the same way, so the GLYPH bank is
+    # also read through the loose file — where the keyboard-prompt overlay
+    # (assets/game_kbm, tools/gen_kbm_icons.py) can serve the key-cap chips. With
+    # that overlay absent or off the loose file is the shipped bytes, so this is
+    # a null for a pad player.
+    fect = next(e for e in entries_p if e['name'] == 'fecmn.tex')
+    fect['hash'] ^= 0xDEADBEEF
     dst_pre = os.path.join(REPO, 'assets/game_patched/data/preload4.big')
     write_big(dst_pre, raw_p, ds_p, no_p, entries_p, align=0x800)
 
     raw_p2 = open(dst_pre, 'rb').read()
     src_raw = open(src_pre, 'rb').read()
-    # The ONLY difference from the shipped archive must be the one hash word.
+    # The ONLY difference from the shipped archive must be the two hash words.
     diffs = [i for i in range(len(src_raw)) if src_raw[i] != raw_p2[i]] \
         if len(src_raw) == len(raw_p2) else None
-    assert diffs is not None and len(diffs) <= 4, \
-        f'preload4 poison changed more than the hash: {None if diffs is None else len(diffs)} bytes'
-    print(f'{dst_pre}: byte-identical to shipped except the nested fecmn.big '
-          f'index hash ({len(diffs)} bytes) — lookups miss, boot decode unchanged')
+    assert diffs is not None and len(diffs) <= 8, \
+        f'preload4 poison changed more than the hashes: {None if diffs is None else len(diffs)} bytes'
+    print(f'{dst_pre}: byte-identical to shipped except the nested fecmn.big and '
+          f'fecmn.tex index hashes ({len(diffs)} bytes) — lookups miss, boot '
+          f'decode unchanged')
 
     for f in sorted(os.listdir(FRONTEND)):
         if f.startswith('str_') and f.endswith('.bcs'):

@@ -55,9 +55,9 @@
 //          on-demand evaluator passes source values straight through, which is
 //          what frees the camera from the stick's turn-rate ceiling (DR2 PC's
 //          MOUSE_RAW wiring, phaseA A.3).
-//        - mouse buttons -> the face-button/trigger sources (left=BUTTON_3/X,
-//          right=BUTTON_R2 trigger, middle=BUTTON_4/Y — semantically DR2 PC's
-//          mousemap, reached through the pad's own two-source lines).
+//        - mouse buttons -> the pad's own sources (left=BUTTON_3/X = attack,
+//          right=BUTTON_R2 = aim, middle=BUTTON_R3 = heavy attack/cam reset —
+//          DR2 PC's mousemap semantics through the pad's own bindings).
 //      The conversion rewrites every source every tick, so every override is
 //      self-healing: stop writing and the pad's own values are back next tick.
 //
@@ -121,7 +121,7 @@ constexpr uint32_t kCmdCount     = 305;
 // Source indices = token-table indices (entry 0 is NONE).
 constexpr uint32_t kSrcLtX = 67, kSrcLtY = 68, kSrcLtDir = 69, kSrcLtMag = 70;
 constexpr uint32_t kSrcRtX = 71, kSrcRtY = 72;
-constexpr uint32_t kSrcBtn3 = 77, kSrcBtn4 = 78, kSrcBtnR2 = 85;
+constexpr uint32_t kSrcBtn3 = 77, kSrcBtnR2 = 85, kSrcBtnR3 = 86;
 constexpr uint32_t kSrcLtUp = 87, kSrcLtRight = 88, kSrcLtDown = 89, kSrcLtLeft = 90;
 constexpr uint32_t kSrcLShift = 52, kSrcRShift = 53, kSrcLCtrl = 54, kSrcRCtrl = 55;
 constexpr uint32_t kSrcLAlt = 56, kSrcRAlt = 57;
@@ -567,17 +567,18 @@ void PostConversionFeed(PPCContext& ctx, uint8_t* base, uint32_t obj)
         }
     }
 
-    // Mouse buttons onto the pad's own face-button/trigger sources: left =
-    // quick attack (BUTTON_3/X), right = aim (the BUTTON_R2 trigger source),
-    // middle = BUTTON_4/Y — DR2 PC's mousemap semantics through the pad's own
-    // bindings. OR with the pad: only override while pressed.
+    // Mouse buttons onto the pad's own sources: left = quick attack/fire
+    // (BUTTON_3/X), right = aim (the BUTTON_R2 trigger source), middle =
+    // heavy attack / camera reset (BUTTON_R3 — the stock padmap binds both to
+    // the stick press, and the R3 prompt glyph shows the middle-mouse chip).
+    // OR with the pad: only override while pressed.
     const uint32_t mb = live ? g_mouseButtons.load(std::memory_order_acquire) : 0;
     if (mb & 1)
         SetSource(ctx, base, obj, kSrcBtn3, 1.0f, 0.0f);
     if (mb & 2)
         SetSource(ctx, base, obj, kSrcBtnR2, 1.0f, 0.0f);
     if (mb & 4)
-        SetSource(ctx, base, obj, kSrcBtn4, 1.0f, 0.0f);
+        SetSource(ctx, base, obj, kSrcBtnR3, 1.0f, 0.0f);
 
     // CZ_KBM_TEST_KEYS=ms:vkhex[,...] — synthetic taps through the same queue
     // real SDL events use; the headless proof of the whole chain. Manufactures
