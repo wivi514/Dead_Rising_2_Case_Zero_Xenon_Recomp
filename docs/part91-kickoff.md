@@ -67,27 +67,51 @@ seen-only-in-default → `CZ_VK_DEFER_FULL_RECT=1` splits scoping from ordering.
 in-game clock moves the sun between sessions — match the VIEW, not the wall time.
 The `.pose` for the defect camera is beside the capture.
 
-## 1. THE BOARD (in order)
+## 0c. PERFORMANCE IS PARKED (2026-09-01) — the operator's instruction and the state that resumes it
 
-0. ~~The operator verdict on §0b~~ — **DONE 2026-09-01**: A/B/A run, defect
-   convicted (window-vs-surface scope), fixed, and the fix operator-verified at the
-   same view. Nothing owed on §0b.
-1. **The regime after part 90**: the crowd is **CPU-bound by ~1.3-1.4 ms again**
-   (wall ~11.2 vs GPU ~9.8, fence 0.00 — §6ek's clean-pair addendum corrected the
-   first "balanced" reading), so the clears re-opened convertible room for any future
-   CPU saving; the GPU-bound bands below 7,000 draws banked −0.6 ms of wall. The GPU
-   side's remaining named items: the resolve copies' dead share (§6el, ~0.1-0.28 ms,
-   risky mechanism), the post chain (REFUTED — title's own work), the big passes (the
-   game). The CPU side: unchanged from §6ej §4 — PM4 walk and the resolve half,
-   change-detector class. **No known lead ≥0.5 ms on either side.** At ~11 ms the crowd holds a
-   locked 60 fps with margin; further work buys headroom and resolution, not felt
-   frame rate. **Parking again is an honest outcome; surface it to the operator.**
-2. The Windows bundle save-squatter hunt (`part86-kickoff.md` §0b; needs czwin) — and
-   the Windows build has not been rebuilt since parallel record OR deferred clears
-   shipped; build and run that leg before any operator session there.
-3. A natural level-up check (`part86-kickoff.md` §0b(b)); glibc floor / AppImage;
-   macOS (milestone C, hardware); the combo bench vs phantom card grants
+The instruction, verbatim, after being shown the arc's total (~13.5 → 11.2 ms at the
+crowd, −17%, GPU 10.6 → 9.8 under it): *"Save everything on performance we'll switch
+to something else so we can get a release really soon."*
+
+**The state, all of it already recorded — do not re-derive**: `phase5-notes.md`
+§6ek (the clears, four addenda, the final numbers) and §6el (the copy census);
+`perf-plan-part90.md` §4 (the executed plan); the fresh decompositions in
+perf-plan-part90 §0. The board on parking: **no known lead ≥0.5 ms on either side**
+— the crowd is CPU-bound by ~1.3-1.4 ms (wall ~11.2 / GPU ~9.8, fence 0.00), the
+serial residue is the PM4 walk + the resolve half (change-detector class, gotchas
+474/4), and the one NAMED-but-parked GPU item is the resolve copies' 36.4% dead
+share (§6el, ~0.1-0.28 ms, prediction-only mechanism, `CZ_VK_COPY_CENSUS=1`
+re-asks it). Every arm is in `docs/instruments.md`; the picture-complaint bisection
+order is §0b's. Whoever resumes: fresh profiled decomposition first (a recorded
+number has a shelf life), and `tools/part80_crowdroute.sh` is still the route.
+
+## 1. THE BOARD — THE SUBJECT IS THE RELEASE ("really soon"), in order
+
+0. **Rebuild the Windows leg** — the shipped bundle's binaries predate the ENTIRE
+   performance arc (parts 87-90: constants, parallel record, deferred clears).
+   czwin pull + build + `--smoke`, then the ps1 package gate (it RUNS the staged
+   exe). Self-servable over ssh.
+1. **The Windows bundle SAVE verification** — part 86 shipped the save relocation
+   (`f396c2f`, saves per-profile in the OS saved-games location, with migration),
+   which sidesteps the §0b(a) squatter, but no bundle-rooted Windows run has
+   verified a save round-trip since. The part-86 repro (bundle root, reach gameplay,
+   save once, `CZ_FILE_TRACE=1`) is the run; it likely needs the operator's hands
+   for the save-point menu.
+2. **Repackage and re-gate BOTH artifacts** on the current code: Linux
+   (`release_text_identity.sh`, `release_package_linux.sh`,
+   `release_gate_clean_container.sh` — must print GATE PASSED) and Windows (the ps1).
+   The packaging scripts preserve player assets themselves (fd313b4) — verified
+   again on the repackage.
+3. **The glibc floor / AppImage** — the last named Linux packaging limitation
+   (`release-plan.md` §9.8 owed list). An old-base container build or AppImage.
+4. **First-boot polish**: the one-time ~20 s pipeline pre-warm runs silently after
+   the progress window closes (§9.8's stated debt) — put it under a visible screen.
+5. Operator checks when convenient: a natural level-up (§0b(b) — F4 awards verified,
+   the natural path is the residual), and the combo bench vs phantom cards
    (`part86-kickoff.md` §0c residual).
+6. macOS is milestone C and needs hardware — explicitly OUT of "really soon".
+
+RT shadows stay parked (part 70). Performance stays parked (§0c).
 
 ## 2. Gates inherited (unchanged, plus one)
 

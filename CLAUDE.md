@@ -968,6 +968,13 @@ authoritative per-subject records are `docs/xenia-capture-analysis.md` (the numb
 findings ledger — it wins on any measured number), `docs/phase1-notes.md`,
 `docs/phase3-notes.md`, `docs/phase5-notes.md` and `docs/d3d-translation-plan.md`.
 
+**SUBJECT CHANGE, 2026-09-01, operator instruction closing part 90's arc:** *"Save
+everything on performance we'll switch to something else so we can get a release really
+soon."* **PERFORMANCE IS PARKED AGAIN — `part91-kickoff.md` §0c is the parking record
+and the state that resumes it; its §1 is the RELEASE board ("really soon"), whose top
+items are the Windows leg rebuild (the shipped bundle predates parts 87-90 entirely),
+the bundle save verification, and the repackage + re-gate of both artifacts.**
+
 **SUBJECT: THE RELEASE, 2026-08-27, operator instruction opening part 82:** *"Do the release
 plan."* **`docs/release-plan.md` IS THE PROGRAMME AND `docs/part91-kickoff.md` IS THE LIVE
 HAND-OFF (part 90 shipped the deferred scoped clears — `phase5-notes.md` §6ek; part 87's
