@@ -195,10 +195,11 @@ mask; trust the microcode's own swizzles.
     `part91-kickoff.md`. Part 90 shipped DEFERRED SCOPED CLEARS ON BY DEFAULT
     (`CZ_VK_NO_DEFERRED_CLEAR=1` the control): the resolve-clear class 0.66 →
     0.009 ms, the device frame −0.8 to −0.95 ms in every band (`phase5-notes.md`
-    §6ek; `perf-plan-part90.md` §4 the executed plan). ONE THING IS OWED: the
-    operator's verdict on their mid-part yellow-streak report — unexplained but
-    plausibly fixed (the scoped rect was missing the 4x-MSAA sample-space factor,
-    gotcha 506), and the PICTURE-COMPLAINT BISECTION ORDER IS NOW
+    §6ek; `perf-plan-part90.md` §4 the executed plan). THE VISUAL REPORT AGAINST IT IS
+    CLOSED, OPERATOR-VERIFIED (2026-09-01): their A/B/A convicted the resolve-window
+    scope, the rect is now the destination SURFACE's footprint (hardware's own clear
+    semantics, gotcha 506), and the fix was confirmed by eye at the defect view. The
+    PICTURE-COMPLAINT BISECTION ORDER REMAINS
     `CZ_VK_NO_DEFERRED_CLEAR=1` FIRST, then `CZ_VK_DEFER_FULL_RECT=1`, then
     `CZ_VK_NO_PAR_RECORD=1`. The copy census (§6el) named 36.4% dead copies and
     parked them. NO KNOWN LEAD ≥0.5 ms REMAINS ON EITHER SIDE — the crowd is
@@ -1061,12 +1062,14 @@ census); `perf-plan-part90.md` §4 is the executed plan):
   monotone** — more than the class, because the 83.6 deleted TRANSFER_DST round-trips
   also serialized the timeline. Gates: sync validation 0 hazards (both builds), era
   medians inside the null, poison control two-sided.
-* **The operator reported a transient yellow streak mid-part** — unreproduced in
-  20,000 dumped frames, but code reading found the scoped rect missing the draw
-  path's 4x-MSAA sample-space factor (4.4 clears/frame quarter-covered; fixed same
-  commit; gotchas 506-507). **UNEXPLAINED-BUT-PLAUSIBLY-FIXED; their next session is
-  the verdict, and the picture-complaint bisection order is now NO_DEFERRED_CLEAR →
-  DEFER_FULL_RECT → NO_PAR_RECORD.**
+* **The operator's visual report was hunted, convicted and CLOSED across two days**:
+  20,000 headless frames reproduced nothing; their F9 characterized it (a
+  view-dependent giant sun-glow blow-out); their three-session A/B/A convicted the
+  clears' scoping; `CZ_VK_DEFER_FULL_RECT=1` split coverage from ordering in one more
+  session; and the fix — the scoped rect is the destination SURFACE's footprint, not
+  the resolve window, hardware's own semantics — was verified by the same eye at the
+  same view (§6ek addenda 6-9, gotchas 506-507). Bisection order for future picture
+  complaints: NO_DEFERRED_CLEAR → DEFER_FULL_RECT → NO_PAR_RECORD.**
 * **The copy census** (`CZ_VK_COPY_CENSUS=1`): 36.4% of resolve copies dead (13.1% of
   pixels — the bloom pyramid, the shadow atlas), worth ~0.1-0.28 ms, prediction-only
   mechanism with a silent-stale failure mode — NAMED, PARKED (§6el).

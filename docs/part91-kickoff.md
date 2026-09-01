@@ -1,4 +1,4 @@
-# Part 91 kickoff — after the deferred clears: the GPU frame has been cut twice, and one operator verdict is owed
+# Part 91 kickoff — after the deferred clears: the GPU frame has been cut twice, and the visual report against them is closed
 
 **THIS IS THE LIVE HAND-OFF**, superseding `part90-kickoff.md` (kept as the record of
 part 90's framing — its §0b pricing frame was confirmed by measurement and then acted
@@ -13,7 +13,7 @@ same-binary control; `CZ_VK_DEFER_FULL_RECT=1` the two-factor diagnostic):
 |---|---|
 | step 0 regime (census run, pre-fix) | crowd wall 11.10 / GPU 10.60 / fence 0.00 — CPU-bound by ~0.5 ms; every band <7,000 draws GPU-bound. §0b's flip confirmed measured |
 | the mechanism | a resolve's clear bits latch as a scoped rect, emitted as `vkCmdClearAttachments` at the head of the next pass's first instance (worker chunk or pump tail — an instance that ALREADY exists; no per-clear scope, which is what made the part-32 arm a wash) |
-| clear class | 0.66 → **0.009-0.010 ms/frame (−98.5%)**; 91.7% of the class's pixels removed (post-MSAA-correction); flush-before-read fallback 13-15% of emissions, kill (<30%) did not fire |
+| clear class | 0.66 → **0.009-0.010 ms/frame (−98.5%)**; **90.2% of the class's pixels removed** (final: SURFACE-footprint rects × the MSAA factor — see §0b's resolution); flush-before-read fallback 13-15% of emissions, kill (<30%) did not fire |
 | device frame | **−0.8 to −0.95 ms in every one of 10 draw bands, monotone** (crowd band GPU 12.41 → 11.46) — more than the clear class alone; the 83.6 deleted TRANSFER_DST round-trips also de-serialized the timeline |
 | pump CPU | §4b resolve/begin cycle 0.55-0.59 → 0.51-0.53 ms/frame |
 | gates | sync validation 0 hazards (both builds); era medians INSIDE the null (2 fix runs); poison positive control two-sided (deferred == control to 0.1/255 on poisoned dumps, both hugely different from unpoisoned) |
@@ -23,7 +23,18 @@ resolve copies are dead (13.1% of pixels — the bloom pyramid family at 22,139 
 each, the shadow atlas, the scene depth), worth ~0.1-0.28 ms, mechanism is
 prediction-only with a silent-stale failure mode. §6el.
 
-## 0b. THE OPERATOR'S VISUAL-ISSUE REPORT — the one thing OWED, RE-CHARACTERIZED same day, and the first bisection
+## 0b. THE OPERATOR'S VISUAL-ISSUE REPORT — **CLOSED 2026-09-01, operator-verified** (the history below is kept as the record of the hunt)
+
+**RESOLUTION (§6ek addendum 9)**: the operator's A/B/A tracked the arm exactly
+(absent on `CZ_VK_NO_DEFERRED_CLEAR=1` twice, present on the default, absent under
+`CZ_VK_DEFER_FULL_RECT=1`) — coverage, not ordering. The shipped rect was the
+RESOLVE WINDOW; hardware's clear bits clear the SURFACE's tiles, and the sun-glow
+machinery reads inside the surface but outside the window. **The scoped rect is now
+the destination surface's footprint** (× the MSAA sample factor), and the operator
+could not reproduce the blow-out at the same view on the fixed default. The
+bisection order for future picture complaints stands as written below.
+
+### The hunt as it unfolded (superseded by the resolution above)
 
 Mid-part the operator reported a "yellow streak / meteorite shower" during a camera
 turn. **It never reproduced in 20,000 dumped frames**, but code reading found a real
@@ -58,9 +69,9 @@ The `.pose` for the defect camera is beside the capture.
 
 ## 1. THE BOARD (in order)
 
-0. **The operator verdict on §0b** — one play session, no instruments needed beyond
-   their eyes; if they see it, the bisection above, ideally with
-   `CZ_VK_FRAME_DUMP_EVERY=8` armed so the streak lands on disk.
+0. ~~The operator verdict on §0b~~ — **DONE 2026-09-01**: A/B/A run, defect
+   convicted (window-vs-surface scope), fixed, and the fix operator-verified at the
+   same view. Nothing owed on §0b.
 1. **The regime after part 90**: the crowd is **CPU-bound by ~1.3-1.4 ms again**
    (wall ~11.2 vs GPU ~9.8, fence 0.00 — §6ek's clean-pair addendum corrected the
    first "balanced" reading), so the clears re-opened convertible room for any future
@@ -92,5 +103,8 @@ The deferred-clear design transfers whole with the parallel recorder (it rides t
 same every-pass-records-an-instance property), and gotcha 506 is the transferable
 core: **audit every coordinate-space factor the draw path applies before scoping any
 write the old code did over-broadly** — the MSAA sample-space factor reached CW's
-notes 58 parts late here. Publish the clear as scoped from day one there, WITH the
-factor, and keep the whole-image form as the control arm.
+notes 58 parts late here, and the second conviction is the rule to publish: **the
+copy block's clear bits clear the destination SURFACE's tile footprint, not the
+resolve window** — the sun-visibility machinery reads between the two. Scope to the
+surface footprint (× the sample factor) from day one, and keep the whole-image form
+as the control arm.

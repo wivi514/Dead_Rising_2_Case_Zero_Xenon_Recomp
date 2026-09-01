@@ -5773,11 +5773,16 @@ From phase C part 18 (the frame rate — and none of it was work):
      quarter of their pass's real footprint. The whole-image clear had hidden the
      missing factor for the copy-block path since phase 5 began — an over-broad
      operation is a blanket over every narrower operation's coordinate bugs, and
-     narrowing it uncovers them all at once. The operator's transient "yellow streak"
-     report the same day is the plausible symptom. Corollary: when a report against a
-     day-old default cannot be reproduced in 20,000 frames, the honest closure is
-     "unexplained but plausibly fixed, control arm is the bisection" — not "could not
-     reproduce, closed" (gotcha 13's shelf life applies to exonerations too).
+     narrowing it uncovers them all at once. The operator's "yellow streak" report the same
+     day was the symptom, and their A/B/A convicted a SECOND under-coverage the next
+     morning: the rect was the resolve WINDOW where hardware's clear bits clear the
+     whole destination SURFACE's tiles — the sun-glow machinery reads inside the
+     surface but outside the window. The faithful scope is the SURFACE footprint
+     (× the sample factor). Corollary kept from the first draft of this entry: when a
+     report against a day-old default cannot be reproduced in 20,000 frames, the
+     honest closure is "unexplained, control arm is the bisection" — not "could not
+     reproduce, closed" — and here the operator's three-session A/B/A settled in an
+     evening what 20,000 headless frames could not (gotcha 507).
 
 507. **A PICTURE GATE MADE OF MEDIANS PASSES A TRANSIENT DEFECT.** Part 90's deferred
      clears sat INSIDE the era-median null on two fix runs while the operator saw a

@@ -24433,40 +24433,43 @@ void DoResolve(uint8_t* base, const uint32_t* regs)
     // CZ_VK_DEFER_FULL_RECT=1 — DIAGNOSTIC: defer the clear (same latch, same emission
     // point, same ordering) but with the FULL-image rect, i.e. the old pixels through
     // the new mechanism. This is the two-factor bisection for any picture complaint
-    // against the deferred clears: streaks that vanish under it indict the SCOPING
-    // (a region the whole-image clear covered and the resolve-extent rect does not);
-    // streaks that survive it indict the deferral/ordering itself.
-    static const bool deferFullRect = EnvOn("CZ_VK_DEFER_FULL_RECT");
-    // The scoped rect: the resolve's own extent in host pixels, clamped to the target
-    // image — the same clamp question the part-32 arm answered for Y over-clears.
+    // against the deferred clears: an artifact that vanishes under it indicts the
+    // SCOPING; one that survives indicts the deferral/ordering itself. It EARNED ITS
+    // KEEP on day one: the operator's giant-sun-glow blow-out vanished under it and
+    // under CZ_VK_NO_DEFERRED_CLEAR while tracking the shipped default exactly
+    // (an A/B/A by eye), which is what convicted the resolve-window scoping below.
+    static const bool deferFullRect = [] {
+        const bool on = EnvOn("CZ_VK_DEFER_FULL_RECT");
+        if (on)
+            fprintf(stderr, "[vk] CZ_VK_DEFER_FULL_RECT=1 — deferred clears use the "
+                            "FULL-image rect (the scoping-vs-ordering diagnostic)\n");
+        return on;
+    }();
+    // THE SCOPED RECT IS THE DESTINATION SURFACE'S FOOTPRINT, NOT THE RESOLVE WINDOW.
+    // On Xenos the copy block's clear bits clear the tiles of the CURRENT SURFACE —
+    // the whole surface, pitch x height, not just the window the resolve copied. The
+    // first shipped form scoped to the resolve window and the operator convicted it
+    // the same day with an A/B/A: a view-dependent giant sun glow (the title's
+    // sun-visibility machinery reading EDRAM regions inside the surface footprint but
+    // outside the resolve window — regions the whole-image clear had always wiped).
+    // The surface footprint contains the resolve window by construction
+    // (copyX+copyW <= w, copyY+copyH <= h), starts at the EDRAM origin where every
+    // surface is laid out, and still removes the tall-EDRAM territory (the 1024-row
+    // shadow band) plus everything beyond the surface from the class.
     //
-    // THE MSAA FACTOR IS NOT OPTIONAL (the operator's yellow-streak report, same day
-    // this shipped). A 4x surface's window coordinates are in PIXELS while our EDRAM
-    // stand-in is at SAMPLE resolution, twice as wide and twice as tall — the draw
-    // path scales every window coordinate by exactly this factor (the
-    // `window coordinates scaled for a 4x MSAA surface` site, and the incident its
-    // comment records: a half-cleared scene tile from the same missing factor). A
-    // scoped clear built from the unscaled scissor covers ONE QUARTER of a 4x pass's
-    // EDRAM footprint; the whole-image clear had been hiding that for the copy-block
-    // clears since part 5. Bright residue surviving in the other three quarters is
-    // the "meteorite shower" trail the operator saw during camera turns.
+    // THE MSAA FACTOR IS NOT OPTIONAL: a 4x surface's coordinates are in PIXELS while
+    // our EDRAM stand-in is at SAMPLE resolution, twice as wide and twice as tall —
+    // the draw path scales every window coordinate by exactly this factor, so the
+    // footprint scales with it (gotcha 506).
     const uint32_t clearMsaa = (regs[xenos::kRbSurfaceInfo] >> 16) & 3;
     const uint32_t clearAxisScale = clearMsaa == 2 ? 2u : 1u;
     const auto scopedRect = [&](const Image& im) {
         VkRect2D r{};
-        if (copyW && copyH && !deferFullRect)
+        if (w && h && !deferFullRect)
         {
-            const int32_t x =
-                std::max(0, RZxi(int32_t(copyX * clearAxisScale)));
-            const int32_t y =
-                std::max(0, RZyi(int32_t(copyY * clearAxisScale)));
-            r.offset = { x, y };
-            r.extent = { std::min(RZx(copyW * clearAxisScale),
-                                  im.width > uint32_t(x) ? im.width - uint32_t(x)
-                                                         : 0u),
-                         std::min(RZ(copyH * clearAxisScale),
-                                  im.height > uint32_t(y) ? im.height - uint32_t(y)
-                                                          : 0u) };
+            r.offset = { 0, 0 };
+            r.extent = { std::min(RZx(w * clearAxisScale), im.width),
+                         std::min(RZ(h * clearAxisScale), im.height) };
         }
         else
             r.extent = { im.width, im.height };

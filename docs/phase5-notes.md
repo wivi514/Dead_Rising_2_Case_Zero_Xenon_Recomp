@@ -20158,3 +20158,42 @@ look at this in-game hour. The A/B at that camera is defined and owed
 (`part91-kickoff.md` §0b); the operator left for work before running it. §6/§7's
 "plausibly-fixed" reading is superseded by this one: the MSAA factor was a real
 divergence worth fixing either way, but it did not fix THIS.
+
+### 9. THIRD ADDENDUM (2026-09-01) — CONVICTED, FIXED, AND OPERATOR-VERIFIED: the rect was the resolve WINDOW, hardware clears the SURFACE
+
+The operator ran the owed A/B and it was an **A/B/A by eye, tracking the arm
+exactly**: the giant sun-glow blow-out could not be produced under
+`CZ_VK_NO_DEFERRED_CLEAR=1` (twice, sessions 1 and 3), appeared reliably on the
+shipped default (session 2, F9 captures `play_0901_0049/capture_009367` — the sun's
+halo blown to a third of the sky — vs `capture_010194`, nearly the same view with a
+normal tight glow), and **vanished under `CZ_VK_DEFER_FULL_RECT=1`** — coverage, not
+ordering, in one extra session.
+
+**The defect**: the shipped scoped rect was the RESOLVE WINDOW (`copyX/copyY/copyW/
+copyH`). On Xenos the copy block's clear bits clear the tiles of the CURRENT
+SURFACE — pitch × height, the whole destination surface's EDRAM footprint, of which
+the resolve window is only a part. The title's sun-visibility machinery (the term
+that sizes the sun glow/halo) reads EDRAM inside the surface footprint but outside
+the resolve window — territory the whole-image clear had wiped on every frame since
+phase 5 — and stale data there made the glow erratic and view-dependent: the
+operator's original "yellow streak / meteorite shower" during a turn, re-seen as a
+giant halo once they could park on it.
+
+**The fix, same day**: the scoped rect is now the destination surface's footprint —
+`(0,0)..(w,h)` in the resolve's own host scale, × the 4x-MSAA sample factor — which
+CONTAINS the resolve window by construction and still excludes the tall-EDRAM
+shadow band and everything beyond the surface. The operator then **could not
+reproduce the blow-out at the same view on the fixed default** — the same
+A/B/A-calibrated eye that convicted the window scoping.
+
+The addendum-6/7 MSAA reading survives as a real-but-secondary finding: the sample
+factor is still required (it scales the footprint), but the quarter-coverage it
+fixed was not this defect's mechanism — the window-vs-surface scope was. Gotcha 506
+carries the general rule; the census numbers for the footprint scoping are §6ek's
+final table (below, from the gate rerun).
+
+**The footprint scoping's own gate numbers (the final state of §6ek)**: sync
+validation 0 hazards; clear class still 0.009-0.010 ms/frame; scoped rects cover
+57.85 of 588.65 Mpixel — **90.2% of the class removed** (window rects were 91.7%,
+so hardware-faithful coverage cost 1.5 points); flush share unchanged (~13.5%);
+census residual 0.1%. The class table and band deltas in §4 stand.
