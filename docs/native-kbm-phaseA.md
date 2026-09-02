@@ -280,3 +280,16 @@ Still genuinely open (operator session):
 * Whether the title ever re-parses padmap mid-session (the splice re-applies
   via its sentinel if so — the log line says when).
 * `DlgKeyboard` typing through the now-real `XamInputGetKeystrokeEx`.
+
+## Round 3 measurement — the A/S/D delay is NOT in input delivery
+
+Three trace probes (`CZ_KBM_TRACE=1`) timestamp the left-stick X value at the
+ring entry the title consumes, the raw source cell, and the published
+effective cell. A full-deflection press transitions ALL THREE within the same
+millisecond, at ±1.00 exactly (2026-09-02, three presses both directions,
+zero faults). The keyboard now delivers precisely what a flicked pad delivers,
+as fast as it can be delivered. The residual ~1 s before Chuck moves on
+A/S/D — with W instant — is the title's own camera-relative TURN before
+moving. Whether DR2 PC shortened that in its player code is beyond the input
+layer; the operator's pad-flick comparison (does a pad flick also take ~1 s?)
+is the one observation that closes the attribution.
