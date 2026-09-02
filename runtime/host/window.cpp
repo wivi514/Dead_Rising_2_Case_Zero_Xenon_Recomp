@@ -1051,17 +1051,29 @@ HostPadState ReadKeyboard()
                 const uint32_t mb = SDL_GetMouseState(nullptr, nullptr);
                 if (mb & SDL_BUTTON(SDL_BUTTON_LEFT))
                     s.buttons |= XI_X;
-                if (mb & SDL_BUTTON(SDL_BUTTON_RIGHT))
                 {
-                    // BOTH triggers: the title splits aiming across them — gun
-                    // aim is the R2 source, but THROWING a held item needs the
-                    // L2 source held (stock padmap: PLAYER_THROW = X pressed
-                    // while BUTTON_L2 held, and the throw tutorial shows the
-                    // LT glyph). DR2 PC collapses both onto its right mouse
-                    // button; so do we. The pad itself already lives with each
-                    // trigger's secondary meanings, so no new collisions.
-                    s.rightTrigger = 255;
-                    s.leftTrigger = 255;
+                    // BOTH triggers ride RMB: gun aim is the R2 source, and
+                    // THROWING a held item needs the L2 source held (stock
+                    // padmap: PLAYER_THROW = X pressed while BUTTON_L2 held —
+                    // the throw tutorial's LT glyph). But they must NOT rise
+                    // in the same instant: PLAYER_THROW_RT is "R2 PRESSED
+                    // while L2 held", and simultaneous edges tripped it — the
+                    // operator's item flew the moment RMB went down. So the
+                    // aim trigger leads and the throw-enable trigger joins
+                    // 70 ms later, the way a pad hand naturally staggers them;
+                    // the throw itself is LMB (X), like DR2 PC.
+                    static uint32_t rmbSince = 0;
+                    if (mb & SDL_BUTTON(SDL_BUTTON_RIGHT))
+                    {
+                        const uint32_t now = SDL_GetTicks();
+                        if (!rmbSince)
+                            rmbSince = now;
+                        s.rightTrigger = 255;
+                        if (now - rmbSince >= 70)
+                            s.leftTrigger = 255;
+                    }
+                    else
+                        rmbSince = 0;
                 }
                 if (mb & SDL_BUTTON(SDL_BUTTON_MIDDLE))
                     s.buttons |= XI_RIGHT_THUMB;
