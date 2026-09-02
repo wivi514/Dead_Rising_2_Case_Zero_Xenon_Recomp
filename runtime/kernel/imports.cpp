@@ -4556,6 +4556,12 @@ PPC_FUNC(__imp__XamInputGetState)
             if (Settings_OverlayVisible())
                 memset(base + padState + 4, 0, 12);
         }
+        // Part 92 round 3: the guest Visuals screen is driven by these BUTTON
+        // bits, which the reduced native merge no longer produces from keys —
+        // OR in the keyboard equivalents for the PUMP ONLY (the guest pad
+        // state is untouched, so nothing reaches the game twice).
+        if (padUser == 0)
+            buttons |= NativeKbm_PanelButtons();
         PcOptions_Pump(ctx, base, buttons);
     }
 

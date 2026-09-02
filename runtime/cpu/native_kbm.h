@@ -48,6 +48,13 @@ void NativeKbm_MouseWheel(int steps);
 // currently informational only; kept because the event plumbing feeds it.)
 void NativeKbm_MoveKeys(uint32_t wasdMask);
 
+// Synthetic pad-button bits for the PC-options panel pump (imports.cpp): the
+// guest Visuals screen is driven by pad-0 BUTTON bits, which the reduced merge
+// no longer produces from keys — this returns the keyboard equivalents
+// (arrows=dpad, Enter=A, Esc=B, X=X) from live key state, consumed ONLY by the
+// panel pump so nothing reaches the game twice.
+uint32_t NativeKbm_PanelButtons();
+
 // The camera's unclamped remainder, in stick units (±1.0 = full deflection),
 // XInput sign convention. window.cpp feeds the clamped part through the XInput
 // right stick; this surplus is added into the title's EFFECTIVE source cells

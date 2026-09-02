@@ -194,10 +194,19 @@ what make the port-0 design trustworthy.
   context pass set their active flags, and a synthetic ENTER
   (`CZ_KBM_TEST_KEYS`) fired `COMMAND_FRONTEND_A_BUTTON` into the title's own
   ENGAGEMENT scan (`sub_827F85F8`, reached from the manager update at
-  `0x828016B0`) — which then **crashed on a null** in profile machinery
-  (`[0x82AD5EF8]`-rooted) that the 360 build never expected to run for a
-  class-0 controller. The keyboard support is compiled out one level FURTHER UP
-  than the connect. Do not resurrect the port-2 connect without fixing that.
+  `0x828016B0`) — which then ~~crashed on a null in profile machinery the 360
+  build never expected to run for a class-0 controller~~. **RETRACTED AS
+  UNPROVEN (round 3, the same night+1)**: a later crash at the same site, in a
+  PAD-engagement run that had worked for a thousand boots, faulted at host
+  address `0x323130312f` — ASCII "…/101 2…", bytes of MY OWN query-histogram
+  string — and the histogram's `snprintf(line+n, sizeof line - n, …)` had a
+  256-byte buffer that 16 ports of counters overflow, after which the size
+  argument UNDERFLOWS and the next call smashes the host stack (gotcha 7's
+  shape: the instrument manufactured the finding, and both engagement crashes
+  ever seen were in CZ_KBM_TRACE runs). The port-2 road may be perfectly
+  viable; it was not re-walked because the port-0 design below is simpler and
+  integrated, but a future session (Case West!) should not treat the
+  engagement path as broken on this evidence.
 * **Engagement is COMMAND-driven and scans every port** — the query histogram
   (`CZ_KBM_TRACE=1` hooks on `0x828053C8`/`0x82805510`) shows bool/float
   command queries against all 16 ports continuously. Port 0's engagement path

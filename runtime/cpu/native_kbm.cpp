@@ -160,6 +160,7 @@ std::deque<Keystroke> g_srcQueue;              // for the key-source feed
 std::atomic<uint32_t> g_wasd{ 0 };
 std::atomic<int> g_mouseDX{ 0 }, g_mouseDY{ 0 };
 std::atomic<uint32_t> g_mouseButtons{ 0 };
+std::atomic<uint32_t> g_panelButtons{ 0 };   // XI bits mirrored from key levels
 // camera surplus in stick units, XInput sign; bit-cast into int32 atomics
 std::atomic<int32_t> g_camSurX{ 0 }, g_camSurY{ 0 };
 
@@ -600,15 +601,28 @@ void DumpQueryHistogram()
     if (std::chrono::duration_cast<std::chrono::seconds>(now - lastDump).count() < 10)
         return;
     lastDump = now;
-    char line[256];
-    int n = snprintf(line, sizeof line, "[kbm] cmd queries by port (bool/float):");
-    for (int p = 0; p < 16; ++p)
+    // 256 bytes was NOT enough for 16 ports of growing counters, and
+    // snprintf's return value is the WOULD-HAVE-BEEN length: once n passed the
+    // buffer, `sizeof line - n` underflowed and the next call smashed the host
+    // stack with histogram digits — a guest thread then "crashed" at an ASCII
+    // fault address made of this very string (part 92 round 3; the crash that
+    // was attributed to the title's keyboard-engagement path bears the same
+    // fingerprint, so that attribution is retracted as unproven in
+    // docs/native-kbm-phaseA.md).
+    char line[640];
+    size_t n = snprintf(line, sizeof line, "[kbm] cmd queries by port (bool/float):");
+    for (int p = 0; p < 16 && n < sizeof line; ++p)
     {
         const uint64_t b = g_queryByPort[0][p].load(std::memory_order_relaxed);
         const uint64_t f = g_queryByPort[1][p].load(std::memory_order_relaxed);
         if (b || f)
-            n += snprintf(line + n, sizeof line - n, " p%d:%llu/%llu", p,
-                          (unsigned long long)b, (unsigned long long)f);
+        {
+            const int w = snprintf(line + n, sizeof line - n, " p%d:%llu/%llu", p,
+                                   (unsigned long long)b, (unsigned long long)f);
+            if (w < 0 || size_t(w) >= sizeof line - n)
+                break;
+            n += size_t(w);
+        }
     }
     fprintf(stderr, "%s\n", line);
 }
@@ -643,12 +657,39 @@ PPC_FUNC(sub_82805510)
 // past the publish there is no other writer until the next frame, which is
 // what makes this race-free where the post-conversion write was not. Sign: the
 // effective cells carry the engine's convention (Y negated vs XInput).
+namespace
+{
+// CZ_KBM_TRACE movement-latency probes: log every crossing of |0.5| on the
+// left-stick X value at three layers — the ring entry the title consumes, the
+// raw source cell, the published (effective) cell — so a held A/D press
+// timestamps its way through the pipeline and the lag names its layer.
+void ProbeCrossing(const char* what, float v, float* last)
+{
+    const bool was = *last > 0.5f || *last < -0.5f;
+    const bool is = v > 0.5f || v < -0.5f;
+    if (was != is)
+    {
+        const auto now = std::chrono::steady_clock::now().time_since_epoch();
+        fprintf(stderr, "[kbm] probe %s %s %.2f @%lld ms\n", what,
+                is ? "ENGAGED" : "released", v,
+                (long long)std::chrono::duration_cast<std::chrono::milliseconds>(now).count());
+    }
+    *last = v;
+}
+} // namespace
+
 PPC_FUNC(sub_82804AF8)
 {
     const uint32_t self = ctx.r3.u32;
     __imp__sub_82804AF8(ctx, base);
     if (!NativeKbm_Active() || !self || self != LoadU32(base, kPortMap))
         return;
+    if (TraceOn())
+    {
+        static float lastA = 0.0f;
+        ProbeCrossing("A(effective)", LoadF32(base, self + 8 + kSrcLtX * 0x30),
+                      &lastA);
+    }
     const float sx = AtomicTakeFloat(g_camSurX);
     const float sy = AtomicTakeFloat(g_camSurY);
     if (sx == 0.0f && sy == 0.0f)
@@ -670,11 +711,23 @@ PPC_FUNC(sub_82804AF8)
 PPC_FUNC(sub_828070E0)
 {
     const uint32_t self = ctx.r3.u32;
+    const uint32_t ringIdx = ctx.r4.u32;
     __imp__sub_828070E0(ctx, base);
     if (!NativeKbm_Active())
         return;
     if (self && self == LoadU32(base, kPortMap))
     {
+        if (TraceOn())
+        {
+            // the ring entry the title just converted: state at this+0x2498+idx*16,
+            // thumbLX at +4 (BE s16)
+            static float lastRing = 0.0f, lastB = 0.0f;
+            const uint32_t st = self + 0x2498 + (ringIdx & 31) * 16;
+            int16_t lx = int16_t((base[st + 4] << 8) | base[st + 5]);
+            ProbeCrossing("ring(consumed)", float(lx) / 32767.0f, &lastRing);
+            ProbeCrossing("B(raw)", LoadF32(base, self + 0x11D8 + kSrcLtX * 0x30),
+                          &lastB);
+        }
         if (!SpliceIntact(base))
         {
             fprintf(stderr, "[kbm] splice sentinel lost (padmap re-parsed?) — "
@@ -770,6 +823,28 @@ void NativeKbm_PushKey(uint16_t vk, uint16_t unicode, bool down, bool repeat,
 {
     if (!NativeKbm_Enabled())
         return;
+    // Mirror the handful of panel keys as pad-button LEVELS for the guest
+    // Visuals screen's pump (NativeKbm_PanelButtons) — the panel is driven by
+    // pad-0 button bits the reduced merge no longer produces from keys.
+    uint32_t bit = 0;
+    switch (vk)
+    {
+        case 0x26: bit = 0x0001; break;   // up    -> XI_DPAD_UP
+        case 0x28: bit = 0x0002; break;   // down  -> XI_DPAD_DOWN
+        case 0x25: bit = 0x0004; break;   // left  -> XI_DPAD_LEFT
+        case 0x27: bit = 0x0008; break;   // right -> XI_DPAD_RIGHT
+        case 0x0D: bit = 0x1000; break;   // enter -> XI_A
+        case 0x1B: bit = 0x2000; break;   // esc   -> XI_B
+        case 0x58: bit = 0x4000; break;   // X     -> XI_X (the panel's save+apply)
+        default: break;
+    }
+    if (bit)
+    {
+        if (down)
+            g_panelButtons.fetch_or(bit, std::memory_order_relaxed);
+        else
+            g_panelButtons.fetch_and(~bit, std::memory_order_relaxed);
+    }
     uint16_t flags = down ? 0x0001 : 0x0002;      // KEYDOWN / KEYUP
     if (repeat)
         flags |= 0x0004;                          // REPEAT
@@ -809,6 +884,11 @@ void NativeKbm_MouseWheel(int steps)
 void NativeKbm_MoveKeys(uint32_t wasdMask)
 {
     g_wasd.store(wasdMask, std::memory_order_release);
+}
+
+uint32_t NativeKbm_PanelButtons()
+{
+    return NativeKbm_Active() ? g_panelButtons.load(std::memory_order_relaxed) : 0;
 }
 
 void NativeKbm_CameraSurplus(float sx, float sy)
