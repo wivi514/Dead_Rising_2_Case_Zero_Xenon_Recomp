@@ -26,7 +26,23 @@ with the real LZX encoder (the guest crashes on degenerate streams — part
 repack, hash identity, round-trip). The game-identical decode of every chip
 was rendered and looked at; the boot serves and decodes the bank clean.
 
-**THE WHOLE PLAN IS EXECUTED. Owed: the operator's session** — feel
+**THE WHOLE PLAN IS EXECUTED AND OPERATOR-ACCEPTED (2026-09-02)** — their
+sitting drove five fix rounds, each conviction from their own reports/logs:
+the publish race (post-conversion source writes fought the title's converter;
+single-writer via the XInput merge + effective-cell camera surplus), the icon
+crop (the widget samples the used-extent region only), the splice racing the
+title's own padmap parse (stable-parse gate + whole-set intact check), THE
+A/S/D SECOND (SDL text-input mode routed held keys through the desktop IME —
+the accent-picker popup was the tell; SDL_StopTextInput), my trace histogram's
+snprintf stack smash (which had manufactured the "engagement crash" — retracted
+in phaseA), the Visuals panel driven by keyboard (panel-only button mirror;
+then the stuck-ENTER release), PRESS ENTER at the title, and DEVICE-FOLLOW
+PROMPT ART (both art sets shipped; texel-identified in guest memory —
+page-aligned, headerless; instant flips, rate-limited rescans after the scan
+storm dropped them below 30 fps once). Their verdict: input "works perfectly",
+performance back to normal, Visuals menu working.
+
+~~Owed: the operator's session~~ — delivered. Still open from their asks: — feel
 acceptance (A/S/D crispness, camera speed vs DR2 PC — B.4/C.3), the first
 on-screen sighting of the chips at a prompt-bearing surface, and legend
 refinements from their read. `CZ_NO_NATIVE_KBM=1` = v1 wholly;
