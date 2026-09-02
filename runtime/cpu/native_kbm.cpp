@@ -146,8 +146,6 @@ struct Binding
     uint8_t src1, mode1, src2, mode2, comb;
 };
 std::vector<Binding> g_splice;                 // resolved key bindings
-uint16_t g_sentinelCmd = 0;                    // first spliced cmd, for re-splice
-uint8_t g_sentinelSrc = 0;
 
 // ---- window-thread state ----------------------------------------------------
 struct Keystroke
@@ -385,6 +383,8 @@ void BuildSplice(uint8_t* base)
             g_splice.size(), skippedMouse, bad);
 }
 
+uint32_t g_lastApplied = 0;   // what the last ApplySplice landed (see SpliceIntact)
+
 // Weave the key bindings into port 0's live binding records. Policy, in order:
 // whole line into an unbound record; else the line's first KEY source into a
 // free src2 with OR; else skip and say so. Returns how many landed.
@@ -394,7 +394,6 @@ uint32_t ApplySplice(uint8_t* base)
     if (!array)
         return 0;
     uint32_t applied = 0, skipped = 0;
-    g_sentinelCmd = 0;
     for (const Binding& b : g_splice)
     {
         const uint32_t rec = array + uint32_t(b.cmd) * 24;
@@ -427,29 +426,47 @@ uint32_t ApplySplice(uint8_t* base)
                         GuestStr(base, LoadU32(base, kCmdTable + 4 * b.cmd)));
             continue;
         }
-        if (!g_sentinelCmd)
-        {
-            g_sentinelCmd = b.cmd;
-            g_sentinelSrc = IsKeyToken(base, b.src1) ? b.src1 : b.src2;
-        }
         ++applied;
     }
     fprintf(stderr, "[kbm] splice: %u of %zu key bindings applied to port 0 "
                     "(%u had no free slot)\n",
             applied, g_splice.size(), skipped);
+    g_lastApplied = applied;
     return applied;
+}
+
+// Is the splice still standing? The single-sentinel version of this check
+// failed the operator in one boot: the first splice fired MID-PARSE (the
+// title's own padmap parse was still filling the table, so 91 of 93 lines
+// found free slots), the finishing parse overwrote almost everything, and the
+// one sentinel record happened to survive — E and ESC died with no re-apply.
+// Now the whole applied set is the check: count the records that carry any
+// KEY-category source and compare against what the last apply landed. ~600
+// byte reads per controller tick — noise.
+uint32_t KeySpliceCount(uint8_t* base)
+{
+    const uint32_t array = LoadU32(base, kBindRecords + 4);
+    const uint32_t count = LoadU32(base, kBindRecords + 8);
+    if (!array)
+        return 0;
+    uint32_t keyed = 0;
+    for (uint32_t i = 0; i < count && i < kCmdCount; ++i)
+    {
+        const uint32_t rec = array + i * 24;
+        const uint32_t s1 = LoadU32(base, rec + 4);
+        const uint32_t s2 = LoadU32(base, rec + 0xC);
+        if ((s1 && s1 < kTokenCount && IsKeyToken(base, int(s1))) ||
+            (s2 && s2 < kTokenCount && IsKeyToken(base, int(s2))))
+            ++keyed;
+    }
+    return keyed;
 }
 
 bool SpliceIntact(uint8_t* base)
 {
-    if (!g_sentinelCmd)
+    if (!g_lastApplied)
         return true;
-    const uint32_t array = LoadU32(base, kBindRecords + 4);
-    if (!array)
-        return false;
-    const uint32_t rec = array + uint32_t(g_sentinelCmd) * 24;
-    return LoadU32(base, rec + 4) == g_sentinelSrc ||
-           LoadU32(base, rec + 0xC) == g_sentinelSrc;
+    return KeySpliceCount(base) * 4 >= g_lastApplied * 3;
 }
 
 bool BytesAre(uint8_t* base, uint32_t addr, const char* s)
@@ -495,6 +512,21 @@ bool VerifyImage(uint8_t* base)
 
 // Port 0's own padmap has been parsed once the title's records carry sources —
 // the gate that also proves the command registry is up.
+// How many of port 0's records the title's parse has filled (src1 != 0) —
+// the stability gate in the pump watches this settle before splicing.
+uint32_t ParsedCount(uint8_t* base, uint32_t /*port*/, uint32_t* outCount)
+{
+    const uint32_t count = LoadU32(base, kBindRecords + 8);
+    const uint32_t array = LoadU32(base, kBindRecords + 4);
+    if (outCount)
+        *outCount = count;
+    uint32_t parsed = 0;
+    if (array)
+        for (uint32_t i = 0; i < count && i < kCmdCount; ++i)
+            parsed += LoadU32(base, array + i * 24 + 4) != 0 ? 1 : 0;
+    return parsed;
+}
+
 bool Port0Parsed(uint8_t* base)
 {
     const uint32_t count = LoadU32(base, kBindRecords + 8);
@@ -768,6 +800,23 @@ void NativeKbm_Pump(PPCContext& ctx, uint8_t* base)
     }
     if (!Port0Parsed(base))
         return;
+    // The title's parse must be FINISHED, not merely started: require a
+    // substantially-filled table whose parsed count has been STABLE across
+    // ~120 pump calls (about two seconds) — the mid-parse splice above is what
+    // this prevents.
+    {
+        static uint32_t lastCount = 0, stablePolls = 0;
+        uint32_t cnt = 0;
+        const uint32_t parsed = ParsedCount(base, 0, &cnt);
+        if (parsed < 150 || parsed != lastCount)
+        {
+            lastCount = parsed;
+            stablePolls = 0;
+            return;
+        }
+        if (++stablePolls < 120)
+            return;
+    }
     BuildSplice(base);
     const uint32_t applied = ApplySplice(base);
     g_phase.store(applied ? Phase::Active : Phase::Declined,
