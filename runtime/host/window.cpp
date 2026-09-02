@@ -1052,7 +1052,17 @@ HostPadState ReadKeyboard()
                 if (mb & SDL_BUTTON(SDL_BUTTON_LEFT))
                     s.buttons |= XI_X;
                 if (mb & SDL_BUTTON(SDL_BUTTON_RIGHT))
+                {
+                    // BOTH triggers: the title splits aiming across them — gun
+                    // aim is the R2 source, but THROWING a held item needs the
+                    // L2 source held (stock padmap: PLAYER_THROW = X pressed
+                    // while BUTTON_L2 held, and the throw tutorial shows the
+                    // LT glyph). DR2 PC collapses both onto its right mouse
+                    // button; so do we. The pad itself already lives with each
+                    // trigger's secondary meanings, so no new collisions.
                     s.rightTrigger = 255;
+                    s.leftTrigger = 255;
+                }
                 if (mb & SDL_BUTTON(SDL_BUTTON_MIDDLE))
                     s.buttons |= XI_RIGHT_THUMB;
             }
