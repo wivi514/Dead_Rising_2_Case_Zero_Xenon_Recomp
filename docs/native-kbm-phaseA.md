@@ -321,3 +321,15 @@ measured live with process_vm_readv:
 The boot-time string edit (PRESS ENTER) does not device-follow — title-screen
 only, chosen at boot. CZ_NO_KB_PROMPTS=1 disables the whole prompt feature
 including this worker.
+
+## The RMB trigger pair (round 6, operator-verified)
+
+The title splits "aiming" across the two triggers: gun aim rides the R2
+source, but THROWING a held item needs the L2 source held (stock padmap:
+`PLAYER_THROW` = X pressed while BUTTON_L2 held — the throw tutorial's LT
+glyph). RMB therefore drives BOTH — but NOT in the same instant:
+`PLAYER_THROW_RT` is "R2 PRESSED while L2 held", and simultaneous edges read
+as that tap and threw the item the moment RMB went down. The shipped shape:
+the aim trigger leads, the throw-enable joins 70 ms later (a pad hand's
+natural stagger). Operator-verified: aim holds, LMB throws, guns unchanged.
+For Case West: expect the same split and the same edge trap.
