@@ -4418,6 +4418,11 @@ static uint32_t XamInputGetState_x(uint32_t userIndex, uint32_t flags,
     const int16_t outRX = active ? entry.rx : int16_t(0);
     const int16_t outRY = active ? entry.ry : int16_t(0);
 
+    // Device-follow (part 92): a synthetic press IS pad input — it lets the
+    // headless gate exercise the prompt-art flip both ways.
+    if (outButtons || outLX || outLY || outRX || outRY)
+        NativeKbm_NoteDeviceInput(true);
+
     const uint64_t stateKey =
         stateHash(outButtons, outLX, outLY, outRX, outRY);
     if (stateKey != lastState.exchange(stateKey))

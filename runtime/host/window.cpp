@@ -950,6 +950,8 @@ void NativeKbmKeyEvent(const SDL_KeyboardEvent& e, bool down)
     const uint16_t vk = ScancodeToVk(sc);
     if (!vk)
         return;
+    if (down)
+        NativeKbm_NoteDeviceInput(false);
     const SDL_Keymod mod = SDL_Keymod(e.keysym.mod);
     uint16_t mods = 0;
     if (mod & KMOD_SHIFT) mods |= 0x8;
@@ -2204,6 +2206,8 @@ void Host_WindowRun()
                     if (mb & SDL_BUTTON(SDL_BUTTON_RIGHT))  mask |= 2;
                     if (mb & SDL_BUTTON(SDL_BUTTON_MIDDLE)) mask |= 4;
                     NativeKbm_MouseButtons(mask);
+                    if (e.type == SDL_MOUSEBUTTONDOWN)
+                        NativeKbm_NoteDeviceInput(false);
                     break;
                 }
                 case SDL_MOUSEWHEEL:
@@ -2327,6 +2331,16 @@ void Host_WindowRun()
         // neither can pin a stick the other is using); pad 1 reports idle-connected.
         {
             HostPadState merged = ReadController();
+            // Device-follow: deliberate pad input (a button, a trigger, or a
+            // stick past the reference deadzone — their pad DRIFTS at 18%, so
+            // idle must not count) flips the prompt art to the Xbox glyphs.
+            if (merged.buttons || merged.leftTrigger > 40 ||
+                merged.rightTrigger > 40 ||
+                merged.thumbLX > 8000 || merged.thumbLX < -8000 ||
+                merged.thumbLY > 8000 || merged.thumbLY < -8000 ||
+                merged.thumbRX > 8000 || merged.thumbRX < -8000 ||
+                merged.thumbRY > 8000 || merged.thumbRY < -8000)
+                NativeKbm_NoteDeviceInput(true);
             const HostPadState kb = ReadKeyboard();
             // A DRIFTING PAD MUST NOT FIGHT THE KEYBOARD (the operator's first
             // keyboard sitting: their idle controller sat at L=(5539,5956) — 18%

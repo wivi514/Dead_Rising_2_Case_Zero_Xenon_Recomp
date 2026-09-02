@@ -89,6 +89,7 @@
 #include <fstream>
 #include <mutex>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include "../kernel/heap.h"
@@ -770,6 +771,210 @@ PPC_FUNC(sub_828070E0)
     }
 }
 
+// ---- DEVICE-FOLLOW PROMPT ART (part 92, the operator's commission) -----------
+// The glyph bank is a boot-time choice (the VFS serves the key-chip fecmn.tex
+// while the keyboard is the input path), but prompts should follow the LIVE
+// device: touch the pad -> Xbox art, touch a key or the mouse -> key chips.
+// Mechanism: tools/gen_kbm_icons.py emits glyph_swap.bin carrying BOTH texel
+// sets plus each decoded record's 16-byte header (unique per glyph — bytes
+// 12..15 differ). A host worker finds every in-memory copy of each record by
+// that fingerprint (one scan of the guest arenas, ~hundreds of ms, off the
+// guest threads) and on a device change overwrites the texels in place — the
+// renderer's per-draw content guard (the part-24 HUD machinery) sees changed
+// bytes and re-uploads. Idempotent, self-checking (the fingerprint is
+// re-verified before every write; a stale address is dropped for rescan).
+namespace
+{
+enum { DEV_KB = 0, DEV_PAD = 1 };
+std::atomic<int> g_wantedDevice{ DEV_KB };
+std::atomic<bool> g_deviceWorkerUp{ false };
+
+struct SwapGlyph
+{
+    std::string name;
+    uint8_t fp[16];
+    std::vector<uint8_t> padTex, kbTex;
+    std::vector<uint32_t> addrs;
+};
+std::vector<SwapGlyph> g_swapGlyphs;
+
+bool LoadGlyphSwap()
+{
+    const auto path = HostPaths::Root() / "assets/game_kbm/glyph_swap.bin";
+    std::ifstream f(path, std::ios::binary);
+    if (!f)
+        return false;
+    char magic[4];
+    uint32_t count = 0;
+    f.read(magic, 4);
+    f.read(reinterpret_cast<char*>(&count), 4);
+    if (memcmp(magic, "KBSW", 4) != 0 || count == 0 || count > 64)
+        return false;
+    for (uint32_t i = 0; i < count; ++i)
+    {
+        uint32_t nameLen = 0, texLen = 0;
+        f.read(reinterpret_cast<char*>(&nameLen), 4);
+        f.read(reinterpret_cast<char*>(&texLen), 4);
+        if (!f || nameLen > 64 || texLen > 0x20000)
+            return false;
+        SwapGlyph g;
+        g.name.resize(nameLen);
+        f.read(g.name.data(), nameLen);
+        f.read(reinterpret_cast<char*>(g.fp), 16);
+        g.padTex.resize(texLen);
+        f.read(reinterpret_cast<char*>(g.padTex.data()), texLen);
+        g.kbTex.resize(texLen);
+        f.read(reinterpret_cast<char*>(g.kbTex.data()), texLen);
+        if (!f)
+            return false;
+        g_swapGlyphs.push_back(std::move(g));
+    }
+    return true;
+}
+
+// One pass over the guest arenas for every unlocated fingerprint. The decoded
+// records can exist in more than one copy (file cache + live texture); every
+// copy is recorded and every copy gets the swap, so whichever one the fetch
+// points at is covered.
+void ScanForGlyphs(uint8_t* base)
+{
+    struct Range { uint32_t lo, hi; };
+    static const Range ranges[] = {
+        { 0xA0000000u, 0xBFFF0000u },   // physical arena: textures live here
+        { 0x00010000u, 0x40000000u },   // small-page virtual
+        { 0x40000000u, 0x7FE00000u },   // large-page virtual
+    };
+    size_t found = 0;
+    for (const Range& r : ranges)
+    {
+        const uint8_t* lo = base + r.lo;
+        size_t left = r.hi - r.lo;
+        const uint8_t* p = lo;
+        while (left > 64)
+        {
+            const uint8_t* hit = static_cast<const uint8_t*>(
+                memchr(p, 0x05, left - 48));
+            if (!hit)
+                break;
+            const size_t off = size_t(hit - p);
+            left -= off;
+            p = hit;
+            if (left <= 64)
+                break;
+            // The guest PATCHES header bytes 10 and 12..15 at load (measured
+            // live: byte 10 becomes a size class, 12..15 something computed),
+            // so the file fingerprint holds only for bytes 0..9 and 11 —
+            // magic, extent, and the 0A 23 xx 08 shape. Identity is then
+            // CONFIRMED by the texels: the first 256 bytes must equal one of
+            // the two art sets (which also says which set is currently in).
+            if (p[1] == 0x01 && p[2] == 0x01 && p[3] == 0xE6 && p[8] == 0x0A &&
+                p[9] == 0x23 && p[11] == 0x08)
+                for (SwapGlyph& g : g_swapGlyphs)
+                    if (memcmp(p + 4, g.fp + 4, 4) == 0 &&
+                        (memcmp(p + 48, g.kbTex.data(), 256) == 0 ||
+                         memcmp(p + 48, g.padTex.data(), 256) == 0))
+                    {
+                        const uint32_t addr = uint32_t(p - base);
+                        bool known = false;
+                        for (uint32_t a2 : g.addrs)
+                            known |= a2 == addr;
+                        if (!known)
+                        {
+                            g.addrs.push_back(addr);
+                            ++found;
+                        }
+                        break;
+                    }
+            ++p;
+            --left;
+        }
+        // stop early once every glyph has at least one address
+        size_t located = 0;
+        for (const SwapGlyph& g : g_swapGlyphs)
+            located += !g.addrs.empty();
+        if (located == g_swapGlyphs.size())
+            break;
+    }
+    size_t located = 0;
+    for (const SwapGlyph& g : g_swapGlyphs)
+        located += !g.addrs.empty();
+    fprintf(stderr, "[kbm] device-follow scan: %zu of %zu glyphs located "
+                    "(%zu copies)\n", located, g_swapGlyphs.size(), found);
+}
+
+void DeviceWorker(uint8_t* base)
+{
+    int applied = -1;                 // force the first apply
+    for (;;)
+    {
+        const int want = g_wantedDevice.load(std::memory_order_acquire);
+        if (want == applied)
+        {
+            std::this_thread::sleep_for(std::chrono::milliseconds(60));
+            continue;
+        }
+        // (Re)scan whenever any glyph is unlocated — the first flip can precede
+        // the frontend's decode of the glyph bank, and a level reload can move
+        // records. At most one pass per device change.
+        bool anyMissing = false;
+        for (const SwapGlyph& g : g_swapGlyphs)
+            if (g.addrs.empty())
+            {
+                anyMissing = true;
+                break;
+            }
+        if (anyMissing)
+            ScanForGlyphs(base);
+        size_t wrote = 0, stale = 0;
+        for (SwapGlyph& g : g_swapGlyphs)
+        {
+            auto it = g.addrs.begin();
+            while (it != g.addrs.end())
+            {
+                if (memcmp(base + *it, g.fp, 8) != 0)
+                {
+                    it = g.addrs.erase(it);   // freed or reused: drop it
+                    ++stale;
+                    continue;
+                }
+                const auto& tex = want == DEV_PAD ? g.padTex : g.kbTex;
+                memcpy(base + *it + 48, tex.data(), tex.size());
+                ++wrote;
+                ++it;
+            }
+        }
+        applied = want;
+        fprintf(stderr, "[kbm] prompt art -> %s (%zu copies swapped%s)\n",
+                want == DEV_PAD ? "PAD" : "KEYBOARD", wrote,
+                stale ? ", stale addresses dropped" : "");
+    }
+}
+} // namespace
+
+void NativeKbm_NoteDeviceInput(bool pad)
+{
+    if (!NativeKbm_Active())
+        return;
+    static const bool promptsOff = getenv("CZ_NO_KB_PROMPTS") != nullptr;
+    if (promptsOff)
+        return;
+    const int want = pad ? DEV_PAD : DEV_KB;
+    if (g_wantedDevice.exchange(want, std::memory_order_release) != want ||
+        !g_deviceWorkerUp.load(std::memory_order_acquire))
+    {
+        if (!g_deviceWorkerUp.exchange(true, std::memory_order_acq_rel))
+        {
+            if (!LoadGlyphSwap())
+            {
+                fprintf(stderr, "[kbm] glyph_swap.bin missing/bad — prompt art "
+                                "stays as booted\n");
+                return;
+            }
+            std::thread(DeviceWorker, g_memory.base).detach();
+        }
+    }
+}
+
 bool NativeKbm_Enabled()
 {
     static const bool off = getenv("CZ_NO_NATIVE_KBM") != nullptr;
@@ -894,6 +1099,8 @@ void NativeKbm_PushKey(uint16_t vk, uint16_t unicode, bool down, bool repeat,
         else
             g_panelButtons.fetch_and(~bit, std::memory_order_relaxed);
     }
+    if (down)
+        NativeKbm_NoteDeviceInput(false);      // device-follow: a key names KB
     uint16_t flags = down ? 0x0001 : 0x0002;      // KEYDOWN / KEYUP
     if (repeat)
         flags |= 0x0004;                          // REPEAT

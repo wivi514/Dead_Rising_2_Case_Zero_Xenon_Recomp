@@ -48,6 +48,12 @@ void NativeKbm_MouseWheel(int steps);
 // currently informational only; kept because the event plumbing feeds it.)
 void NativeKbm_MoveKeys(uint32_t wasdMask);
 
+// Device-follow (part 92): any REAL input names its device — pad input flips
+// the prompt art to the Xbox glyphs, keyboard/mouse input flips it to the key
+// chips, by swapping the decoded glyph texels in guest memory (the renderer's
+// content guard re-uploads). Cheap when the device is unchanged.
+void NativeKbm_NoteDeviceInput(bool pad);
+
 // Synthetic pad-button bits for the PC-options panel pump (imports.cpp): the
 // guest Visuals screen is driven by pad-0 BUTTON bits, which the reduced merge
 // no longer produces from keys — this returns the keyboard equivalents

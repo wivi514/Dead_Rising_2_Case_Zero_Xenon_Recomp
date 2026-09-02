@@ -360,6 +360,12 @@ def main():
 
     patches = {}
     previews = []
+    # The DEVICE-FOLLOW sidecar (assets/game_kbm/glyph_swap.bin): for every
+    # patched glyph, the 16-byte decoded-record header (a unique in-memory
+    # fingerprint — bytes 12..15 differ per glyph) plus BOTH texel sets, so the
+    # runtime can find the decoded records in live guest memory and swap the
+    # art in place when the active input device changes (cpu/native_kbm.cpp).
+    swap_entries = []
     for e in entries:
         base = e["name"].rsplit(".", 1)[0]
         spec = LEGENDS.get(base)
@@ -395,6 +401,7 @@ def main():
         if args.preview:
             previews.append((base, canvas.copy()))
         raw = hdr + encode_dxt5_tiled(canvas, len(texels) // 16)
+        swap_entries.append((base, hdr[:16], texels, raw[48:]))
         window = struct.unpack(">I", data[e["rec"][4] + 4:e["rec"][4] + 8])[0]
         pay = make_entry_payload(raw, window)
         # GATE 3: round-trip through the real decompressor.
@@ -430,6 +437,17 @@ def main():
     OUT.parent.mkdir(parents=True, exist_ok=True)
     sout.write_bytes(sbank)
     print(f"wrote {sout} (2 same-length PRESS ENTER edits)")
+
+    swp = bytearray()
+    swp += struct.pack("<4sI", b"KBSW", len(swap_entries))
+    for base_, fp, padTex, kbTex in swap_entries:
+        nb = base_.encode()
+        assert len(padTex) == len(kbTex)
+        swp += struct.pack("<II", len(nb), len(padTex))
+        swp += nb + fp + padTex + kbTex
+    (OUT.parent.parent.parent / "glyph_swap.bin").write_bytes(bytes(swp))
+    print(f"wrote {OUT.parent.parent.parent / 'glyph_swap.bin'} "
+          f"({len(swp)} bytes, {len(swap_entries)} glyphs, both art sets)")
 
     out = rebuild(data, entries, patches)
     # THE SIZE PIN (see the module comment): the loader reads this file at

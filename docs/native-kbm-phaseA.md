@@ -293,3 +293,31 @@ A/S/D — with W instant — is the title's own camera-relative TURN before
 moving. Whether DR2 PC shortened that in its player code is beyond the input
 layer; the operator's pad-flick comparison (does a pad flick also take ~1 s?)
 is the one observation that closes the attribution.
+
+## Device-follow prompt art (round 4, the operator's request)
+
+Touch the pad → Xbox glyphs; touch a key or a mouse button → key chips, live.
+`tools/gen_kbm_icons.py` emits `assets/game_kbm/glyph_swap.bin` (both texel
+sets + each record's header); a host worker locates every in-memory copy of
+each decoded glyph record and, on a device change, overwrites the texels in
+place — the renderer's per-draw content guard re-uploads changed textures (the
+part-24 HUD machinery doing the delivery). Findings that shaped it, all
+measured live with process_vm_readv:
+
+* The guest PATCHES the decoded record header at load — byte 10 becomes a
+  size class, bytes 12..15 something computed — so the file header is only a
+  partial fingerprint (magic + extent + the 0A 23 xx 08 shape); identity is
+  confirmed by comparing the first 256 texel bytes against either art set,
+  which also reports which set is currently resident.
+* Glyph records decode LAZILY (none exist at the title screen), so the worker
+  rescans on any device change while glyphs remain unlocated, and re-verifies
+  every address before writing (stale copies are dropped for rescan).
+* Input attribution: pad = any button/trigger or a stick past the reference
+  deadzone measured on the RAW controller state (their pad drifts at 18% —
+  idle must not count); keyboard/mouse = key downs and mouse buttons.
+  Synthetic CZ_FAKE presses count as pad, which is what lets the headless
+  gate exercise both flips.
+
+The boot-time string edit (PRESS ENTER) does not device-follow — title-screen
+only, chosen at boot. CZ_NO_KB_PROMPTS=1 disables the whole prompt feature
+including this worker.
