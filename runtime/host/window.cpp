@@ -577,7 +577,13 @@ void EmitSettingsOverlay(int w, int h, Rect&& rect)
     };
 
     text(panelX + 20, panelY + 16, "PC SETTINGS", 3, 245, 235, 200);
-    text(panelX + 20, panelY + 46, "UP/DOWN ROW   LEFT/RIGHT CHANGE   X APPLY   B CLOSE",
+    // The hint line follows the ACTIVE input path: with the native keyboard on,
+    // the panel is driven by arrows/Enter/Esc/X (NativeKbm_PanelButtons) and the
+    // words say so — "B CLOSE" on a keyboard screen was the operator's report.
+    text(panelX + 20, panelY + 46,
+         NativeKbm_Active()
+             ? "UP/DOWN ROW   LEFT/RIGHT CHANGE   X APPLY   ESC CLOSE"
+             : "UP/DOWN ROW   LEFT/RIGHT CHANGE   X APPLY   B CLOSE",
          2, 160, 160, 170);
 
     static const char* kModeNames[] = { "WINDOW", "BORDERLESS", "FULLSCREEN" };
@@ -1785,6 +1791,16 @@ bool Host_WindowInit()
     // once the window exists to measure its display against (see the flags comment).
     if (modeFlag != 0 && Settings_DisplayMode() == CzDisplayMode::Fullscreen)
         ApplyDisplayModeNow(CzDisplayMode::Fullscreen);
+
+    // SDL2 starts TEXT INPUT by default on desktop, which routes held keys through
+    // the OS input method — on the operator's Linux desktop, HOLDING a letter popped
+    // the IME's accent picker (à á â...) and the raw keydown was delayed by the
+    // press-and-hold timeout. That WAS the part-91/92 "A/S/D take a second to move"
+    // symptom: the pad was instant, the headless probes (no SDL, no IME) measured
+    // the delivery instant, and only the real desktop path lagged — the delay lived
+    // in the input method, before this process ever saw the key. A game window
+    // wants scancodes, not composed text.
+    SDL_StopTextInput();
 
     // No SDL_RENDERER_PRESENTVSYNC. The guest's swap rate is the frame clock here
     // (one XE_SWAP per frame, verified against B1), and a vsync-paced present would
