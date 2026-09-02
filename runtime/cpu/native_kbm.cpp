@@ -847,7 +847,7 @@ static const Range kScanRanges[] = {
     { 0x00010000u, 0x40000000u },   // small-page virtual
 };
 
-void ScanForGlyphs(uint8_t* base)
+void ScanForGlyphs(uint8_t* base, bool physOnly)
 {
     size_t found = 0;
     for (SwapGlyph& g : g_swapGlyphs)
@@ -863,6 +863,8 @@ void ScanForGlyphs(uint8_t* base)
             continue;                      // sets identical?! nothing to swap
         for (const Range& r : kScanRanges)
         {
+            if (physOnly && r.lo != 0xA0000000u)
+                continue;      // rescans sweep only where the copies really live
             const uint8_t* lo = base + r.lo;
             const size_t len = r.hi - r.lo;
             for (const uint8_t* probe : { g.kbTex.data() + po, g.padTex.data() + po })
@@ -919,9 +921,36 @@ void DeviceWorker(uint8_t* base)
             std::this_thread::sleep_for(std::chrono::milliseconds(60));
             continue;
         }
-        // (Re)scan whenever any glyph is unlocated — the first flip can precede
-        // the frontend's decode of the glyph bank, and a level reload can move
-        // records. At most one pass per device change.
+        auto swapAll = [&](size_t& wrote, size_t& stale) {
+            for (SwapGlyph& g : g_swapGlyphs)
+            {
+                auto it = g.addrs.begin();
+                while (it != g.addrs.end())
+                {
+                    // still one of the two art sets? anything else means the
+                    // allocation was reused — drop it for rescan.
+                    if (memcmp(base + *it, g.kbTex.data(), g.kbTex.size()) != 0 &&
+                        memcmp(base + *it, g.padTex.data(), g.padTex.size()) != 0)
+                    {
+                        it = g.addrs.erase(it);
+                        ++stale;
+                        continue;
+                    }
+                    const auto& tex = want == DEV_PAD ? g.padTex : g.kbTex;
+                    memcpy(base + *it, tex.data(), tex.size());
+                    ++wrote;
+                    ++it;
+                }
+            }
+        };
+        // Swap the KNOWN copies first — the flip must be instant. Rescans for
+        // unlocated glyphs run AFTER, rate-limited to one per 20 s and to the
+        // physical arena past the first pass: the first version swept multiple
+        // gigabytes on EVERY flip whenever one glyph stayed unlocated, and
+        // alternating devices in play turned that into a constant memory storm
+        // — the operator's sub-30-fps report.
+        size_t wrote = 0, stale = 0;
+        swapAll(wrote, stale);
         bool anyMissing = false;
         for (const SwapGlyph& g : g_swapGlyphs)
             if (g.addrs.empty())
@@ -929,28 +958,17 @@ void DeviceWorker(uint8_t* base)
                 anyMissing = true;
                 break;
             }
-        if (anyMissing)
-            ScanForGlyphs(base);
-        size_t wrote = 0, stale = 0;
-        for (SwapGlyph& g : g_swapGlyphs)
+        static auto lastScan = std::chrono::steady_clock::time_point{};
+        static bool scannedOnce = false;
+        const auto now = std::chrono::steady_clock::now();
+        if ((anyMissing || stale) &&
+            (lastScan == std::chrono::steady_clock::time_point{} ||
+             now - lastScan > std::chrono::seconds(20)))
         {
-            auto it = g.addrs.begin();
-            while (it != g.addrs.end())
-            {
-                // still one of the two art sets? anything else means the
-                // allocation was reused — drop it for rescan.
-                if (memcmp(base + *it, g.kbTex.data(), g.kbTex.size()) != 0 &&
-                    memcmp(base + *it, g.padTex.data(), g.padTex.size()) != 0)
-                {
-                    it = g.addrs.erase(it);
-                    ++stale;
-                    continue;
-                }
-                const auto& tex = want == DEV_PAD ? g.padTex : g.kbTex;
-                memcpy(base + *it, tex.data(), tex.size());
-                ++wrote;
-                ++it;
-            }
+            ScanForGlyphs(base, scannedOnce);   // full sweep once, then physical-only
+            scannedOnce = true;
+            lastScan = std::chrono::steady_clock::now();
+            swapAll(wrote, stale);              // newly-found copies get the art now
         }
         applied = want;
         fprintf(stderr, "[kbm] prompt art -> %s (%zu copies swapped%s)\n",
@@ -1081,14 +1099,13 @@ void NativeKbm_HandleKeystroke(PPCContext& ctx, uint8_t* base)
 
 // ---- window-thread side ------------------------------------------------------
 
-void NativeKbm_PushKey(uint16_t vk, uint16_t unicode, bool down, bool repeat,
-                       uint16_t mods)
+void NativeKbm_PanelKeyLevel(uint16_t vk, bool down)
 {
-    if (!NativeKbm_Enabled())
-        return;
-    // Mirror the handful of panel keys as pad-button LEVELS for the guest
-    // Visuals screen's pump (NativeKbm_PanelButtons) — the panel is driven by
-    // pad-0 button bits the reduced merge no longer produces from keys.
+    // Pad-button LEVELS for the guest Visuals panel pump, tracked for EVERY
+    // key event regardless of the overlay/focus gates — the first version
+    // lived inside PushKey, whose gating suppressed the release of the very
+    // ENTER that opened the panel: the A bit stuck on and the selected row
+    // stepped by itself (the operator's report).
     uint32_t bit = 0;
     switch (vk)
     {
@@ -1099,15 +1116,19 @@ void NativeKbm_PushKey(uint16_t vk, uint16_t unicode, bool down, bool repeat,
         case 0x0D: bit = 0x1000; break;   // enter -> XI_A
         case 0x1B: bit = 0x2000; break;   // esc   -> XI_B
         case 0x58: bit = 0x4000; break;   // X     -> XI_X (the panel's save+apply)
-        default: break;
+        default: return;
     }
-    if (bit)
-    {
-        if (down)
-            g_panelButtons.fetch_or(bit, std::memory_order_relaxed);
-        else
-            g_panelButtons.fetch_and(~bit, std::memory_order_relaxed);
-    }
+    if (down)
+        g_panelButtons.fetch_or(bit, std::memory_order_relaxed);
+    else
+        g_panelButtons.fetch_and(~bit, std::memory_order_relaxed);
+}
+
+void NativeKbm_PushKey(uint16_t vk, uint16_t unicode, bool down, bool repeat,
+                       uint16_t mods)
+{
+    if (!NativeKbm_Enabled())
+        return;
     if (down)
         NativeKbm_NoteDeviceInput(false);      // device-follow: a key names KB
     uint16_t flags = down ? 0x0001 : 0x0002;      // KEYDOWN / KEYUP

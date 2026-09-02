@@ -61,6 +61,10 @@ void NativeKbm_NoteDeviceInput(bool pad);
 // panel pump so nothing reaches the game twice.
 uint32_t NativeKbm_PanelButtons();
 
+// Key level for the panel bits, called for EVERY key event (no overlay/focus
+// gating — see the stuck-ENTER note in the implementation).
+void NativeKbm_PanelKeyLevel(uint16_t vk, bool down);
+
 // The camera's unclamped remainder, in stick units (±1.0 = full deflection),
 // XInput sign convention. window.cpp feeds the clamped part through the XInput
 // right stick; this surplus is added into the title's EFFECTIVE source cells

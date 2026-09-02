@@ -943,12 +943,15 @@ void NativeKbmKeyEvent(const SDL_KeyboardEvent& e, bool down)
         wasd = down ? (wasd | bit) : (wasd & ~bit);
         NativeKbm_MoveKeys(wasd);
     }
+    const uint16_t vk = ScancodeToVk(sc);
+    if (!vk)
+        return;
+    // panel levels track EVERY event (releases must land even when the gates
+    // below suppress the game-facing push — the stuck-ENTER lesson)
+    NativeKbm_PanelKeyLevel(vk, down);
     if (!g_keyboardFocus ||
         g_debugOverlayVisible.load(std::memory_order_acquire) ||
         Settings_OverlayVisible())
-        return;
-    const uint16_t vk = ScancodeToVk(sc);
-    if (!vk)
         return;
     if (down)
         NativeKbm_NoteDeviceInput(false);
