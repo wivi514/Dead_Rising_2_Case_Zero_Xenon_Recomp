@@ -42,12 +42,13 @@ page-aligned, headerless; instant flips, rate-limited rescans after the scan
 storm dropped them below 30 fps once). Their verdict: input "works perfectly",
 performance back to normal, Visuals menu working.
 
-~~Owed: the operator's session~~ — delivered. Still open from their asks: — feel
-acceptance (A/S/D crispness, camera speed vs DR2 PC — B.4/C.3), the first
-on-screen sighting of the chips at a prompt-bearing surface, and legend
-refinements from their read. `CZ_NO_NATIVE_KBM=1` = v1 wholly;
-`CZ_NO_KB_PROMPTS=1` = pad art with the keyboard live; the picture-complaint
-bisection order gains `CZ_NO_PATCHED_ASSETS=1` for anything frontend.
+~~Owed: the operator's session~~ — delivered; B.4/C.3 acceptance is met (their
+words across the sitting: movement/aim/camera "work perfectly", chips sighted
+in-game). Still open, non-blocking: legend refinements as they meet more
+prompts, and the title-screen string not device-following (boot-time choice).
+Arms: `CZ_NO_NATIVE_KBM=1` = v1 wholly; `CZ_NO_KB_PROMPTS=1` = pad art with
+the keyboard live; the picture-complaint bisection order gains
+`CZ_NO_PATCHED_ASSETS=1` for anything frontend.
 
 **THIS IS THE LIVE HAND-OFF**, superseding `part91-kickoff.md` (kept as part 91's
 record: the live-resolution apply, KB/M v1, and the §0b/§0c/§0d performance-parking
