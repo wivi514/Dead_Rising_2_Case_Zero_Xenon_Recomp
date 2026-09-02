@@ -832,68 +832,74 @@ bool LoadGlyphSwap()
     return true;
 }
 
-// One pass over the guest arenas for every unlocated fingerprint. The decoded
-// records can exist in more than one copy (file cache + live texture); every
-// copy is recorded and every copy gets the swap, so whichever one the fetch
-// points at is covered.
+// Locate every in-memory copy of each glyph's TEXELS. Measured live (part 92
+// round 4, process_vm_readv over a gameplay run): the decoded glyph textures
+// sit PAGE-ALIGNED and HEADERLESS in the physical arena, byte-identical to the
+// stored (tiled, swapped) texel payloads — the 05 01 01 E6 records seen
+// elsewhere are not them. A glyph is found by a DISCRIMINATING 64-byte slice
+// (the first aligned offset where the two art sets differ — corner blocks are
+// transparent and identical across glyphs, which burned the first probe), and
+// each hit is confirmed by a FULL compare against either art set.
+struct Range { uint32_t lo, hi; };
+static const Range kScanRanges[] = {
+    { 0xA0000000u, 0xBFFF0000u },   // physical arena: textures live here
+    { 0x40000000u, 0x7FE00000u },   // large-page virtual
+    { 0x00010000u, 0x40000000u },   // small-page virtual
+};
+
 void ScanForGlyphs(uint8_t* base)
 {
-    struct Range { uint32_t lo, hi; };
-    static const Range ranges[] = {
-        { 0xA0000000u, 0xBFFF0000u },   // physical arena: textures live here
-        { 0x00010000u, 0x40000000u },   // small-page virtual
-        { 0x40000000u, 0x7FE00000u },   // large-page virtual
-    };
     size_t found = 0;
-    for (const Range& r : ranges)
+    for (SwapGlyph& g : g_swapGlyphs)
     {
-        const uint8_t* lo = base + r.lo;
-        size_t left = r.hi - r.lo;
-        const uint8_t* p = lo;
-        while (left > 64)
+        if (!g.addrs.empty())
+            continue;
+        // the discriminating slice: first 64-aligned offset where the sets differ
+        size_t po = 0;
+        while (po + 64 <= g.kbTex.size() &&
+               memcmp(g.kbTex.data() + po, g.padTex.data() + po, 64) == 0)
+            po += 64;
+        if (po + 64 > g.kbTex.size())
+            continue;                      // sets identical?! nothing to swap
+        for (const Range& r : kScanRanges)
         {
-            const uint8_t* hit = static_cast<const uint8_t*>(
-                memchr(p, 0x05, left - 48));
-            if (!hit)
-                break;
-            const size_t off = size_t(hit - p);
-            left -= off;
-            p = hit;
-            if (left <= 64)
-                break;
-            // The guest PATCHES header bytes 10 and 12..15 at load (measured
-            // live: byte 10 becomes a size class, 12..15 something computed),
-            // so the file fingerprint holds only for bytes 0..9 and 11 —
-            // magic, extent, and the 0A 23 xx 08 shape. Identity is then
-            // CONFIRMED by the texels: the first 256 bytes must equal one of
-            // the two art sets (which also says which set is currently in).
-            if (p[1] == 0x01 && p[2] == 0x01 && p[3] == 0xE6 && p[8] == 0x0A &&
-                p[9] == 0x23 && p[11] == 0x08)
-                for (SwapGlyph& g : g_swapGlyphs)
-                    if (memcmp(p + 4, g.fp + 4, 4) == 0 &&
-                        (memcmp(p + 48, g.kbTex.data(), 256) == 0 ||
-                         memcmp(p + 48, g.padTex.data(), 256) == 0))
-                    {
-                        const uint32_t addr = uint32_t(p - base);
-                        bool known = false;
-                        for (uint32_t a2 : g.addrs)
-                            known |= a2 == addr;
-                        if (!known)
-                        {
-                            g.addrs.push_back(addr);
-                            ++found;
-                        }
+            const uint8_t* lo = base + r.lo;
+            const size_t len = r.hi - r.lo;
+            for (const uint8_t* probe : { g.kbTex.data() + po, g.padTex.data() + po })
+            {
+                const uint8_t* p = lo;
+                size_t left = len;
+                while (left >= 64)
+                {
+                    const uint8_t* hit = static_cast<const uint8_t*>(
+                        memmem(p, left, probe, 64));
+                    if (!hit)
                         break;
+                    if (size_t(hit - base) >= po)
+                    {
+                        const uint8_t* texBase = hit - po;
+                        if (memcmp(texBase, g.kbTex.data(), g.kbTex.size()) == 0 ||
+                            memcmp(texBase, g.padTex.data(), g.padTex.size()) == 0)
+                        {
+                            const uint32_t addr = uint32_t(texBase - base);
+                            bool known = false;
+                            for (uint32_t a2 : g.addrs)
+                                known |= a2 == addr;
+                            if (!known)
+                            {
+                                g.addrs.push_back(addr);
+                                ++found;
+                            }
+                        }
                     }
-            ++p;
-            --left;
+                    const size_t adv = size_t(hit - p) + 64;
+                    p += adv;
+                    left -= adv;
+                }
+            }
+            if (!g.addrs.empty())
+                break;                     // physical-arena hit: done for this glyph
         }
-        // stop early once every glyph has at least one address
-        size_t located = 0;
-        for (const SwapGlyph& g : g_swapGlyphs)
-            located += !g.addrs.empty();
-        if (located == g_swapGlyphs.size())
-            break;
     }
     size_t located = 0;
     for (const SwapGlyph& g : g_swapGlyphs)
@@ -931,14 +937,17 @@ void DeviceWorker(uint8_t* base)
             auto it = g.addrs.begin();
             while (it != g.addrs.end())
             {
-                if (memcmp(base + *it, g.fp, 8) != 0)
+                // still one of the two art sets? anything else means the
+                // allocation was reused — drop it for rescan.
+                if (memcmp(base + *it, g.kbTex.data(), g.kbTex.size()) != 0 &&
+                    memcmp(base + *it, g.padTex.data(), g.padTex.size()) != 0)
                 {
-                    it = g.addrs.erase(it);   // freed or reused: drop it
+                    it = g.addrs.erase(it);
                     ++stale;
                     continue;
                 }
                 const auto& tex = want == DEV_PAD ? g.padTex : g.kbTex;
-                memcpy(base + *it + 48, tex.data(), tex.size());
+                memcpy(base + *it, tex.data(), tex.size());
                 ++wrote;
                 ++it;
             }
