@@ -201,9 +201,13 @@ all arms reaching 7.6k draws, era = frames >= 1800 draws):
   distinctColours 0.53% (null 1.43%); coverage saturated as always.
 - **GPU: +0.33 ms/frame at 720p** (5.22/5.25 base → 5.57, +6.3% against a 0.5%
   null). The resolve-copy class 0.22 → 0.41 ms (it is a real downsample now);
-  the >=256-draw passes +0.12 ms. NOT measured at the operator's 3440x1440,
-  where it will be several times larger — that read is owed before any
-  default-on decision (step 7).
+  the >=256-draw passes +0.12 ms.
+- **GPU at 3440x1440** (one run per arm — the census reproduces to 0.001 ms —
+  same route, all arms ~8k draws): base 9.50 → **2x 10.35 (+0.85 ms, +9.0%)**
+  → **4x 10.82 (+1.32 ms, +13.9%)**; the resolve-copy class 0.84 → 1.50 →
+  1.67 ms. **Median frame time unmoved at ~20-21 ms in all three arms** — even
+  at the operator's resolution the cost sits inside this machine's headroom.
+  Their machine is the real read (their frame runs ~2x the headless one).
 - **Frame time: unmoved** (median 10-11 ms all three arms — the GPU cost is
   absorbed by this route's headroom, consistent with the part-90 regime).
 
