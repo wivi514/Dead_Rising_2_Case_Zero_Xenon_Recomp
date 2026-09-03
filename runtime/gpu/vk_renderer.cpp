@@ -4366,6 +4366,23 @@ struct Renderer
     // The EDRAM stand-in: one persistent colour target and one depth target.
     Image color;
     Image depth;
+    // CZ_VK_MSAA (part 93): when the EDRAM pair above is MULTISAMPLED, these are the
+    // single-sample images its samples resolve into. `colorResolve` serves the present
+    // fallback (blit/readback cannot read a multisampled image); `depthResolve` serves
+    // every depth-buffer resolve, because vkCmdResolveImage is defined for colour
+    // formats only — the depth path resolves through a zero-draw dynamic-rendering
+    // pass with a resolve attachment, then copies out of this image exactly as the
+    // single-sample path copies out of R->depth. Both are null at 1x, where not one
+    // line of the MSAA paths executes (the same-binary control arm).
+    Image colorResolve;
+    Image depthResolve;
+    // VK_SAMPLE_COUNT_1_BIT unless CZ_VK_MSAA asked for more AND the device's
+    // framebuffer limits agreed — decided once in CreateDevice, printed there, and
+    // constant for the run (the persistent EDRAM cannot change sample count mid-frame).
+    VkSampleCountFlagBits msaaSamples = VK_SAMPLE_COUNT_1_BIT;
+    // SAMPLE_ZERO is the only mode Vulkan 1.2+ guarantees, and it is also the faithful
+    // one: hardware's depth resolve hands the consumer one sample's value, not a blend.
+    VkResolveModeFlagBits depthResolveMode = VK_RESOLVE_MODE_SAMPLE_ZERO_BIT;
     Buffer readback;
 
     // Per-frame bump arena for constants, vertex copies and index copies. Device
@@ -5710,7 +5727,8 @@ bool CreateImage(Image& img, uint32_t w, uint32_t h, VkFormat format,
                  VkImageViewType viewType = VK_IMAGE_VIEW_TYPE_2D, uint32_t layers = 1,
                  uint32_t depthExtent = 1,
                  VkComponentMapping components = VkComponentMapping{},
-                 uint32_t levels = 1, bool poolMemory = false)
+                 uint32_t levels = 1, bool poolMemory = false,
+                 VkSampleCountFlagBits samples = VK_SAMPLE_COUNT_1_BIT)
 {
     img.width = w;
     img.height = h;
@@ -5738,7 +5756,7 @@ bool CreateImage(Image& img, uint32_t w, uint32_t h, VkFormat format,
     ci.extent = { w, h, depthExtent };
     ci.mipLevels = levels;
     ci.arrayLayers = layers;
-    ci.samples = VK_SAMPLE_COUNT_1_BIT;
+    ci.samples = samples;
     ci.tiling = VK_IMAGE_TILING_OPTIMAL;
     ci.usage = usage;
     ci.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
@@ -6590,6 +6608,80 @@ bool CreateDevice()
     else if (R->rtSupported)
         fprintf(stderr, "[vk] RT: supported but OFF (CZ_VK_RT=0) — device created "
                         "exactly as before part 64\n");
+
+    // ---- CZ_VK_MSAA=N (part 93, docs/msaa-plan.md): true multisampled EDRAM --------
+    //
+    // Decided HERE, once, because everything downstream keys off it: the EDRAM pair is
+    // created with this sample count in InitCommon, every draw pipeline states it, and
+    // it cannot change for the run (the persistent EDRAM is one image). N in {2,4};
+    // clamped DOWN to what framebufferColor & framebufferDepth both support, falling
+    // back to 1x — the same renderer as CZ_VK_MSAA unset, bit for bit — and every
+    // outcome prints, because an arm whose engagement is silent cannot be shown to
+    // have engaged (gotcha 151).
+    {
+        const char* msaaEnv = Env("CZ_VK_MSAA");
+        const long msaaReq = msaaEnv ? strtol(msaaEnv, nullptr, 10) : 0;
+        if (msaaEnv && msaaReq != 0 && msaaReq != 1 && msaaReq != 2 && msaaReq != 4)
+            fprintf(stderr, "[vk] CZ_VK_MSAA=%s is not 2 or 4 — IGNORED, EDRAM stays "
+                            "single-sample\n", msaaEnv);
+        if (msaaReq == 2 || msaaReq == 4)
+        {
+            const VkSampleCountFlags supported =
+                props.limits.framebufferColorSampleCounts &
+                props.limits.framebufferDepthSampleCounts;
+            uint32_t n = uint32_t(msaaReq);
+            while (n > 1 && !(supported & n))
+                n >>= 1;
+            // SAMPLE_ZERO depth resolve is mandatory in Vulkan 1.2+, but "mandatory"
+            // is a spec claim and this is a gate: ask the device rather than assume,
+            // and refuse loudly if it declines (gotcha 5 — never guess).
+            VkPhysicalDeviceDepthStencilResolveProperties dsr{
+                VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DEPTH_STENCIL_RESOLVE_PROPERTIES
+            };
+            VkPhysicalDeviceProperties2 p2m{
+                VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2
+            };
+            p2m.pNext = &dsr;
+            vkGetPhysicalDeviceProperties2(R->physical, &p2m);
+            if (n < 2)
+                fprintf(stderr, "[vk] CZ_VK_MSAA=%ld REFUSED: the device's framebuffer "
+                                "sample counts (colour %#x, depth %#x) support neither "
+                                "4x nor 2x — EDRAM stays single-sample\n",
+                        msaaReq, unsigned(props.limits.framebufferColorSampleCounts),
+                        unsigned(props.limits.framebufferDepthSampleCounts));
+            else if (!(dsr.supportedDepthResolveModes & VK_RESOLVE_MODE_SAMPLE_ZERO_BIT) ||
+                     !(dsr.supportedStencilResolveModes & VK_RESOLVE_MODE_SAMPLE_ZERO_BIT))
+                // Both, because the depth resolve pass hands ONE attachment struct to
+                // pDepthAttachment and pStencilAttachment, so the mode applies to both
+                // aspects (and equal modes also sidesteps the independentResolve limit).
+                fprintf(stderr, "[vk] CZ_VK_MSAA=%ld REFUSED: the device reports no "
+                                "SAMPLE_ZERO depth/stencil resolve mode (depth %#x, "
+                                "stencil %#x) — EDRAM stays single-sample\n",
+                        msaaReq, unsigned(dsr.supportedDepthResolveModes),
+                        unsigned(dsr.supportedStencilResolveModes));
+            else
+            {
+                R->msaaSamples = VkSampleCountFlagBits(n);
+                if (uint32_t(msaaReq) != n)
+                    fprintf(stderr, "[vk] CZ_VK_MSAA=%ld clamped to %ux by the "
+                                    "device's framebuffer limits\n", msaaReq, n);
+                fprintf(stderr, "[vk] CZ_VK_MSAA — EDRAM is MULTISAMPLED at %ux "
+                                "(resolves at RB_COPY; SAMPLE_ZERO depth resolve). "
+                                "Unset CZ_VK_MSAA for the single-sample control arm.\n",
+                        n);
+                if (R->rtEnabled)
+                {
+                    // The RT factor pass samples R->depth through an ordinary 2D view,
+                    // which a multisampled image cannot serve. RT is parked (part 70);
+                    // refuse the combination rather than hand the pass garbage.
+                    fprintf(stderr, "[vk] CZ_VK_MSAA with RT is NOT SUPPORTED — RT is "
+                                    "OFF this run (the factor pass cannot sample a "
+                                    "multisampled depth image)\n");
+                    R->rtEnabled = false;
+                }
+            }
+        }
+    }
     // Resolves to null when the extension was not enabled, which is every run without
     // CZ_VK_VALIDATION — NameObject is then a branch on a null pointer and nothing else.
     R->setObjectName = reinterpret_cast<PFN_vkSetDebugUtilsObjectNameEXT>(
@@ -10321,7 +10413,12 @@ VkPipeline GetPipeline(const PipelineKey& key, const ShaderMeta& vs, const Shade
     VkPipelineMultisampleStateCreateInfo ms{
         VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO
     };
-    ms.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+    // The EDRAM's own sample count (CZ_VK_MSAA, part 93). Constant for the run, so it
+    // needs no pipeline-key bit; every pipeline this function makes renders into the
+    // EDRAM pair (the draw-id pass substitutes only the fragment stage, same
+    // attachments). The RT trace/factor pipelines below have their own 1x state —
+    // they render into single-sample images and RT is refused under MSAA anyway.
+    ms.rasterizationSamples = R->msaaSamples;
 
     // RB_DEPTHCONTROL: stencil_enable:1, z_enable:1, z_write_enable:1, ?:1,
     // zfunc:3 @4, backface_enable:1 @7.
@@ -24305,7 +24402,15 @@ void DoResolve(uint8_t* base, const uint32_t* regs)
             // The source EDRAM buffer, and the aspect that goes with it. A depth
             // resolve copies out of R->depth: the whole point of reading
             // copy_src_select is that these two are different pictures.
-            Image& src = fromDepth ? R->depth : R->color;
+            //
+            // CZ_VK_MSAA: a multisampled image cannot be vkCmdCopyImage'd into a
+            // single-sample snapshot. Colour resolves in place of the copy below;
+            // DEPTH has no vkCmdResolveImage, so it goes through a zero-draw
+            // rendering pass whose resolve attachment writes R->depthResolve, and
+            // the existing copy then reads THAT image with the same offsets (it is
+            // the EDRAM's extent exactly).
+            const bool msaaOn = R->msaaSamples != VK_SAMPLE_COUNT_1_BIT;
+            Image& src = fromDepth ? (msaaOn ? R->depthResolve : R->depth) : R->color;
             const VkImageAspectFlags aspect =
                 fromDepth ? VK_IMAGE_ASPECT_DEPTH_BIT : VK_IMAGE_ASPECT_COLOR_BIT;
             BeginFrame();
@@ -24313,6 +24418,93 @@ void DoResolve(uint8_t* base, const uint32_t* regs)
             // A deferred clear still outstanding here means a clear-then-copy with no
             // pass in between; the copy must see the cleared pixels, so emit it now.
             FlushPendingClears("clear: deferred FLUSHED for a resolve copy");
+            if (msaaOn && fromDepth)
+            {
+                // The depth resolve is REGIONAL: dynamic rendering resolves exactly
+                // the renderArea, so only the rectangle this copy needs is paid for.
+                // Charged to the resolve-copy class — it IS the resolve's device work.
+                GpuSeg _gdr(kGpResolveCopy);
+                Barrier(R->cmd, R->depth, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+                        VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT);
+                // The RESOLVE TARGET's barrier is written out rather than going through
+                // Barrier(), because the resolve-attachment WRITE at vkCmdEndRendering is
+                // performed at COLOR_ATTACHMENT_OUTPUT with COLOR_ATTACHMENT_WRITE access
+                // — even for a DEPTH resolve attachment — and LayoutMasks' depth-
+                // attachment scope (EARLY|LATE fragment tests, DS access) does not cover
+                // it. Sync validation reported exactly that, 10 WRITE-AFTER-WRITE hazards
+                // against this image, on this arm's first gate run. The dst scope below
+                // is the union of both models. (This one site bypasses the
+                // CZ_VK_BARRIER_POISON/WIDE arms — a stated caveat, not an oversight.)
+                {
+                    VkImageMemoryBarrier bb{ VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER };
+                    bb.oldLayout = R->depthResolve.layout;
+                    bb.newLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+                    bb.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+                    bb.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+                    bb.image = R->depthResolve.image;
+                    bb.subresourceRange = { VK_IMAGE_ASPECT_DEPTH_BIT |
+                                                VK_IMAGE_ASPECT_STENCIL_BIT,
+                                            0, 1, 0, 1 };
+                    VkPipelineStageFlags srcStage = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT;
+                    bb.srcAccessMask = 0;
+                    LayoutMasks(bb.oldLayout, srcStage, bb.srcAccessMask);
+                    const VkPipelineStageFlags dstStage =
+                        VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT |
+                        VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT |
+                        VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+                    bb.dstAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT |
+                                       VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT |
+                                       VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+                    vkCmdPipelineBarrier(R->cmd, srcStage, dstStage, 0, 0, nullptr, 0,
+                                         nullptr, 1, &bb);
+                    R->depthResolve.layout = bb.newLayout;
+                    ++g_barrierN;
+                }
+                VkRenderingAttachmentInfo da{ VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO };
+                da.imageView = R->depth.view;
+                da.imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+                da.resolveMode = R->depthResolveMode;
+                da.resolveImageView = R->depthResolve.view;
+                da.resolveImageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+                da.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
+                da.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+                VkRenderingInfo rri{ VK_STRUCTURE_TYPE_RENDERING_INFO };
+                rri.renderArea = { { RZxi(int32_t(copyX)), RZyi(int32_t(copyY)) },
+                                   { RZx(copyW), RZ(copyH) } };
+                rri.layerCount = 1;
+                rri.pDepthAttachment = &da;
+                rri.pStencilAttachment = &da;
+                vkCmdBeginRendering(R->cmd, &rri);
+                vkCmdEndRendering(R->cmd);
+                // ...and straight to TRANSFER_SRC for the copy below, mirrored: the
+                // SOURCE scope must also name the resolve write's
+                // COLOR_ATTACHMENT_OUTPUT/COLOR_ATTACHMENT_WRITE model, which
+                // LayoutMasks' depth-attachment entry does not. Emitted here so the
+                // generic Barrier() in the copy block early-returns on the layout.
+                {
+                    VkImageMemoryBarrier bb{ VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER };
+                    bb.oldLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+                    bb.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+                    bb.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+                    bb.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+                    bb.image = R->depthResolve.image;
+                    bb.subresourceRange = { VK_IMAGE_ASPECT_DEPTH_BIT |
+                                                VK_IMAGE_ASPECT_STENCIL_BIT,
+                                            0, 1, 0, 1 };
+                    bb.srcAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT |
+                                       VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+                    bb.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+                    vkCmdPipelineBarrier(R->cmd,
+                                         VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT |
+                                             VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT |
+                                             VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+                                         VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr,
+                                         0, nullptr, 1, &bb);
+                    R->depthResolve.layout = bb.newLayout;
+                    ++g_barrierN;
+                }
+                Count("resolve: depth resolved out of the multisampled EDRAM");
+            }
             // The whole resolve's device work is one segment, barriers included. The first
             // version timed only the `vkCmdCopyImage` and left the two layout transitions
             // in the residual, where they are indistinguishable from work nobody wrapped —
@@ -24350,9 +24542,27 @@ void DoResolve(uint8_t* base, const uint32_t* regs)
                 CopyCensusCopy(key, RZxi(int32_t(dstX)), RZyi(int32_t(dstY)),
                                RZx(copyW), RZ(copyH),
                                uint64_t(RZx(copyW)) * uint64_t(RZ(copyH)));
-            vkCmdCopyImage(R->cmd, src.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-                           it->second.image.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                           1, &copy);
+            if (msaaOn && !fromDepth)
+            {
+                // The MSAA resolve, where the single-sample renderer copies. Same
+                // region, same layouts; VkImageResolve is field-for-field the copy
+                // struct. This is the plan's 1:1 mapping made literal: the guest's
+                // RB_COPY *is* the resolve (docs/msaa-plan.md §1).
+                VkImageResolve rv{};
+                rv.srcSubresource = copy.srcSubresource;
+                rv.srcOffset = copy.srcOffset;
+                rv.dstSubresource = copy.dstSubresource;
+                rv.dstOffset = copy.dstOffset;
+                rv.extent = copy.extent;
+                vkCmdResolveImage(R->cmd, src.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                                  it->second.image.image,
+                                  VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &rv);
+                Count("resolve: colour resolved out of the multisampled EDRAM");
+            }
+            else
+                vkCmdCopyImage(R->cmd, src.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                               it->second.image.image,
+                               VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy);
             // RT STAGE 2's INJECTION EXPERIMENT (part 64; rt-and-fov-plan.md §3,
             // route (a)). CZ_VK_SHADOW_FILL=<depth 0..1> overwrites the shadow
             // ATLAS snapshot's depths with a constant right after each cascade
@@ -24789,6 +24999,35 @@ void VkRenderer_OnShaderBind(uint32_t type, uint64_t hash, const uint8_t* code,
 
 namespace {
 
+// CZ_VK_MSAA's single-sample companions, created beside the (now multisampled) EDRAM
+// pair at bring-up and at every live rescale. A no-op returning true at 1x, so the
+// control arm allocates nothing. `colorResolve` is TRANSFER_DST (vkCmdResolveImage
+// writes it on the present fallback) + TRANSFER_SRC (the readback/blit reads it);
+// `depthResolve` is a DEPTH_STENCIL_ATTACHMENT because the only defined way to resolve
+// a depth image is a resolve attachment on a rendering pass (vkCmdResolveImage is
+// colour-only), + TRANSFER_SRC for the snapshot copy that follows.
+bool CreateEdramResolveTargets(uint32_t hostW, uint32_t hostH)
+{
+    if (R->msaaSamples == VK_SAMPLE_COUNT_1_BIT)
+        return true;
+    // SAMPLED on the colour companion is not read by anything — it is there because
+    // CreateImage unconditionally builds a VkImageView and a view requires at least
+    // one view-capable usage bit (VUID-VkImageViewCreateInfo-image-04441, caught by
+    // the very first validation run of this arm).
+    if (!CreateImage(R->colorResolve, hostW, hostH, VK_FORMAT_R8G8B8A8_UNORM,
+                     VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
+                         VK_IMAGE_USAGE_SAMPLED_BIT,
+                     VK_IMAGE_ASPECT_COLOR_BIT) ||
+        !CreateImage(R->depthResolve, hostW, hostH, EdramDepthFormat(),
+                     VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT |
+                         VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
+                     VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT))
+        return false;
+    NameImage(R->colorResolve, "EDRAM colour RESOLVE %ux%u", hostW, hostH);
+    NameImage(R->depthResolve, "EDRAM depth RESOLVE %ux%u", hostW, hostH);
+    return true;
+}
+
 // Device bring-up, shared by both feeds. Sets g_active on success; which feed owns
 // the renderer is the CALLER's declaration (g_d3dMode), not decided here.
 bool InitCommon()
@@ -24821,7 +25060,8 @@ bool InitCommon()
                      VK_FORMAT_R8G8B8A8_UNORM,
                      VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
                          VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
-                     VK_IMAGE_ASPECT_COLOR_BIT) ||
+                     VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_VIEW_TYPE_2D, 1, 1,
+                     VkComponentMapping{}, 1, false, R->msaaSamples) ||
         // TRANSFER_SRC because 18.4% of this title's resolves copy out of the DEPTH
         // buffer rather than the colour one (its shadow cascades and the scene depth
         // its depth-of-field pass reads back) — see DoResolve.
@@ -24836,7 +25076,10 @@ bool InitCommon()
                          VK_IMAGE_USAGE_TRANSFER_DST_BIT |
                          VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
                          (R->rtEnabled ? VK_IMAGE_USAGE_SAMPLED_BIT : 0u),
-                     VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT))
+                     VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT,
+                     VK_IMAGE_VIEW_TYPE_2D, 1, 1, VkComponentMapping{}, 1, false,
+                     R->msaaSamples) ||
+        !CreateEdramResolveTargets(RSX(R->targetWidth), RS(edramH)))
     {
         fprintf(stderr, "[vk] render target creation FAILED\n");
         return false;
@@ -25846,7 +26089,15 @@ void DoSwapImpl(uint8_t* base, uint32_t frontBuffer, uint32_t width, uint32_t he
     auto frontSnap = R->snapshots.find(R->frontBuffer & 0x1FFFFFFF);
     if (frontSnap == R->snapshots.end())
         R->haveFrontSnapshot = false;
-    Image& source = R->haveFrontSnapshot ? frontSnap->second.image : R->color;
+    // CZ_VK_MSAA: the raw-EDRAM fallback cannot blit or read back a multisampled
+    // image, so it presents through the single-sample companion, filled by the
+    // resolve a few lines below. The snapshot path is untouched — snapshots are
+    // the resolve OUTPUT and stay single-sample.
+    const bool msaaFallback =
+        !R->haveFrontSnapshot && R->msaaSamples != VK_SAMPLE_COUNT_1_BIT;
+    Image& source = R->haveFrontSnapshot ? frontSnap->second.image
+                    : msaaFallback       ? R->colorResolve
+                                         : R->color;
     // The present consumes the front-buffer snapshot's last copy.
     if (g_copyCensusOn && R->haveFrontSnapshot)
         CopyCensusSampled(R->frontBuffer & 0x1FFFFFFF);
@@ -25865,6 +26116,22 @@ void DoSwapImpl(uint8_t* base, uint32_t frontBuffer, uint32_t width, uint32_t he
     const uint32_t height0 = RS(R->haveFrontSnapshot ? R->frontHeight : R->targetHeight);
     Count(R->haveFrontSnapshot ? "swap: presented the front-buffer resolve"
                                : "swap: presented raw EDRAM (no resolve matched)");
+    if (msaaFallback)
+    {
+        Barrier(R->cmd, R->color, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                VK_IMAGE_ASPECT_COLOR_BIT);
+        Barrier(R->cmd, R->colorResolve, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                VK_IMAGE_ASPECT_COLOR_BIT);
+        VkImageResolve rv{};
+        rv.srcSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 };
+        rv.dstSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 };
+        rv.extent = { std::min(width0, R->color.width),
+                      std::min(height0, R->color.height), 1 };
+        vkCmdResolveImage(R->cmd, R->color.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                          R->colorResolve.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                          1, &rv);
+        Count("swap: EDRAM fallback resolved for present (CZ_VK_MSAA)");
+    }
 
     // WHETHER THE READBACK STILL HAPPENS AT ALL. In the CZ_VK_SWAPCHAIN arm the window
     // gets its pixels from the swapchain blit below and nothing needs them in host
@@ -28261,6 +28528,8 @@ void ApplyPendingRenderScale()
     R->pendingClears.clear();
     destroyImage(R->color);
     destroyImage(R->depth);
+    destroyImage(R->colorResolve);
+    destroyImage(R->depthResolve);
     // The explicit W x H form (part 91: the panel's APPLY press) wins; the legacy
     // integer-scale form preserves the current aspect at 720*scale.
     if (wantW)
@@ -28283,13 +28552,17 @@ void ApplyPendingRenderScale()
                      VK_FORMAT_R8G8B8A8_UNORM,
                      VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
                          VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
-                     VK_IMAGE_ASPECT_COLOR_BIT) ||
+                     VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_VIEW_TYPE_2D, 1, 1,
+                     VkComponentMapping{}, 1, false, R->msaaSamples) ||
         !CreateImage(R->depth, RSX(R->targetWidth), RS(edramH),
                      EdramDepthFormat(),
                      VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT |
                          VK_IMAGE_USAGE_TRANSFER_DST_BIT |
                          VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
-                     VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT))
+                     VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT,
+                     VK_IMAGE_VIEW_TYPE_2D, 1, 1, VkComponentMapping{}, 1, false,
+                     R->msaaSamples) ||
+        !CreateEdramResolveTargets(RSX(R->targetWidth), RS(edramH)))
     {
         // A renderer with no EDRAM stand-in cannot draw at all — say so and stop
         // feeding it rather than crash on the first pass.

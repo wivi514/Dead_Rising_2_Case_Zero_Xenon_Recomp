@@ -3598,3 +3598,26 @@ CZ_VK_DEPTH_FLOAT=1  create the EDRAM depth buffer as D32_SFLOAT_S8_UINT instead
                    Part 92: fixes depth-precision look questions but NOT the hair flicker
                    (the cards genuinely cross in depth; the console hides it with MSAA).
                    Off by default = same-binary control. Everything reads R->depth.format.
+CZ_VK_MSAA=N       TRUE MULTISAMPLED EDRAM (part 93, docs/msaa-plan.md — the faithful
+                   hair-flicker fix). N in {2,4}; anything else is refused by name.
+                   The persistent EDRAM colour+depth pair is created with N samples,
+                   every draw pipeline rasterizes at N, and the resolves happen exactly
+                   where hardware's do: DoResolve's snapshot copy becomes
+                   vkCmdResolveImage for colour and a zero-draw rendering pass with a
+                   SAMPLE_ZERO resolve attachment for depth (vkCmdResolveImage is
+                   colour-only), writing the single-sample companions R->colorResolve /
+                   R->depthResolve. Snapshots, present, F8/F9 and every downstream
+                   consumer see single-sample images as before. Clamped DOWN to the
+                   device's framebufferColor & framebufferDepth sample counts (falls
+                   back to 1x = the stock renderer, saying so); refuses RT (the factor
+                   pass cannot sample a multisampled depth image — RT is parked anyway).
+                   Engagement line: "[vk] CZ_VK_MSAA — EDRAM is MULTISAMPLED at Nx".
+                   Counters: "resolve: colour/depth resolved out of the multisampled
+                   EDRAM", "swap: EDRAM fallback resolved for present (CZ_VK_MSAA)".
+                   UNSET = OFF = the single-sample renderer bit for bit (the control
+                   arm; not one MSAA line executes at 1x). The window-coordinate 4x
+                   scaling (CZ_VK_NO_MSAA_WINDOW_SCALE*) is UNTOUCHED by this arm on
+                   purpose — see the retraction in docs/msaa-plan.md §3.2: it is
+                   coordinate aliasing between differently-declared surfaces, not a
+                   memory-costing supersample, and removing it would half-cover the
+                   title's 4x-declared clears.

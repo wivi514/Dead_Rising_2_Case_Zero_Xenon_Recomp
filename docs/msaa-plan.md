@@ -63,13 +63,22 @@ in the renderer and correspond exactly to hardware's resolves.
    cheaper first target. **Query `VkPhysicalDeviceLimits::framebufferColorSampleCounts &
    framebufferDepthSampleCounts`** and clamp; fall back to 1x (current renderer) if the
    device lacks it.
-2. **Replace or keep the supersample emulation?** They are two ways to get a sample grid and
+2. ~~**Replace or keep the supersample emulation?** They are two ways to get a sample grid and
    MUST NOT stack. Decision: when `CZ_VK_MSAA` is on, **turn OFF the 2x window-Y scale and the
    4x-surface supersampling of the EDRAM** (the sample grid now comes from real MSAA), and
-   render the EDRAM at the plain internal resolution with `rasterizationSamples=N`. The A2M
-   path changes too — with real MSAA, alpha-to-coverage (`VkPipelineMultisampleStateCreateInfo::
-   alphaToCoverageEnable`) becomes available and is the *correct* faithful A2M, replacing the
-   ordered-dither hack (`XeAlphaTestThreshold`). This is a simplification, not extra work.
+   render the EDRAM at the plain internal resolution with `rasterizationSamples=N`.~~
+   **RETRACTED IN PART 93, when the build session read the code instead of this plan's
+   recon summary.** The msaa==2 window-coordinate doubling is NOT a supersample of the
+   EDRAM image — the image's extent never changes with the surface's declared MSAA; the
+   doubling is COORDINATE ALIASING that keeps differently-declared surfaces covering the
+   same stand-in pixels (the title re-declares a surface 4x purely to CLEAR it: the scene
+   tile's clear is `(0,0)-(320,720)` declared 4x over a 640-wide 2x tile, and only the
+   doubling makes it cover the tile — `vk_renderer.cpp` ~22111's own comment). Turning it
+   off under MSAA would half-cover those clears and reintroduce that defect. So real MSAA
+   **keeps the whole window-coordinate mapping untouched** and adds N samples per stand-in
+   pixel orthogonally: nothing stacks, because the two mechanisms govern different axes
+   (where a draw lands vs. how many samples each landed pixel carries). The A2M
+   alpha-to-coverage switch remains a possible step-5 follow-up, unchanged.
 3. **Depth resolve mode.** `vkCmdResolveImage` does NOT resolve depth. Use a resolve
    ATTACHMENT with `VkResolveModeFlagBits` (`VK_RESOLVE_MODE_SAMPLE_ZERO_BIT` minimum, or
    `MIN`/`MAX` — check `VkPhysicalDeviceDepthStencilResolveProperties`). Colour resolves via a
