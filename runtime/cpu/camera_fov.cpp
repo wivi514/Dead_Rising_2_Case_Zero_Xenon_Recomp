@@ -23,6 +23,7 @@
 #include <map>
 #include <mutex>
 #include <set>
+#include <string>
 #include <utility>
 #include <cstring>
 
@@ -149,8 +150,18 @@ PPC_FUNC(sub_8246BF48)
 PPC_FUNC(sub_82375518)
 {
     static const bool on = getenv("CZ_FOV_PROP_TRACE") != nullptr;
+    // CZ_PROP_TRACE_ALL=1 — the FULL registered-property census (part 93). The same
+    // universal binder that carries FOV_Min/Max/Default/Rate carries every named
+    // numeric tunable the engine registers, so this is the recon for the operator's
+    // shadow-distance and LOD-distance request: print EVERY (name, obj, field) once,
+    // deduplicated, and grep the result for shadow/lod/distance/detail/fade/cull. If a
+    // distance tunable is here, it can be poked live exactly like FOV; if it is not,
+    // the parameter is baked into asset data or code and is a much larger job. One
+    // line per distinct name at registration (boot/zone load), not per frame — gotcha
+    // 7 safe.
+    static const bool traceAll = getenv("CZ_PROP_TRACE_ALL") != nullptr;
     const uint32_t nameVa = ctx.r4.u32;
-    if (on && nameVa >= 0x82000000 && nameVa < 0x82C00000)
+    if ((on || traceAll) && nameVa >= 0x82000000 && nameVa < 0x82C00000)
     {
         char name[48] = {};
         for (int i = 0; i < 47; i++)
@@ -160,9 +171,18 @@ PPC_FUNC(sub_82375518)
                 break;
             name[i] = c;
         }
-        if (strstr(name, "FOV") || strstr(name, "Fov"))
+        if (on && (strstr(name, "FOV") || strstr(name, "Fov")))
             fprintf(stderr, "[fovprop] \"%s\" obj=%08X count=%u field=%08X\n",
                     name, ctx.r3.u32, ctx.r5.u32, ctx.r6.u32);
+        if (traceAll && name[0])
+        {
+            static std::set<std::string> seen;
+            static std::mutex mu;
+            std::lock_guard<std::mutex> lk(mu);
+            if (seen.insert(name).second)
+                fprintf(stderr, "[prop] \"%s\" count=%u field=%08X\n",
+                        name, ctx.r5.u32, ctx.r6.u32);
+        }
     }
     __imp__sub_82375518(ctx, base);
 }
