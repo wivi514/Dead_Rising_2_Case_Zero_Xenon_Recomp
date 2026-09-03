@@ -107,6 +107,9 @@ in the renderer and correspond exactly to hardware's resolves.
 
 ## 5. Build order (each step gated, committed separately, arm-first)
 
+**EXECUTED 2026-09-03 (part 93), steps 0-4 as one arm — §9 below is the record;
+steps 5-7 remain.**
+
 0. **Plan/measure baseline.** Capture the hair flicker headlessly if possible (the part-92
    harness lands on the DebugJump menu — may need the operator for the close view), and
    record `CZ_VK_GPU_PASSES=1` frame cost at the crowd for the perf delta.
@@ -150,3 +153,61 @@ hair" as a one-line default. Document whichever is chosen with its control arm.
 Xenos EDRAM is multisampled in every 360 title; whatever MSAA lands here transfers whole to
 Case West (same engine). The 1:1 "RB_COPY is the resolve" mapping is general, not Case-Zero
 specific.
+
+## 9. Execution record (part 93, 2026-09-03) — the arm is BUILT and headlessly gated
+
+Commit c02d2cc; everything below measured on it, same binary both arms, at
+1280x720 pinned unless stated.
+
+**What shipped** (`CZ_VK_MSAA=N`, N in {2,4}, OFF by default — unset is the
+single-sample renderer bit for bit):
+
+- EDRAM colour+depth created at N samples; every draw pipeline rasterizes at N
+  (one site — the RT trace/factor pipelines render into 1x images and RT is
+  refused under MSAA). Live rescale rebuilds everything.
+- `DoResolve`: colour snapshot copy → `vkCmdResolveImage`, region-for-region.
+  Depth (no colour-only API covers it) → a zero-draw dynamic-rendering pass
+  whose SAMPLE_ZERO resolve attachment writes the new single-sample
+  `R->depthResolve` over exactly the copy's renderArea, then the existing
+  `vkCmdCopyImage` reads that image with unchanged offsets. Snapshots stay 1x,
+  so every downstream consumer (present, F8/F9, SNAP_DUMP, cube faces, sized
+  views) is untouched.
+- The present raw-EDRAM fallback resolves into `R->colorResolve` first
+  (blit/readback cannot read multisampled); 10 engagements on a boot, counted.
+- Device gate: N clamped down to `framebufferColorSampleCounts &
+  framebufferDepthSampleCounts`, SAMPLE_ZERO depth AND stencil resolve modes
+  verified, every refusal printed by name.
+
+**What the gates caught** (both real, both fixed in the commit):
+
+1. `VUID-VkImageViewCreateInfo-image-04441` — the colour companion had only
+   TRANSFER usage while `CreateImage` unconditionally builds a view; a SAMPLED
+   bit nobody reads satisfies the view. Validation delta over the control arm
+   is now ZERO (the 8 `topology-08773` PointSize messages are pre-existing —
+   identical count in the MSAA-unset control).
+2. Sync validation, 10 WRITE-AFTER-WRITE: a depth RESOLVE-ATTACHMENT write is
+   modelled at COLOR_ATTACHMENT_OUTPUT with COLOR_ATTACHMENT_WRITE access —
+   both barriers around the mini-pass (into the pass, and out to TRANSFER_SRC)
+   must name that scope, which `LayoutMasks`' depth-attachment entry does not.
+   Fixed with two explicit barriers at that one site (LayoutMasks untouched, so
+   the 1x arm's barriers are byte-identical). **0 hazards over 16,164 depth
+   resolves; the CZ_VK_BARRIER_POISON positive control produces exactly the
+   documented 30.**
+
+**Measurements** (DebugJump crowd route, three-run serial block base/4x/base,
+all arms reaching 7.6k draws, era = frames >= 1800 draws):
+
+- **Picture: inside the null.** meanLuma 0.17% from base (null 1.14%),
+  distinctColours 0.53% (null 1.43%); coverage saturated as always.
+- **GPU: +0.33 ms/frame at 720p** (5.22/5.25 base → 5.57, +6.3% against a 0.5%
+  null). The resolve-copy class 0.22 → 0.41 ms (it is a real downsample now);
+  the >=256-draw passes +0.12 ms. NOT measured at the operator's 3440x1440,
+  where it will be several times larger — that read is owed before any
+  default-on decision (step 7).
+- **Frame time: unmoved** (median 10-11 ms all three arms — the GPU cost is
+  absorbed by this route's headroom, consistent with the part-90 regime).
+
+**Owed:** step 6, the operator's hair verdict (DebugJump 0-2, camera still,
+`CZ_VK_MSAA=4` vs unset — flicker gone AND hair solid is the acceptance test);
+the 3440x1440 GPU cost read; step 5 (A2M alphaToCoverage) which is optional
+polish, not blocking; step 7's 2x-vs-4x and default decision, theirs.
