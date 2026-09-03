@@ -211,7 +211,19 @@ all arms reaching 7.6k draws, era = frames >= 1800 draws):
 - **Frame time: unmoved** (median 10-11 ms all three arms — the GPU cost is
   absorbed by this route's headroom, consistent with the part-90 regime).
 
-**Owed:** step 6, the operator's hair verdict (DebugJump 0-2, camera still,
-`CZ_VK_MSAA=4` vs unset — flicker gone AND hair solid is the acceptance test);
-the 3440x1440 GPU cost read; step 5 (A2M alphaToCoverage) which is optional
-polish, not blocking; step 7's 2x-vs-4x and default decision, theirs.
+**Step 6 — the hair verdict — IS IN, and it is a NEGATIVE for the hair (2026-09-03).**
+Operator at DebugJump 0-2, both arms same session, camera still: `CZ_VK_MSAA=4` and
+the control both show the flicker, both keep the hair solid — no visible difference.
+Checked headlessly rather than assumed: MSAA genuinely reaches the screen (sharpness
+6.244 control → 6.128 at 4x, and a 7x zoom on a static car's silhouette shows real
+edge AA), so the flicker is NOT a coverage/edge effect MSAA can fix — the hair cards
+are near-coplanar over broad regions, so a depth-order flip swings all 4 samples
+together. Full write-up and reconciliation with the grey-arm finding in
+`docs/hair-flicker-part92.md`. **The faithful hair fix is therefore OIT / per-frame
+card sorting, not MSAA.** MSAA stays as a working game-wide AA arm on its own merits;
+the standing hair mitigation reverts to `CZ_VK_DEPTH_FLOAT=1
+CZ_VK_NO_BLEND_DEPTH_WRITE=1`.
+
+**Still owed (now decoupled from the hair):** step 5 (A2M alphaToCoverage), optional
+polish; step 7's 2x-vs-4x and ship-default/panel-row decision — the operator's, and
+now a pure AA-vs-cost call rather than a hair fix.

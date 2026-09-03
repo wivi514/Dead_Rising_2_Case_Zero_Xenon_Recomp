@@ -106,3 +106,46 @@ board — decision deferred to the operator. Two partial mitigations exist as ar
 
 Arms added this session (same-binary, off by default): `CZ_VK_NO_BLEND_DEPTH_WRITE=1`
 (depth-write off for blended draws), `CZ_VK_DEPTH_FLOAT=1` (D32_SFLOAT_S8 EDRAM depth).
+
+## MSAA BUILT AND TESTED (2026-09-03, part 93) — IT WORKS BUT DOES NOT FIX THE FLICKER
+
+`CZ_VK_MSAA=4` (true multisampled EDRAM + resolves, `docs/msaa-plan.md` §9,
+commit c02d2cc) was built and put in front of the operator at DebugJump 0-2. The
+verdict, both arms same session, camera still:
+
+| arm | flicker | hair |
+|---|---|---|
+| `CZ_VK_MSAA=4` | **still present** | solid |
+| control (no MSAA) | still present | solid |
+
+**The operator saw NO difference between the arms.** That could mean MSAA was not
+reaching the presented image, so it was checked headlessly rather than assumed:
+
+- **MSAA genuinely reaches the screen.** A frame-sharpness A/B (mean |luma gradient|,
+  `tools/frame_sharpness.py`, ~800 frames/arm on the crowd route) read control 6.244
+  vs 4x **6.128 — 1.9% softer**, in the anti-aliasing direction. Small because a
+  whole-frame gradient is dominated by textured interiors and MSAA only touches
+  silhouette EDGES — and a 7x zoom on a static car's silhouette against the road
+  confirms it directly: hard stair-steps in the control, graduated blend pixels along
+  the same diagonal at 4x. The resolve works; AA is on the picture.
+- **So the flicker is NOT a coverage/edge effect**, which is why per-sample coverage
+  cannot touch it. This RECONCILES the two halves of this document that looked in
+  tension: the early grey-arm finding (the flicker is in the SHADING of whole
+  surfaces, not geometry/coverage) was right, and the later "depth-test flip at card
+  crossings" framing was incomplete. The cards do not cross along clean LINES that
+  MSAA could dither — they are near-coplanar/interpenetrating over BROAD regions, so
+  when the depth ordering flips, every one of a pixel's 4 samples flips together and
+  the whole area's blended colour swings. 4x MSAA (and, consistently, the earlier 4x
+  supersample) leaves it untouched for the same reason.
+
+**Consequence for the fix.** The flicker is a translucency-ORDERING instability, not
+an aliasing one. The remaining faithful fixes are the heavy ones this doc already
+named — per-frame back-to-front depth sorting of the 178 hair cards, or
+order-independent transparency — and MSAA is not a substitute for them. What MSAA IS:
+a genuine, working, game-wide anti-aliasing feature that happens not to be the hair
+fix. Keep it as an arm on its own merits (`docs/msaa-plan.md` §9 has its cost:
++0.85 ms at 2x / +1.32 ms at 4x at 1440p, frame time unmoved on the dev machine).
+
+**The standing hair mitigation remains `CZ_VK_DEPTH_FLOAT=1 CZ_VK_NO_BLEND_DEPTH_WRITE=1`**
+(flicker gone, hair slightly see-through) until OIT/sorting is judged worth its cost
+against the release board. Decision is the operator's.
