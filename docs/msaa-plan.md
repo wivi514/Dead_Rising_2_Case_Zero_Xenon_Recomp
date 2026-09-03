@@ -224,6 +224,15 @@ card sorting, not MSAA.** MSAA stays as a working game-wide AA arm on its own me
 the standing hair mitigation reverts to `CZ_VK_DEPTH_FLOAT=1
 CZ_VK_NO_BLEND_DEPTH_WRITE=1`.
 
-**Still owed (now decoupled from the hair):** step 5 (A2M alphaToCoverage), optional
-polish; step 7's 2x-vs-4x and ship-default/panel-row decision — the operator's, and
-now a pure AA-vs-cost call rather than a hair fix.
+**Step 7 default decision — MADE (2026-09-03): 2x is the DEFAULT.** The operator
+chose 2x on its AA merit (the hair fix having come up negative). `CZ_VK_MSAA` unset
+now = 2x; `CZ_VK_MSAA=0` (or `=1`) is the single-sample control arm — the pre-part-93
+renderer bit for bit, and FIRST in the picture-complaint bisection order. An invalid
+value warns and falls back to 2x, never silently to 1x. Standing headless gates re-run
+at the default 2x. NB: every headless recipe that does not set `CZ_VK_MSAA` now carries
+2x — set `CZ_VK_MSAA=0` for a pre-part-93 baseline.
+
+**Still owed:** step 5 (A2M alphaToCoverage), optional polish; an AA-vs-cost read on
+the OPERATOR's machine (their frame is ~2x the headless one); the ship-in-the-release-
+bundle decision (the bundle turns the renderer on via `cz_defaults.env` — whether it
+also carries `CZ_VK_MSAA=2` is a release-board item).

@@ -97,8 +97,20 @@ and visual-report closures).
 ## 2. Parked subjects (unchanged)
 
 Performance (part91-kickoff §0c/§0d — the resume list is §0d); RT shadows (part 70).
-The picture-complaint bisection order stands: `CZ_VK_NO_DEFERRED_CLEAR=1` →
-`CZ_VK_DEFER_FULL_RECT=1` → `CZ_VK_NO_PAR_RECORD=1`.
+The picture-complaint bisection order, updated part 93 now that **2x MSAA is
+default-on**: `CZ_VK_MSAA=0` FIRST (the single-sample pre-part-93 renderer bit for
+bit), then `CZ_VK_NO_DEFERRED_CLEAR=1` → `CZ_VK_DEFER_FULL_RECT=1` →
+`CZ_VK_NO_PAR_RECORD=1`.
+
+**Part 93 (2026-09-03): MSAA built, tested, and DEFAULTED to 2x.** `CZ_VK_MSAA=N`
+(true multisampled EDRAM, `docs/msaa-plan.md` §9) works and reaches the screen
+(proven by a sharpness A/B + a zoomed still), but it does NOT fix the part-92 hair
+flicker — that is a translucency-ordering instability, not an edge-aliasing one, so
+the faithful hair fix is OIT/card-sorting (`docs/hair-flicker-part92.md`). MSAA is
+kept as a working game-wide AA feature; the operator set 2x as the default (cost
++0.85 ms GPU at 1440p, frame time unmoved on the dev machine). `CZ_VK_MSAA=0` is the
+control arm. Owed: an AA-vs-cost read on the OPERATOR's machine, and the
+ship-in-release-bundle decision.
 
 ## 3. Gates inherited (unchanged)
 

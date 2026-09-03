@@ -3598,8 +3598,14 @@ CZ_VK_DEPTH_FLOAT=1  create the EDRAM depth buffer as D32_SFLOAT_S8_UINT instead
                    Part 92: fixes depth-precision look questions but NOT the hair flicker
                    (the cards genuinely cross in depth; the console hides it with MSAA).
                    Off by default = same-binary control. Everything reads R->depth.format.
-CZ_VK_MSAA=N       TRUE MULTISAMPLED EDRAM (part 93, docs/msaa-plan.md — the faithful
-                   hair-flicker fix). N in {2,4}; anything else is refused by name.
+CZ_VK_MSAA=N       TRUE MULTISAMPLED EDRAM (part 93, docs/msaa-plan.md). **DEFAULT 2x
+                   as of part 93** (operator decision) — unset = 2x, `CZ_VK_MSAA=0`
+                   (or `=1`) is the single-sample control arm (the pre-part-93 renderer
+                   bit for bit; bisect any picture/perf complaint with it FIRST). N in
+                   {2,4} explicit; an invalid value warns and falls back to the 2x
+                   default (never silently to 1x). NB the default flip means every
+                   headless recipe that does not set CZ_VK_MSAA now runs at 2x — set
+                   `CZ_VK_MSAA=0` to reproduce a pre-part-93 baseline.
                    The persistent EDRAM colour+depth pair is created with N samples,
                    every draw pipeline rasterizes at N, and the resolves happen exactly
                    where hardware's do: DoResolve's snapshot copy becomes
@@ -3614,7 +3620,7 @@ CZ_VK_MSAA=N       TRUE MULTISAMPLED EDRAM (part 93, docs/msaa-plan.md — the f
                    Engagement line: "[vk] CZ_VK_MSAA — EDRAM is MULTISAMPLED at Nx".
                    Counters: "resolve: colour/depth resolved out of the multisampled
                    EDRAM", "swap: EDRAM fallback resolved for present (CZ_VK_MSAA)".
-                   UNSET = OFF = the single-sample renderer bit for bit (the control
+                   CZ_VK_MSAA=0 = the single-sample renderer bit for bit (the control
                    arm; not one MSAA line executes at 1x). The window-coordinate 4x
                    scaling (CZ_VK_NO_MSAA_WINDOW_SCALE*) is UNTOUCHED by this arm on
                    purpose — see the retraction in docs/msaa-plan.md §3.2: it is

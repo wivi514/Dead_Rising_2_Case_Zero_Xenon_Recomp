@@ -6615,15 +6615,31 @@ bool CreateDevice()
     // created with this sample count in InitCommon, every draw pipeline states it, and
     // it cannot change for the run (the persistent EDRAM is one image). N in {2,4};
     // clamped DOWN to what framebufferColor & framebufferDepth both support, falling
-    // back to 1x — the same renderer as CZ_VK_MSAA unset, bit for bit — and every
-    // outcome prints, because an arm whose engagement is silent cannot be shown to
-    // have engaged (gotcha 151).
+    // back to 1x, and every outcome prints, because an arm whose engagement is silent
+    // cannot be shown to have engaged (gotcha 151).
+    //
+    // **DEFAULT 2x AS OF PART 93 (operator decision).** Unset = 2x; the price is
+    // measured, not guessed (+0.85 ms GPU at 1440p, frame time unmoved — plan §9),
+    // which is what lets a default ship here where the CLAUDE.md rule warns against
+    // an unmeasured one. **`CZ_VK_MSAA=0` (or `=1`) is the single-sample control
+    // arm** — the pre-part-93 renderer bit for bit, the baseline every earlier A/B was
+    // taken against — so any picture or perf complaint bisects with it FIRST. An
+    // invalid value warns and falls back to the 2x default rather than to 1x, so a
+    // typo never silently disables AA.
     {
         const char* msaaEnv = Env("CZ_VK_MSAA");
-        const long msaaReq = msaaEnv ? strtol(msaaEnv, nullptr, 10) : 0;
+        long msaaReq = msaaEnv ? strtol(msaaEnv, nullptr, 10) : 2;
         if (msaaEnv && msaaReq != 0 && msaaReq != 1 && msaaReq != 2 && msaaReq != 4)
-            fprintf(stderr, "[vk] CZ_VK_MSAA=%s is not 2 or 4 — IGNORED, EDRAM stays "
-                            "single-sample\n", msaaEnv);
+        {
+            fprintf(stderr, "[vk] CZ_VK_MSAA=%s is not 0/1/2/4 — IGNORED, using the "
+                            "2x default (CZ_VK_MSAA=0 is the single-sample control)\n",
+                    msaaEnv);
+            msaaReq = 2;
+        }
+        if (msaaReq == 0 || msaaReq == 1)
+            fprintf(stderr, "[vk] CZ_VK_MSAA=%ld — EDRAM is SINGLE-SAMPLE by request "
+                            "(the pre-part-93 control arm; the default is 2x)\n",
+                    msaaReq);
         if (msaaReq == 2 || msaaReq == 4)
         {
             const VkSampleCountFlags supported =
@@ -6666,9 +6682,9 @@ bool CreateDevice()
                     fprintf(stderr, "[vk] CZ_VK_MSAA=%ld clamped to %ux by the "
                                     "device's framebuffer limits\n", msaaReq, n);
                 fprintf(stderr, "[vk] CZ_VK_MSAA — EDRAM is MULTISAMPLED at %ux "
-                                "(resolves at RB_COPY; SAMPLE_ZERO depth resolve). "
-                                "Unset CZ_VK_MSAA for the single-sample control arm.\n",
-                        n);
+                                "(resolves at RB_COPY; SAMPLE_ZERO depth resolve)%s. "
+                                "CZ_VK_MSAA=0 is the single-sample control arm.\n",
+                        n, msaaEnv ? "" : " [2x default]");
                 if (R->rtEnabled)
                 {
                     // The RT factor pass samples R->depth through an ordinary 2D view,
