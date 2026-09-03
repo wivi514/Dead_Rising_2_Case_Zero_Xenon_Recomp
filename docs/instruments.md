@@ -3587,3 +3587,14 @@ CZ_NO_KB_PROMPTS=1  keep the PAD glyph art while the native keyboard is live —
 `tools/big_decompress --force` (part 92) writes the decompressed bytes even when
 the .bct oracle fails, SAYING SO — the frontend .tex banks carry the same LZX
 framing around 05 01 01 E6 texture records that are not .bct files.
+
+CZ_VK_NO_BLEND_DEPTH_WRITE=1  force depth-WRITE off for every blended (translucent)
+                   draw — the conventional order-independent behaviour for translucency.
+                   Part 92 hair-flicker arm: stops the 178 layered hair cards fighting
+                   each other's depth (flicker gone) at the cost of card-vs-card
+                   occlusion (see-through layers). Off by default = same-binary control.
+CZ_VK_DEPTH_FLOAT=1  create the EDRAM depth buffer as D32_SFLOAT_S8_UINT instead of
+                   D24_UNORM_S8_UINT — the faithful match to Xenos D24FS8 float depth.
+                   Part 92: fixes depth-precision look questions but NOT the hair flicker
+                   (the cards genuinely cross in depth; the console hides it with MSAA).
+                   Off by default = same-binary control. Everything reads R->depth.format.

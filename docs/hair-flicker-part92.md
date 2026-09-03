@@ -69,3 +69,40 @@ the hair shader's NORMAL/specular path: a per-frame-unstable tangent-space basis
 normal-map LOD as the skinned mesh deforms, which hardware's filtering/MSAA-resolve
 smooths and our one-sample-per-pixel path does not. Confirm the shader first, then
 read ps_522e2b16's translated HLSL for the normal/specular arithmetic.
+
+## RESOLVED DIAGNOSIS (2026-09-03) — layered translucent hair cards, needs MSAA
+
+The hair is **vs=d78d670a ps=34524bb6**: 178 alpha-blended (SRC_ALPHA/INV_SRC_ALPHA,
+blend 07060706) cards layered on the top of the head (v0 y 1.66-1.82), all sampling one
+512x512 hair texture, all writing depth (RB_DEPTHCONTROL bit 2) and testing LESS_EQUAL.
+Positively identified by the four-colour character-ID arm (the body is ea2cd381/45109c37,
+the watch is 522e2b16, ab3a6ccc is a small specular+cube mesh — none of them the hair).
+
+The flicker is the cards' **depth-test result flipping frame to frame at card
+crossings** as the skinned mesh animates. Confirmed by two same-binary arms:
+
+| arm | flicker | look |
+|---|---|---|
+| default (D24_UNORM, blend depth-write ON) | YES | correct (solid) |
+| `CZ_VK_NO_BLEND_DEPTH_WRITE=1` | **gone** | see-through layers |
+| `CZ_VK_DEPTH_FLOAT=1` (D32_SFLOAT depth) | YES | correct (solid) |
+| `CZ_VK_DEPTH_FLOAT=1 CZ_VK_NO_BLEND_DEPTH_WRITE=1` | **gone** | see-through layers |
+
+So: card-vs-card depth-write is REQUIRED for the solid look and is the CAUSE of the
+flicker; float precision alone does not fix it (the cards genuinely cross in depth, it
+is not just a UNORM tie). The console is clean because Xenos renders into a natively
+**multisampled** EDRAM surface: per-sample depth makes a card crossing transition
+gradually across samples instead of flipping a whole pixel. Our renderer is
+single-sample and has no downsampling resolve, so the crossing flips. 4x supersampling
+did not help (stale, pre-ID test) consistent with this being a per-sample-DEPTH effect,
+not a shading-resolution one.
+
+**The clean fix is real MSAA** (multisampled colour+depth with a resolve), or
+depth-sorted / order-independent transparency for the hair. Both are substantial
+renderer features, out of proportion to a cosmetic bug and competing with the release
+board — decision deferred to the operator. Two partial mitigations exist as arms if a
+"flicker gone, slightly see-through" trade is preferred:
+`CZ_VK_DEPTH_FLOAT=1 CZ_VK_NO_BLEND_DEPTH_WRITE=1`.
+
+Arms added this session (same-binary, off by default): `CZ_VK_NO_BLEND_DEPTH_WRITE=1`
+(depth-write off for blended draws), `CZ_VK_DEPTH_FLOAT=1` (D32_SFLOAT_S8 EDRAM depth).

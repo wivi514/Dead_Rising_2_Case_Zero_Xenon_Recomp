@@ -5857,6 +5857,22 @@ bool FormatHasStencil(VkFormat f)
            f == VK_FORMAT_D32_SFLOAT_S8_UINT || f == VK_FORMAT_S8_UINT;
 }
 
+// The EDRAM depth format. Xenos depth is 24-bit FLOATING POINT (D24FS8), whose precision
+// is concentrated near the camera; our historical D24_UNORM spreads precision uniformly,
+// so near the camera it is far coarser. That mismatch is the part-92 Chuck-hair flicker:
+// 178 layered alpha-blended hair cards a few millimetres apart, all writing depth and
+// testing LESS_EQUAL, land on tied/inverted UNORM depths at head distance and the winner
+// re-rolls every frame as the mesh animates — a flicker hardware's float depth does not
+// show because it separates the cards cleanly. CZ_VK_DEPTH_FLOAT=1 selects D32_SFLOAT_S8
+// (float depth with stencil), the faithful match, keeping depth-write and occlusion. The
+// D24_UNORM default is the same-binary control arm. Everything downstream reads
+// R->depth.format, and the depth clear/sample paths are normalised 0..1 floats either way.
+VkFormat EdramDepthFormat()
+{
+    static const bool wantFloat = EnvOn("CZ_VK_DEPTH_FLOAT");
+    return wantFloat ? VK_FORMAT_D32_SFLOAT_S8_UINT : VK_FORMAT_D24_UNORM_S8_UINT;
+}
+
 // THE STAGE AND ACCESS MASKS A LAYOUT IMPLIES (part 78 item 1).
 //
 // Every barrier in this renderer used `ALL_COMMANDS -> ALL_COMMANDS` with
@@ -10427,6 +10443,26 @@ VkPipeline GetPipeline(const PipelineKey& key, const ShaderMeta& vs, const Shade
                        cb.dstAlphaBlendFactor == VK_BLEND_FACTOR_ZERO)
                         ? VK_TRUE
                         : VK_FALSE;
+
+    // CZ_VK_NO_BLEND_DEPTH_WRITE=1 — translucent geometry should depth-TEST but not
+    // depth-WRITE, so overlapping alpha-blended layers do not occlude one another via
+    // written depth. Chuck's hair is 178 layered alpha-blended cards (vs d78d670a,
+    // blend 07060706) that DO write depth (RB_DEPTHCONTROL bit 2 set); on our
+    // D24_UNORM their near-equal depths flip the LESS_EQUAL test frame to frame as the
+    // skinned mesh animates, and because the cards are transparent each flip adds or
+    // drops a layer's contribution — a continuous, motion-gated flicker that hardware's
+    // depth precision does not show (part 92 hair-flicker hunt). This arm forces
+    // depth-write off for every blended draw; the default keeps the guest's own bit so
+    // it is a same-binary control. It is aimed at the hair but applies to all blended
+    // geometry because that is the conventional, order-independent-correct behaviour for
+    // translucency; if it regresses another effect, narrow it to the hair VS.
+    static const bool noBlendDepthWrite = EnvOn("CZ_VK_NO_BLEND_DEPTH_WRITE");
+    if (noBlendDepthWrite && cb.blendEnable == VK_TRUE)
+    {
+        ds.depthWriteEnable = VK_FALSE;
+        COUNT("pipeline: depth-write forced off for a blended draw "
+              "(CZ_VK_NO_BLEND_DEPTH_WRITE)");
+    }
 
     VkPipelineColorBlendStateCreateInfo bs{
         VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO
@@ -24795,7 +24831,7 @@ bool InitCommon()
         // decision, and `CZ_VK_RT=0` — the master arm since part 64 — must stay a
         // bit-for-bit description of the pre-RT renderer.
         !CreateImage(R->depth, RSX(R->targetWidth), RS(edramH),
-                     VK_FORMAT_D24_UNORM_S8_UINT,
+                     EdramDepthFormat(),
                      VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT |
                          VK_IMAGE_USAGE_TRANSFER_DST_BIT |
                          VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
@@ -28249,7 +28285,7 @@ void ApplyPendingRenderScale()
                          VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
                      VK_IMAGE_ASPECT_COLOR_BIT) ||
         !CreateImage(R->depth, RSX(R->targetWidth), RS(edramH),
-                     VK_FORMAT_D24_UNORM_S8_UINT,
+                     EdramDepthFormat(),
                      VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT |
                          VK_IMAGE_USAGE_TRANSFER_DST_BIT |
                          VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
