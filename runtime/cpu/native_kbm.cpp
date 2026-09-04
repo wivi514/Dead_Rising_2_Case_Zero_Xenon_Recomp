@@ -213,9 +213,93 @@ float LoadF32(uint8_t* base, uint32_t addr)
     return f;
 }
 
+void StoreF32(uint8_t* base, uint32_t addr, float f)
+{
+    uint32_t v;
+    memcpy(&v, &f, 4);
+    StoreU32(base, addr, v);
+}
+
+// Raw mouse-look accumulator for the DIRECT camera-look path (imported from Case
+// West, part 93). window.cpp feeds it the same per-poll deltas it hands the stick;
+// the camera hook (sub_82471EA0) drains it once a frame and adds it straight onto
+// the camera's yaw/pitch angles, past the engine's radial turn-rate clamp.
+std::atomic<int> g_lookDX{ 0 }, g_lookDY{ 0 };
+void TakeMouseLook(int& dx, int& dy)
+{
+    dx = g_lookDX.exchange(0, std::memory_order_relaxed);
+    dy = g_lookDY.exchange(0, std::memory_order_relaxed);
+}
+
+// True while the KB/mouse (not a pad) is the live device — defined down by the
+// device-follow state; forward-declared here for the direct-camera hook's gate.
+bool MouseDeviceActive();
+
 const char* GuestStr(uint8_t* base, uint32_t addr)
 {
     return reinterpret_cast<const char*>(base + addr);
+}
+
+// DIRECT CAMERA LOOK — imported from Case West (part 93; docs/mouse-camera-uncap.md
+// there). The mouse fed the game's right stick, but the camera update turns that
+// into a turn rate through a RADIAL MAGNITUDE CLAMP: sub_82471EA0 clamps
+// sqrt(yaw^2+pitch^2) before a fixed max turn-rate, so any input-side gain (the
+// part-91 CameraSurplus path) just makes a longer vector the clamp normalizes back —
+// which is exactly the "turn-rate ceiling at MOUSE SENS 10" the operator felt.
+//
+// This bypasses it: sub_82471EA0 stores the persistent yaw at r6+0x40 and pitch at
+// r6+0x44 (radians; r31=r6 in the callee), and those stores are its final action. We
+// hook it, capture r6 on entry, and AFTER the game's own clamped update add our
+// uncapped mouse delta straight onto those angle accumulators. Adding to the angle
+// INTEGRAL is stable — the engine's smoother reads its own separate state (at
+// +0x70/+0x74 in Case Zero, not these), so there is no feedback blow-up. Case Zero's
+// yaw/pitch offsets are identical to Case West's; only the function address differs
+// (CW sub_82470DC0 -> CZ sub_82471EA0) and the smoother state moved.
+extern "C" PPC_FUNC(__imp__sub_82471EA0);
+
+PPC_FUNC(sub_82471EA0)
+{
+    const uint32_t cam = ctx.r6.u32;     // r31 in the callee = the camera state
+    __imp__sub_82471EA0(ctx, base);
+    // The camera state can live in the physical-alias heap, so the bound is generous
+    // — reject only a wild pointer.
+    if (!NativeKbm_Active() || !MouseDeviceActive() || !Settings_MouseCam() ||
+        cam < 0x10000 || cam >= 0xF0000000)
+        return;
+    int dx = 0, dy = 0;
+    TakeMouseLook(dx, dy);
+    if (dx == 0 && dy == 0)
+        return;
+    // scale: MOUSE SENS (live) x base. Angles are radians (the update applies
+    // deg->rad internally). 0.00027 is Case West's operator-dialed landing
+    // (sens 5 ~= 0.135 rad / 100 counts). Tune with the MOUSE SENS row or
+    // CZ_KBM_LOOK_SCALE without a rebuild.
+    float scale = 0.00027f;
+    if (const char* e = getenv("CZ_KBM_LOOK_SCALE"))
+    {
+        const float v = float(atof(e));
+        if (v > 0.0f)
+            scale = v;
+    }
+    const float k = float(Settings_MouseSens()) * scale;
+    // The camera FIELD delta sign is opposite the command-input sign the stick path
+    // used, so a naive add is inverted on both axes. Default to the corrected
+    // polarity (mouse-right = look right, mouse-down = look down); the inverts flip
+    // each live.
+    float sx = -1.0f, sy = 1.0f;
+    if (getenv("CZ_KBM_INVERT_X")) sx = -sx;
+    if (getenv("CZ_KBM_INVERT_Y")) sy = -sy;
+    const float yaw = LoadF32(base, cam + 0x40);
+    const float pit = LoadF32(base, cam + 0x44);
+    StoreF32(base, cam + 0x40, yaw + float(dx) * k * sx);
+    StoreF32(base, cam + 0x44, pit + float(dy) * k * sy);
+    if (getenv("CZ_KBM_CAM_TRACE"))
+    {
+        static uint64_t n = 0;
+        if ((n++ % 20) == 0)
+            fprintf(stderr, "[camlook] cam=%08X dx=%d dy=%d k=%.5f yaw %.4f pit %.4f\n",
+                    cam, dx, dy, k, yaw, pit);
+    }
 }
 
 bool GuestCall(PPCContext& ctx, uint8_t* base, uint32_t fnAddr, const char* what)
@@ -787,6 +871,13 @@ namespace
 {
 enum { DEV_KB = 0, DEV_PAD = 1 };
 std::atomic<int> g_wantedDevice{ DEV_KB };
+
+// The direct-camera gate (forward-declared up by the helpers): scale the camera only
+// while the KB/mouse is the live device, never a controller.
+bool MouseDeviceActive()
+{
+    return g_wantedDevice.load(std::memory_order_acquire) == DEV_KB;
+}
 std::atomic<bool> g_deviceWorkerUp{ false };
 
 struct SwapGlyph
@@ -1183,4 +1274,16 @@ void NativeKbm_CameraSurplus(float sx, float sy)
         AtomicAddFloat(g_camSurX, sx);
     if (sy != 0.0f)
         AtomicAddFloat(g_camSurY, sy);
+}
+
+// Raw per-poll mouse deltas for the DIRECT camera-look path (sub_82471EA0 drains
+// them once a frame and adds them straight onto the camera's yaw/pitch angles,
+// bypassing the engine's radial turn-rate clamp — see that hook). Imported from
+// Case West, part 93.
+void NativeKbm_AddMouseLook(int dx, int dy)
+{
+    if (dx)
+        g_lookDX.fetch_add(dx, std::memory_order_relaxed);
+    if (dy)
+        g_lookDY.fetch_add(dy, std::memory_order_relaxed);
 }

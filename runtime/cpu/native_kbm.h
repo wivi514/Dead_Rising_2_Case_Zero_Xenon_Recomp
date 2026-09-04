@@ -71,3 +71,9 @@ void NativeKbm_PanelKeyLevel(uint16_t vk, bool down);
 // after its own per-frame publish — the race-free spelling of the DR2-PC
 // no-turn-rate-ceiling camera.
 void NativeKbm_CameraSurplus(float sx, float sy);
+
+// Raw per-poll mouse deltas for the DIRECT camera-look path (imported from Case West,
+// part 93): the camera hook sub_82471EA0 adds them straight onto the camera's
+// yaw/pitch angles, past the engine's radial turn-rate clamp — the fix for the
+// "MOUSE SENS 10 still feels slow / has a turn-rate ceiling" gap.
+void NativeKbm_AddMouseLook(int dx, int dy);

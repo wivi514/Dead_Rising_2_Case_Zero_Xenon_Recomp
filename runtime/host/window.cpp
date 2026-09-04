@@ -1032,10 +1032,19 @@ HostPadState ReadKeyboard()
             {
                 const int dx = g_mouseDX.exchange(0, std::memory_order_relaxed);
                 const int dy = g_mouseDY.exchange(0, std::memory_order_relaxed);
+                // DIRECT CAMERA LOOK (imported from Case West, part 93): hand the raw
+                // deltas to the native path, which adds them straight onto the camera's
+                // yaw/pitch past the engine's radial turn-rate clamp (native_kbm.cpp,
+                // sub_82471EA0). The stick feed below stays — it keeps the "camera is
+                // being moved" state the engine reads — but the direct add is what
+                // gives the uncapped speed that fixes the SENS-10 ceiling.
+                NativeKbm_AddMouseLook(dx, dy);
                 // RAW per-poll pixels -> stick units; deliberately no EMA and
                 // no px/s conversion — DR2 PC's camera is displacement-shaped.
+                // 350 (was 140): Case West's 2.5x-faster stick scale (commit 4eac54b);
+                // with the direct look above this mainly keeps the input-active state.
                 const float sens = float(Settings_MouseSens());
-                const float unitsPerPx = sens * sens * 140.0f;
+                const float unitsPerPx = sens * sens * 350.0f;
                 const float rx = float(dx) * unitsPerPx;
                 const float ry = float(-dy) * unitsPerPx;   // screen-down = look down
                 auto clampStick = [](float v) {
