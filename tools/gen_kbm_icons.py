@@ -61,7 +61,7 @@ generated key map — see docs/native-kbm-phaseA.md):
                   x=LMB (attack=BUTTON_3)   LB/RB=1/3 (item cycles=L1/R1)
                   LT=RMB (aim)              RT=LMB (fire)
   butstart=ENTER  butback=TAB  dpads=arrow keys  R3=MMB (heavy attack)
-  analog_move_center=WASD cluster  analog_move_left=A  analog_move_right=D (struggle flash)
+  analog_move_center=A/D chip  analog_move_left=A  analog_move_right=D (struggle flash)
   UNPATCHED (no keyboard equivalent bound): L3, y_button_ig.
 
 Usage:
@@ -108,16 +108,17 @@ LEGENDS = {
     "RTbutton": ("key", "4"),
     "RTbutton_ig": ("mouse", "L"),
     "R3": ("mouse", "M"),
-    "analog_move_center": ("wasd",),
     # The zombie-grab struggle prompt (hud_infobar w_zombie_grapple) is a
-    # 3-frame cFEBitmapList — analog_move_left / _center / _right — so the
-    # game itself swaps the glyph between the two tilt frames during the
-    # struggle (the operator's grab capture shows the center frame steady
-    # while NOT mashing, consistent with the frame following the stick's X;
-    # either way any alternation lands on these two slots). Legending them A
-    # and D makes the prompt flash A↔D — the DR2-PC behaviour. No other
-    # layout or string references these two names (censused over every
-    # frontend .big and str_en.bcs markup).
+    # 3-frame cFEBitmapList — analog_move_left / _center / _right — whose
+    # frame follows the stick's X (confirmed by the operator's mashing burst:
+    # tilt frames appear exactly on the presses). Legending the tilts A and D
+    # makes the prompt flash A↔D — the DR2-PC behaviour. The CENTER frame was
+    # the WASD cluster at first and the operator's session found it flashing
+    # WASD between every press; the census says analog_move_center serves
+    # ONLY grapple-shaped prompts (this widget, the "escape grapples"
+    # tutorial string, hud_bossbattle's twist-QTE center — nothing teaches
+    # movement with it), so it is an A/D chip now, start to finish.
+    "analog_move_center": ("key", "A/D"),
     "analog_move_left": ("key", "A"),
     "analog_move_right": ("key", "D"),
 }
@@ -439,9 +440,13 @@ def main():
     # IDS_HUD_LS ("LS ") labels ONLY the zombie-grab struggle prompt (both
     # cFEText nodes of hud_infobar's w_zombie_grapple; no other layout uses
     # id 4049) — with the tilt glyphs legended A/D the keyboard reading is A/D.
+    # "LEFT STICK" appears in exactly ONE string in the whole bank — the
+    # grapple tutorial ("Wiggle the LEFT STICK [icon] to escape grapples!") —
+    # so the keyboard wording rides the same same-length road.
     for old, new in ((b"PRESS\x00START\x00", b"PRESS\x00ENTER\x00"),
                      (b"PRESS START\x00", b"PRESS ENTER\x00"),
-                     (b"\x00LS \x00", b"\x00A/D\x00")):
+                     (b"\x00LS \x00", b"\x00A/D\x00"),
+                     (b"LEFT STICK ", b"A / D KEYS ")):
         n = sbank.count(old)
         if n != 1:
             print(f"GATE FAILED: str_en.bcs holds {n} of {old!r}, expected 1",
@@ -451,7 +456,7 @@ def main():
     sout = OUT.parent / "str_en.bcs"
     OUT.parent.mkdir(parents=True, exist_ok=True)
     sout.write_bytes(sbank)
-    print(f"wrote {sout} (3 same-length string edits: PRESS ENTER x2, LS -> A/D)")
+    print(f"wrote {sout} (4 same-length string edits)")
 
     swp = bytearray()
     swp += struct.pack("<4sI", b"KBSW", len(swap_entries))

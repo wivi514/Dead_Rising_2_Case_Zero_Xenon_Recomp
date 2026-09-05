@@ -19,9 +19,14 @@ loading/ratinglogos `.big`), so it was safe to retarget.
 ## The fix (tools/gen_kbm_icons.py, regenerated assets/game_kbm/)
 
 1. `LEGENDS += analog_move_left=("key","A"), analog_move_right=("key","D")` — the two tilt
-   frames become A and D key caps; mashing flashes A↔D via the game's own frame selection.
-   The center frame stays the WASD cluster (it is shared with hud_bossbattle's twist QTE
-   and the `[@analog_move_center]` string markup — do not change it).
+   frames become A and D key caps; mashing flashes A↔D via the game's own frame selection
+   (the operator's mashing burst confirmed the frame follows the stick's X).
+   The center frame FIRST stayed the WASD cluster; the operator's session found it flashing
+   WASD between every press. The deeper census retired the sharing worry — the ONLY string
+   using `[@analog_move_center]` is the grapple tutorial itself, and the only other layout
+   consumer is hud_bossbattle's twist-QTE center; nothing teaches movement with it — so the
+   center is now an "A/D" chip, and the grapple tutorial's "LEFT STICK " (unique in the
+   bank) reads "A / D KEYS " via a fourth same-length edit.
 2. Same-length str edit `\0LS \0` → `\0A/D\0` alongside the PRESS ENTER pair, so the big
    label reads "A/D" instead of "LS". (Same accepted caveat as PRESS ENTER: the string
    cannot device-follow; the glyph art does, via glyph_swap.bin, now 25 entries — the
