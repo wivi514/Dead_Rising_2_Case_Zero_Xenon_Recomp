@@ -980,6 +980,127 @@ bool LoadGlyphSwap()
     return true;
 }
 
+// ---- DEVICE-FOLLOW PROMPT STRINGS (the MASH-on-pad fix) ----------------------
+// The kbm overlay's str_en.bcs carries FOUR keyboard wordings (PRESS ENTER twice,
+// "A / D KEYS " in the grapple tutorial, and id 4049's MASH struggle label), and
+// the bank is a boot-time choice exactly like the glyph bank — so a pad player
+// got stick GLYPHS (the texel swap above) under a keyboard LABEL: the operator's
+// report was MASH showing on the Xbox prompt. The strings must follow the live
+// device the same way the art does.
+//
+// Mechanism: the loaded bank is the file's own bytes in guest memory (the .bcs
+// offset-table format requires the whole file in one buffer), so it is located
+// once by its 64-byte prefix (the id-table header — unique, and identical
+// across the kbm/patched variants so the locator cannot be wrong-footed by
+// which one loaded), confirmed by a 4 KB compare, and each string is swapped in
+// place at its file offset. Every write re-verifies the region is one of the
+// two known variants first — anything else means the model is wrong and the
+// write is refused (the glyph swap's own discipline). The one unequal pair,
+// MASH(5) vs "LS \0"(4), swaps inside a 5-byte region whose last byte is NUL in
+// both variants, so neither direction can touch the next string.
+//
+// Honest limitation, unlike the texel swap: a widget copies its TEXT when it is
+// built, so a flip updates the NEXT build of a screen/prompt (the next grapple,
+// the next title-screen entry), not one already showing. Prompts are built per
+// use, so in practice the label matches the device that triggered it.
+struct SwapString
+{
+    const char* what;
+    uint32_t off;                    // offset of the region inside the bank file
+    std::vector<uint8_t> kb, pad;    // both variants, same region length
+};
+std::vector<SwapString> g_swapStrings;
+std::vector<uint8_t> g_bankFp;       // first 64 bytes: the in-memory locator
+std::vector<uint8_t> g_bankHdr;      // first 4096: hit confirmation / stale check
+std::vector<uint32_t> g_bankAddrs;
+
+bool LoadStrSwap()
+{
+    const auto path = HostPaths::Root() / "assets/game_kbm/data/frontend/str_en.bcs";
+    std::ifstream f(path, std::ios::binary | std::ios::ate);
+    if (!f)
+        return false;
+    const std::streamsize sz = f.tellg();
+    if (sz < 4096)
+        return false;
+    std::vector<uint8_t> bank(static_cast<size_t>(sz), 0);
+    f.seekg(0);
+    f.read(reinterpret_cast<char*>(bank.data()), sz);
+    if (!f)
+        return false;
+
+    // The three same-length wordings, located by searching for the KB bytes —
+    // each must occur exactly once (the generator gates the same uniqueness on
+    // the original wording; a count != 1 here means the bank moved under us and
+    // that string just does not follow, said out loud).
+    struct Pair { const char* what; const char* kb; const char* pad; size_t len; };
+    const Pair pairs[] = {
+        { "title PRESS/ENTER pair", "PRESS\0ENTER\0", "PRESS\0START\0", 12 },
+        { "PRESS ENTER",            "PRESS ENTER\0",  "PRESS START\0",  12 },
+        { "grapple tutorial",       "A / D KEYS ",    "LEFT STICK ",    11 },
+    };
+    for (const Pair& p : pairs)
+    {
+        size_t count = 0;
+        const uint8_t* hit = nullptr;
+        const uint8_t* from = bank.data();
+        size_t left = bank.size();
+        while (const uint8_t* h = FindBytes(from, left,
+                   reinterpret_cast<const uint8_t*>(p.kb), p.len))
+        {
+            ++count;
+            hit = h;
+            left -= size_t(h - from) + 1;
+            from = h + 1;
+        }
+        if (count != 1)
+        {
+            fprintf(stderr, "[kbm] string-follow: %s occurs %zu times in the "
+                            "bank (expected 1) — that string stays as booted\n",
+                    p.what, count);
+            continue;
+        }
+        SwapString s;
+        s.what = p.what;
+        s.off = uint32_t(hit - bank.data());
+        s.kb.assign(p.kb, p.kb + p.len);
+        s.pad.assign(p.pad, p.pad + p.len);
+        g_swapStrings.push_back(std::move(s));
+    }
+
+    // Id 4049 (the struggle label) through the bank's own table — exact, not a
+    // search. Region is 5 bytes: "MASH\0" <-> "LS \0\0".
+    const uint32_t n = *reinterpret_cast<const uint32_t*>(bank.data());
+    if (bank.size() >= 4 + 8ull * n)
+    {
+        const uint32_t* ids = reinterpret_cast<const uint32_t*>(bank.data() + 4);
+        const uint32_t* offs = reinterpret_cast<const uint32_t*>(bank.data() + 4 + 4ull * n);
+        for (uint32_t k = 0; k < n; ++k)
+            if (ids[k] == 4049)
+            {
+                if (offs[k] + 5 <= bank.size() &&
+                    memcmp(bank.data() + offs[k], "MASH\0", 5) == 0)
+                {
+                    SwapString s;
+                    s.what = "struggle label MASH/LS";
+                    s.off = offs[k];
+                    s.kb.assign({'M', 'A', 'S', 'H', 0});
+                    s.pad.assign({'L', 'S', ' ', 0, 0});
+                    g_swapStrings.push_back(std::move(s));
+                }
+                else
+                    fprintf(stderr, "[kbm] string-follow: id 4049 is not MASH in "
+                                    "the bank — the label stays as booted\n");
+                break;
+            }
+    }
+    if (g_swapStrings.empty())
+        return false;
+    g_bankFp.assign(bank.begin(), bank.begin() + 64);
+    g_bankHdr.assign(bank.begin(), bank.begin() + 4096);
+    return true;
+}
+
 // Locate every in-memory copy of each glyph's TEXELS. Measured live (part 92
 // round 4, process_vm_readv over a gameplay run): the decoded glyph textures
 // sit PAGE-ALIGNED and HEADERLESS in the physical arena, byte-identical to the
@@ -994,6 +1115,40 @@ static const Range kScanRanges[] = {
     { 0x40000000u, 0x7FE00000u },   // large-page virtual
     { 0x00010000u, 0x40000000u },   // small-page virtual
 };
+
+// The string bank, unlike the textures, is a file read into a HEAP allocation,
+// so it is scanned in every range (the physOnly economy is a texture fact). One
+// 64-byte needle over the arenas, each hit confirmed by the 4 KB header.
+void ScanForStrBank(uint8_t* base)
+{
+    if (g_swapStrings.empty())
+        return;
+    g_bankAddrs.clear();
+    for (const Range& r : kScanRanges)
+    {
+        const uint8_t* p = base + r.lo;
+        size_t left = r.hi - r.lo;
+        while (left >= g_bankHdr.size())
+        {
+            const uint8_t* hit = FindBytes(p, left, g_bankFp.data(), g_bankFp.size());
+            if (!hit)
+                break;
+            const size_t remain = size_t(base + r.hi - hit);
+            if (remain >= g_bankHdr.size() &&
+                memcmp(hit, g_bankHdr.data(), g_bankHdr.size()) == 0)
+            {
+                g_bankAddrs.push_back(uint32_t(hit - base));
+                fprintf(stderr, "[kbm] device-follow scan: string bank at "
+                                "%08X\n", uint32_t(hit - base));
+            }
+            left = remain - 1;
+            p = hit + 1;
+        }
+    }
+    if (g_bankAddrs.empty())
+        fprintf(stderr, "[kbm] device-follow scan: string bank NOT found — "
+                        "prompt wording stays as booted this round\n");
+}
 
 void ScanForGlyphs(uint8_t* base, bool physOnly)
 {
@@ -1068,7 +1223,7 @@ void DeviceWorker(uint8_t* base)
             std::this_thread::sleep_for(std::chrono::milliseconds(60));
             continue;
         }
-        auto swapAll = [&](size_t& wrote, size_t& stale) {
+        auto swapAll = [&](size_t& wrote, size_t& strWrote, size_t& stale) {
             for (SwapGlyph& g : g_swapGlyphs)
             {
                 auto it = g.addrs.begin();
@@ -1089,6 +1244,30 @@ void DeviceWorker(uint8_t* base)
                     ++it;
                 }
             }
+            // The prompt STRINGS follow the same flip. Stale check is the 4 KB
+            // header (an allocation reuse cannot keep it), and every region is
+            // verified to be one of the two known variants before the write.
+            auto ba = g_bankAddrs.begin();
+            while (ba != g_bankAddrs.end())
+            {
+                if (memcmp(base + *ba, g_bankHdr.data(), g_bankHdr.size()) != 0)
+                {
+                    ba = g_bankAddrs.erase(ba);
+                    ++stale;
+                    continue;
+                }
+                for (const SwapString& s : g_swapStrings)
+                {
+                    uint8_t* region = base + *ba + s.off;
+                    if (memcmp(region, s.kb.data(), s.kb.size()) != 0 &&
+                        memcmp(region, s.pad.data(), s.pad.size()) != 0)
+                        continue;      // not our model — refuse the write
+                    const auto& text = want == DEV_PAD ? s.pad : s.kb;
+                    memcpy(region, text.data(), text.size());
+                    ++strWrote;
+                }
+                ++ba;
+            }
         };
         // Swap the KNOWN copies first — the flip must be instant. Rescans for
         // unlocated glyphs run AFTER, rate-limited to one per 20 s and to the
@@ -1096,9 +1275,9 @@ void DeviceWorker(uint8_t* base)
         // gigabytes on EVERY flip whenever one glyph stayed unlocated, and
         // alternating devices in play turned that into a constant memory storm
         // — the operator's sub-30-fps report.
-        size_t wrote = 0, stale = 0;
-        swapAll(wrote, stale);
-        bool anyMissing = false;
+        size_t wrote = 0, strWrote = 0, stale = 0;
+        swapAll(wrote, strWrote, stale);
+        bool anyMissing = !g_swapStrings.empty() && g_bankAddrs.empty();
         for (const SwapGlyph& g : g_swapGlyphs)
             if (g.addrs.empty())
             {
@@ -1113,13 +1292,16 @@ void DeviceWorker(uint8_t* base)
              now - lastScan > std::chrono::seconds(20)))
         {
             ScanForGlyphs(base, scannedOnce);   // full sweep once, then physical-only
+            if (g_bankAddrs.empty())
+                ScanForStrBank(base);           // the bank is heap-resident: all ranges
             scannedOnce = true;
             lastScan = std::chrono::steady_clock::now();
-            swapAll(wrote, stale);              // newly-found copies get the art now
+            swapAll(wrote, strWrote, stale);    // newly-found copies get the art now
         }
         applied = want;
-        fprintf(stderr, "[kbm] prompt art -> %s (%zu copies swapped%s)\n",
-                want == DEV_PAD ? "PAD" : "KEYBOARD", wrote,
+        fprintf(stderr, "[kbm] prompt art -> %s (%zu texel copies, %zu strings "
+                        "swapped%s)\n",
+                want == DEV_PAD ? "PAD" : "KEYBOARD", wrote, strWrote,
                 stale ? ", stale addresses dropped" : "");
     }
 }
@@ -1144,6 +1326,10 @@ void NativeKbm_NoteDeviceInput(bool pad)
                                 "stays as booted\n");
                 return;
             }
+            if (!LoadStrSwap())
+                fprintf(stderr, "[kbm] string-follow: kbm str_en.bcs missing/bad "
+                                "— prompt WORDING stays as booted (art still "
+                                "follows)\n");
             std::thread(DeviceWorker, g_memory.base).detach();
         }
     }
