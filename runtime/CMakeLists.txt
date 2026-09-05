@@ -344,6 +344,15 @@ if(WIN32)
     endif()
 endif()
 
+# overlay_gen.cpp uses a TU-internal exception for its gate ladder (caught at its
+# own public entry points; no exception crosses the file's boundary). clang-cl
+# follows MSVC's default of exceptions OFF, where a `throw` is a hard compile
+# error — this file, and only this file, gets /EHsc there. On Linux exceptions
+# are on by default and no flag is needed.
+if(MSVC)
+    set_source_files_properties(host/overlay_gen.cpp PROPERTIES COMPILE_OPTIONS "/EHsc")
+endif()
+
 # D.2's two translation units get their include paths as SOURCE properties, not
 # target-wide: the XenosRecomp directory carries generically-named headers (shader.h,
 # constant_table.h) that nothing else in this runtime should ever resolve by accident.
