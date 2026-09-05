@@ -27,10 +27,16 @@ loading/ratinglogos `.big`), so it was safe to retarget.
    consumer is hud_bossbattle's twist-QTE center; nothing teaches movement with it — so the
    center is now an "A/D" chip, and the grapple tutorial's "LEFT STICK " (unique in the
    bank) reads "A / D KEYS " via a fourth same-length edit.
-2. Same-length str edit `\0LS \0` → `\0A/D\0` alongside the PRESS ENTER pair, so the big
-   label reads "A/D" instead of "LS". (Same accepted caveat as PRESS ENTER: the string
-   cannot device-follow; the glyph art does, via glyph_swap.bin, now 25 entries — the
-   runtime parses the count from the file, no code change.)
+2. The label (`IDS_HUD_LS`, id 4049) went "LS" → "A/D" (same-length) → **"MASH"** on the
+   operator's third-round direction, and the CENTER frame went WASD cluster → A/D chip →
+   **BLANK**: they wanted only the A↔D alternation, no combined button prompt at all. "MASH"
+   does not fit the 3-byte slot in place, so the tool now REBUILDS the .bcs table
+   ({u32 n; ids[n]; offs[n]; strings} — NOT size-pinned; gen_pc_options.py has grown these
+   banks since part 60) with every id verified on read-back. Between presses the prompt is
+   just the MASH label; each press shows its key cap. (The shipped bank even carries a
+   leftover PC string for this prompt — "Wiggle the MOUSE to escape grapples!", id 9501 —
+   confirming DR2-PC re-labels this QTE for its device the same way.) The string still
+   cannot device-follow; the glyph art does, via glyph_swap.bin, 25 entries.
 
 All three generator gates passed; the bank stays under the 501,900-byte layout pin.
 Pad players are unaffected: glyph_swap.bin carries both art sets and device-follow

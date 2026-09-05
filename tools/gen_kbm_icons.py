@@ -61,7 +61,7 @@ generated key map — see docs/native-kbm-phaseA.md):
                   x=LMB (attack=BUTTON_3)   LB/RB=1/3 (item cycles=L1/R1)
                   LT=RMB (aim)              RT=LMB (fire)
   butstart=ENTER  butback=TAB  dpads=arrow keys  R3=MMB (heavy attack)
-  analog_move_center=A/D chip  analog_move_left=A  analog_move_right=D (struggle flash)
+  analog_move_center=BLANK  analog_move_left=A  analog_move_right=D (struggle flash; label MASH)
   UNPATCHED (no keyboard equivalent bound): L3, y_button_ig.
 
 Usage:
@@ -84,7 +84,7 @@ OUT = REPO / "assets/game_kbm/data/frontend/fecmn.tex"
 BIGDEC = REPO / "tools/big_decompress"
 FONT = "/usr/share/fonts/dejavu-sans-fonts/DejaVuSans-Bold.ttf"
 
-# glyph base name -> legend spec: ("key", text) | ("mouse", button) | ("wasd",)
+# glyph base name -> legend spec: ("key", text) | ("mouse", button) | ("blank",)
 LEGENDS = {
     "a_button": ("key", "↵"),   # ENTER as the return symbol — the 32-px slot cannot fit the word
     "a_button_ig": ("key", "SPACE"),
@@ -112,13 +112,15 @@ LEGENDS = {
     # 3-frame cFEBitmapList — analog_move_left / _center / _right — whose
     # frame follows the stick's X (confirmed by the operator's mashing burst:
     # tilt frames appear exactly on the presses). Legending the tilts A and D
-    # makes the prompt flash A↔D — the DR2-PC behaviour. The CENTER frame was
-    # the WASD cluster at first and the operator's session found it flashing
-    # WASD between every press; the census says analog_move_center serves
-    # ONLY grapple-shaped prompts (this widget, the "escape grapples"
-    # tutorial string, hud_bossbattle's twist-QTE center — nothing teaches
-    # movement with it), so it is an A/D chip now, start to finish.
-    "analog_move_center": ("key", "A/D"),
+    # makes the prompt flash A↔D — the DR2-PC behaviour. The CENTER frame is
+    # BLANK by the operator's third-round direction (it was the WASD cluster,
+    # then an A/D chip — both read as a button prompt where they wanted only
+    # the alternation): between presses nothing shows but the MASH label
+    # (id 4049, rewritten below). The census says analog_move_center serves
+    # ONLY grapple-shaped prompts — this widget, the "escape grapples"
+    # tutorial string, hud_bossbattle's twist-QTE center — so blanking it
+    # costs no movement tutorial anything.
+    "analog_move_center": ("blank",),
     "analog_move_left": ("key", "A"),
     "analog_move_right": ("key", "D"),
 }
@@ -294,16 +296,6 @@ def draw_mouse_chip(size, button):
     return img
 
 
-def draw_wasd_chip(size):
-    w, h = size
-    img = Image.new("RGBA", size, (0, 0, 0, 0))
-    k = min(w, h) // 2 - 2
-    for ch, (cx, cy) in {"W": (w // 2 - k // 2, 0), "A": (w // 2 - k - k // 2, h - k - 1),
-                         "S": (w // 2 - k // 2, h - k - 1), "D": (w // 2 + k // 2, h - k - 1)}.items():
-        img.alpha_composite(draw_key_chip((k, k), ch), (int(cx), int(cy)))
-    return img
-
-
 # ---- the bank ---------------------------------------------------------------
 
 def parse_bank(data):
@@ -403,12 +395,11 @@ def main():
         aw = min(w, max(8, int(uw * 0.96)))
         ah = min(h, max(8, int(uh * 0.96)))
         if spec[0] == "key":
-            text = spec[1]
-            chip = draw_key_chip((aw, ah), text)
+            chip = draw_key_chip((aw, ah), spec[1])
         elif spec[0] == "mouse":
             chip = draw_mouse_chip((aw, ah), spec[1])
-        else:
-            chip = draw_wasd_chip((aw, ah))
+        else:  # ("blank",) — the name renders as nothing at all
+            chip = Image.new("RGBA", (aw, ah), (0, 0, 0, 0))
         canvas.alpha_composite(chip, (1, 1))
         if args.preview:
             previews.append((base, canvas.copy()))
@@ -445,7 +436,6 @@ def main():
     # so the keyboard wording rides the same same-length road.
     for old, new in ((b"PRESS\x00START\x00", b"PRESS\x00ENTER\x00"),
                      (b"PRESS START\x00", b"PRESS ENTER\x00"),
-                     (b"\x00LS \x00", b"\x00A/D\x00"),
                      (b"LEFT STICK ", b"A / D KEYS ")):
         n = sbank.count(old)
         if n != 1:
@@ -453,10 +443,42 @@ def main():
                   file=sys.stderr)
             sys.exit(1)
         sbank = sbank.replace(old, new)
+
+    # IDS_HUD_LS (id 4049) labels ONLY the struggle prompt (both cFEText
+    # nodes of hud_infobar's w_zombie_grapple; no other layout uses the id),
+    # and the operator wants it to read MASH — which does not fit the shipped
+    # 3-byte "LS " in place. The .bcs is {u32 n; u32 ids[n]; u32 offs[n];
+    # NUL-terminated strings} and its size is NOT pinned (gen_pc_options.py
+    # has grown these banks since part 60), so the bank is rebuilt with the
+    # one string swapped and every id verified to read back what it should.
+    n = struct.unpack_from("<I", sbank, 0)[0]
+    ids = list(struct.unpack_from(f"<{n}I", sbank, 4))
+    offs = list(struct.unpack_from(f"<{n}I", sbank, 4 + 4 * n))
+    table = {ids[k]: sbank[offs[k]:sbank.index(b"\0", offs[k])] for k in range(n)}
+    if table.get(4049) != b"LS ":
+        print(f"GATE FAILED: string id 4049 reads {table.get(4049)!r}, "
+              f"expected b'LS ' — the bank layout moved; refusing to rewrite",
+              file=sys.stderr)
+        sys.exit(1)
+    table[4049] = b"MASH"
+    header = 4 + 8 * n
+    blob = bytearray()
+    new_offs = []
+    for i in ids:                      # keep the shipped id order
+        new_offs.append(header + len(blob))
+        blob += table[i] + b"\0"
+    sbank = (struct.pack("<I", n) + struct.pack(f"<{n}I", *ids) +
+             struct.pack(f"<{n}I", *new_offs) + bytes(blob))
+    got = {ids[k]: sbank[new_offs[k]:sbank.index(b"\0", new_offs[k])]
+           for k in range(n)}
+    if got != table:
+        print("GATE FAILED: rebuilt str bank does not read back", file=sys.stderr)
+        sys.exit(1)
+
     sout = OUT.parent / "str_en.bcs"
     OUT.parent.mkdir(parents=True, exist_ok=True)
     sout.write_bytes(sbank)
-    print(f"wrote {sout} (4 same-length string edits)")
+    print(f"wrote {sout} (3 same-length edits + id 4049 LS->MASH via table rebuild)")
 
     swp = bytearray()
     swp += struct.pack("<4sI", b"KBSW", len(swap_entries))
