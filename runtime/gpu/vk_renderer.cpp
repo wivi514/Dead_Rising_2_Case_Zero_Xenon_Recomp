@@ -9996,6 +9996,13 @@ uint32_t UploadTexture(uint8_t* base, const uint32_t* regs, uint32_t constIdx,
     // and decodes to opaque black. Its real bytes cannot be sourced reliably, so for THIS
     // one texture synthesise a soft warm gravel of the exact same block layout. Isotropic
     //
+    // PART 96 RETIREMENT: this whole block is DEAD. Part 96 proved d7182b is NOT the deck
+    // floor at all — it is a recycled surface that our depth wrongly draws OVER the real
+    // gravel floor (ps_f20be397), which is present and byte-identical to hardware. The draw
+    // that would sample this injected texture is now SKIPPED at DoDraw (search "part 96"),
+    // so this injection never reaches the screen. Kept, not deleted, because the golden
+    // store and signature detection around it are still exercised; it is inert.
+    //
     // PART 95 CORRECTION (phase5-notes §6eo): the 32x32 is this texture's THUMBNAIL LOD
     // level. Hardware PROMOTES it to a full-res gravel (~10x finer, 150-240 pebbles across
     // the deck vs 32 features a 32x32 at UV 0..1 can show); our runtime never promotes it,
@@ -20410,6 +20417,38 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
     PipelineKey key{};
     key.vsHash = vsBind.hash;
     key.psHash = psBind.hash;
+
+    // Gas-station rooftop deck (part 96). ps_d7182b binds a recycled 32x32 detail texture
+    // (default 0E522000) and our runtime draws it OVER the real gravel floor (ps_f20be397).
+    // The two surfaces are near-coplanar in screen depth on the deck; on hardware the
+    // HIGHER one (f20be397, world y~8) occludes d7182b (world y~2), but our depth resolves
+    // it the other way, so d7182b — whose contribution to the deck is always zero — buries
+    // the gravel that is present and byte-identical to hardware underneath. Part 94
+    // mis-read this as a black-texture streaming bug and injected gravel INTO d7182b (the
+    // wrong, covering surface), which could only ever be a smooth 32x32; the real
+    // full-detail floor was under it the whole time (proven by discarding this draw, which
+    // reveals fine gravel matching Xenia — docs/black-rooftop). Skipping this exact
+    // signature reveals it. `CZ_VK_NO_DECK_SKIP=1` is the control arm; `CZ_VK_GRAVEL_ADDR`
+    // overrides the address (0 disables). This retires part 94's injection (now dead: the
+    // draw it painted never runs on the deck). The signature is deck-specific — d7182b only
+    // ever binds this recycled 32x32 — so other d7182b surfaces are untouched.
+    {
+        static const bool noDeckSkip = getenv("CZ_VK_NO_DECK_SKIP") != nullptr;
+        static const uint32_t deckAddr = []{ const char* e = getenv("CZ_VK_GRAVEL_ADDR");
+            return e ? uint32_t(strtoul(e, nullptr, 16)) : 0x0E522000u; }();
+        if (!noDeckSkip && deckAddr && psBind.hash == 0xd7182b2fb8f8c474ull)
+        {
+            const xenos::TextureFetch dt = xenos::DecodeTextureFetch(regs, 0);
+            if (dt.format == xenos::kFmt_DXT1 && dt.width == 32 && dt.height == 32 &&
+                (dt.address & 0x1FFFFFFFu) == (deckAddr & 0x1FFFFFFFu))
+            {
+                Count("draw: gas-station deck d7182b covering-surface skipped — reveals "
+                      "f20be397 gravel (part 96)");
+                return;
+            }
+        }
+    }
+
     key.topology = uint32_t(topology);
     key.blendControl = regs[xenos::kRbBlendControl0];
     // CZ_VK_DRAW_ID: for ONE armed frame every draw paints its own index. See

@@ -20334,3 +20334,50 @@ nothing was shipped blind.** The one thing owed: reach the rooftop with `CZ_FILE
 + `CZ_VK_TEX_DUMP` (or the czwin Xenia texture-cache hook) and dump the streaming read /
 full-res decode that lands at `0E522000` during its load window. Full record and artifacts:
 `~/DR2CZ-troubleshooting/black-rooftop/README.md` and `part95-analysis/`.
+
+## §6ep — Part 96: the gas-station rooftop deck SOLVED — d7182b was burying the real gravel, and part 94 painted the wrong surface (2026-09-05)
+
+Operator: "Fix the gas station rooftop gravel." The deck rendered smooth/streaky where
+hardware shows fine pebble gravel. Parts 93-95 chased it as a texture problem (black
+texture → LOD thumbnail → page-provided albedo) and part 94 shipped a 32x32 gravel
+injection. **All of that was wrong about which surface the deck floor even is.**
+
+### The real finding, proven from the operator's own Xenia F4 traces + our runtime
+
+- **The deck floor is `ps_f20be397` / `vs_e653a62c`** — a tiled 1024x1024 fine-gravel
+  shader whose UV tiles ~4x (the fine detail). **Its texture is in our build, byte-identical
+  to Xenia** (0D902000 == Xenia's 11696000, mean 88.8, distinct 142). So the gravel was
+  present the whole time.
+- **`ps_d7182b` (the 32x32 part 94 obsessed over) is a SEPARATE surface** — world y~2,
+  six units BELOW the gravel floor (world y~8), overlapping it in x/z. On hardware the
+  higher floor occludes d7182b; our runtime resolves the near-coplanar screen depth the
+  OTHER way, so d7182b (whose contribution to the deck is always zero) buries the gravel.
+  Part 93's "black deck" WAS d7182b's zero texture covering; part 94 then injected gravel
+  INTO d7182b — the covering surface — which is why it could only ever be a smooth 32x32.
+- **Ruled out on the way:** missing texture, LOD promotion, texcoord swap (off, correct),
+  param-gen (off for this draw), the deferred scoped clears (`CZ_VK_NO_DEFERRED_CLEAR`:
+  still black), and depth precision (`CZ_VK_DEPTH_FLOAT`: still black). The depths are a
+  near-coplanar z-fight our runtime loses; the exact per-draw reason our depth inverts
+  vs hardware is unpinned (it is not any of the above), but d7182b's correct contribution
+  to the deck is provably zero.
+
+### The fix (shipped, operator-verified)
+
+`DoDraw` now SKIPS the exact deck signature — `ps_d7182b` binding a 32x32 DXT1 at the
+recycled deck address (default 0E522000) — revealing f20be397's real fine gravel
+underneath, exactly as discarding the draw did in the diagnostic. Targeted (d7182b only
+ever binds this recycled 32x32, so other surfaces are untouched), retires part 94's
+injection (now dead), operator-confirmed "looks right" against the Xenia frame.
+`CZ_VK_NO_DECK_SKIP=1` is the control arm; `CZ_VK_GRAVEL_ADDR` overrides the address.
+
+### Reusable tools built this part
+- `tools/patch_d7182b_diag_hlsl.py` / `patch_f20_diag_hlsl.py` + `tools/deck_diag_session.sh`
+  — per-shader HLSL diagnostics (discard, magenta, UV-viz, depth-viz, world-Y) baked into a
+  clip_a2m-copy cache and driven in a SAFE play session. The discard mode is what proved a
+  covering surface hides a correct one — the general shape for "is this draw the defect, or
+  is it hiding the real thing".
+- Live guest texture-DB read via `process_vm_readv` while the operator stands on a defect
+  → the material name + hash + LOD state directly (identified `concrete_dirty_rooftop_beige`
+  / 032a3240, though that turned out to be d7182b's texture, not the floor).
+
+Full record: `~/DR2CZ-troubleshooting/black-rooftop/README.md`.
