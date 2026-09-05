@@ -266,3 +266,13 @@ flip, and process_vm_readv of the running guest read 'LS ' at the id-4049
 offset where the disk file holds 'MASH'. Both artifacts REBUILT at 74ab694
 and re-gated (Linux: text identity + container GATE PASSED; Windows: staged
 --smoke). Release-note SHAs refreshed: linux 59b8994d…, windows f0f97e56….
+
+**Addendum 2 (same day): the always-on mouse.** Operator instruction: *"The
+mouse should always be on so remove the settings in the visuals and set it
+to always on."* Done in `46fab38`: the MOUSE CAMERA toggle is retired
+(Visuals is seven rows; MOUSE SENS stays as the tuning knob), capture
+follows keyboard focus alone, Settings_MouseCam is deleted and a stale
+mouse_cam= line in an existing cz_settings.txt is an ignored unknown.
+Both artifacts rebuilt at 46fab38 and re-gated (text identity + container
+GATE PASSED; czwin staged --smoke OK). SHAs refreshed: linux efbd5cb9…,
+windows c1c1eb13….
