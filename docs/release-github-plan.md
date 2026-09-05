@@ -72,7 +72,9 @@ raw Capcom texels into a public download, a materially worse legal shape than th
 recompiled binary alone, and one this project explicitly avoided in part 60. Not
 recommended; recorded because it exists.
 
-## §1 Decisions the operator owns (ask once, before the rebuild)
+## §1 Decisions the operator owns — ALL FOUR ANSWERED 2026-09-05, same day:
+## **v1.0.0 · attach both artifacts · keep MSAA 2x default · glibc floor as a
+## known limitation.** Nothing in this section blocks anything anymore.
 
 1. **Version/tag.** Suggest `v1.0.0` — the game is completable start to finish on a
    shipped bundle (part 85's strongest verdict). `v0.9.x` if they want a soft-launch.
