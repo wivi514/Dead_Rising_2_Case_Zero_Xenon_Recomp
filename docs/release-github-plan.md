@@ -252,3 +252,17 @@ come first.
    bundle.
 3. §5 — tag v1.0.0 at the verified commit, create the GitHub Release, paste
    docs/release-notes-v1.0.0.md, attach both artifacts, flip visibility.
+
+**Addendum (same day, pre-§3 sitting): the MASH-on-pad fix.** The operator
+caught the §0 design's one behavioural gap before testing: the kbm bank's
+string edits are a boot-time choice, so a PAD player got the keyboard
+wording (MASH on the struggle prompt) under correctly device-followed stick
+art. Fixed in `74ab694`: the four keyboard wordings (PRESS ENTER ×2,
+A / D KEYS, MASH) now ride the same device-follow worker as the glyph
+texels — the loaded bank is located by its id-table prefix and each string
+region swaps in place, verify-before-write both directions. Verified live
+headlessly (synthetic presses are pad input): 4 strings swapped on the PAD
+flip, and process_vm_readv of the running guest read 'LS ' at the id-4049
+offset where the disk file holds 'MASH'. Both artifacts REBUILT at 74ab694
+and re-gated (Linux: text identity + container GATE PASSED; Windows: staged
+--smoke). Release-note SHAs refreshed: linux 59b8994d…, windows f0f97e56….

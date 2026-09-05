@@ -1,8 +1,8 @@
 # Release notes — v1.0.0 (draft, release-github-plan §5.2)
 
 This is the text to paste into the GitHub Release body when the operator creates
-it. The SHA-256 lines are current as of the §2 rebuild (2026-09-05, commit
-`d125ec2` binaries); **if either artifact is rebuilt after the §3 operator
+it. The SHA-256 lines are current as of the post-§3-fix rebuild (2026-09-05, commit
+`74ab694` binaries — the MASH-on-pad string-follow fix); **if either artifact is rebuilt after the §3 operator
 sitting, refresh its hash here first** (`sha256sum dist/*.tar.zst` /
 `Get-FileHash` on czwin).
 
@@ -71,6 +71,6 @@ XenosRecomp.
 ### Checksums (SHA-256)
 
 ```
-5561e0712ea12a48ae3bb6bd7fa76f03c016ef14a815bef491c3d9203c190e15  CaseZeroRecomp-linux-x86_64.tar.zst
-a533e454de6965fd6a93f7cb0e372abf520222b8ab767c284a9741df663e8e5f  CaseZeroRecomp-windows-x86_64.zip
+59b8994d699e488e31cd770b9952a256d9bd5ee864fe4dcf76a762175077fd18  CaseZeroRecomp-linux-x86_64.tar.zst
+f0f97e56f29854013f5808eec5d839c5c7fc606b607503b591730597c730a919  CaseZeroRecomp-windows-x86_64.zip
 ```
