@@ -61,7 +61,7 @@ generated key map — see docs/native-kbm-phaseA.md):
                   x=LMB (attack=BUTTON_3)   LB/RB=1/3 (item cycles=L1/R1)
                   LT=RMB (aim)              RT=LMB (fire)
   butstart=ENTER  butback=TAB  dpads=arrow keys  R3=MMB (heavy attack)
-  analog_move_center=WASD cluster
+  analog_move_center=WASD cluster  analog_move_left=A  analog_move_right=D (struggle flash)
   UNPATCHED (no keyboard equivalent bound): L3, y_button_ig.
 
 Usage:
@@ -109,6 +109,17 @@ LEGENDS = {
     "RTbutton_ig": ("mouse", "L"),
     "R3": ("mouse", "M"),
     "analog_move_center": ("wasd",),
+    # The zombie-grab struggle prompt (hud_infobar w_zombie_grapple) is a
+    # 3-frame cFEBitmapList — analog_move_left / _center / _right — so the
+    # game itself swaps the glyph between the two tilt frames during the
+    # struggle (the operator's grab capture shows the center frame steady
+    # while NOT mashing, consistent with the frame following the stick's X;
+    # either way any alternation lands on these two slots). Legending them A
+    # and D makes the prompt flash A↔D — the DR2-PC behaviour. No other
+    # layout or string references these two names (censused over every
+    # frontend .big and str_en.bcs markup).
+    "analog_move_left": ("key", "A"),
+    "analog_move_right": ("key", "D"),
 }
 
 
@@ -425,8 +436,12 @@ def main():
     # str banks are layout-pinned like everything else), served from this
     # overlay only while the keyboard is the input path.
     sbank = (REPO / "assets/game_patched/data/frontend/str_en.bcs").read_bytes()
+    # IDS_HUD_LS ("LS ") labels ONLY the zombie-grab struggle prompt (both
+    # cFEText nodes of hud_infobar's w_zombie_grapple; no other layout uses
+    # id 4049) — with the tilt glyphs legended A/D the keyboard reading is A/D.
     for old, new in ((b"PRESS\x00START\x00", b"PRESS\x00ENTER\x00"),
-                     (b"PRESS START\x00", b"PRESS ENTER\x00")):
+                     (b"PRESS START\x00", b"PRESS ENTER\x00"),
+                     (b"\x00LS \x00", b"\x00A/D\x00")):
         n = sbank.count(old)
         if n != 1:
             print(f"GATE FAILED: str_en.bcs holds {n} of {old!r}, expected 1",
@@ -436,7 +451,7 @@ def main():
     sout = OUT.parent / "str_en.bcs"
     OUT.parent.mkdir(parents=True, exist_ok=True)
     sout.write_bytes(sbank)
-    print(f"wrote {sout} (2 same-length PRESS ENTER edits)")
+    print(f"wrote {sout} (3 same-length string edits: PRESS ENTER x2, LS -> A/D)")
 
     swp = bytearray()
     swp += struct.pack("<4sI", b"KBSW", len(swap_entries))

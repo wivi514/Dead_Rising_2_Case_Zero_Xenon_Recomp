@@ -1,6 +1,39 @@
 # KB/M struggle ("push back the zombie") prompt — fix plan
 
-**Status: NOT STARTED. Prepared for a fresh conversation (2026-09-05).** The operator found
+**Status: EXECUTED 2026-09-05, same day. Phase 1 answered CASE 1 by reading the layout —
+no runtime probe was needed — and the fix shipped as the two-line LEGENDS addition (plus
+one same-length string edit). Owed: the operator's grab capture confirming the flash.**
+
+## The phase-1 answer (recorded here so nobody re-derives it)
+
+The struggle prompt is `cFEWidget w_zombie_grapple` in `hud_infobar.txt` (ingame.big).
+Its stick icon is a **3-frame `cFEBitmapList`** — `analog_move_left`, `analog_move_center`,
+`analog_move_right` — i.e. **the game swaps whole glyph NAMES itself** (case 1, the
+hoped-for one). The operator's 10-frame burst shows the center frame steady while NOT
+mashing, consistent with the frame following the stick's X (which WASD drives full-scale);
+whichever mechanism picks the frame, the alternation lands on those two slot names.
+The "LS" label is `IDS_HUD_LS` = the 3-char string `"LS "` at 0x19434 in str_en.bcs,
+referenced by NO other layout (censused over every `.txt` in ingame/fecmn/mainmenu/
+loading/ratinglogos `.big`), so it was safe to retarget.
+
+## The fix (tools/gen_kbm_icons.py, regenerated assets/game_kbm/)
+
+1. `LEGENDS += analog_move_left=("key","A"), analog_move_right=("key","D")` — the two tilt
+   frames become A and D key caps; mashing flashes A↔D via the game's own frame selection.
+   The center frame stays the WASD cluster (it is shared with hud_bossbattle's twist QTE
+   and the `[@analog_move_center]` string markup — do not change it).
+2. Same-length str edit `\0LS \0` → `\0A/D\0` alongside the PRESS ENTER pair, so the big
+   label reads "A/D" instead of "LS". (Same accepted caveat as PRESS ENTER: the string
+   cannot device-follow; the glyph art does, via glyph_swap.bin, now 25 entries — the
+   runtime parses the count from the file, no code change.)
+
+All three generator gates passed; the bank stays under the 501,900-byte layout pin.
+Pad players are unaffected: glyph_swap.bin carries both art sets and device-follow
+restores the stick art when a pad is active; `CZ_NO_NATIVE_KBM=1` still disables all of it.
+
+---
+
+*The original plan follows, kept for the recon reasoning.* The operator found
 and captured this during the part-96 session but asked to fix it separately.
 
 ## The bug (operator's words + capture)
