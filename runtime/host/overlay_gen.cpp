@@ -1589,8 +1589,10 @@ void GenerateKbmLayer(const Paths& p,
 // Wanted / stamp
 // ---------------------------------------------------------------------------
 
-// Bump when any transform above changes byte-for-byte output: a shipped update
-// must not keep serving a player's stale banks (the gotcha-13 shape, on disk).
+// Bump when any transform above changes byte-for-byte output — INCLUDING a chip
+// art change (re-export tools/release/kbm_chips with gen_kbm_icons.py
+// --export-chips in the same commit): a shipped update must not keep serving a
+// player's stale banks (the gotcha-13 shape, on disk).
 constexpr int kGeneratorVersion = 1;
 
 fs::path StampPath(const Paths& p)

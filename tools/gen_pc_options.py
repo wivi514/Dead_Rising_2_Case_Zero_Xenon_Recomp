@@ -1,6 +1,15 @@
 #!/usr/bin/env python3
 """Generate the patched frontend assets that wake the title's own PC graphics menu.
 
+AS OF THE GITHUB RELEASE (release-github-plan §0) THIS TOOL IS THE REFERENCE, NOT
+THE ROAD: runtime/host/overlay_gen.cpp is a line-for-line C++ port that runs the
+same transforms at a player's first run (a shipped bundle has no Python and must
+not ship the Capcom-derived outputs), and its contract is BYTE IDENTITY with this
+file — `cz_runtime --gen-overlays` + `diff -r` is the gate, and the clean-container
+gate hashes the container-generated fecmn.big against this tool's output. If you
+change ANY transform here, port the change and bump overlay_gen.cpp's
+kGeneratorVersion in the same commit.
+
 WHY THIS EXISTS (part 60). The 360 XEX ships a complete PC options screen —
 data/frontend/fecmn.big carries options_pc.txt (Resolution, DisplayMode, VSync,
 Shadow, Multisampling, ...), the path manifests wire `OptionsPC` into both menu

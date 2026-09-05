@@ -45,3 +45,4 @@ tools/__pycache__/
 /thirdparty/sdl2/
 /thirdparty/ffmpeg-lgpl/
 build-release/
+build-relmatch/

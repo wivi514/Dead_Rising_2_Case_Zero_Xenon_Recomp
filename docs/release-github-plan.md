@@ -1,6 +1,12 @@
 # The GitHub release — plan
 
-**Status: PREPARED 2026-09-05, not started.** Operator instruction, closing the KB/M
+**Status: EXECUTING — §0, §2, §3.3, §3.4 and §4 DONE 2026-09-05 (same-day session;
+§6 below is the execution record). WHAT REMAINS NEEDS THE OPERATOR: §3.1 (bundle
+save round-trip, both platforms), §3.2 (KB/M from the bundle — first time the
+whole native path incl. first-run overlays exists in an artifact), then §5's
+tag + Release creation (no `gh` here) and the visibility flip.**
+
+~~**Status: PREPARED 2026-09-05, not started.**~~ Operator instruction, closing the KB/M
 fix arc: *"Now we switch to the release everything is good enough so prepare a plan for
 release we can put on github."* This plan is the successor to `part92-kickoff.md` §1
 item 1 (the deferred release board) and builds on `release-plan.md` §9.8 (milestone E's
@@ -164,3 +170,85 @@ port is the bulk). §1's answers can be gathered while §0 builds. §2-§3 are a
 including the czwin friction and one operator sitting. §4-§5 are a session. Nothing
 else in the backlog blocks a v1.0: performance is parked by instruction with no lead
 ≥0.5 ms, RT is parked, the hair flicker is a documented known issue.
+
+---
+
+## §6 Execution record (2026-09-05, the session that ran §0-§4)
+
+**§0 SHIPPED, and the identity gate passed on the first build.**
+`runtime/host/overlay_gen.{h,cpp}` is the line-for-line C++ port of BOTH Python
+generators — the real LZX verbatim-block encoder (greedy LZ77, package-merge
+Huffman with the Python's exact tie-breaks, the pretree delta/run writer, the
+five-byte readahead slack), per-chunk XMemCompress decode through XenonUtils'
+own `lzxDecompress`, the options_pc.txt rewrite, the .bcs rebuilds, the
+preload4 hash eviction, the layout.bin size pins, and the fecmn.tex glyph
+patch with its three gates. The chip art ships pre-baked
+(`gen_kbm_icons.py --export-chips` → `tools/release/kbm_chips/*.dxt`,
+committed, 336 KB, our art only — PIL stays dev-only). Verified three ways,
+each two-sided:
+
+1. dev tree: Python outputs vs `cz_runtime --gen-overlays`, `diff -r` — zero
+   differing bytes across all 14 files (and a flipped byte IS reported);
+2. clean container: the new gate step [3/4] hashes the container-generated
+   fecmn.big against the Python reference — matched, GATE PASSED;
+3. staged bundle in a fake root: the AUTOMATIC boot path (no explicit verbs)
+   extracted, generated, and produced overlays byte-identical to the
+   reference.
+
+A `.cz_overlay_version` stamp regenerates stale overlays on shipped updates;
+`CZ_NO_OVERLAY_GEN=1` is the off switch (docs/instruments.md). The Python
+tools carry the new contract in their docstrings: they are the REFERENCE and
+the oracle; a transform change there must be ported + version-bumped in the
+same commit.
+
+**§2 DONE — both artifacts rebuilt at head and gated.**
+* Linux: matched-configure Release + RelWithDebInfo arms both built;
+  `release_text_identity.sh` OK (36,147,762-byte .text, identical);
+  `release_package_linux.sh` (now stages kbm_chips/, all-25-or-refuse);
+  `release_gate_clean_container.sh` GATE PASSED including the new overlay
+  step. `CaseZeroRecomp-linux-x86_64.tar.zst` 26 MB, sha256 5561e071…
+* Windows: czwin pulled to head; the predicted parts-87-96 MSVC friction was
+  exactly ONE line — `memmem` in native_kbm.cpp's glyph scan, a GNU extension
+  the Windows CRT lacks, replaced on both platforms with the same
+  memchr-skip+memcmp helper (commit d125ec2) so the legs scan identically.
+  overlay_gen.cpp needed /EHsc there (clang-cl defaults exceptions off; the
+  flag is scoped to the one file). Build clean; `release_package_windows.ps1`
+  staged, smoke-gated the staged exe, zipped.
+  `CaseZeroRecomp-windows-x86_64.zip` 21 MB, sha256 a533e454…
+
+**§3.3 ANSWERED BY MEASUREMENT — the pre-warm seed does NOT collapse under
+MSAA 2x.** Structural reason first: `PipelineKey` carries no sample count —
+pipelines take the renderer's live `msaaSamples` at creation, so the key file
+is MSAA-agnostic by construction. Then the measurement: a clean second launch
+of the staged bundle (fake root, fake HOME so the SHIPPED prewarm.keys is the
+seed, MSAA 2x default active) created **757 of 1,365 — exactly the part-85
+baseline**, the other 608 skipped for the documented vertex-shader-drift
+reason. Beware the first attempt's two traps, recorded so nobody re-falls in:
+session ONE always seeds ~0 (the vertex half of the cache is being born at
+first sight — documented behaviour, not a collapse), and a dev-box run
+without HOME redirected reads the DEV per-user key file, not the shipped
+seed.
+
+**§3.4 standing gates**: --smoke both platforms (staged exes), container
+first-run flow end to end, text identity. Sync-validation and name-diff
+unchanged by this session (no renderer or cache change).
+
+**§4 DONE**: the public README is live at the root (players + porters + the
+legal note); the day-1 dev README is preserved verbatim at
+docs/dev-readme-day1.md with its retraction chain annotated. Repo hygiene
+re-verified in §1's terms (no game bytes tracked).
+
+**§5 prepared**: docs/release-notes-v1.0.0.md is the paste-ready Release
+body, SHA-256 lines included (refresh them if §3's sitting forces a
+rebuild). Tag NOT created yet — §3.1/§3.2 are §9.8's release blocker and
+come first.
+
+**Owed to the operator, in order:**
+1. §3.1 — bundle save round-trip: Windows (czwin, `schtasks /run /tn
+   cz_play` after staging) and Linux. Make a save, quit, relaunch, load.
+2. §3.2 — same sitting: KB/M from the bundle (prompt icons now generated at
+   first run — delete assets/game_kbm first to see it happen; the MASH A↔D
+   struggle prompt is the newest visible), and the options screen from the
+   bundle.
+3. §5 — tag v1.0.0 at the verified commit, create the GitHub Release, paste
+   docs/release-notes-v1.0.0.md, attach both artifacts, flip visibility.

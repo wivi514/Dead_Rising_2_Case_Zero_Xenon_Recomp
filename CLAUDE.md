@@ -983,14 +983,19 @@ findings ledger — it wins on any measured number), `docs/phase1-notes.md`,
 **SUBJECT CHANGE, 2026-09-05, operator instruction closing the KB/M fix arc:** *"Now we
 switch to the release everything is good enough so prepare a plan for release we can put
 on github."* **THE LIVE WORK IS THE GITHUB RELEASE AND `docs/release-github-plan.md` IS
-THE PLAN.** Its §0 is the one discovered blocker and the first work: a shipped bundle has
-NO ROAD to the patched-asset overlays (`assets/game_patched`/`assets/game_kbm` — the PC
-options screen, PRESS ENTER/MASH strings, all 25 KB/M prompt icons and device-follow are
-Python-generated from game data and neither ship nor regenerate on a player's machine),
-so overlay generation must move into the first-run flow, the stfs_extract road. Then:
-rebuild both artifacts at head (they predate parts 86-96 ENTIRELY), verify the Windows
-bundle save + KB/M-from-bundle + prewarm-vs-MSAA, rewrite the day-1 root README for the
-public, tag, attach, and the operator flips visibility. The KB/M struggle prompt was
+THE PLAN — AND AS OF THE SAME DAY ITS §0, §2, §3.3, §3.4 AND §4 ARE DONE (its §6 is the
+execution record). §0 SHIPPED: `runtime/host/overlay_gen.cpp` generates both overlays at
+a player's first run, byte-identical to the Python (identity gate passed on the FIRST
+build, verified three ways: dev-tree diff -r, container hash, fake-root automatic boot);
+the 25 key-cap chips ship pre-baked (`tools/release/kbm_chips/`, our art, PIL dev-only).
+§2 DONE: both artifacts rebuilt at head and gated (the whole predicted czwin friction
+was ONE `memmem`). §3.3 ANSWERED: the pre-warm seed does NOT collapse under MSAA 2x —
+757 of 1,365, exactly the part-85 baseline, and `PipelineKey` carries no sample count so
+the seed is MSAA-agnostic by construction. §4 DONE: public README at the root, day-1
+README preserved at `docs/dev-readme-day1.md`. `docs/release-notes-v1.0.0.md` is the
+paste-ready Release body with both SHA-256s. WHAT REMAINS NEEDS THE OPERATOR (§6's owed
+list): §3.1 bundle save round-trip both platforms, §3.2 KB/M-from-bundle in the same
+sitting, then tag v1.0.0 + create the Release + attach + flip visibility.** The KB/M struggle prompt was
 fixed the same day (three rounds, operator-verified: bare A↔D caps + MASH label;
 `docs/kbm-struggle-prompt-plan.md` carries the executed record, and the .bcs string
 table is now REBUILDABLE — not size-pinned — freeing string edits from same-length).

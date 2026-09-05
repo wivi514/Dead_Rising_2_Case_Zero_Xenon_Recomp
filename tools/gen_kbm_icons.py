@@ -2,6 +2,14 @@
 """Generate the keyboard/mouse prompt icons — our own key-cap art in the title's
 own glyph textures (part 92, native-kbm-plan phase D).
 
+AS OF THE GITHUB RELEASE (release-github-plan §0) THIS TOOL IS THE REFERENCE, NOT
+THE ROAD: runtime/host/overlay_gen.cpp re-runs the bank patch at a player's first
+run, composing the pre-baked chip texels this tool exports (--export-chips ->
+tools/release/kbm_chips/, committed — PIL stays dev-only) into the player's own
+bank, byte-identical to this tool's output. A chip-art or transform change here
+must re-export the chips AND bump overlay_gen.cpp's kGeneratorVersion in the same
+commit.
+
 WHY THIS EXISTS. Prompt strings carry inline markup ([@x_button_ig]) that
 resolves to a frontend BITMAP by name, and all 25 pad-glyph bitmaps live in ONE
 bank: data/frontend/fecmn.tex (recon in docs/native-kbm-phaseA.md A.4). With the

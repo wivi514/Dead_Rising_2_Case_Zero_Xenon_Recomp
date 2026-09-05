@@ -3364,6 +3364,18 @@ CZ_NO_STFS_EXTRACT=1  **the off switch for the in-process package extract.** By 
                   shader prebuild. With this set, the boot refuses with the python3
                   command instead — the pre-part-85 behaviour. A run pointed at another
                   xex by argv/CZ_XEX never extracts, with or without this.
+
+CZ_NO_OVERLAY_GEN=1  **the off switch for first-run overlay generation** (release-github
+                  §0, host/overlay_gen.cpp). By default a boot regenerates
+                  assets/game_patched + assets/game_kbm from the player's own game data
+                  whenever an output is missing or the generator version stamp
+                  (.cz_overlay_version) is older than the binary's — the C++ port of
+                  gen_pc_options.py + gen_kbm_icons.py, byte-identical to both (gated in
+                  the clean-container gate by hash, and by diff -r in the dev tree).
+                  CZ_NO_PATCHED_ASSETS=1 (any value, the VFS overlay arm) also suppresses
+                  generation: a run that asked for the shipped bytes should not spend a
+                  first-run producing files it will ignore. `cz_runtime --gen-overlays`
+                  runs the same generation by hand and is the identity-gate driver.
 ```
 
 **And a file, not a variable: `cz_defaults.env` beside the executable.** The packaging
