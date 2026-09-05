@@ -192,7 +192,12 @@ mask; trust the microcode's own swizzles.
     read `phase5-notes.md` §6ba before following anything in it.
   - **THE LIVE HAND-OFF IS ALWAYS THE HIGHEST-NUMBERED `partNN-kickoff.md`**, and it
     supersedes every earlier kickoff on "where the port is". **IT IS
-    `part92-kickoff.md`. Part 91 shipped the LIVE-RESOLUTION APPLY
+    `part92-kickoff.md` — BUT AS OF 2026-09-05 THE LIVE WORK POINTER IS
+    `docs/release-github-plan.md`** (the GitHub release; part92-kickoff's item 0, the
+    native KB/M build, is delivered and operator-accepted, and its item 1, the release
+    board, is superseded by that plan — its §0 overlay gap is the first work, its §1
+    decisions are ALL ANSWERED: v1.0.0, attach both artifacts, MSAA 2x, glibc floor as
+    known limitation). **Part 91 shipped the LIVE-RESOLUTION APPLY
     (operator-verified; the part-60 freeze was the apply's mid-frame placement —
     §6em) and KEYBOARD/MOUSE v1 (merged into pad 0, mouse camera, panel rows —
     §6en), censused the PC input vocabulary ALREADY IN THE XEX, and left the
