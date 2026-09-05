@@ -975,11 +975,27 @@ authoritative per-subject records are `docs/xenia-capture-analysis.md` (the numb
 findings ledger — it wins on any measured number), `docs/phase1-notes.md`,
 `docs/phase3-notes.md`, `docs/phase5-notes.md` and `docs/d3d-translation-plan.md`.
 
+**SUBJECT CHANGE, 2026-09-05, operator instruction closing the KB/M fix arc:** *"Now we
+switch to the release everything is good enough so prepare a plan for release we can put
+on github."* **THE LIVE WORK IS THE GITHUB RELEASE AND `docs/release-github-plan.md` IS
+THE PLAN.** Its §0 is the one discovered blocker and the first work: a shipped bundle has
+NO ROAD to the patched-asset overlays (`assets/game_patched`/`assets/game_kbm` — the PC
+options screen, PRESS ENTER/MASH strings, all 25 KB/M prompt icons and device-follow are
+Python-generated from game data and neither ship nor regenerate on a player's machine),
+so overlay generation must move into the first-run flow, the stfs_extract road. Then:
+rebuild both artifacts at head (they predate parts 86-96 ENTIRELY), verify the Windows
+bundle save + KB/M-from-bundle + prewarm-vs-MSAA, rewrite the day-1 root README for the
+public, tag, attach, and the operator flips visibility. The KB/M struggle prompt was
+fixed the same day (three rounds, operator-verified: bare A↔D caps + MASH label;
+`docs/kbm-struggle-prompt-plan.md` carries the executed record, and the .bcs string
+table is now REBUILDABLE — not size-pinned — freeing string edits from same-length).
+
 **SUBJECT CHANGE, 2026-09-01, operator instruction closing part 90's arc:** *"Save
 everything on performance we'll switch to something else so we can get a release really
 soon."* **PERFORMANCE IS PARKED AGAIN — `part91-kickoff.md` §0c is the parking record and
-its §0d the ordered resume list. The live work is the COMMISSIONED NATIVE KB/M BUILD
-(`docs/native-kbm-plan.md`, part92-kickoff §1 item 0); the RELEASE board follows it —
+its §0d the ordered resume list. ~~The live work is the COMMISSIONED NATIVE KB/M BUILD~~
+— delivered and operator-accepted (part92-kickoff §0-live); the RELEASE board followed it
+and is now the live subject per the 2026-09-05 block above —
 top items the Windows leg rebuild (the shipped bundle predates parts 87-91 entirely,
 including new SDL-side input code), the bundle save verification, and the repackage +
 re-gate of both artifacts.**
