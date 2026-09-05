@@ -349,6 +349,13 @@ def decompress_entry(payload):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--preview", metavar="DIR", help="also write chip PNGs here")
+    ap.add_argument("--export-chips", metavar="DIR",
+                    help="also write each patched glyph's finished texel blob "
+                    "(the tiled, 16-bit-swapped DXT5 bytes — OUR art only, no "
+                    "header and no Capcom byte) as <base>.dxt. These ship in "
+                    "the release artifact so a player's first run can compose "
+                    "them into their own bank without Python or PIL "
+                    "(runtime/host/overlay_gen.cpp; release-github-plan §0.2)")
     args = ap.parse_args()
 
     data = SRC.read_bytes()
@@ -405,6 +412,10 @@ def main():
             previews.append((base, canvas.copy()))
         raw = hdr + encode_dxt5_tiled(canvas, len(texels) // 16)
         swap_entries.append((base, hdr[:16], texels, raw[48:]))
+        if args.export_chips:
+            cdir = Path(args.export_chips)
+            cdir.mkdir(parents=True, exist_ok=True)
+            (cdir / f"{base}.dxt").write_bytes(raw[48:])
         window = struct.unpack(">I", data[e["rec"][4] + 4:e["rec"][4] + 8])[0]
         pay = make_entry_payload(raw, window)
         # GATE 3: round-trip through the real decompressor.
