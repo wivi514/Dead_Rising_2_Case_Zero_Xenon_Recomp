@@ -110,6 +110,30 @@ extern "C" PPC_FUNC(__imp__sub_82804AF8);
 namespace
 {
 
+// memmem is a GNU extension the Windows CRT lacks, and the scan below is the one
+// caller in the runtime. Same code on both platforms on purpose (an #ifdef'd
+// glibc memmem would make the two legs scan differently): skip to the needle's
+// first byte with memchr — for texel data the first byte is selective — then one
+// memcmp. Called on device changes and rescans, never per frame.
+const uint8_t* FindBytes(const uint8_t* hay, size_t hayLen,
+                         const uint8_t* needle, size_t needleLen)
+{
+    if (needleLen == 0 || hayLen < needleLen)
+        return nullptr;
+    const uint8_t* p = hay;
+    const uint8_t* end = hay + hayLen - needleLen + 1;
+    while (p < end)
+    {
+        p = static_cast<const uint8_t*>(std::memchr(p, needle[0], size_t(end - p)));
+        if (!p)
+            return nullptr;
+        if (std::memcmp(p, needle, needleLen) == 0)
+            return p;
+        ++p;
+    }
+    return nullptr;
+}
+
 // ---- guest addresses (docs/native-kbm-phaseA.md; verified before use) --------
 constexpr uint32_t kPortMap      = 0x82AD65E8; // 16 x u32 controller-per-port
 constexpr uint32_t kTokenNames   = 0x829F3930; // 95 name ptrs (entry 0 = NONE)
@@ -997,8 +1021,7 @@ void ScanForGlyphs(uint8_t* base, bool physOnly)
                 size_t left = len;
                 while (left >= 64)
                 {
-                    const uint8_t* hit = static_cast<const uint8_t*>(
-                        memmem(p, left, probe, 64));
+                    const uint8_t* hit = FindBytes(p, left, probe, 64);
                     if (!hit)
                         break;
                     if (size_t(hit - base) >= po)
