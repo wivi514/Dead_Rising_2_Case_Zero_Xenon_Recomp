@@ -20268,3 +20268,69 @@ key-cap prompt icons). v1 stays as the fallback arm (`CZ_NO_NATIVE_KBM=1` once t
 native path exists); the operator's two feel complaints are the acceptance tests.
 Owed: their pad-flick test (splits our-values vs title-curve for the A/S/D delay;
 the plan's A.3 answers it from the code side regardless).
+
+## §6eo — Part 95: the gas-station rooftop deck is a TEXTURE-LOD (thumbnail-stuck) bug, not a black-texture race — part 94's diagnosis corrected (2026-09-05)
+
+Operator instruction: *"Fix the gas station rooftop gravel ... attempt to fix it
+yourself."* Part 94 (WIP, commit 52392e4) had turned the deck from PURE BLACK into a warm
+GRAVEL COLOUR but left it SMOOTH / faintly diagonally streaked, where the real game shows
+FINE PEBBLE GRAVEL. Part 95 found why, and it overturns part 94's model.
+
+### Part 94's model, and where it was wrong
+
+Part 94: "the deck's 32x32 DXT1 detail texture (guest `0E522000`) loses a streaming race,
+caches an all-zero opaque-black BC1 block; inject a real 32x32 gravel." The BLACK half is
+right and is fixed. **The error: the 32x32 is the texture's THUMBNAIL LOD level. A 32x32
+mapped ONCE across a ~32 m deck is inherently smooth — no 32x32-based mechanism (the golden
+store OR the `pit_gravel_tex.h` injection) can ever be fine.** Part 94 baked the 32x32
+thumbnail, which is precisely why the deck is now gravel-COLOURED but permanently smooth.
+
+### The proof chain (ground truth = the operator's own Xenia `.xtr`; three traces at
+### `/tmp/claude-1000/xtr/*.xtr`, state-for-state identical to our F9 censuses)
+
+1. The deck draw is `ps_d7182b2fb8f8c474` / `vs_20a6f33d2e44b6d3`; its ONLY colour texture
+   is s0 = `0E522000` **32x32 DXT1** (other slots: the 4x4 white dummy, the 4096x1024
+   depth/shadow buffer). So the deck's whole appearance rides that one texture.
+2. The UV maps it ONCE (U,V ∈ [0,1]) across the ~325-unit deck. Read from the trace's
+   vertex buffer: position is vertex-fetch fmt 57 = `32_32_32_FLOAT` (3 dwords), UV is
+   fmt 37 = `32_32_FLOAT` (2 dwords — NOT half-floats, which was an early mis-read that
+   sent the UV to garbage). The VS passes it through unscaled. Both emulators map once; the
+   texture does not tile.
+3. Xenia's rendered deck is ~10x finer than a 32x32 can produce — 150-240 distinct pebbles
+   across the deck (native-resolution crop of the trace's own composited scene buffer),
+   against ≤32 features a 32x32-at-0..1 can show.
+4. Yet in the trace, Xenia's deck DRAW also binds 32x32 — so the fine-gravel scene buffer
+   is a LATER, PROMOTED frame ("a capture's memory has a TIME", gotcha's memory-time shape).
+5. ⇒ the fine gravel is a higher-resolution PROMOTED version of the same s0 texture. Our
+   runtime binds the 32x32 thumbnail every session and never promotes it. This is the §6bx
+   / part-44 texture-LOD machine: a CLOSE surface that fails to promote (part 44 established
+   distant thumbnails are FAITHFUL; a close one stuck at thumbnail is a real defect).
+
+### Consequence
+
+`pit_gravel_tex.h` and the golden store are both capped at thumbnail quality. Keep them
+(gravel-colour beats black), but the real fix is one of:
+- **(A)** fix LOD promotion (the §6bx set-apply / streaming machine — general, large, needs
+  a rooftop trace to verify), or
+- **(B)** identify the exact full-res deck texture and inject it as a LARGER image. The
+  enlargement is feasible cleanly: in `UploadTexture` make `t` mutable and, gated on an env
+  var + the exact signature, override `t.width/height/mipMax` right after
+  `DecodeTextureFetch` — the cache key, copies, `CreateImage` and untile all flow through
+  self-consistently and cannot touch other textures — then fill the enlarged `pixels` from a
+  baked full-res LINEAR BC1.
+
+### The blocker, and why no code shipped this part
+
+The exact deck texture is NOT identified, and it cannot be verified headlessly (DebugJump
+lands at the military camp; the gas-station rooftop is gameplay-only). Part 95 decoded every
+ground/concrete texture in the gas-station zone (`prologue_z02.big`:
+`page_gasbase_concrete_cm` 1024x512, `page_concrete_cracked_cm`, a 512x256 tileable concrete
+floor, the AO maps — the `.tex` set format and its LZX sub-payloads were cracked to do it)
+and **none matches Xenia's fine uniform pebbles** — they are grid-lined concrete SLABS.
+`ps_d7182b` is a GENERIC floor shader, so the deck's map is probably a SHARED gravel
+(streamedassets / a common bank), not zone-specific. **Injecting a wrong-but-plausible
+texture would paint grid lines across the deck — worse than the current smooth gravel — so
+nothing was shipped blind.** The one thing owed: reach the rooftop with `CZ_FILE_TRACE=1`
++ `CZ_VK_TEX_DUMP` (or the czwin Xenia texture-cache hook) and dump the streaming read /
+full-res decode that lands at `0E522000` during its load window. Full record and artifacts:
+`~/DR2CZ-troubleshooting/black-rooftop/README.md` and `part95-analysis/`.

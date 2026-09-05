@@ -9995,6 +9995,15 @@ uint32_t UploadTexture(uint8_t* base, const uint32_t* regs, uint32_t constIdx,
     // 32x32 DXT1 detail map (default 0E522000) that loses the streaming race every session
     // and decodes to opaque black. Its real bytes cannot be sourced reliably, so for THIS
     // one texture synthesise a soft warm gravel of the exact same block layout. Isotropic
+    //
+    // PART 95 CORRECTION (phase5-notes §6eo): the 32x32 is this texture's THUMBNAIL LOD
+    // level. Hardware PROMOTES it to a full-res gravel (~10x finer, 150-240 pebbles across
+    // the deck vs 32 features a 32x32 at UV 0..1 can show); our runtime never promotes it,
+    // so it is stuck at the thumbnail. This block (and the golden store) can therefore fix
+    // the COLOUR but never the smoothness — a 32x32 mapped once across a ~32 m deck is
+    // inherently smooth. The real fix is LOD promotion or injecting the full-res texture as
+    // a LARGER image; both need the rooftop (not reachable headlessly) to identify and
+    // verify. Do not read the deck being smooth as this code failing — it is capped.
     // 2D value noise — a per-block base plus per-texel indices from a 2D hash of the texel's
     // absolute position — so it never streaks, and the endpoints are forced apart (c0>c1) so
     // every block is 4-colour OPAQUE, never the punch-through mode that would poke holes.
