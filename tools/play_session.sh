@@ -72,7 +72,7 @@ if [ -n "$busy" ]; then
     echo "!! a cz_runtime is already running; refusing to start a second:"; printf '%s' "$busy"; exit 2
 fi
 
-TAG="play_$(date +%m%d_%H%M)"
+TAG="${TAG:-play_$(date +%m%d_%H%M)}"
 FPS="${FPS:-500}"
 mkdir -p "$OUT/$TAG"
 
