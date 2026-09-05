@@ -822,7 +822,7 @@ PPC_FUNC(sub_82804AF8)
     // publish is a reliable point to apply it. Adding to the persistent angle integral
     // is stable — the camera re-reads +0x40/+0x44 as the base for its own clamped stick
     // delta each frame, so the addition persists and is not itself clamped.
-    if (MouseDeviceActive() && Settings_MouseCam())
+    if (MouseDeviceActive())
     {
         const uint32_t cam = g_camObj.load(std::memory_order_relaxed);
         if (cam >= 0x10000 && cam < 0xF0000000)

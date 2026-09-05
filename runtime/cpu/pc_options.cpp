@@ -835,15 +835,9 @@ void PcOptions_Pump(PPCContext& ctx, uint8_t* base, uint32_t buttons)
                     fprintf(stderr, "[pcopt] fov %+d — live\n", fov);
                     break;
                 }
+                // (the MOUSE CAMERA toggle that sat between FOV and SENS is
+                // retired — the mouse camera is always on, operator instruction)
                 case 6:
-                    // MOUSE CAMERA (part 91): toggles the host mouse->right-stick
-                    // layer. Applied live — the window loop re-reads it and
-                    // captures/releases the cursor on the change.
-                    Settings_SetMouseCam(!Settings_MouseCam());
-                    fprintf(stderr, "[pcopt] mouse camera %s — live\n",
-                            Settings_MouseCam() ? "ON" : "OFF");
-                    break;
-                case 7:
                 {
                     // 1..10, clamped like every ordered ladder here (gotcha 377).
                     int sv = Settings_MouseSens() + dir;
@@ -860,7 +854,7 @@ void PcOptions_Pump(PPCContext& ctx, uint8_t* base, uint32_t buttons)
         int sel = Settings_OverlaySelection();
         if (pressed & (kUp | kDown))
         {
-            sel = (sel + ((pressed & kDown) ? 1 : 7)) % 8;
+            sel = (sel + ((pressed & kDown) ? 1 : 6)) % 7;
             Settings_SetOverlaySelection(sel);
         }
         else if (pressed & (kLeft | kRight))
