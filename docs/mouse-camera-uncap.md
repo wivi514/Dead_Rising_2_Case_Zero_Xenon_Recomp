@@ -27,21 +27,45 @@ Raw per-poll mouse deltas reach the hook via `NativeKbm_AddMouseLook` (fed from
 `window.cpp`'s existing relative-mouse block; the stick feed stays so the engine's
 "camera is being moved" state still sets).
 
-## Case Zero vs Case West — the only differences
+## Case Zero — the fix that actually worked (and the two that did not)
 
-Same Blue Castle engine, different XEX build, so the addresses shifted; the RE
-(disassembly-verified) mapping:
+Same engine, different XEX, and the port did NOT transfer cleanly. Recorded because
+the dead ends are the useful part for Case West's own next sibling.
 
-| | Case West | **Case Zero** |
+**Finding the live camera — trace from the command, not the shape.** Two functions
+matched Case West's clamp+angle-store DISASSEMBLY SHAPE (`sub_82471EA0`, `sub_8246F9A8`,
+plus `sub_824676C0`) and ALL were dead — operator-confirmed 0 calls, or hooks that never
+fired. The live camera was found empirically: hook the float command query `sub_82805510`
+(Case Zero's equivalent of Case West's `sub_827FFE90`, already in native_kbm.cpp) and log
+who queries camera command **216** (`COMMAND_USER_CAM_LEFTRIGHT`) / **217** (`UPDOWN`).
+The answer, during real gameplay: `lr=0x8246FA6C` / `0x8246FA84`, inside **`sub_8246F9A8`**
+— which writes the persistent yaw at **`+0x40`(r31)** / pitch at **`+0x44`(r31)** (r31 =
+r6 = the camera object; offsets read off its own `stfs` stores, and identical to Case
+West's after all).
+
+**Why the entry hook FAILED — and the bypass.** A strong `PPC_FUNC(sub_8246F9A8)`
+override fires **0 times** even across 780k-resolve gameplay: the recompiler executes
+that function's code through a path that bypasses its entry symbol (the byte before it,
+`0x8246F9A4`, is a null word; both "entries" are dead). So the entry cannot be hooked.
+
+The working bypass: the camera keeps its object in `r31` (non-volatile) and calls the
+command query `sub_82805510` FROM INSIDE ITSELF — and that query DOES hook and fire. At
+the query hook's entry, before the query's own prologue, `ctx.r31` still holds the
+caller's r31 = **the camera object**. Capture it there (`g_camObj`, gated to the camera's
+own call sites 0x8246FA6C/0x8246FA84 so the deadzone-checker at 0x821592F0 does not
+overwrite it), then add the accumulated mouse delta onto `camera+0x40 / +0x44` from the
+per-frame source-publish hook `sub_82804AF8`. Adding to the persistent angle integral is
+stable and un-clamped. **Operator-verified working (2026-09-04): "It does work".**
+Headless proof of the plumbing: the capture grabbed camera object `A6741348` (in the
+physical-alias heap, exactly where Case West's calibration found it) during gameplay.
+
+## Case Zero vs Case West — the address map
+
+| item | Case West | Case Zero |
 |---|---|---|
-| camera-update function | `sub_82470DC0` | **`sub_82471EA0`** |
+| camera-update function | `sub_82470DC0` (hooked at entry) | **`sub_8246F9A8`** (entry un-hookable; captured via its command query) |
 | yaw / pitch store offsets | +0x40 / +0x44 | **+0x40 / +0x44 (identical)** |
 | smoother state (untouched) | +0x48 / +0x4c | +0x70 / +0x74 |
-
-`sub_82471EA0` was confirmed by its disassembly: the `fmuls`/`fmadds`/`fsqrts` magnitude
-of the stick vector, the clamp, then `fadds prev,delta` → `stfs 0x40(r31)` /
-`stfs 0x44(r31)` as the final action. (Case West's `0x82470DC0` is an unrelated function
-in Case Zero — do not reuse it.)
 
 ## Units, sign, scale (from Case West's measurements; operator re-tunes live)
 

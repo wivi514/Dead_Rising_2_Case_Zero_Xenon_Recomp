@@ -88,6 +88,7 @@
 #include <deque>
 #include <fstream>
 #include <mutex>
+#include <set>
 #include <string>
 #include <thread>
 #include <vector>
@@ -222,7 +223,7 @@ void StoreF32(uint8_t* base, uint32_t addr, float f)
 
 // Raw mouse-look accumulator for the DIRECT camera-look path (imported from Case
 // West, part 93). window.cpp feeds it the same per-poll deltas it hands the stick;
-// the camera hook (sub_82471EA0) drains it once a frame and adds it straight onto
+// the camera hook (sub_824676C0) drains it once a frame and adds it straight onto
 // the camera's yaw/pitch angles, past the engine's radial turn-rate clamp.
 std::atomic<int> g_lookDX{ 0 }, g_lookDY{ 0 };
 void TakeMouseLook(int& dx, int& dy)
@@ -240,67 +241,33 @@ const char* GuestStr(uint8_t* base, uint32_t addr)
     return reinterpret_cast<const char*>(base + addr);
 }
 
-// DIRECT CAMERA LOOK — imported from Case West (part 93; docs/mouse-camera-uncap.md
-// there). The mouse fed the game's right stick, but the camera update turns that
-// into a turn rate through a RADIAL MAGNITUDE CLAMP: sub_82471EA0 clamps
-// sqrt(yaw^2+pitch^2) before a fixed max turn-rate, so any input-side gain (the
-// part-91 CameraSurplus path) just makes a longer vector the clamp normalizes back —
-// which is exactly the "turn-rate ceiling at MOUSE SENS 10" the operator felt.
+// DIRECT CAMERA LOOK — imported from Case West (part 93; docs/mouse-camera-uncap.md).
+// The mouse fed the game's right-stick command, but the manual third-person camera
+// turns that into a turn rate through a per-axis CLAMP, so any input-side gain (the
+// part-91 CameraSurplus / DR2-PC source-unclamp already in this file) is clamped
+// straight back — the "turn-rate ceiling at MOUSE SENS 10" the operator felt. Case
+// West fixed it by writing the camera ANGLE directly, past the clamp.
 //
-// This bypasses it: sub_82471EA0 stores the persistent yaw at r6+0x40 and pitch at
-// r6+0x44 (radians; r31=r6 in the callee), and those stores are its final action. We
-// hook it, capture r6 on entry, and AFTER the game's own clamped update add our
-// uncapped mouse delta straight onto those angle accumulators. Adding to the angle
-// INTEGRAL is stable — the engine's smoother reads its own separate state (at
-// +0x70/+0x74 in Case Zero, not these), so there is no feedback blow-up. Case Zero's
-// yaw/pitch offsets are identical to Case West's; only the function address differs
-// (CW sub_82470DC0 -> CZ sub_82471EA0) and the smoother state moved.
-extern "C" PPC_FUNC(__imp__sub_82471EA0);
+// FINDING THE CAMERA, AND WHY THE ENTRY-HOOK APPROACH FAILED. The live camera update
+// is the function at 0x8246F9A8 (found empirically: it is the sole consumer of camera
+// command 216 COMMAND_USER_CAM_LEFTRIGHT / 217 UPDOWN, queried via sub_82805510 from
+// lr=0x8246FA6C/0x8246FA84, during real gameplay). But the recompiler executes that
+// code through a path that BYPASSES its entry symbol — a strong PPC_FUNC(sub_8246F9A8)
+// override fires 0 times even across 784k-resolve gameplay (0x8246F9A4 just before it
+// is a null word; both entries are dead). Two earlier shape-matched candidates
+// (sub_82471EA0, sub_8246F9A8-as-entry, sub_824676C0) were all dead for this reason.
+//
+// THE WORKING BYPASS. The camera keeps its object in r31 (non-volatile) and calls the
+// command query sub_82805510 FROM INSIDE ITSELF — and sub_82805510 DOES hook and fire.
+// At the query hook's entry, before the query's own prologue runs, ctx.r31 still holds
+// the CALLER's r31 = the camera object. So we CAPTURE it there (g_camObj), and add our
+// uncapped mouse delta onto camera+0x40 (YAW) / +0x44 (PITCH) from a per-frame input
+// hook (sub_82804AF8) — bypassing both the entry-hook problem and the radial clamp.
+// Adding to the persistent angle integral is stable: the camera re-reads +0x40/+0x44
+// as the base for its own clamped stick delta each frame, so our addition persists.
+// Offsets +0x40/+0x44 and r31=camera are read off 0x8246F9A8's own stfs stores.
+std::atomic<uint32_t> g_camObj{ 0 };
 
-PPC_FUNC(sub_82471EA0)
-{
-    const uint32_t cam = ctx.r6.u32;     // r31 in the callee = the camera state
-    __imp__sub_82471EA0(ctx, base);
-    // The camera state can live in the physical-alias heap, so the bound is generous
-    // — reject only a wild pointer.
-    if (!NativeKbm_Active() || !MouseDeviceActive() || !Settings_MouseCam() ||
-        cam < 0x10000 || cam >= 0xF0000000)
-        return;
-    int dx = 0, dy = 0;
-    TakeMouseLook(dx, dy);
-    if (dx == 0 && dy == 0)
-        return;
-    // scale: MOUSE SENS (live) x base. Angles are radians (the update applies
-    // deg->rad internally). 0.00027 is Case West's operator-dialed landing
-    // (sens 5 ~= 0.135 rad / 100 counts). Tune with the MOUSE SENS row or
-    // CZ_KBM_LOOK_SCALE without a rebuild.
-    float scale = 0.00027f;
-    if (const char* e = getenv("CZ_KBM_LOOK_SCALE"))
-    {
-        const float v = float(atof(e));
-        if (v > 0.0f)
-            scale = v;
-    }
-    const float k = float(Settings_MouseSens()) * scale;
-    // The camera FIELD delta sign is opposite the command-input sign the stick path
-    // used, so a naive add is inverted on both axes. Default to the corrected
-    // polarity (mouse-right = look right, mouse-down = look down); the inverts flip
-    // each live.
-    float sx = -1.0f, sy = 1.0f;
-    if (getenv("CZ_KBM_INVERT_X")) sx = -sx;
-    if (getenv("CZ_KBM_INVERT_Y")) sy = -sy;
-    const float yaw = LoadF32(base, cam + 0x40);
-    const float pit = LoadF32(base, cam + 0x44);
-    StoreF32(base, cam + 0x40, yaw + float(dx) * k * sx);
-    StoreF32(base, cam + 0x44, pit + float(dy) * k * sy);
-    if (getenv("CZ_KBM_CAM_TRACE"))
-    {
-        static uint64_t n = 0;
-        if ((n++ % 20) == 0)
-            fprintf(stderr, "[camlook] cam=%08X dx=%d dy=%d k=%.5f yaw %.4f pit %.4f\n",
-                    cam, dx, dy, k, yaw, pit);
-    }
-}
 
 bool GuestCall(PPCContext& ctx, uint8_t* base, uint32_t fnAddr, const char* what)
 {
@@ -765,6 +732,28 @@ PPC_FUNC(sub_82805510)
         if (ctx.r4.u32 < 16)
             g_queryByPort[1][ctx.r4.u32].fetch_add(1, std::memory_order_relaxed);
     }
+    // CAPTURE THE CAMERA OBJECT for the direct-look fix (part 93; see g_camObj). The
+    // live camera update (0x8246F9A8, un-hookable at its entry) queries cmd 216
+    // (COMMAND_USER_CAM_LEFTRIGHT) and 217 (UPDOWN) from lr 0x8246FA6C / 0x8246FA84.
+    // At this hook's entry — before sub_82805510's own prologue — ctx.r31 still holds
+    // the caller's r31 = the camera object (the same r31 the camera writes +0x40/+0x44
+    // through). Gated to the camera's OWN call sites so the other cmd-216/217 reader
+    // (the deadzone checker at 0x821592F0, not an angle-writer) does not overwrite it.
+    if ((ctx.r3.u32 == 216 || ctx.r3.u32 == 217) &&
+        (uint32_t(ctx.lr) == 0x8246FA6C || uint32_t(ctx.lr) == 0x8246FA84))
+    {
+        g_camObj.store(ctx.r31.u32, std::memory_order_relaxed);
+        if (getenv("CZ_KBM_CAM_TRACE"))
+        {
+            static uint32_t last = 0;
+            if (ctx.r31.u32 != last)
+            {
+                last = ctx.r31.u32;
+                fprintf(stderr, "[camlook] captured camera object %08X (from lr=%08X)\n",
+                        ctx.r31.u32, uint32_t(ctx.lr));
+            }
+        }
+    }
     __imp__sub_82805510(ctx, base);
 }
 
@@ -801,6 +790,50 @@ PPC_FUNC(sub_82804AF8)
     __imp__sub_82804AF8(ctx, base);
     if (!NativeKbm_Active() || !self || self != LoadU32(base, kPortMap))
         return;
+
+    // DIRECT CAMERA-ANGLE LOOK (part 93; the working import of Case West's fix). Add
+    // the accumulated raw mouse delta straight onto the captured camera object's yaw
+    // (+0x40) / pitch (+0x44), past the engine's radial turn-rate clamp. g_camObj was
+    // captured from the camera's own command query (see sub_82805510); this per-frame
+    // publish is a reliable point to apply it. Adding to the persistent angle integral
+    // is stable — the camera re-reads +0x40/+0x44 as the base for its own clamped stick
+    // delta each frame, so the addition persists and is not itself clamped.
+    if (MouseDeviceActive() && Settings_MouseCam())
+    {
+        const uint32_t cam = g_camObj.load(std::memory_order_relaxed);
+        if (cam >= 0x10000 && cam < 0xF0000000)
+        {
+            int dx = 0, dy = 0;
+            TakeMouseLook(dx, dy);
+            if (dx || dy)
+            {
+                float scale = 0.00027f;
+                if (const char* e = getenv("CZ_KBM_LOOK_SCALE"))
+                {
+                    const float vv = float(atof(e));
+                    if (vv > 0.0f)
+                        scale = vv;
+                }
+                const float k = float(Settings_MouseSens()) * scale;
+                float sgx = -1.0f, sgy = 1.0f;
+                if (getenv("CZ_KBM_INVERT_X")) sgx = -sgx;
+                if (getenv("CZ_KBM_INVERT_Y")) sgy = -sgy;
+                const float yaw = LoadF32(base, cam + 0x40);
+                const float pit = LoadF32(base, cam + 0x44);
+                StoreF32(base, cam + 0x40, yaw + float(dx) * k * sgx);
+                StoreF32(base, cam + 0x44, pit + float(dy) * k * sgy);
+                if (getenv("CZ_KBM_CAM_TRACE"))
+                {
+                    static uint64_t n = 0;
+                    if ((n++ % 20) == 0)
+                        fprintf(stderr, "[camlook] APPLY cam=%08X dx=%d dy=%d k=%.5f "
+                                        "yaw %.4f->%.4f\n", cam, dx, dy, k, yaw,
+                                yaw + float(dx) * k * sgx);
+                }
+            }
+        }
+    }
+
     if (TraceOn())
     {
         static float lastA = 0.0f;
@@ -1276,7 +1309,7 @@ void NativeKbm_CameraSurplus(float sx, float sy)
         AtomicAddFloat(g_camSurY, sy);
 }
 
-// Raw per-poll mouse deltas for the DIRECT camera-look path (sub_82471EA0 drains
+// Raw per-poll mouse deltas for the DIRECT camera-look path (sub_824676C0 drains
 // them once a frame and adds them straight onto the camera's yaw/pitch angles,
 // bypassing the engine's radial turn-rate clamp — see that hook). Imported from
 // Case West, part 93.
