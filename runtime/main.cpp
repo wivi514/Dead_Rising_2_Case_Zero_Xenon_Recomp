@@ -41,6 +41,7 @@
 #include "gpu/vk_renderer.h"
 #include "host/first_run.h"
 #include "host/host_paths.h"
+#include "host/overlay_gen.h"
 #include "host/stfs_extract.h"
 #include "host/settings.h"
 #include "host/window.h"
@@ -195,6 +196,24 @@ int main(int argc, char** argv)
         return ShaderPrebuild::BuildFromDisc(bank, out);
     }
 
+    // Release-github §0: the overlay generation by hand — what the first-run hook
+    // below runs automatically, exposed for the byte-identity gate against the
+    // Python references (tools/gen_pc_options.py + tools/gen_kbm_icons.py: run
+    // both, run this, `diff -r` the trees) and for regenerating deliberately.
+    if (argc > 1 && strcmp(argv[1], "--gen-overlays") == 0)
+    {
+        HostPaths::Report();
+        std::string err;
+        if (!OverlayGen::Generate(
+                [](const char* label, float) { fprintf(stderr, "[overlay] %s\n", label); },
+                err))
+        {
+            fprintf(stderr, "[overlay] FAILED: %s\n", err.c_str());
+            return 1;
+        }
+        return 0;
+    }
+
     // Release §2.3 step 2: the extract by hand — what the first-run hook below runs
     // automatically, exposed for the byte-identity gate against the Python reference
     // (tools/extract_stfs.py) and for unpacking a package deliberately.
@@ -345,6 +364,24 @@ int main(int argc, char** argv)
                         Host_ProgressUpdate(l, total ? float(done) / float(total) : 1.f);
                     });
             }
+        }
+        // Release-github §0: the patched-asset overlays (the PC options screen,
+        // the KB/M prompt icons, every string edit) are GENERATED from the
+        // player's own game data, because they carry Capcom-derived bytes and so
+        // cannot ship in the artifact. Runs whenever an output is missing or was
+        // written by an older generator; CZ_NO_OVERLAY_GEN=1 is the off switch.
+        // A failure is loud but not fatal: the VFS then serves the shipped data,
+        // which is degraded (pad prompts, no options screen) but honest.
+        if (OverlayGen::WantedAtBoot())
+        {
+            if (!progressWindow)
+                progressWindow = Host_ProgressBegin("PREPARING FIRST RUN");
+            std::string err;
+            if (!OverlayGen::Generate(
+                    [](const char* label, float frac) { Host_ProgressUpdate(label, frac); },
+                    err))
+                fprintf(stderr, "[overlay] FAILED: %s — the shipped menus and pad "
+                                "prompts will be used\n", err.c_str());
         }
         if (progressWindow)
             Host_ProgressEnd();
