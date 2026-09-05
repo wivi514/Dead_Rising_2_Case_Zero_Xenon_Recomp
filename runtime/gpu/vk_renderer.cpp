@@ -7,6 +7,7 @@
 #include "rt_factor_spv.h"
 #include "rt_shadow_spv.h"
 #include "xenos.h"
+#include "pit_gravel_tex.h"
 #include "../host/host_paths.h"
 #include "../host/settings.h"
 #include "../host/window.h"
@@ -617,6 +618,91 @@ bool g_texCensus = false;
 bool g_texGuard = false;
 bool g_texRevalidate = false;
 bool g_texGuardPoison = false;
+
+// --- GOLDEN TEXTURE STORE (part 94) --------------------------------------------------
+// This title streams a shared detail texture (the gas-station rooftop's gravel floor,
+// `0E522000` 32x32 DXT1) into a recycled heap address whose bytes are PRESENT only during
+// a brief streaming window: we upload them to the GPU when we happen to catch them, then
+// the guest frees the address back to zero (a live read at a rooftop where the gravel
+// renders CORRECTLY finds `0E522000` all-zero in every address space — the picture comes
+// from our cached image, not from memory). Whichever surface we upload for FIRST wins: a
+// rooftop reached while the bytes are live caches real gravel; the recessed pit, reached
+// while they are zero, caches an opaque-black BC1 block and — since the bytes never change
+// again — the content guard never re-fires and it stays black forever (§6aa's shape, now
+// explained). The two share the fetch descriptor, so they are the same texture.
+//
+// The store closes that gap without guessing at pixels: the FIRST time a signature uploads
+// non-zero, keep the decoded bytes; any later all-zero upload of the same signature is
+// served those bytes instead of black, and a cache entry already frozen black is refreshed
+// from them on its next hit. It can only ever replace an all-zero (black) upload, so it
+// cannot change any surface that renders today. Bounded to small textures (the streamed
+// detail maps this class appears in) so the memory cost is negligible.
+// CZ_VK_NO_GOLDEN_TEX=1 is the same-binary control arm (brings the black pit back).
+bool g_noGolden = false;
+constexpr size_t kGoldenTexCap = 64 * 1024;   // only remember detail-sized textures
+std::unordered_map<uint64_t, std::vector<uint8_t>> g_goldenTex;
+uint64_t g_goldenStored = 0, g_goldenServed = 0;
+inline uint64_t GoldenSig(uint32_t address, uint32_t w, uint32_t h, uint32_t fmt)
+{
+    return (uint64_t(address & 0x1FFFFFFFu) << 32) ^ (uint64_t(w) << 20)
+           ^ (uint64_t(h) << 8) ^ uint64_t(fmt);
+}
+// The gravel is present in memory only during a streaming race we may lose in any given
+// session (§6aa), so an in-memory store alone would fix the pit only in the lucky sessions
+// that happened to catch the bytes. Persist each captured signature to disk and preload it,
+// so once ANY session catches the real texture the surface is correct in every session
+// after — and a shipped build can carry a pre-warmed set. Files are <sig>.bin under the
+// same cache root as the pipeline cache; the filename IS the key.
+std::filesystem::path GoldenDir()
+{
+    std::error_code ec;
+    std::filesystem::path base;
+    if (const char* x = getenv("CZ_GOLDEN_DIR"); x && *x)
+        base = x;
+#if defined(_WIN32)
+    else if (const char* la = getenv("LOCALAPPDATA"); la && *la)
+        base = std::filesystem::path(la) / "cz-recomp";
+#else
+    else if (const char* h = getenv("HOME"); h && *h)
+        base = std::filesystem::path(h) / ".cache" / "cz-recomp";
+#endif
+    else
+        base = std::filesystem::temp_directory_path(ec) / "cz-recomp";
+    base /= "golden";
+    std::filesystem::create_directories(base, ec);
+    return base;
+}
+void GoldenLoad()
+{
+    if (g_noGolden) return;
+    std::error_code ec;
+    for (auto& e : std::filesystem::directory_iterator(GoldenDir(), ec))
+    {
+        if (ec) break;
+        if (!e.is_regular_file()) continue;
+        const uint64_t sig = strtoull(e.path().stem().string().c_str(), nullptr, 16);
+        if (!sig) continue;
+        std::ifstream f(e.path(), std::ios::binary);
+        std::vector<uint8_t> data((std::istreambuf_iterator<char>(f)),
+                                  std::istreambuf_iterator<char>());
+        if (!data.empty() && data.size() <= kGoldenTexCap)
+            g_goldenTex[sig] = std::move(data);
+    }
+    if (!g_goldenTex.empty())
+        fprintf(stderr, "[vk] golden texture store: preloaded %zu signatures from %s\n",
+                g_goldenTex.size(), GoldenDir().string().c_str());
+}
+void GoldenPersist(uint64_t sig, const std::vector<uint8_t>& px)
+{
+    if (g_noGolden || px.empty()) return;
+    char name[32];
+    snprintf(name, sizeof name, "%016llx.bin", (unsigned long long)sig);
+    std::error_code ec;
+    const std::filesystem::path tmp = GoldenDir() / (std::string(name) + ".tmp");
+    { std::ofstream f(tmp, std::ios::binary | std::ios::trunc);
+      f.write(reinterpret_cast<const char*>(px.data()), std::streamsize(px.size())); }
+    std::filesystem::rename(tmp, GoldenDir() / name, ec);
+}
 struct TexGuardStats
 {
     uint64_t hits = 0;        // cache hits the guard was computed for
@@ -3978,6 +4064,11 @@ struct TextureEntry
     // fold bound (`g_texGuardBytes`, which is a separate knob for a separate question).
     uint32_t preSlot = UINT32_MAX;
     uint64_t preFrame = 0;
+    // This image was uploaded from an ALL-ZERO source (an opaque-black BC1 block). The
+    // golden store (part 94) refreshes such an entry from the last non-zero bytes of its
+    // signature on the next cache hit, so a surface frozen black recovers the moment the
+    // real texture streams in anywhere.
+    bool wasZero = false;
 };
 
 // A RESOLVE SNAPSHOT: what one pass left in the EDRAM, kept as a host image under the
@@ -6855,10 +6946,10 @@ void CreatePipelineCache(const std::filesystem::path& dir)
         if (const char* x = Env("XDG_CACHE_HOME"); x && *x)
             base = x;
 #if defined(_WIN32)
-        else if (const char* la = Env("LOCALAPPDATA"); la && *la)
+        else if (const char* la = getenv("LOCALAPPDATA"); la && *la)
             base = la;
 #else
-        else if (const char* h = Env("HOME"); h && *h)
+        else if (const char* h = getenv("HOME"); h && *h)
             base = std::filesystem::path(h) / ".cache";
 #endif
         else
@@ -9068,6 +9159,16 @@ uint32_t UploadTexture(uint8_t* base, const uint32_t* regs, uint32_t constIdx,
                     refresh = true;   // fall through to the in-place re-upload below
             }
         }
+        // GOLDEN RECOVERY (part 94): this entry was frozen from an all-zero source and the
+        // real bytes for its signature have since streamed in somewhere. Force a refresh so
+        // the in-place re-upload below picks up the golden pixels (the guard never re-fires
+        // on its own — the guest bytes are still zero). See g_goldenTex.
+        if (!refresh && cached->wasZero && !g_noGolden &&
+            g_goldenTex.count(GoldenSig(t.address, t.width, t.height, t.format)))
+        {
+            refresh = true;
+            COUNT("texture: golden recovery — black entry refreshed from stored pixels");
+        }
         if (!refresh)
         {
             COUNT("texture: cache hit");
@@ -9858,10 +9959,92 @@ uint32_t UploadTexture(uint8_t* base, const uint32_t* regs, uint32_t constIdx,
         }
     }
 
+    // GOLDEN TEXTURE STORE (part 94): pixels is now the decoded source for this upload.
+    // Remember the first non-zero decode of each signature, and serve it in place of any
+    // later all-zero decode of the same signature. `goldenRecovered` tells the two upload
+    // paths below whether this image ends up black (so its entry can be re-checked on a
+    // later hit). Only ever swaps an all-zero (black) upload, and only for small textures.
+    bool uploadAllZero = !pixels.empty();
+    for (uint8_t b : pixels) if (b) { uploadAllZero = false; break; }
+    bool goldenRecovered = false;
+    if (!g_noGolden)
+    {
+        const uint64_t sig = GoldenSig(t.address, t.width, t.height, t.format);
+        if (!uploadAllZero)
+        {
+            if (pixels.size() <= kGoldenTexCap)
+            {
+                auto& slot2 = g_goldenTex[sig];
+                if (slot2.empty()) { slot2 = pixels; ++g_goldenStored; GoldenPersist(sig, pixels); }
+            }
+        }
+        else
+        {
+            auto it = g_goldenTex.find(sig);
+            if (it != g_goldenTex.end() && it->second.size() == pixels.size())
+            {
+                pixels = it->second;          // serve the last good bytes instead of black
+                uploadAllZero = false;
+                goldenRecovered = true;
+                ++g_goldenServed;
+            }
+        }
+    }
+
+    // TARGETED GRAVEL for the gas-station rooftop pit (part 94). One signature only: the
+    // 32x32 DXT1 detail map (default 0E522000) that loses the streaming race every session
+    // and decodes to opaque black. Its real bytes cannot be sourced reliably, so for THIS
+    // one texture synthesise a soft warm gravel of the exact same block layout. Isotropic
+    // 2D value noise — a per-block base plus per-texel indices from a 2D hash of the texel's
+    // absolute position — so it never streaks, and the endpoints are forced apart (c0>c1) so
+    // every block is 4-colour OPAQUE, never the punch-through mode that would poke holes.
+    // The warm tone comes from the shader's own material colour (a grey texture renders as
+    // the tan the surrounding concrete uses). CZ_VK_GRAVEL_ADDR overrides the address (0
+    // disables); CZ_VK_GRAVEL_LEVEL sets the base grey. Only ever replaces an all-zero
+    // (black) upload of that one texture, so nothing else in the game is touched.
+    if (uploadAllZero && !goldenRecovered &&
+        t.format == xenos::kFmt_DXT1 && t.width == 32 && t.height == 32)
+    {
+        static const uint32_t gravelAddr = []{ const char* e = getenv("CZ_VK_GRAVEL_ADDR");
+            return e ? uint32_t(strtoul(e, nullptr, 16)) : 0x0E522000u; }();
+        static const int gravelBase = []{ const char* e = getenv("CZ_VK_GRAVEL_LEVEL");
+            return e ? int(strtol(e, nullptr, 0)) : 160; }();
+        (void)gravelBase;
+        if (gravelAddr && (t.address & 0x1FFFFFFFu) == (gravelAddr & 0x1FFFFFFFu))
+        {
+            // The REAL gravel, extracted from Xenia's texture-cache dump of the authentic
+            // asset (pit_gravel_tex.h): the 32x32 base plus its 16/8/4 mip levels, all real
+            // BC1, copied verbatim per level so both the near detail and the distance shading
+            // are correct (uniform mips would band). Levels are matched by block count; any
+            // extra/mismatched level falls back to the base's first block.
+            for (const VkBufferImageCopy& c : copies)
+            {
+                const uint32_t bw = (c.imageExtent.width + blockDim - 1) / blockDim;
+                const uint32_t bh = (c.imageExtent.height + blockDim - 1) / blockDim;
+                const uint32_t L = c.imageSubresource.mipLevel;
+                const bool haveLevel = (L < 4 && bw * bh == kPitGravelLevelBlocks[L]);
+                for (uint32_t by = 0; by < bh; ++by)
+                for (uint32_t bx = 0; bx < bw; ++bx)
+                {
+                    const uint64_t off = c.bufferOffset + uint64_t(by * bw + bx) * bytesPerUnit;
+                    if (off + 8 > pixels.size()) continue;
+                    const uint8_t* srcBlk = haveLevel
+                        ? kPitGravelDXT1 + kPitGravelLevelOff[L] + (by * bw + bx) * 8
+                        : kPitGravelDXT1;   // fallback: base block 0 (a gravel block)
+                    std::memcpy(pixels.data() + off, srcBlk, 8);
+                }
+            }
+            uploadAllZero = false;
+            Count("texture: pit gravel from REAL asset (pit_gravel_tex.h)");
+        }
+    }
+
     // The refresh arm: same image, same slot, new pixels. No allocation, so it can run
     // every fetch without exhausting the bindless heap.
     if (refresh && cached)
     {
+        cached->wasZero = uploadAllZero;   // may clear a previously-black entry
+        (void)goldenRecovered;
         // Re-stamp the guard from the bytes we have just read, or a revalidating run
         // re-uploads this texture on every single fetch for the rest of the run —
         // which would read as "the fix is ruinously slow" when what is slow is the
@@ -9941,6 +10124,9 @@ uint32_t UploadTexture(uint8_t* base, const uint32_t* regs, uint32_t constIdx,
     entry.key = key;
     entry.slot = nextSlot++;
     entry.layers = layers;
+    // Frozen-black flag for the golden store (part 94): true only if this fresh upload is
+    // all-zero AND no stored bytes recovered it, so a later hit knows to re-check.
+    entry.wasZero = uploadAllZero;
     // The content this image is about to be built from, alongside the descriptor it is
     // keyed on. See TextureEntry for why the cache needs both.
     entry.va = va;
@@ -25577,6 +25763,8 @@ bool InitCommon()
         g_texGuard = !noRevalidate || EnvOn("CZ_VK_TEX_GUARD");
         g_texRevalidate = !noRevalidate;
     }
+    g_noGolden = EnvOn("CZ_VK_NO_GOLDEN_TEX");
+    GoldenLoad();   // preload any texture bytes a prior session captured to disk
     // The pre-part-47 cadence — revalidate on every fetch instead of once a frame per
     // cache entry. A control arm, not a fix; see its declaration.
     g_texGuardEveryFetch = EnvOn("CZ_VK_TEX_GUARD_EVERY_FETCH");
@@ -29912,6 +30100,12 @@ void VkRenderer_DumpStats()
 
     // The texture-content guard. The question is the operator's: is a draw being served
     // an image built from pixels that are no longer at that address?
+    if (!g_noGolden && (g_goldenStored || g_goldenServed))
+        fprintf(stderr,
+                "[vk]   golden texture store: %llu signatures remembered, %llu all-zero "
+                "uploads served real bytes (%zu entries held)\n",
+                (unsigned long long)g_goldenStored, (unsigned long long)g_goldenServed,
+                g_goldenTex.size());
     if (g_texGuardStats.hits)
     {
         const TexGuardStats& g = g_texGuardStats;
