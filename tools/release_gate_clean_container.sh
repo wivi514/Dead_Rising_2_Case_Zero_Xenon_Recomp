@@ -50,6 +50,16 @@ PKGFILE=${CZ_GATE_PACKAGE:-$(find "$(cd "$(dirname "$0")/.." && pwd)/assets/pack
 [ -n "$PKGFILE" ] && [ -f "$PKGFILE" ] \
     || { echo "FAIL: no STFS package under assets/package (set CZ_GATE_PACKAGE)" >&2; exit 1; }
 
+# The overlay oracle (release-github §0.4): the container regenerates the patched-
+# asset overlays with the C++ generator, and its fecmn.big must hash to what the
+# PYTHON reference produced in the dev tree — the same byte-identity contract the
+# stfs extract carries. Required, not skipped-if-absent (regenerate with
+# `python3 tools/gen_pc_options.py` if this refuses).
+OVERLAY_REF="$(cd "$(dirname "$0")/.." && pwd)/assets/game_patched/data/frontend/fecmn.big"
+[ -f "$OVERLAY_REF" ] \
+    || { echo "FAIL: no $OVERLAY_REF — run tools/gen_pc_options.py first" >&2; exit 1; }
+OVERLAY_SHA=$(sha256sum "$OVERLAY_REF" | cut -d' ' -f1)
+
 # `-i` is load-bearing and its absence is why the first run of this gate printed
 # "GATE PASSED" having executed nothing: without it podman does not attach stdin, the
 # heredoc goes nowhere, `sh -s` reads EOF and exits 0. A gate whose body never ran and
@@ -61,7 +71,8 @@ echo "==> $IMAGE, bundle mounted read-only at /app"
 LOG=$(mktemp)
 trap 'rm -f "$LOG"; rm -rf "$UCODE_DIR"' EXIT
 podman run --rm -i -v "$STAGE:/app:ro,Z" -v "$UCODE_DIR:/ucode:Z" \
-    -v "$PKGFILE:/pkg/package:ro,Z" "$IMAGE" /bin/sh -s > "$LOG" 2>&1 <<'IN'
+    -v "$PKGFILE:/pkg/package:ro,Z" -e "CZ_GATE_OVERLAY_SHA=$OVERLAY_SHA" \
+    "$IMAGE" /bin/sh -s > "$LOG" 2>&1 <<'IN'
 set -u
 
 # The Vulkan LOADER is installed here on purpose, and it is the one library this gate
@@ -156,14 +167,37 @@ done
 # path is renderer-gated, and it is exercised on the host (part 85's fake-root run,
 # with the auto-extract, the prebuild AND the renderer). What this section proves
 # is that the same three steps work against the bundle's own glibc-floor claim.
-echo "--- the first-run flow, end to end (extract -> shader build -> boot):"
+echo "--- the first-run flow, end to end (extract -> shader build -> overlays -> boot):"
 mkdir -p /w/assets/game
-echo "    [1/3] in-process extract of the mounted package:"
+echo "    [1/4] in-process extract of the mounted package:"
 /app/cz_runtime --extract-package /pkg/package /w/assets/game 2>&1 | tail -1 | sed 's/^/    /'
-echo "    [2/3] disc shader build (DXC, all cores):"
+echo "    [2/4] disc shader build (DXC, all cores):"
 /app/cz_runtime --build-shader-cache /w/assets/game/data/shaders/deadrisingprologue-ps.big \
     /w/assets/shader_spv 2>&1 | grep -E "translated|refused|FAIL" | tail -2 | sed 's/^/    /'
-echo "    [3/3] boot from the extracted tree (no GPU in this container — the renderer"
+echo "    [3/4] overlay generation (release-github §0: the options screen, KB/M"
+echo "          prompt icons and string edits, composed from the player's own data):"
+if CZ_ROOT=/w /app/cz_runtime --gen-overlays >/tmp/overlay.log 2>&1; then
+    ok=1
+    for f in /w/assets/game_patched/data/frontend/fecmn.big \
+             /w/assets/game_patched/layout.bin \
+             /w/assets/game_kbm/data/frontend/fecmn.tex \
+             /w/assets/game_kbm/glyph_swap.bin; do
+        [ -f "$f" ] || { echo "    overlay output MISSING: $f"; ok=0; }
+    done
+    # The byte-identity spot check against the Python reference in the dev tree:
+    # the C++ generator in the container must produce the same fecmn.big, hash
+    # for hash, that gen_pc_options.py produced on the host.
+    got=$(sha256sum /w/assets/game_patched/data/frontend/fecmn.big | cut -d' ' -f1)
+    if [ "$got" != "$CZ_GATE_OVERLAY_SHA" ]; then
+        echo "    overlay HASH MISMATCH: container $got vs Python reference $CZ_GATE_OVERLAY_SHA"
+        ok=0
+    fi
+    [ "$ok" = 1 ] && echo "    overlay-gen OK (fecmn.big matches the Python reference: $got)"
+else
+    echo "    overlay-gen FAILED:"
+    tail -5 /tmp/overlay.log | sed 's/^/      /'
+fi
+echo "    [4/4] boot from the extracted tree (no GPU in this container — the renderer"
 echo "          cannot run here and is covered by the host-side first-run test):"
 mkdir -p /w/assets/save
 CZ_ROOT=/w CZ_VKDRAW=0 CZ_NO_WINDOW=1 CZ_NO_AUDIO_OUT=1 CZ_FILE_TRACE=1 \
@@ -209,6 +243,11 @@ grep -q "first-run-flow OK" "$LOG" || {
 # The dlopen gate's own sentence — a .spv actually produced inside the container.
 grep -q "dxc-translate OK" "$LOG" || {
     echo "GATE FAILED: the bundled libdxcompiler.so did not translate a shader" >&2
+    missing_marker=1; }
+# The overlay generation's own sentence — the C++ generator ran in the container
+# and its fecmn.big hashed identical to the Python reference (release-github §0.4).
+grep -q "overlay-gen OK" "$LOG" || {
+    echo "GATE FAILED: overlay generation did not run or did not match the Python reference" >&2
     missing_marker=1; }
 # And nothing the bundle must carry may be missing.
 grep -q " MISSING" "$LOG" && {

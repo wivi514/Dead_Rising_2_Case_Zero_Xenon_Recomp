@@ -160,6 +160,17 @@ print(f"    prewarm.keys                    {n} keys")
 PY
 cp "$ROOT/tools/release/prewarm.keys" "$STAGE/"
 
+# THE KEY-CAP CHIPS (release-github §0): the 25 keyboard prompt icons as finished
+# DXT5 texel blobs — OUR art, no Capcom byte — which the first-run overlay
+# generator (host/overlay_gen.cpp) composes into the player's own fecmn.tex. All
+# 25 must be present: a partial set would generate a bank with some pad glyphs
+# silently surviving, the exact half-present shape §0 exists to prevent.
+CHIPS=$(ls "$ROOT/tools/release/kbm_chips"/*.dxt 2>/dev/null | wc -l)
+[ "$CHIPS" -eq 25 ] || fail "tools/release/kbm_chips has $CHIPS of 25 chip blobs"
+mkdir -p "$STAGE/kbm_chips"
+cp "$ROOT/tools/release/kbm_chips"/*.dxt "$STAGE/kbm_chips/"
+echo "    kbm_chips/                      25 key-cap prompt icons (our art)"
+
 # RELEASE DEFAULTS (part 85). Every dev recipe says CZ_VKDRAW=1 out loud and the
 # binary defaults it off, because the same binary with it unset is the control arm for
 # every renderer claim. A player gets the opposite default from this file, which

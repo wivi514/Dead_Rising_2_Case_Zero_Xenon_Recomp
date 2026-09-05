@@ -99,6 +99,16 @@ if ($pkMagic -ne 0x5750435A -or $pkVer -ne 1 -or $pkN -eq 0 -or $pkb.Length -ne 
 Copy-Item $pk $Stage
 Write-Host ("    {0,-20}          pre-warm seed, {1} keys" -f "prewarm.keys", $pkN)
 
+# The key-cap chips (release-github §0): the 25 keyboard prompt icons as finished
+# DXT5 texel blobs — our art, no Capcom byte — composed into the player's own
+# fecmn.tex by the first-run overlay generator. All 25 or refuse: a partial set
+# would ship a bank with some pad glyphs silently surviving.
+$chips = @(Get-ChildItem (Join-Path $Root "tools\release\kbm_chips") -Filter *.dxt -ErrorAction SilentlyContinue)
+if ($chips.Count -ne 25) { Fail "tools\release\kbm_chips has $($chips.Count) of 25 chip blobs" }
+New-Item -ItemType Directory -Force (Join-Path $Stage "kbm_chips") | Out-Null
+$chips | Copy-Item -Destination (Join-Path $Stage "kbm_chips")
+Write-Host ("    {0,-20}          25 key-cap prompt icons (our art)" -f "kbm_chips/")
+
 Copy-Item (Join-Path $Root "tools\extract_stfs.py") (Join-Path $Stage "tools")
 Copy-Item (Join-Path $Root "LICENSE") $Stage
 Copy-Item (Join-Path $Root "tools\release\README.md") $Stage
