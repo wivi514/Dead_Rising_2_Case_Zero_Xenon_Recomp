@@ -876,13 +876,24 @@ struct Semaphore final : KernelObject
         return STATUS_SUCCESS;
     }
 
-    uint32_t Release(uint32_t releaseCount)
+    // NT semantics: a release past the limit FAILS with STATUS_SEMAPHORE_LIMIT_EXCEEDED,
+    // the count unchanged and the out-parameter unwritten. The first version ignored
+    // `maximum` and let the count grow unbounded, which broke the invariant the title's
+    // job scheduler is built on (count == queued work, capped at the limit the guest
+    // asked for — every one of its NtCreateSemaphore calls passes maximum=0x10) and let
+    // the czamd boot-hang's kick loop inflate a work semaphore to 66 million. The
+    // guest's own release wrapper checks this status and SetLastError()s it — it is
+    // Win32 ReleaseSemaphore, expected to be able to fail (part 100).
+    uint32_t Release(uint32_t releaseCount, uint32_t* previous)
     {
         std::lock_guard lock(m);
-        const uint32_t previous = count;
+        if (maximum && count + releaseCount > maximum)
+            return STATUS_SEMAPHORE_LIMIT_EXCEEDED;
+        if (previous)
+            *previous = count;
         count += releaseCount;
         cv.notify_all();
-        return previous;
+        return STATUS_SUCCESS;
     }
 };
 
@@ -1021,7 +1032,10 @@ static uint32_t NtReleaseSemaphore_x(Semaphore* sem, uint32_t releaseCount,
             *previousCount = 0;
         return STATUS_INVALID_HANDLE;
     }
-    const uint32_t previous = sem->Release(releaseCount);
+    uint32_t previous = 0;
+    const uint32_t status = sem->Release(releaseCount, &previous);
+    if (status != STATUS_SUCCESS)
+        return status;
     if (previousCount)
         *previousCount = static_cast<int32_t>(previous);
     return STATUS_SUCCESS;
