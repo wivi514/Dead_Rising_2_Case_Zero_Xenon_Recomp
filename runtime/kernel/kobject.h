@@ -14,6 +14,7 @@
 #include <cstdint>
 #include <mutex>
 #include <type_traits>
+#include <vector>
 
 #include <xbox.h>
 
@@ -58,6 +59,7 @@ extern std::recursive_mutex g_kernelLock;
 void RegisterKernelHandle(uint32_t handle);
 bool UnregisterKernelHandle(uint32_t handle);
 bool IsLiveKernelHandle(uint32_t handle);
+std::vector<uint32_t> SnapshotKernelHandles();   // CZ_KOBJ_DUMP
 
 // KERNEL OBJECTS LIVE WHERE THE GUEST CAN WRITE, and this is how we survive that.
 //

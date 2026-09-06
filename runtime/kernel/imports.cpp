@@ -811,12 +811,28 @@ static uint32_t GuestTimeoutToMs(be<int64_t>* timeout)
     return static_cast<uint32_t>((-t) / 10000);
 }
 
+// CZ_KOBJ_DUMP bookkeeping, shared by Event and Semaphore: who touched the object
+// last and how many threads are inside its Wait right now. Plain atomics, updated
+// unconditionally — the cost is a handful of relaxed stores on paths that already
+// take a mutex, and gating them on the env var would make the instrument's own
+// numbers unreadable (a waiter counted only after the arm turns on undercounts
+// exactly the parked thread the dump exists to find).
+struct KobjActivity
+{
+    std::atomic<uint32_t> waiters{ 0 };
+    std::atomic<uint32_t> lastWaitTid{ 0 };
+    std::atomic<uint32_t> lastSignalTid{ 0 };
+    std::atomic<uint64_t> waitCalls{ 0 };
+    std::atomic<uint64_t> signalCalls{ 0 };
+};
+
 struct Event final : KernelObject
 {
     std::mutex m;
     std::condition_variable cv;
     bool manualReset;
     bool signaled;
+    KobjActivity act;
 
     Event(XKEVENT* header) : manualReset(header->Type == 0), signaled(header->SignalState != 0) {}
     Event(bool manualReset, bool initialState) : manualReset(manualReset), signaled(initialState) {}
@@ -824,6 +840,10 @@ struct Event final : KernelObject
 
     uint32_t Wait(uint32_t timeoutMs) override
     {
+        act.lastWaitTid = CurrentGuestThreadId();
+        act.waitCalls++;
+        act.waiters++;
+        struct Dec { std::atomic<uint32_t>& w; ~Dec() { w--; } } dec{ act.waiters };
         std::unique_lock lock(m);
         if (timeoutMs == WAIT_TIMEOUT_INFINITE)
             cv.wait(lock, [&] { return signaled; });
@@ -836,6 +856,8 @@ struct Event final : KernelObject
 
     void Set()
     {
+        act.lastSignalTid = CurrentGuestThreadId();
+        act.signalCalls++;
         std::lock_guard lock(m);
         signaled = true;
         // notify_all even for auto-reset events. Exactly-one-release is still
@@ -859,6 +881,7 @@ struct Semaphore final : KernelObject
     std::condition_variable cv;
     uint32_t count;
     uint32_t maximum;
+    KobjActivity act;
 
     Semaphore(XKSEMAPHORE* sem) : count(sem->Header.SignalState), maximum(sem->Limit) {}
     Semaphore(uint32_t count, uint32_t maximum) : count(count), maximum(maximum) {}
@@ -866,6 +889,10 @@ struct Semaphore final : KernelObject
 
     uint32_t Wait(uint32_t timeoutMs) override
     {
+        act.lastWaitTid = CurrentGuestThreadId();
+        act.waitCalls++;
+        act.waiters++;
+        struct Dec { std::atomic<uint32_t>& w; ~Dec() { w--; } } dec{ act.waiters };
         std::unique_lock lock(m);
         auto ready = [&] { return count > 0; };
         if (timeoutMs == WAIT_TIMEOUT_INFINITE)
@@ -886,6 +913,8 @@ struct Semaphore final : KernelObject
     // Win32 ReleaseSemaphore, expected to be able to fail (part 100).
     uint32_t Release(uint32_t releaseCount, uint32_t* previous)
     {
+        act.lastSignalTid = CurrentGuestThreadId();
+        act.signalCalls++;
         std::lock_guard lock(m);
         if (maximum && count + releaseCount > maximum)
             return STATUS_SEMAPHORE_LIMIT_EXCEEDED;
@@ -896,6 +925,70 @@ struct Semaphore final : KernelObject
         return STATUS_SUCCESS;
     }
 };
+
+// CZ_KOBJ_DUMP=N: every N seconds, walk the live handle registry and print each
+// semaphore's count/max/waiters and each waited-on event's state, with the last
+// waiter and signaller thread ids. Built for part 100's czamd boot hang, where the
+// frozen state is a scheduler protocol failure and the question "which handle does
+// the kick loop pound, and who if anyone is parked on it" had no instrument: the
+// stall trace only sees sleepers, the wait trace only sees 5-second blocking waits,
+// and the import counters see neither handles nor waiters.
+static void KobjDumpReporter(unsigned seconds)
+{
+    for (;;)
+    {
+        std::this_thread::sleep_for(std::chrono::seconds(seconds));
+        const std::vector<uint32_t> handles = SnapshotKernelHandles();
+        unsigned sems = 0, evts = 0, printed = 0;
+        fprintf(stderr, "[kobj] dump: %zu live handles\n", handles.size());
+        for (uint32_t h : handles)
+        {
+            KernelObject* obj = GetKernelObject(h);
+            if (!KernelObjectIsIntact(obj))
+                continue;
+            if (auto* s = dynamic_cast<Semaphore*>(obj))
+            {
+                sems++;
+                fprintf(stderr,
+                        "[kobj] sem %08X count=%u max=%u waiters=%u waits=%llu rels=%llu "
+                        "lastWait=%08X lastRel=%08X\n",
+                        h, s->count, s->maximum, s->act.waiters.load(),
+                        (unsigned long long)s->act.waitCalls.load(),
+                        (unsigned long long)s->act.signalCalls.load(),
+                        s->act.lastWaitTid.load(), s->act.lastSignalTid.load());
+                printed++;
+            }
+            else if (auto* e = dynamic_cast<Event*>(obj))
+            {
+                evts++;
+                // Events number in the hundreds; only the ones somebody has ever
+                // waited on say anything about a stuck hand-off.
+                if (e->act.waitCalls.load() == 0)
+                    continue;
+                fprintf(stderr,
+                        "[kobj] evt %08X sig=%d manual=%d waiters=%u waits=%llu sets=%llu "
+                        "lastWait=%08X lastSet=%08X\n",
+                        h, e->signaled ? 1 : 0, e->manualReset ? 1 : 0, e->act.waiters.load(),
+                        (unsigned long long)e->act.waitCalls.load(),
+                        (unsigned long long)e->act.signalCalls.load(),
+                        e->act.lastWaitTid.load(), e->act.lastSignalTid.load());
+                printed++;
+            }
+        }
+        fprintf(stderr, "[kobj] dump end: %u sems, %u events, %u printed\n", sems, evts, printed);
+    }
+}
+static void MaybeStartKobjDump()
+{
+    static std::once_flag once;
+    std::call_once(once, [] {
+        if (const char* v = getenv("CZ_KOBJ_DUMP"))
+        {
+            const unsigned s = std::max(1u, unsigned(strtoul(v, nullptr, 10)));
+            std::thread(KobjDumpReporter, s).detach();
+        }
+    });
+}
 
 // A handle is just a guest pointer with bit 31 set, so a stale or garbage one
 // translates to arbitrary memory and Set()/Reset() would take a mutex that was never
@@ -922,6 +1015,7 @@ static Event* ResolveEvent(uint32_t handle, const char* who)
 static uint32_t NtCreateEvent_x(be<uint32_t>* handle, void* attrs, uint32_t eventType,
                                 uint32_t initialState)
 {
+    MaybeStartKobjDump();
     if (!handle)
         return STATUS_INVALID_PARAMETER;
     Event* event = CreateKernelObject<Event>(eventType == 0, initialState != 0);
@@ -1011,6 +1105,7 @@ static uint32_t KeResetEvent_x(XKEVENT* event)
 static uint32_t NtCreateSemaphore_x(be<uint32_t>* handle, XOBJECT_ATTRIBUTES* attrs,
                                     uint32_t initialCount, uint32_t maximumCount)
 {
+    MaybeStartKobjDump();
     if (!handle)
         return STATUS_INVALID_PARAMETER;
     Semaphore* sem = CreateKernelObject<Semaphore>(initialCount, maximumCount);

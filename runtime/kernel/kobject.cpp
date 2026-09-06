@@ -54,6 +54,16 @@ bool IsLiveKernelHandle(uint32_t handle)
     return g_kernelHandles.count(handle) != 0;
 }
 
+// For CZ_KOBJ_DUMP (part 100): a frozen boot's diagnosis needs "every semaphore's
+// count and every thread parked on it" read out of the LIVE state, and the registry
+// is the only enumeration of the objects that exists. A snapshot, not an iterator,
+// so the dump walks without holding the kernel lock across guest-memory reads.
+std::vector<uint32_t> SnapshotKernelHandles()
+{
+    std::lock_guard guard(g_kernelLock);
+    return std::vector<uint32_t>(g_kernelHandles.begin(), g_kernelHandles.end());
+}
+
 void DestroyKernelObject(uint32_t handle)
 {
     std::lock_guard guard(g_kernelLock);
