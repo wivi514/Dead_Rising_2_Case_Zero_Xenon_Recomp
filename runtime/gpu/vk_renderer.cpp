@@ -10572,28 +10572,31 @@ bool NoPipelineCache1()
 }
 uint64_t g_pipeCache1Hits = 0, g_pipeCache1Misses = 0;
 
-VkPipeline GetPipeline(const PipelineKey& key, const ShaderMeta& vs, const ShaderMeta& ps)
+// ===================================================================================
+// BuildPipelineObject — the PURE half of GetPipeline (part 98, the release-thread
+// stutter). It fills the create-info structs and calls vkCreateGraphicsPipelines,
+// and touches NOTHING else: no counters, no pipelines map, no front cache, no key
+// save. That is a threading contract, not tidiness — the async worker below runs
+// this off the pump thread, and every impure effect stays in RegisterBuiltPipeline,
+// which only the pump thread calls, so counter semantics stay single-threaded.
+// What the worker may read: R->device / pipeCache / pipeLayout / drawIdModule /
+// msaaSamples / physical and the two format fields — all set at init and immutable
+// during play — plus the ShaderMeta COPIES its job carries. vkCreateGraphicsPipelines
+// against the same VkPipelineCache from two threads is legal: a default-created cache
+// is internally synchronized.
+struct PipelineBuildResult
 {
-    // The front cache. Correct by construction: it only ever answers for a key that
-    // compares EQUAL to the one it stored, and it is invalidated by being overwritten on
-    // every miss, so an insert cannot leave it holding a handle the table disagrees with.
-    if (!NoPipelineCache1())
-    {
-        if (R->lastPipelineValid && R->lastPipelineKey == key)
-        {
-            ++g_pipeCache1Hits;
-            return R->lastPipeline;
-        }
-        ++g_pipeCache1Misses;
-    }
-    auto it = R->pipelines.find(key);
-    if (it != R->pipelines.end())
-    {
-        R->lastPipelineKey = key;
-        R->lastPipeline = it->second;
-        R->lastPipelineValid = true;
-        return it->second;
-    }
+    VkPipeline pipeline = VK_NULL_HANDLE;
+    uint64_t wallNs = 0;          // the vkCreateGraphicsPipelines call alone
+    bool refusedFormat = false;   // unmapped Xenos vertex format — register NULL, once
+    bool createFailed = false;
+    bool twoSidedStencil = false; // engagement counters, counted at registration
+    bool twoSidedCcwArm = false;
+};
+static PipelineBuildResult BuildPipelineObject(const PipelineKey& key, const ShaderMeta& vs,
+                                               const ShaderMeta& ps)
+{
+    PipelineBuildResult out;
 
     // --- vertex input, straight out of the vertex shader's own declaration ---------
     // One Vulkan binding per attribute rather than one per stream. The Xenos vertex
@@ -10610,21 +10613,23 @@ VkPipeline GetPipeline(const PipelineKey& key, const ShaderMeta& vs, const Shade
         const VkFormat f = XenosVertexFormat(a.format, a.isSigned, a.isInteger);
         if (f == VK_FORMAT_UNDEFINED)
         {
+            // Reachable from the pump thread and the async worker; the mutex costs only
+            // on a format nobody has mapped, which is at most a few times per run.
+            static std::mutex seenMx;
             static std::vector<uint32_t> seen;
-            if (std::find(seen.begin(), seen.end(), a.format) == seen.end())
             {
-                seen.push_back(a.format);
-                fprintf(stderr,
-                        "[vk] REFUSED pipeline: unmapped Xenos vertex format %u "
-                        "(vs=%016llx location=%d) — add it to XenosVertexFormat\n",
-                        a.format, (unsigned long long)key.vsHash, a.location);
+                std::lock_guard<std::mutex> lk(seenMx);
+                if (std::find(seen.begin(), seen.end(), a.format) == seen.end())
+                {
+                    seen.push_back(a.format);
+                    fprintf(stderr,
+                            "[vk] REFUSED pipeline: unmapped Xenos vertex format %u "
+                            "(vs=%016llx location=%d) — add it to XenosVertexFormat\n",
+                            a.format, (unsigned long long)key.vsHash, a.location);
+                }
             }
-            Count("pipeline: refused, unmapped vertex format");
-            R->pipelines.emplace(key, VK_NULL_HANDLE);
-            R->lastPipelineKey = key;
-            R->lastPipeline = VK_NULL_HANDLE;
-            R->lastPipelineValid = true;
-            return VK_NULL_HANDLE;
+            out.refusedFormat = true;
+            return out;
         }
         // A mapped format the DEVICE cannot use as a vertex buffer is a different
         // failure from an unmapped one and has to say so by name. The SCALED formats
@@ -10632,7 +10637,10 @@ VkPipeline GetPipeline(const PipelineKey& key, const ShaderMeta& vs, const Shade
         // with an unsupported vertex format is undefined behaviour that presents as
         // wrong geometry rather than as an error.
         {
+            // Same two-thread reachability as `seen` above; same once-per-format cost.
+            static std::mutex checkedMx;
             static std::vector<uint32_t> checked;
+            std::lock_guard<std::mutex> lk(checkedMx);
             if (std::find(checked.begin(), checked.end(), uint32_t(f)) == checked.end())
             {
                 checked.push_back(uint32_t(f));
@@ -10803,11 +10811,11 @@ VkPipeline GetPipeline(const PipelineKey& key, const ShaderMeta& vs, const Shade
             // Engagement counters, at pipeline creation because facing is pipeline
             // state: the first says two-sided stencil states were MET this run (a
             // facing verdict from a run where this never fires means nothing), the
-            // second that the pre-part-58 control arm was live.
-            COUNT("pipeline: two-sided stencil built (facing matters here)");
-            if (ccwFront)
-                COUNT("pipeline: two-sided stencil built with FRONT=CCW "
-                      "(CZ_VK_STENCIL_CCW_FRONT control arm)");
+            // second that the pre-part-58 control arm was live. Counted at
+            // registration (pump thread), not here — this function may be on the
+            // async worker.
+            out.twoSidedStencil = true;
+            out.twoSidedCcwArm = ccwFront;
         }
         else
         {
@@ -10983,6 +10991,248 @@ VkPipeline GetPipeline(const PipelineKey& key, const ShaderMeta& vs, const Shade
     pci.pDynamicState = &dsi;
     pci.layout = R->pipeLayout;
 
+    // TIMED whichever thread runs it — the wall time travels in the result so the
+    // caller can charge it to the right place (NotePipelineCreate on the sync path,
+    // the drain's summary line on the async one). The story of WHY creation is timed
+    // at all — part 83's 372 ms frame — is at the sync call site in GetPipeline.
+    const uint64_t tw0 = NowNs();
+    VkPipeline pipeline = VK_NULL_HANDLE;
+    const VkResult r =
+        vkCreateGraphicsPipelines(R->device, R->pipeCache, 1, &pci, nullptr, &pipeline);
+    out.wallNs = NowNs() - tw0;
+    if (r != VK_SUCCESS)
+    {
+        fprintf(stderr, "[vk] vkCreateGraphicsPipelines failed (%d) vs=%016llx ps=%016llx\n",
+                int(r), (unsigned long long)key.vsHash, (unsigned long long)key.psHash);
+        out.createFailed = true;
+        pipeline = VK_NULL_HANDLE;
+    }
+    out.pipeline = pipeline;
+    return out;
+}
+
+// Registration — the IMPURE half. PUMP THREAD ONLY: the synchronous path and the async
+// drain both end here, so every counter, the pipelines map, the periodic key save and
+// the front cache keep their single-threaded semantics.
+static VkPipeline RegisterBuiltPipeline(const PipelineKey& key, const PipelineBuildResult& b)
+{
+    if (b.refusedFormat)
+        Count("pipeline: refused, unmapped vertex format");
+    else if (b.createFailed)
+        Count("pipeline: creation failed");
+    else
+        Count("pipeline: created");
+    if (b.twoSidedStencil)
+    {
+        COUNT("pipeline: two-sided stencil built (facing matters here)");
+        if (b.twoSidedCcwArm)
+            COUNT("pipeline: two-sided stencil built with FRONT=CCW "
+                  "(CZ_VK_STENCIL_CCW_FRONT control arm)");
+    }
+    R->pipelines.emplace(key, b.pipeline);
+    // Persist the growing key set as we go, so a kill or a crash cannot throw away the
+    // warm-up. See SavePipelineKeysIfDue.
+    SavePipelineKeysIfDue();
+    R->lastPipelineKey = key;
+    R->lastPipeline = b.pipeline;
+    R->lastPipelineValid = true;
+    return b.pipeline;
+}
+
+// ===================================================================================
+// pipelinejit — ASYNC PIPELINE CREATION ON MISS (part 98)
+// ===================================================================================
+//
+// WHY. Part 83 measured what a NEW player's machine does at every first encounter with
+// a material: vkCreateGraphicsPipelines on the frame thread at 1-200 ms a call against
+// a cold driver cache (one frame: 396 ms wall, 372 ms in GetPipeline). The boot
+// pre-warm fixed the 757 keys whose shaders exist at load — but ~600 keys name VERTEX
+// shaders a fresh install does not have yet (the disc holds none — release plan §1.4),
+// so those pipelines could only be built mid-play, synchronously, which is the stutter
+// the release thread reported within a day of v1.0.0. docs/async-pipeline-plan.md is
+// the plan and the pre-registered predictions.
+//
+// WHAT. The exact shape of shaderjit one block up, one level higher in the stack: a
+// GetPipeline miss hands the key plus COPIES of the two ShaderMeta to one worker
+// thread, the draw is skipped under its own counter while the build is in flight —
+// the same visual contract a draw whose shader is still translating has had since
+// D.4 — and finished builds are drained on the pump thread at the miss site (the miss
+// recurs every draw, so the drain is reached) and once per frame in DoSwapImpl (so a
+// pipeline whose draws stopped recurring still lands and its key still saves).
+//
+// THREADING. Enqueue and Drain run on the pump thread only, so `pending` and the
+// shader/pipeline tables are single-threaded; the worker touches only its own queue
+// entries and the pure builder above. The queue mutex guards queue/finished, and
+// `finishedCount` mirrors finished.size() UNDER THAT SAME MUTEX so the lock-free
+// "anything to drain?" probe can never underflow. One worker on purpose (the
+// operator's rule: leave the cores to the game); never joined (this runtime exits
+// with _Exit, same shape as shaderjit).
+//
+// CZ_VK_SYNC_PIPELINE=1 is the same-binary control arm: the part-83 behaviour.
+namespace pipelinejit
+{
+struct Job
+{
+    PipelineKey key{};
+    // COPIES, deliberately: ShaderMeta is plain data plus module handles, and a copy
+    // is what lets the worker never read the live shader tables the pump thread grows.
+    ShaderMeta vs;
+    ShaderMeta ps;
+};
+struct Done
+{
+    PipelineKey key{};
+    PipelineBuildResult build;
+};
+std::mutex mx;
+std::condition_variable cv;
+std::deque<Job> queue;                    // guarded by mx
+std::vector<Done> finished;               // guarded by mx
+std::atomic<uint32_t> finishedCount{ 0 }; // == finished.size(); mutated under mx only
+std::unordered_set<PipelineKey, PipelineKeyHash> pending; // pump thread only
+std::vector<PipelineKey> prewarmWaiting;  // pump thread only — the pre-warm chain
+bool workerUp = false;                    // pump thread only
+bool bootDone = false;                    // set after PrewarmPipelines(): the async gate
+                                          // stays closed while the boot warm runs, so
+                                          // the load-time 757 stay synchronous where a
+                                          // player expects to wait
+
+bool AsyncOn()
+{
+    static const bool syncArm = EnvOn("CZ_VK_SYNC_PIPELINE");
+    return !syncArm && bootDone;
+}
+
+void Worker()
+{
+    for (;;)
+    {
+        Job job;
+        {
+            std::unique_lock<std::mutex> lk(mx);
+            cv.wait(lk, [] { return !queue.empty(); });
+            job = std::move(queue.front());
+            queue.pop_front();
+        }
+        Done d;
+        d.key = job.key;
+        d.build = BuildPipelineObject(job.key, job.vs, job.ps);
+        {
+            std::lock_guard<std::mutex> lk(mx);
+            finished.push_back(std::move(d));
+            finishedCount.fetch_add(1, std::memory_order_release);
+        }
+    }
+}
+
+// Pump thread. `urgent` = a draw is being skipped for this key RIGHT NOW, so it jumps
+// ahead of speculative pre-warm-chain work in the queue.
+void Enqueue(const PipelineKey& key, const ShaderMeta& vs, const ShaderMeta& ps,
+             bool urgent)
+{
+    pending.insert(key);
+    if (!workerUp)
+    {
+        workerUp = true;
+        std::thread(Worker).detach();
+    }
+    {
+        std::lock_guard<std::mutex> lk(mx);
+        if (urgent)
+            queue.push_front({ key, vs, ps });
+        else
+            queue.push_back({ key, vs, ps });
+    }
+    cv.notify_one();
+}
+
+// Pump thread. Registers every finished build; returns true if anything landed, so the
+// miss site re-runs its lookup. The probe is one relaxed-ish atomic read — free on the
+// standing path.
+bool Drain()
+{
+    if (!finishedCount.load(std::memory_order_acquire))
+        return false;
+    std::vector<Done> batch;
+    {
+        std::lock_guard<std::mutex> lk(mx);
+        batch.swap(finished);
+        finishedCount.fetch_sub(uint32_t(batch.size()), std::memory_order_release);
+    }
+    if (batch.empty())
+        return false;
+    uint64_t ns = 0;
+    for (const Done& d : batch)
+    {
+        pending.erase(d.key);
+        if (R->pipelines.count(d.key))
+            continue; // one producer per key today; the guard keeps the map honest anyway
+        RegisterBuiltPipeline(d.key, d.build);
+        COUNT("pipeline: created in background (async)");
+        ns += d.build.wallNs;
+    }
+    fprintf(stderr, "[vk] async pipeline: %zu built in background (%.1f ms create time "
+                    "moved off the frame thread)\n",
+            batch.size(), double(ns) * 1e-6);
+    return true;
+}
+} // namespace pipelinejit
+
+VkPipeline GetPipeline(const PipelineKey& key, const ShaderMeta& vs, const ShaderMeta& ps)
+{
+    // The front cache. Correct by construction: it only ever answers for a key that
+    // compares EQUAL to the one it stored, and it is invalidated by being overwritten on
+    // every miss, so an insert cannot leave it holding a handle the table disagrees with.
+    if (!NoPipelineCache1())
+    {
+        if (R->lastPipelineValid && R->lastPipelineKey == key)
+        {
+            ++g_pipeCache1Hits;
+            return R->lastPipeline;
+        }
+        ++g_pipeCache1Misses;
+    }
+    auto it = R->pipelines.find(key);
+    if (it != R->pipelines.end())
+    {
+        R->lastPipelineKey = key;
+        R->lastPipeline = it->second;
+        R->lastPipelineValid = true;
+        return it->second;
+    }
+
+    // THE ASYNC PATH (part 98). A pending key touches NEITHER the pipelines map NOR the
+    // front cache — registering a null would read as "refused forever", and the whole
+    // point of pending is that the answer changes.
+    if (pipelinejit::AsyncOn())
+    {
+        if (pipelinejit::Drain())
+        {
+            auto hit = R->pipelines.find(key);
+            if (hit != R->pipelines.end())
+            {
+                R->lastPipelineKey = key;
+                R->lastPipeline = hit->second;
+                R->lastPipelineValid = true;
+                return hit->second;
+            }
+        }
+        if (pipelinejit::pending.count(key))
+        {
+            // Recurs every draw that wants the pipeline while it builds, so it takes
+            // the cheap counter path — and it is deliberately NOT the "no translated
+            // shader" class of report: a skip here is momentary by construction.
+            COUNT("draw: skipped, pipeline creating in background");
+            return VK_NULL_HANDLE;
+        }
+        pipelinejit::Enqueue(key, vs, ps, /*urgent=*/true);
+        Count("pipeline: async create enqueued at a draw");
+        COUNT("draw: skipped, pipeline creating in background");
+        return VK_NULL_HANDLE;
+    }
+
+    // THE SYNCHRONOUS PATH — the boot pre-warm, and the CZ_VK_SYNC_PIPELINE control arm.
+    //
     // TIMED, and counted per reporting window, because this is the one thing inside
     // `other` that costs MILLISECONDS rather than nanoseconds — and an operator session
     // spent an evening making that matter.
@@ -11002,42 +11252,23 @@ VkPipeline GetPipeline(const PipelineKey& key, const ShaderMeta& vs, const Shade
     // and the honest response is this counter rather than a fourth argument. Gotcha 30:
     // a hypothesis that has not been given a way to fail is not evidence.
     //
-    // Cost when the profile is off: one bool test on a path that already builds a whole
-    // VkGraphicsPipelineCreateInfo, i.e. nothing. This is not a hot path — that is the
-    // entire hypothesis.
     // PART 71: TIMED UNCONDITIONALLY, and through the pipeline cache. See the
-    // `NotePipelineCreate` comment for why the `g_profileOn` timer below was not enough —
+    // `NotePipelineCreate` comment for why the `g_profileOn` timer was not enough —
     // in short, it is off in every session whose stutter anyone has ever reported.
-    const uint64_t tw0 = NowNs();
+    // PART 98: the create's own wall time travels in the build result, so the number
+    // NotePipelineCreate records is the same one it always recorded.
     const uint64_t t0 = ProfNow();
-    VkPipeline pipeline = VK_NULL_HANDLE;
-    const VkResult r =
-        vkCreateGraphicsPipelines(R->device, R->pipeCache, 1, &pci, nullptr, &pipeline);
-    NotePipelineCreate(NowNs() - tw0, R->frame);
-    if (g_profileOn)
+    const PipelineBuildResult b = BuildPipelineObject(key, vs, ps);
+    if (!b.refusedFormat)
     {
-        g_prof.pipelineNs += ProfNow() - t0;
-        g_prof.pipelinesCreated++;
+        NotePipelineCreate(b.wallNs, R->frame);
+        if (g_profileOn)
+        {
+            g_prof.pipelineNs += ProfNow() - t0;
+            g_prof.pipelinesCreated++;
+        }
     }
-    if (r != VK_SUCCESS)
-    {
-        fprintf(stderr, "[vk] vkCreateGraphicsPipelines failed (%d) vs=%016llx ps=%016llx\n",
-                int(r), (unsigned long long)key.vsHash, (unsigned long long)key.psHash);
-        Count("pipeline: creation failed");
-        pipeline = VK_NULL_HANDLE;
-    }
-    else
-    {
-        Count("pipeline: created");
-    }
-    R->pipelines.emplace(key, pipeline);
-    // Persist the growing key set as we go, so a kill or a crash cannot throw away the
-    // warm-up. See SavePipelineKeysIfDue.
-    SavePipelineKeysIfDue();
-    R->lastPipelineKey = key;
-    R->lastPipeline = pipeline;
-    R->lastPipelineValid = true;
-    return pipeline;
+    return RegisterBuiltPipeline(key, b);
 }
 
 // ===================================================================================
@@ -25886,6 +26117,10 @@ bool InitCommon()
     // and before the guest has drawn anything, so every pipeline this session needs is
     // already built when the first frame asks for one. See PrewarmPipelines.
     PrewarmPipelines();
+    // Only now may GetPipeline go asynchronous (part 98): the boot warm above stays
+    // synchronous — at load, where a player expects to wait — and everything after it
+    // is mid-play, where a 1-200 ms create on the frame thread is the reported stutter.
+    pipelinejit::bootDone = true;
 
     R->presentPixels.resize(size_t(RSX(R->targetWidth)) * RS(R->targetHeight) * 4);
     g_texCensus = EnvOn("CZ_VK_TEX_CENSUS");
@@ -26141,6 +26376,12 @@ void DoSwapImpl(uint8_t* base, uint32_t frontBuffer, uint32_t width, uint32_t he
     // than the wrong one.
     R->frontBuffer = frontBuffer;
     ++R->frame;
+
+    // Part 98: land any background-built pipelines even when no draw is currently
+    // missing them, so their keys reach the periodic save and a returning material
+    // hits the map instead of the pending set. One atomic read when there is nothing.
+    if (pipelinejit::AsyncOn())
+        pipelinejit::Drain();
 
     // ITEM 1.1: start the workers on the frame that is beginning, here and not in
     // `BeginFrame`, which does not run until the first draw. Everything between this
