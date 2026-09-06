@@ -39,6 +39,10 @@ six runs: `~/DR2CZ-troubleshooting/part98/`, harness in the scratchpad's
 
 ## §1 What is owed, in order
 
+0. **THE OPERATOR'S OWN VERDICT FIRST (their instruction, 2026-09-06): they will
+   test the fix on a NEW PC** — a true session-one machine, the exact population the
+   reports come from and better than any simulation here. Everything below waits on
+   it; a headless number does not outrank their report.
 1. **v1.0.1.** The fix is in the tree, NOT in the published artifacts. Rebuild both
    (linux here, windows via czwin — remember the standing note that the shipped
    Windows bundle must be built at head), re-gate (`release_text_identity.sh`,
