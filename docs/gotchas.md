@@ -5814,3 +5814,27 @@ From phase C part 18 (the frame rate — and none of it was work):
      FIFO queues, urgent drained first), not a position. Found by counter, not by eye:
      the skip counter read 5.78 M with no promotion, and the tier fix took it −87%
      where the front-insertion version managed −72% (part 98).
+
+510. **AN ENGINE'S BOOT STATES CHAIN THROUGH THEIR SIDE EFFECTS — SKIP THE DISPLAY
+     DATA, NEVER THE STATE.** Part 99 tried to remove the boot logos by substituting
+     the requested top-level state (Startup → LegalScreen → Loading → FrontEnd on
+     this engine) and every spelling failed differently: jumping to FrontEnd
+     null-derefed (the FE preload never ran), jumping to Loading or BCGIntro hung
+     forever (each state's ENTER kicks the async work the NEXT state waits on).
+     The logos themselves turned out to be pure DATA — fecmn.big's intro.txt, an
+     event-chained cFEAnim timeline — and collapsing its keyframe Times to a
+     per-anim 1,2,3… shipped the skip with every enter/exit and every chained
+     event still firing through the engine's own machinery. On a state-machine
+     engine, ask "what draws this?" before "what state is this?": the drawn thing
+     is usually data you can shorten without touching the chain. (Blue Castle
+     engine — transfers to Case West verbatim, same intro.txt shape.)
+
+511. **A RECON ADDRESS IN A PLAN IS A TRANSCRIPTION, NOT A MEASUREMENT — WHEN
+     --find-uses READS ZERO ON IT, RE-DERIVE THE ADDRESS BEFORE BELIEVING THE
+     ZERO.** Part 99's plan recorded the state-name table at 0x82A6912C; the image
+     says `lis 0x82A6; addi -0x6ED4` = 0x82A5912C. One hex digit of typo made
+     every scan of the documented address return zero sites, which read as "the
+     table is unreferenced" — gotcha 3's shape, with the detector fed a wrong
+     input instead of broken. The five minutes of disassembling the REGISTRATION
+     function (which computes the address in two instructions) settled it; the
+     hours would have gone to theorising about why nobody reads the table.

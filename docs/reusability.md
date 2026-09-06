@@ -160,3 +160,20 @@ title, and they should save Case West most of a part:
   arm needs a same-binary control run back to back and a frame count quoted
   beside every number (gotchas 384-385). Part 64 spent an hour on three
   "improvements" that were partial reads.
+
+## Part 99: two launcher features that transfer to Case West nearly verbatim
+
+Both are Blue Castle engine facts, not Case Zero facts:
+
+- **Subtitle language**: the engine builds `str_%s.bcs` from the console language
+  answered by `ExGetXConfigSetting(3, 9)` / `XGetLanguage` (one boot-time read).
+  Measure the ID→bank mapping with one `CZ_FILE_TRACE` boot per `CZ_LANGUAGE=N`
+  before offering rows — Case Zero ships six banks (1=en 2=ja 4=fr 5=es 6=it
+  7=ko, 3/8 fall back to en); Case West's set needs its own census but the
+  mechanism is identical.
+- **The boot-logo skip**: the logos are `intro.txt` in fecmn.big — an
+  event-chained cFEAnim timeline — NOT the top-level states (gotcha 510: the
+  states chain through side effects and none is skippable). Collapse the
+  keyframe `Time`s per-anim to 1,2,3…, serve the variant archive as its own VFS
+  layer behind a toggle. `runtime/cpu/boot_skip.cpp`'s header carries the three
+  refuted mechanisms so Case West does not rebuild them.
