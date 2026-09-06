@@ -56,8 +56,10 @@
 //          what frees the camera from the stick's turn-rate ceiling (DR2 PC's
 //          MOUSE_RAW wiring, phaseA A.3).
 //        - mouse buttons -> the pad's own sources (left=BUTTON_3/X = attack,
-//          right=BUTTON_R2 = aim, middle=BUTTON_R3 = heavy attack/cam reset —
-//          DR2 PC's mousemap semantics through the pad's own bindings).
+//          right=BUTTON_L2 = aim, middle=BUTTON_R3 = heavy attack/cam reset).
+//          RIGHT WAS BUTTON_R2 UNTIL PART 99 and that was the self-firing
+//          assault rifle: R2 is the FIRE side (PLAYER_RAPID_FIRE_RT = X|R2
+//          HELD) and L2 is the aim — operator-verified on a physical pad.
 //      The conversion rewrites every source every tick, so every override is
 //      self-healing: stop writing and the pad's own values are back next tick.
 //
