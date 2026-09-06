@@ -1507,48 +1507,62 @@ void GenerateKbmLayer(const Paths& p,
         Refuse("fecmn.tex: no chip blob matched any bank entry — kbm_chips missing "
                "or wrong");
 
-    // THE TITLE-SCREEN STRINGS: three same-length byte edits, each of which must
-    // occur EXACTLY once, then the id-4049 LS -> MASH rewrite via a full table
-    // rebuild (the .bcs size is not pinned). Reads the game_patched bank this
-    // same run generated — the KB layer stacks on the part-60 layer.
+    // THE TITLE-SCREEN STRINGS. All SIX language banks get the id-4049 LS -> MASH
+    // rewrite via a full table rebuild (the .bcs size is not pinned) — the
+    // struggle prompt is mechanics, not prose, and before part 99 only str_en
+    // carried it, so a player who picked another language in the launcher got the
+    // pad wording back on the struggle prompt. The three ENGLISH-LITERAL edits
+    // (PRESS START/LEFT STICK) stay en-only: translating them is a content
+    // decision the operator owns, and a non-English player sees the pad wording
+    // for those two (recorded in the plan's §1.5). Reads the game_patched banks
+    // this same run generated — the KB layer stacks on the part-60 layer.
+    for (const char* lang : {"en", "fr", "it", "es", "ja", "ko"})
     {
-        Bytes sbank = ReadFileBytes(p.patched / "data" / "frontend" / "str_en.bcs");
-        struct Edit
+        const std::string bankName = std::string("str_") + lang + ".bcs";
+        Bytes sbank = ReadFileBytes(p.patched / "data" / "frontend" / bankName);
+        if (std::strcmp(lang, "en") == 0)
         {
-            const char* oldB;
-            size_t oldLen;
-            const char* newB;
-        };
-        const Edit edits[] = {
-            {"PRESS\0START\0", 12, "PRESS\0ENTER\0"},
-            {"PRESS START\0", 12, "PRESS ENTER\0"},
-            {"LEFT STICK ", 11, "A / D KEYS "},
-        };
-        for (const Edit& ed : edits)
-        {
-            size_t count = 0, at = 0;
-            for (size_t s = 0; s + ed.oldLen <= sbank.size(); ++s)
-                if (std::memcmp(sbank.data() + s, ed.oldB, ed.oldLen) == 0)
-                {
-                    ++count;
-                    at = s;
-                }
-            if (count != 1)
-                Refuse("str_en.bcs holds " + std::to_string(count) + " of a title "
-                       "string expected exactly once — refusing the KB edit");
-            std::memcpy(sbank.data() + at, ed.newB, ed.oldLen);
+            struct Edit
+            {
+                const char* oldB;
+                size_t oldLen;
+                const char* newB;
+            };
+            const Edit edits[] = {
+                {"PRESS\0START\0", 12, "PRESS\0ENTER\0"},
+                {"PRESS START\0", 12, "PRESS ENTER\0"},
+                {"LEFT STICK ", 11, "A / D KEYS "},
+            };
+            for (const Edit& ed : edits)
+            {
+                size_t count = 0, at = 0;
+                for (size_t s = 0; s + ed.oldLen <= sbank.size(); ++s)
+                    if (std::memcmp(sbank.data() + s, ed.oldB, ed.oldLen) == 0)
+                    {
+                        ++count;
+                        at = s;
+                    }
+                if (count != 1)
+                    Refuse("str_en.bcs holds " + std::to_string(count) + " of a title "
+                           "string expected exactly once — refusing the KB edit");
+                std::memcpy(sbank.data() + at, ed.newB, ed.oldLen);
+            }
         }
         std::vector<uint32_t> idOrder;
-        std::map<uint32_t, Bytes> table = ParseBcs(sbank, "str_en.bcs", &idOrder);
+        std::map<uint32_t, Bytes> table = ParseBcs(sbank, bankName.c_str(), &idOrder);
+        // Every bank says 'LS ' here except fr, which ships 'LS' — measured over
+        // all six patched banks (part 99), so both spellings pass the gate.
         const Bytes ls = {'L', 'S', ' '};
-        if (table.count(4049) == 0 || table[4049] != ls)
-            Refuse("str_en.bcs: string id 4049 is not 'LS ' — the bank layout "
-                   "moved; refusing to rewrite");
+        const Bytes lsNoSpace = {'L', 'S'};
+        if (table.count(4049) == 0 ||
+            (table[4049] != ls && table[4049] != lsNoSpace))
+            Refuse(bankName + ": string id 4049 is not 'LS'/'LS ' — the bank "
+                   "layout moved; refusing to rewrite");
         table[4049] = Bytes{'M', 'A', 'S', 'H'};
         const Bytes rebuilt = BuildBcs(idOrder, table); // keep the shipped id order
-        if (ParseBcs(rebuilt, "str_en.bcs (rebuilt)") != table)
-            Refuse("rebuilt str_en.bcs does not read back");
-        WriteFileBytes(p.kbm / "data" / "frontend" / "str_en.bcs", rebuilt);
+        if (ParseBcs(rebuilt, (bankName + " (rebuilt)").c_str()) != table)
+            Refuse("rebuilt " + bankName + " does not read back");
+        WriteFileBytes(p.kbm / "data" / "frontend" / bankName, rebuilt);
     }
 
     // glyph_swap.bin: the device-follow sidecar, PAD texels from the player's own
@@ -1593,7 +1607,8 @@ void GenerateKbmLayer(const Paths& p,
 // art change (re-export tools/release/kbm_chips with gen_kbm_icons.py
 // --export-chips in the same commit): a shipped update must not keep serving a
 // player's stale banks (the gotcha-13 shape, on disk).
-constexpr int kGeneratorVersion = 2;   // 2: y_button_ig legended Q (CW 112d47a)
+constexpr int kGeneratorVersion = 3;   // 3: id-4049 MASH in all six language banks
+                                       // (part 99); 2: y_button_ig legended Q
 
 fs::path StampPath(const Paths& p)
 {

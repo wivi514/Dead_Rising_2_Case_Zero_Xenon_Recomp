@@ -443,64 +443,72 @@ def main():
         for base, img in previews:
             img.save(pdir / f"{base}.png")
 
-    # THE TITLE-SCREEN STRING: with the keyboard live the title should say
-    # PRESS ENTER, the way DR2 PC's shell does. Two spellings ship — a
-    # PRESS\0START id pair (the title screen) and one "PRESS START" — and both
-    # replacements are SAME-LENGTH in-place edits of the game_patched bank (the
-    # str banks are layout-pinned like everything else), served from this
-    # overlay only while the keyboard is the input path.
-    sbank = (REPO / "assets/game_patched/data/frontend/str_en.bcs").read_bytes()
-    # IDS_HUD_LS ("LS ") labels ONLY the zombie-grab struggle prompt (both
-    # cFEText nodes of hud_infobar's w_zombie_grapple; no other layout uses
-    # id 4049) — with the tilt glyphs legended A/D the keyboard reading is A/D.
-    # "LEFT STICK" appears in exactly ONE string in the whole bank — the
-    # grapple tutorial ("Wiggle the LEFT STICK [icon] to escape grapples!") —
-    # so the keyboard wording rides the same same-length road.
-    for old, new in ((b"PRESS\x00START\x00", b"PRESS\x00ENTER\x00"),
-                     (b"PRESS START\x00", b"PRESS ENTER\x00"),
-                     (b"LEFT STICK ", b"A / D KEYS ")):
-        n = sbank.count(old)
-        if n != 1:
-            print(f"GATE FAILED: str_en.bcs holds {n} of {old!r}, expected 1",
+    # THE TITLE-SCREEN STRINGS. All SIX language banks get the id-4049 LS->MASH
+    # rewrite (below); the three ENGLISH-LITERAL edits stay en-only — translating
+    # PRESS START / LEFT STICK is a content decision the operator owns, so a
+    # non-English player sees the pad wording for those two (part-99 plan §1.5).
+    #
+    # The en edits: with the keyboard live the title should say PRESS ENTER, the
+    # way DR2 PC's shell does. Two spellings ship — a PRESS\0START id pair (the
+    # title screen) and one "PRESS START" — and both replacements are SAME-LENGTH
+    # in-place edits of the game_patched bank, served from this overlay only
+    # while the keyboard is the input path. "LEFT STICK" appears in exactly ONE
+    # string in the whole bank — the grapple tutorial.
+    OUT.parent.mkdir(parents=True, exist_ok=True)
+    for lang in ("en", "fr", "it", "es", "ja", "ko"):
+        bank_name = f"str_{lang}.bcs"
+        sbank = (REPO / "assets/game_patched/data/frontend" / bank_name).read_bytes()
+        n_edits = 0
+        if lang == "en":
+            for old, new in ((b"PRESS\x00START\x00", b"PRESS\x00ENTER\x00"),
+                             (b"PRESS START\x00", b"PRESS ENTER\x00"),
+                             (b"LEFT STICK ", b"A / D KEYS ")):
+                n = sbank.count(old)
+                if n != 1:
+                    print(f"GATE FAILED: {bank_name} holds {n} of {old!r}, expected 1",
+                          file=sys.stderr)
+                    sys.exit(1)
+                sbank = sbank.replace(old, new)
+                n_edits += 1
+
+        # IDS_HUD_LS (id 4049) labels ONLY the struggle prompt (both cFEText
+        # nodes of hud_infobar's w_zombie_grapple; no other layout uses the id),
+        # and the operator wants it to read MASH — which does not fit the shipped
+        # 3-byte "LS " in place. The .bcs is {u32 n; u32 ids[n]; u32 offs[n];
+        # NUL-terminated strings} and its size is NOT pinned (gen_pc_options.py
+        # has grown these banks since part 60), so the bank is rebuilt with the
+        # one string swapped and every id verified to read back what it should.
+        # Every bank says "LS " here except fr, which ships "LS" — measured over
+        # all six patched banks (part 99), so both spellings pass the gate.
+        n = struct.unpack_from("<I", sbank, 0)[0]
+        ids = list(struct.unpack_from(f"<{n}I", sbank, 4))
+        offs = list(struct.unpack_from(f"<{n}I", sbank, 4 + 4 * n))
+        table = {ids[k]: sbank[offs[k]:sbank.index(b"\0", offs[k])] for k in range(n)}
+        if table.get(4049) not in (b"LS ", b"LS"):
+            print(f"GATE FAILED: {bank_name} string id 4049 reads "
+                  f"{table.get(4049)!r}, expected b'LS '/b'LS' — the bank layout "
+                  f"moved; refusing to rewrite", file=sys.stderr)
+            sys.exit(1)
+        table[4049] = b"MASH"
+        header = 4 + 8 * n
+        blob = bytearray()
+        new_offs = []
+        for i in ids:                      # keep the shipped id order
+            new_offs.append(header + len(blob))
+            blob += table[i] + b"\0"
+        sbank = (struct.pack("<I", n) + struct.pack(f"<{n}I", *ids) +
+                 struct.pack(f"<{n}I", *new_offs) + bytes(blob))
+        got = {ids[k]: sbank[new_offs[k]:sbank.index(b"\0", new_offs[k])]
+               for k in range(n)}
+        if got != table:
+            print(f"GATE FAILED: rebuilt {bank_name} does not read back",
                   file=sys.stderr)
             sys.exit(1)
-        sbank = sbank.replace(old, new)
 
-    # IDS_HUD_LS (id 4049) labels ONLY the struggle prompt (both cFEText
-    # nodes of hud_infobar's w_zombie_grapple; no other layout uses the id),
-    # and the operator wants it to read MASH — which does not fit the shipped
-    # 3-byte "LS " in place. The .bcs is {u32 n; u32 ids[n]; u32 offs[n];
-    # NUL-terminated strings} and its size is NOT pinned (gen_pc_options.py
-    # has grown these banks since part 60), so the bank is rebuilt with the
-    # one string swapped and every id verified to read back what it should.
-    n = struct.unpack_from("<I", sbank, 0)[0]
-    ids = list(struct.unpack_from(f"<{n}I", sbank, 4))
-    offs = list(struct.unpack_from(f"<{n}I", sbank, 4 + 4 * n))
-    table = {ids[k]: sbank[offs[k]:sbank.index(b"\0", offs[k])] for k in range(n)}
-    if table.get(4049) != b"LS ":
-        print(f"GATE FAILED: string id 4049 reads {table.get(4049)!r}, "
-              f"expected b'LS ' — the bank layout moved; refusing to rewrite",
-              file=sys.stderr)
-        sys.exit(1)
-    table[4049] = b"MASH"
-    header = 4 + 8 * n
-    blob = bytearray()
-    new_offs = []
-    for i in ids:                      # keep the shipped id order
-        new_offs.append(header + len(blob))
-        blob += table[i] + b"\0"
-    sbank = (struct.pack("<I", n) + struct.pack(f"<{n}I", *ids) +
-             struct.pack(f"<{n}I", *new_offs) + bytes(blob))
-    got = {ids[k]: sbank[new_offs[k]:sbank.index(b"\0", new_offs[k])]
-           for k in range(n)}
-    if got != table:
-        print("GATE FAILED: rebuilt str bank does not read back", file=sys.stderr)
-        sys.exit(1)
-
-    sout = OUT.parent / "str_en.bcs"
-    OUT.parent.mkdir(parents=True, exist_ok=True)
-    sout.write_bytes(sbank)
-    print(f"wrote {sout} (3 same-length edits + id 4049 LS->MASH via table rebuild)")
+        sout = OUT.parent / bank_name
+        sout.write_bytes(sbank)
+        print(f"wrote {sout} ({n_edits} same-length edits + id 4049 LS->MASH "
+              f"via table rebuild)")
 
     swp = bytearray()
     swp += struct.pack("<4sI", b"KBSW", len(swap_entries))
