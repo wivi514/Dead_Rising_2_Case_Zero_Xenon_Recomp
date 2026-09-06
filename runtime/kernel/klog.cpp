@@ -55,6 +55,11 @@ void KernelCallTrace(const char* name, uint64_t hit)
         std::fprintf(stderr, "[kcall+] %s hit %llu times\n", name,
                      static_cast<unsigned long long>(hit));
 
-    if (hit == 0 && WantsBacktrace(name))
+    // First call: the classic CZ_KCALL_WHO. Milestones too (every 65536th hit): a
+    // frozen-state hot loop calls an import at 500k+/s, and the first-call stack —
+    // taken at boot when everything was healthy — says nothing about WHO is looping
+    // NOW. Part 100's czamd hang is the motivating case: NtReleaseSemaphore at
+    // 660k/s with no way to name the calling guest function.
+    if (WantsBacktrace(name))
         CzDumpGuestBacktrace(name);
 }
