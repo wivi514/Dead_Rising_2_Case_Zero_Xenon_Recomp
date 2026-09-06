@@ -63,3 +63,32 @@ because none of this touched the renderer.
 arm over `skip_intro_logos`), `CZ_STATE_TRACE=1` (names every top-level state
 request; the instrument that refuted the plan's mechanism). The launcher window
 grew to 720x460 for the two new rows.
+
+## §3 Addendum — two operator-session fixes the same day (both ride v1.0.1)
+
+The operator's post-part-99 session surfaced and closed two more defects, both
+operator-verified in live play the same sitting:
+
+1. **The self-firing assault rifle** (window.cpp, native_kbm.cpp comment): the
+   KB/M mouse mapping was built in part 92 on "RMB = aim = RIGHT trigger", but
+   on the shipped padmap R2 is the FIRE side (`PLAYER_FIRE_WEAPON` = X|R2
+   PRESSED, `PLAYER_RAPID_FIRE_RT` = X|R2 HELD) and LT is the aim — proven by
+   the operator's control test (LT held on a physical pad aims, never fires)
+   and the input trace (2,135 `triggers=255/255` packets while aiming, F9-
+   anchored). Automatics emptied themselves on the HELD semantics; semi-autos
+   need a fresh edge while aimed and never showed it. RMB now raises LT only,
+   in both input paths; the 70 ms trigger-stagger hack (which papered over a
+   THROW_RT misfire caused by the same wrong R2) is deleted — with no
+   mouse-side R2 at all, that misfire is structurally impossible. Gotcha 512.
+2. **EXIT GAME → YES now quits to the desktop** (imports.cpp): the menu's exit
+   leaves an XBLA title via `XamLoaderLaunchTitle(NULL)` — "launch the
+   dashboard" — which the generated stub answered with STATUS_NOT_IMPLEMENTED,
+   so the confirmation did nothing (one `[kcall]` line near the session's end,
+   F9-anchored). Implemented: both title-requested exits (this and
+   HalReturnToFirmware, which had used destructor-running `exit(0)` since
+   phase 1) now share the window-close path's sequence — dump counters, SAVE
+   THE PIPELINE CACHE, `_Exit(0)`. Verified end to end in the operator's
+   session: the log shows the request, the cache write, and a clean exit.
+
+§1's order is unchanged; v1.0.1 now carries five changes (part 98's async
+pipelines, the two launcher features, and these two).

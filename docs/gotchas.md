@@ -5838,3 +5838,17 @@ From phase C part 18 (the frame rate — and none of it was work):
      input instead of broken. The five minutes of disassembling the REGISTRATION
      function (which computes the address in two instructions) settled it; the
      hours would have gone to theorising about why nobody reads the table.
+
+512. **AN INPUT MAPPING'S SEMANTIC BELIEF IS A CLAIM ABOUT THE TITLE — CHECK IT
+     AGAINST THE SHIPPED BINDING TABLE, WHICH IS ALREADY IN THE REPO.** The part-92
+     mouse mapping encoded "RMB = aim = right trigger" and held R2 through every
+     aim; the shipped padmap — parsed by our own tooling since phase A of the KB/M
+     work — says in one line that R2 is FIRE (`PLAYER_RAPID_FIRE_RT` = X|R2 HELD)
+     and the aim is L2. The result hid for seven parts because only AUTOMATIC
+     weapons express a held fire source; every semi-auto test read clean (edge-
+     fired). Three instruments closed it in one sitting: the input trace's button
+     histogram (2,135 both-triggers-held packets), the operator's CONTROL TEST on
+     the real device (LT held on a pad aims and never fires — the decisive arm),
+     and the padmap grep that should have been read before the mapping was
+     written. A held phantom input manifests only on held-semantics consumers —
+     absence of a symptom on the edge-fired majority is not absence of the defect.
