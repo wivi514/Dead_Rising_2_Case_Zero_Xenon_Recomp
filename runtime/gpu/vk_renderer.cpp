@@ -11114,7 +11114,13 @@ struct Done
 };
 std::mutex mx;
 std::condition_variable cv;
-std::deque<Job> queue;                    // guarded by mx
+// TWO TIERS, both FIFO, urgent drained first. The first shape was one deque with
+// promoted jobs push_front'ed — which is LIFO among the promoted: in an area-arrival
+// burst every newly skipping material jumped IN FRONT of the previously promoted one,
+// so the longest-waiting material built LAST. Two FIFO tiers keep "a draw wants it"
+// ahead of "the chain guessed it" without starving anybody inside the urgent tier.
+std::deque<Job> queueUrgent;              // guarded by mx — a draw is skipping on these
+std::deque<Job> queueSpare;               // guarded by mx — speculative chain builds
 std::vector<Done> finished;               // guarded by mx
 std::atomic<uint32_t> finishedCount{ 0 }; // == finished.size(); mutated under mx only
 std::unordered_set<PipelineKey, PipelineKeyHash> pending;  // pump thread only
@@ -11150,9 +11156,10 @@ void Worker()
         Job job;
         {
             std::unique_lock<std::mutex> lk(mx);
-            cv.wait(lk, [] { return !queue.empty(); });
-            job = std::move(queue.front());
-            queue.pop_front();
+            cv.wait(lk, [] { return !queueUrgent.empty() || !queueSpare.empty(); });
+            std::deque<Job>& q = queueUrgent.empty() ? queueSpare : queueUrgent;
+            job = std::move(q.front());
+            q.pop_front();
         }
         Done d;
         d.key = job.key;
@@ -11165,12 +11172,14 @@ void Worker()
     }
 }
 
-// Pump thread. `urgent` = a draw is being skipped for this key RIGHT NOW, so it jumps
-// ahead of speculative pre-warm-chain work in the queue.
+// Pump thread. `urgent` = a draw is being skipped for this key RIGHT NOW, so it goes
+// in the tier the worker drains first.
 void Enqueue(const PipelineKey& key, const ShaderMeta& vs, const ShaderMeta& ps,
              bool urgent)
 {
     pending.insert(key);
+    if (urgent)
+        promoted.insert(key); // already in the urgent tier — a later Promote is a no-op
     if (!workerUp)
     {
         workerUp = true;
@@ -11178,34 +11187,28 @@ void Enqueue(const PipelineKey& key, const ShaderMeta& vs, const ShaderMeta& ps,
     }
     {
         std::lock_guard<std::mutex> lk(mx);
-        if (urgent)
-            queue.push_front({ key, vs, ps });
-        else
-            queue.push_back({ key, vs, ps });
+        (urgent ? queueUrgent : queueSpare).push_back({ key, vs, ps });
     }
     cv.notify_one();
 }
 
 // Pump thread, from the skip site: a draw is skipping on this key RIGHT NOW and the
-// key was queued speculatively (the chain). Move its job to the front of the queue,
-// ONCE per key — without this, the first fresh-player run measured 5.7 MILLION skipped
-// draws, because a visible material's pipeline sat behind hundreds of speculative
-// builds at ~10-40 ms each on one worker. With the front of the queue, the wait is
-// bounded by the build in progress plus its own, i.e. a frame or two.
+// key was queued speculatively (the chain). Move its job from the spare tier to the
+// back of the urgent tier, ONCE per key — without any promotion, the first
+// fresh-player run measured 5.7 MILLION skipped draws, because a visible material's
+// pipeline sat behind hundreds of speculative builds at ~10-40 ms each on one worker.
+// FIFO within the urgent tier is the point of the two-deque shape — see the queue
+// declaration for the LIFO trap the first promotion design fell into.
 void Promote(const PipelineKey& key)
 {
     if (!promoted.insert(key).second)
-        return; // already moved once — the worker has it or will take it next
+        return; // already urgent — the worker has it or will take it in tier order
     std::lock_guard<std::mutex> lk(mx);
-    for (auto it = queue.begin(); it != queue.end(); ++it)
+    for (auto it = queueSpare.begin(); it != queueSpare.end(); ++it)
         if (it->key == key)
         {
-            if (it != queue.begin())
-            {
-                Job j = std::move(*it);
-                queue.erase(it);
-                queue.push_front(std::move(j));
-            }
+            queueUrgent.push_back(std::move(*it));
+            queueSpare.erase(it);
             break;
         }
 }
