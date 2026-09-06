@@ -1,7 +1,8 @@
 # Release notes — v1.0.1
 
 **This is the text to paste into the GitHub Release body.** Binaries are commit
-`20e098d`. It carries part 98's stutter fix (async pipeline creation + the
+`20e098d` (Linux) / `ed6815d` (Windows — same tree, one docs commit later; no
+source difference). It carries part 98's stutter fix (async pipeline creation + the
 pre-warm chain) and part 99's four changes: subtitle-language selection, the
 skip-intro-logos toggle, the aim-trigger fix, and Exit Game quitting to the
 desktop.
@@ -97,5 +98,5 @@ XenosRecomp.
 
 ```
 fe5a32743203c113b6b7d3075c0c247be5478766e5728fbfbabefeef60ac6e58  CaseZeroRecomp-linux-x86_64.tar.zst
-PENDING — the Windows artifact has not been rebuilt at this commit yet         CaseZeroRecomp-windows-x86_64.zip
+43a5bb5fa8be734317dcf536369b11c21a77735b34e880765820f8a0e1bebc2a  CaseZeroRecomp-windows-x86_64.zip
 ```
