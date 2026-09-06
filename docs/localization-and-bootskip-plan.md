@@ -149,3 +149,65 @@ Audio localization (the game ships English VO only — nothing to select), Germa
 or any language the disc does not carry, translating the two English-literal KB/M
 title-screen edits, an in-game live language switch, and making the skip toggle
 default-on.
+
+## §5 EXECUTED (2026-09-06, part 99) — both fixes in-tree; §0's boot-logo recon corrected
+
+**Fix 1 shipped as planned** (commits e1da647, 42d558d). The §1.1 experiment ran
+exactly as written: one `CZ_FILE_TRACE` boot per `CZ_LANGUAGE=N`, and the
+prediction held — 1=en 2=ja 4=fr 5=es 6=it 7=ko each open exactly their own
+bank, once; 3 (de) and 8 (zh) fall back to en, so the launcher offers six. The
+`SUBTITLES` row is in the launcher (ASCII names), `language` persists the Xbox
+ID, both HLE sites answer from one helper, and the settings loader clamps
+unshipped IDs loudly. §1.5 landed small as specified: the id-4049 MASH rewrite
+is in all six banks (note: the fr bank ships `LS` with no trailing space — the
+gate accepts both spellings), the English-literal edits stay en-only, generator
+v3, and the C++/Python byte-identity gate passed on the first build. §1.6's
+gates all ran: A5 unchanged (permutations only), one bank per boot, six
+languages boot headlessly. **Still owed from §1.4: the eye pass** — ja/ko glyph
+completeness is likely (arialko/arialutf ship) but unproven.
+
+**Fix 2 shipped, but §0's mechanism recon was wrong three ways, all measured
+(commit 42f99bc; the full record is boot_skip.cpp's header):**
+
+- ~~the state table is at 0x82A6912C~~ — **0x82A5912C** (`lis 0x82A6;
+  addi -0x6ED4`); the doc address was a typo that made every `--find-uses`
+  read zero.
+- ~~the logos are the LegalScreen/BCGIntro top-level states~~ — **BCGIntro is
+  never requested on any boot.** The measured chain (CZ_STATE_TRACE, new) is
+  Startup -> LegalScreen (7 ms) -> Loading -> FrontEnd. The visible sequence —
+  black legal card, CAPCOM, BLUE CASTLE, DOLBY, the DR2 title card — is
+  **fecmn.big's `intro.txt`**, an event-chained cFEAnim timeline (~18 s,
+  UseRealTime), playing across the Loading/FrontEnd eras. The black legal card
+  is `startup.txt` and its duration is LOAD-driven, not timed.
+- **§2.2 (a) is refuted in all three spellings** — substituting the requested
+  state in sub_827E68F8: LegalScreen->FrontEnd null-derefs in under a second
+  (FrontEnd probes `game:\pressstart.txt`, a fallback no stock boot takes);
+  LegalScreen->Loading and LegalScreen->BCGIntro both hang at file #44 — each
+  state's ENTER kicks the work the next state waits on. The title's own
+  `skip_startup` tunable (0x82A57BF0, via CZ_DEBUG_TUNABLES) does not shorten
+  the visible sequence either. §2.1's ten minutes on `data/capcom.txt` ran:
+  it is a name string copied into a struct with a `<none>` default, not a
+  config reader with a skip flag.
+
+**What shipped is §2.2 (b) delivered as a DATA PATCH, no guest-code hook**:
+overlay_gen (both generators, byte-identical, v4) writes
+`assets/game_bootskip/data/frontend/fecmn.big` — the patched archive with every
+intro.txt keyframe `Time` renumbered per-anim to 1,2,3... — and the VFS serves
+it as its own layer only while `skip_intro_logos` is on. Every anim plays and
+every chained event fires in order through the title's own machinery; each logo
+is a one-tick flash. Note the bootskip archive is smaller than layout.bin's
+pinned size for fecmn.big — measured tolerable (a full boot to title ran clean
+on exactly that configuration).
+
+**§2.4's gates:** skip ON reaches deepest file #85 with zero faults and the
+collapsed sequence on frame dumps; skip OFF never consults the layer and A5 is
+unchanged. §2.5's prediction: the saving is the ~18 s logo timeline minus the
+load it overlaps (headless, roughly 10-12 s of visible logo time collapsed to
+~1-2 s of flashes); no new kcall/file divergences appeared.
+
+**§2 step 0 (the "stuck on Capcom logo" report) remains open** — it needs the
+reporter's log, and nothing here closes it either way.
+
+**Still owed: the v1.0.1 flow (part98-kickoff §1) with all three changes, and
+the operator's eye pass** — pick a language, toggle the skip, feel the boot;
+the new-PC session-one test doubles as both.

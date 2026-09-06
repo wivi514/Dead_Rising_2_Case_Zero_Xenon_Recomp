@@ -192,9 +192,12 @@ mask; trust the microcode's own swizzles.
     read `phase5-notes.md` §6ba before following anything in it.
   - **THE LIVE HAND-OFF IS ALWAYS THE HIGHEST-NUMBERED `partNN-kickoff.md`**, and it
     supersedes every earlier kickoff on "where the port is". **IT IS
-    `part98-kickoff.md` — the PUBLIC STUTTER REPORTS reproduced (session one
+    `part99-kickoff.md` — BOTH operator-queued launcher fixes (subtitle language +
+    the skip-intro-logos toggle) are IN-TREE and gated; its §1 is the owed list and
+    v1.0.1 — now carrying part 98's stutter fix AND both features — HEADS IT.**
+    ~~It is `part98-kickoff.md` — the PUBLIC STUTTER REPORTS reproduced (session one
     pre-warms 0 of 1,365, gotcha 508) and fixed in-tree by async pipeline creation +
-    the pre-warm chain, defaults ON; its §1 is the owed list and v1.0.1 HEADS IT.**
+    the pre-warm chain, defaults ON~~ — part 98's fix stands and ships in v1.0.1.
     ~~It is `part97-kickoff.md` — the POST-RELEASE hand-off: v1.0.0 is PUBLISHED, the
     repo is PUBLIC, and its §1 is the standing list (watch issues, topics, AppImage,
     macOS, Case West)~~ — part 97's §1 standing list still stands EXCEPT that "watch
@@ -1059,41 +1062,9 @@ ground is and that PERFORMANCE IS PARKED. (This
 line has now named the wrong plan TWICE — the two-live-pointers defect the block-rotation note at the bottom of this file
 describes, and the reason that note asks for the rule and not just the name; gotcha 13.)
 
-Where the port is, as of 2026-09-06 (**PART 97 CLOSED — THE RELEASE. v1.0.0 IS
-PUBLISHED AND THE REPO IS PUBLIC:
-https://github.com/wivi514/Dead_Rising_2_Case_Zero_Xenon_Recomp** —
-`docs/part97-kickoff.md` WAS the live hand-off, superseded by part 98's;
-`docs/release-github-plan.md` §6/§7 + addenda 1-5 are the execution record):
-
-* **The overlay gap (§0) closed the honest way**: `runtime/host/overlay_gen.cpp`
-  regenerates both patched-asset overlays at a player's first run, byte-identical
-  to the Python generators (identity gate passed on the FIRST build; verified by
-  dev diff, container hash, and a fake-root automatic boot). The 26 key-cap chips
-  ship pre-baked, our art only. Transform changes must re-export chips + bump
-  kGeneratorVersion in the same commit — the Python docstrings say so.
-* **A same-day operator fix round preceded publication**: device-following prompt
-  WORDING (MASH keyboard-only — the string bank swaps in guest memory with the
-  glyph art), the always-on mouse camera (Visuals toggle retired, 7 rows), and
-  three Case West back-imports — XMA hardware loops (CZ hits the path, ~5,900
-  sustains a run), LRU texture-slot recycling (215/215 recycle/destroy pairing at
-  cap 256 under sync validation, 0 hazards), the Q glyph for in-game Y.
-* **Published and verified from the outside**: both public downloads pulled back
-  over the internet hash byte-identical to the gated artifacts (linux 0d1aa15c…,
-  windows d911ad17…; binaries commit 407eb79). Launch-night session: ~80-85 fps
-  at 3440x1440 in 9-10k-draw crowds. READMEs are player-first; level cap 50,
-  21:9 + FOV ≥ +10 tip, and the Sponsors link/button are live post-release adds.
-* **THE STANDING STATE (part97-kickoff §1)**: watch public issues (picture-
-  complaint bisection now includes CZ_VK_NO_TEX_LRU=1); topics unset (operator);
-  AppImage/glibc floor is the one shipped limitation with a known path; macOS is
-  milestone C; **Case West is the next port** and inherits everything;
-  performance/RT stay parked; the hair flicker stays the one open picture item.
-* **THE RELEASE IS FROZEN AT THE TAG**: any rebuild refreshes the SHAs in
-  `docs/release-notes-v1.0.0.md` first, re-gates, and updates the PUBLISHED
-  Release's assets — it is public now; a stale-hash download is a broken promise.
-
 Where the port is, as of 2026-09-06 late (**PART 98 CLOSED — THE PUBLIC STUTTER
 REPORTS, REPRODUCED AND FIXED IN-TREE; v1.0.1 IS OWED.**
-**`docs/part98-kickoff.md` IS THE LIVE HAND-OFF**; the record is
+`docs/part98-kickoff.md` WAS the live hand-off, superseded by part 99's; the record is
 `phase5-notes.md` §6eq, the plan `docs/async-pipeline-plan.md`, the transferable
 findings gotchas 508-509):
 
@@ -1120,16 +1091,50 @@ findings gotchas 508-509):
 * **v1.0.1 IS THE OWED FOLLOW-UP** (part98-kickoff §1): rebuild both artifacts at
   head, re-gate, fresh SHAs, update the published Release — the frozen-tag rule.
   A stutter report that does NOT fade by session two is a different defect; do not
-  close it against part 98. **AND AS OF 2026-09-06 TWO MORE FIXES ARE QUEUED AHEAD
+  close it against part 98. ~~AND AS OF 2026-09-06 TWO MORE FIXES ARE QUEUED AHEAD
   OF IT (operator instruction): subtitle-language selection from the launcher and a
   skip-boot-logos toggle — `docs/localization-and-bootskip-plan.md` IS THE LIVE
-  PLAN**, its §0 recon is done (six languages ship: en fr it es ja ko; the logos
-  are the LegalScreen/BCGIntro top-level states, table 0x82A6912C), and its §2
+  PLAN~~ — **EXECUTED BY PART 99 (its §5 is the record; the §0 claim repeated here
+  that the logos are the LegalScreen/BCGIntro states at table 0x82A6912C was WRONG
+  BOTH WAYS — see the part-99 block below)**, and its §2
   step 0 notes the "stuck on Capcom logo" report may itself be part 98's
   session-one compile stall — get the reporter's log before closing it either way.
 
+Where the port is, as of 2026-09-06 latest (**PART 99 CLOSED — BOTH QUEUED LAUNCHER
+FIXES SHIPPED; v1.0.1 IS NEXT IN LINE. `docs/part99-kickoff.md` IS THE LIVE
+HAND-OFF**; `docs/localization-and-bootskip-plan.md` §5 is the execution record,
+with its §0 boot-logo recon CORRECTED IN PLACE):
+
+* **Subtitle language from the launcher**: six banks (en ja fr es it ko), the
+  ID→bank mapping MEASURED (one CZ_FILE_TRACE boot per CZ_LANGUAGE=N; 3=de and
+  8=zh fall back to en and are not offered), one CzLanguage() helper behind both
+  HLE sites, SUBTITLES launcher row persisting the Xbox ID, no in-game row on
+  purpose (the title reads it ONCE at boot — A1). The id-4049 MASH rewrite now
+  lands in all six banks (fr ships 'LS' without the trailing space).
+* **The skip-intro-logos toggle is a DATA PATCH, and the plan's mechanism is
+  refuted**: the logos are NOT the LegalScreen/BCGIntro states (BCGIntro is never
+  requested; the chain is Startup → LegalScreen(7 ms) → Loading → FrontEnd, per
+  the new CZ_STATE_TRACE) — they are fecmn.big's intro.txt cFEAnim timeline
+  (~18 s). All three state-substitution spellings crashed or hung (each state's
+  enter kicks work the next state waits on — boot_skip.cpp's header is the
+  record); what shipped is assets/game_bootskip/fecmn.big with the keyframe
+  times collapsed per-anim (every event still fires; each logo a one-tick
+  flash), its own VFS layer, consulted only while skip_intro_logos is on.
+  Default OFF (legal notices ship opt-in); CZ_SKIP_INTRO is the dev arm. The
+  black legal card is load-driven and untouched. The state table is at
+  0x82A5912C (the plan's 0x82A6912C was a typo).
+* **Gates**: three-layer C++/Python overlay identity (bootskip+patched+kbm,
+  diff -r clean, generator v4); A5 unchanged in both toggle states; skip ON
+  reaches deepest file #85 with zero faults; skip OFF never consults the layer.
+* **Owed (part99-kickoff §1)**: v1.0.1 rebuild + re-gate + fresh SHAs + update
+  the PUBLISHED Release (all three changes ride together); the operator eye
+  pass (a language pick — ja/ko glyphs likely but unproven — and the skip
+  toggle, one sitting); the "stuck on Capcom logo" report stays open pending
+  the reporter's log.
+
+
 **Older per-part status blocks (parts 28-54, the superseded mid-part-44 closure and the
-superseded MID-PART-46 block) moved to `docs/port-history.md`, NOW INCLUDING PARTS 60-91's** — part 98 moved part 91's out in the same commit that added its own block, part 91 moved part 89's out in the same commit that added its own block, part 90 moved part 88's out in the same commit that added its own block, part 89 moved part 87's out in the same commit that added its own block, part 88 moved part 86's out in the same commit that added its own block, part 87 moved part 85's out in the same commit that added its own block, part 86 moved part 84's out in the same commit that added its own block, part 85 moved part 83's out in the same commit that added its own block, part 84 moved part 82's out in the same commit that added its own block, part 83 moved part 81's out in the same commit that added its own block, part 82 moved part 80's out in the same commit that added its own block, part 78 moved part 76's out in the same commit that added its own block, part 76 moved part 74's out in the same commit that added its own block, part 74 moved part 72's out in the same commit that added its own block, part 73 moved part 71's out in the same commit that added its own block, part 72 moved part 70's out in the same commit that added its own block, part 71 moved part 69's out in the same commit that added its own block, part 70 moved part 68's out in the same commit that added its own block, part 69 moved part 67's out in the same commit that added its own block, part 68 moved part 66's out in the same commit that added its own block, part 67 moved part 65's out the same way, part 65 moved part 63's out the same way, part 64 moved parts 61/62's out the same way, part 63 moved part 60's out the same way, part 61 moved part 59's out the same way, part 59 moved part 57's out the same way, part 57 moved part 55's out the same way, part 55 moved part 53's
+superseded MID-PART-46 block) moved to `docs/port-history.md`, NOW INCLUDING PARTS 60-91's AND 97's** — part 99 moved part 97's out in the same commit that added its own block, part 98 moved part 91's out in the same commit that added its own block, part 91 moved part 89's out in the same commit that added its own block, part 90 moved part 88's out in the same commit that added its own block, part 89 moved part 87's out in the same commit that added its own block, part 88 moved part 86's out in the same commit that added its own block, part 87 moved part 85's out in the same commit that added its own block, part 86 moved part 84's out in the same commit that added its own block, part 85 moved part 83's out in the same commit that added its own block, part 84 moved part 82's out in the same commit that added its own block, part 83 moved part 81's out in the same commit that added its own block, part 82 moved part 80's out in the same commit that added its own block, part 78 moved part 76's out in the same commit that added its own block, part 76 moved part 74's out in the same commit that added its own block, part 74 moved part 72's out in the same commit that added its own block, part 73 moved part 71's out in the same commit that added its own block, part 72 moved part 70's out in the same commit that added its own block, part 71 moved part 69's out in the same commit that added its own block, part 70 moved part 68's out in the same commit that added its own block, part 69 moved part 67's out in the same commit that added its own block, part 68 moved part 66's out in the same commit that added its own block, part 67 moved part 65's out the same way, part 65 moved part 63's out the same way, part 64 moved parts 61/62's out the same way, part 63 moved part 60's out the same way, part 61 moved part 59's out the same way, part 59 moved part 57's out the same way, part 57 moved part 55's out the same way, part 55 moved part 53's
 out in the same commit that added its own, which is what the rule below asks for. — CLAUDE.md keeps only the
 live part and one part back, per the 2026-08-08 split's rule, and **part 53 moved part
 51's out in the same commit that added its own**, which is what the rule below asks for.

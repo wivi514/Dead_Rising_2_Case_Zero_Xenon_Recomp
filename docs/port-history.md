@@ -6589,3 +6589,38 @@ records are `phase5-notes.md` §6em and §6en; the commissioned plan is
   our-own-art icons), with v1 as the standing fallback arm.
 * **The release board waited behind the fixes** (their instruction) — and was then
   executed to publication; see the part-97 block below.
+
+## Part 97 status block (moved from CLAUDE.md by part 99, per the one-back rule)
+
+Where the port is, as of 2026-09-06 (**PART 97 CLOSED — THE RELEASE. v1.0.0 IS
+PUBLISHED AND THE REPO IS PUBLIC:
+https://github.com/wivi514/Dead_Rising_2_Case_Zero_Xenon_Recomp** —
+`docs/part97-kickoff.md` WAS the live hand-off, superseded by part 98's;
+`docs/release-github-plan.md` §6/§7 + addenda 1-5 are the execution record):
+
+* **The overlay gap (§0) closed the honest way**: `runtime/host/overlay_gen.cpp`
+  regenerates both patched-asset overlays at a player's first run, byte-identical
+  to the Python generators (identity gate passed on the FIRST build; verified by
+  dev diff, container hash, and a fake-root automatic boot). The 26 key-cap chips
+  ship pre-baked, our art only. Transform changes must re-export chips + bump
+  kGeneratorVersion in the same commit — the Python docstrings say so.
+* **A same-day operator fix round preceded publication**: device-following prompt
+  WORDING (MASH keyboard-only — the string bank swaps in guest memory with the
+  glyph art), the always-on mouse camera (Visuals toggle retired, 7 rows), and
+  three Case West back-imports — XMA hardware loops (CZ hits the path, ~5,900
+  sustains a run), LRU texture-slot recycling (215/215 recycle/destroy pairing at
+  cap 256 under sync validation, 0 hazards), the Q glyph for in-game Y.
+* **Published and verified from the outside**: both public downloads pulled back
+  over the internet hash byte-identical to the gated artifacts (linux 0d1aa15c…,
+  windows d911ad17…; binaries commit 407eb79). Launch-night session: ~80-85 fps
+  at 3440x1440 in 9-10k-draw crowds. READMEs are player-first; level cap 50,
+  21:9 + FOV ≥ +10 tip, and the Sponsors link/button are live post-release adds.
+* **THE STANDING STATE (part97-kickoff §1)**: watch public issues (picture-
+  complaint bisection now includes CZ_VK_NO_TEX_LRU=1); topics unset (operator);
+  AppImage/glibc floor is the one shipped limitation with a known path; macOS is
+  milestone C; **Case West is the next port** and inherits everything;
+  performance/RT stay parked; the hair flicker stays the one open picture item.
+* **THE RELEASE IS FROZEN AT THE TAG**: any rebuild refreshes the SHAs in
+  `docs/release-notes-v1.0.0.md` first, re-gates, and updates the PUBLISHED
+  Release's assets — it is public now; a stale-hash download is a broken promise.
+

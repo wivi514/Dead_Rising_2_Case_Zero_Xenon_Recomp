@@ -8,11 +8,16 @@ NOT the cause is what stops the next session re-buying it.
 Next, in order:
 
 0x. **v1.0.1 — SHIP PART 98'S STUTTER FIX TO THE PUBLIC RELEASE.** ~~Next in line~~ —
-    **the operator queued two more fixes ahead of the release (2026-09-06):
-    subtitle-language selection from the launcher, and a skip-boot-logos toggle.
-    `docs/localization-and-bootskip-plan.md` IS THE PLAN (recon done: six languages
-    ship, the logos are the LegalScreen/BCGIntro top-level states, and the
-    "stuck on Capcom logo" report may itself be part 98's bug).** The public v1.0.0
+    ~~the operator queued two more fixes ahead of the release~~ — **BOTH QUEUED FIXES
+    ARE IN-TREE AS OF PART 99 (subtitle language from the launcher, the
+    skip-intro-logos toggle) and v1.0.1 IS NEXT IN LINE AGAIN, now carrying all
+    three changes.** `docs/localization-and-bootskip-plan.md` §5 is the execution
+    record — note its §0 boot-logo recon was corrected in place: the logos are NOT
+    the LegalScreen/BCGIntro states (BCGIntro is never requested); they are
+    fecmn.big's intro.txt timeline, and the shipped skip is a data patch served as
+    the game_bootskip VFS layer. Owed from part 99: the operator eye pass (a
+    language pick + the skip toggle, one sitting; ja/ko glyph rendering is likely
+    but unproven). The public v1.0.0
     artifacts still carry the part-83 behaviour that the release-thread stutter reports
     hit (session one pre-warms 0 of 1,365 — gotcha 508); the fix (async pipeline
     creation + the pre-warm chain, `phase5-notes.md` §6eq) is in the tree at 49c895c,

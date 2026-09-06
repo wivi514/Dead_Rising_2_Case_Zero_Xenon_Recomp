@@ -3681,3 +3681,38 @@ CZ_VK_MSAA=N       TRUE MULTISAMPLED EDRAM (part 93, docs/msaa-plan.md). **DEFAU
                    coordinate aliasing between differently-declared surfaces, not a
                    memory-costing supersample, and removing it would half-cover the
                    title's 4x-declared clears.
+
+## Part 99 — subtitle language and the boot-logo skip
+
+```
+CZ_LANGUAGE=N      DEV ARM for the subtitle/UI language; wins over the launcher's
+                   persisted `language` setting. N is the Xbox console-language ID,
+                   answered identically by both HLE sites (ExGetXConfigSetting 3/9 and
+                   XGetLanguage — one CzLanguage() helper so they cannot disagree).
+                   Measured mapping, one CZ_FILE_TRACE boot per N: 1=en 2=ja 4=fr
+                   5=es 6=it 7=ko each open exactly their own str_XX.bcs; 3 (de) and
+                   8 (zh) fall back to en — no bank on the disc, so the launcher does
+                   not offer them. Read ONCE by the title at boot (A1), which is why
+                   the launcher row is the only apply surface and there is no F4 row.
+
+CZ_SKIP_INTRO=1|0  DEV ARM for the boot-logo skip; wins over the persisted
+                   `skip_intro_logos` setting (default OFF — the logos are legal
+                   notices, the skip ships opt-in). The mechanism is a DATA PATCH,
+                   not a hook: the VFS serves assets/game_bootskip/fecmn.big (the
+                   patched archive with intro.txt's cFEAnim keyframe times collapsed
+                   per-anim to 1,2,3...) so every logo anim still plays and every
+                   chained event still fires — each logo is a one-tick flash. With
+                   the toggle off the layer is never consulted; the engagement line
+                   is the VFS's "served from the BOOT-SKIP overlay". The black legal
+                   card (startup.txt) is load-driven and deliberately untouched.
+                   cpu/boot_skip.cpp's header records the three refuted state-
+                   substitution mechanisms — do not rebuild them.
+
+CZ_STATE_TRACE=1   every TOP-LEVEL state request (sub_827E68F8), named through the
+                   interned-name table at 0x82A5912C: Startup, LegalScreen, BCGIntro,
+                   FrontEnd, FEToGame, Loading, InGame, ... A handful of lines per
+                   boot, nothing per-frame. This is the instrument that established
+                   the real boot chain (Startup -> LegalScreen(7 ms) -> Loading ->
+                   FrontEnd, BCGIntro never requested) and refuted the plan's state-
+                   skip mechanism.
+```
