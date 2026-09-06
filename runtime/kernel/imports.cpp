@@ -1554,9 +1554,74 @@ static thread_local std::vector<PendingApc> t_apcQueue;
 bool CzApcInlineEnabled() { return ApcInline(); }
 void CzDrainApcsNow() { DrainThreadApcs(); }
 
+// CZ_APC_TRACE=1: the measurement the part-99 hang hypothesis owed (its two arms
+// both failed — INLINE regresses a working boot, ALWAYS does not fix czamd). The
+// claim was "a completion APC sits in t_apcQueue undelivered"; this counts queued
+// vs drained PER THREAD in a global registry (t_apcQueue itself is thread-local,
+// so no other thread can look inside it) and a reporter thread prints any
+// imbalance with its age. It also prints a balanced summary line every 10 s so
+// silence means "not armed", never "nothing pending" (gotcha 25).
+struct ApcStats
+{
+    uint64_t queued = 0, drained = 0;
+    uint32_t lastRoutine = 0;
+    std::chrono::steady_clock::time_point lastQueue{};
+};
+static std::mutex g_apcStatsMutex;
+static std::map<uint32_t, ApcStats> g_apcStats;
+static bool ApcTrace()
+{
+    static const bool on = getenv("CZ_APC_TRACE") != nullptr;
+    return on;
+}
+static void ApcTraceReporter()
+{
+    for (;;)
+    {
+        std::this_thread::sleep_for(std::chrono::seconds(10));
+        uint64_t totalQ = 0, totalD = 0;
+        const auto now = std::chrono::steady_clock::now();
+        std::lock_guard lk(g_apcStatsMutex);
+        for (const auto& [tid, s] : g_apcStats)
+        {
+            totalQ += s.queued;
+            totalD += s.drained;
+            if (s.queued != s.drained)
+                fprintf(stderr,
+                        "[apc] tid=%08X PENDING %llu (queued=%llu drained=%llu) "
+                        "last routine=%08X queued %llds ago\n",
+                        tid, (unsigned long long)(s.queued - s.drained),
+                        (unsigned long long)s.queued, (unsigned long long)s.drained,
+                        s.lastRoutine,
+                        (long long)std::chrono::duration_cast<std::chrono::seconds>(
+                            now - s.lastQueue).count());
+        }
+        fprintf(stderr, "[apc] report: %zu threads, queued=%llu drained=%llu\n",
+                g_apcStats.size(), (unsigned long long)totalQ,
+                (unsigned long long)totalD);
+    }
+}
+static void ApcTraceOnQueue(uint32_t routine)
+{
+    static std::once_flag once;
+    std::call_once(once, [] { std::thread(ApcTraceReporter).detach(); });
+    std::lock_guard lk(g_apcStatsMutex);
+    ApcStats& s = g_apcStats[GuestThread::GetCurrentThreadId()];
+    s.queued++;
+    s.lastRoutine = routine;
+    s.lastQueue = std::chrono::steady_clock::now();
+}
+static void ApcTraceOnDrain(size_t count)
+{
+    std::lock_guard lk(g_apcStatsMutex);
+    g_apcStats[GuestThread::GetCurrentThreadId()].drained += count;
+}
+
 void QueueThreadApc(uint32_t routine, uint32_t context, uint32_t ioStatusBlock)
 {
     t_apcQueue.push_back({ routine, context, ioStatusBlock });
+    if (ApcTrace())
+        ApcTraceOnQueue(routine);
 }
 
 // NT waitable timers (NtCreateTimer/NtSetTimerEx/NtCancelTimer). A timer's APC fires
@@ -1666,6 +1731,8 @@ static bool DrainThreadApcs()
         return false;
     auto queue = std::move(t_apcQueue);
     t_apcQueue.clear();
+    if (ApcTrace())
+        ApcTraceOnDrain(queue.size());
     for (const PendingApc& apc : queue)
     {
         // The low bit of the routine is a kernel flag (Xenia masks it too), not part
