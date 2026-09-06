@@ -7,7 +7,12 @@ NOT the cause is what stops the next session re-buying it.
 
 Next, in order:
 
-0x. **v1.0.1 — SHIP PART 98'S STUTTER FIX TO THE PUBLIC RELEASE.** The public v1.0.0
+0x. **v1.0.1 — SHIP PART 98'S STUTTER FIX TO THE PUBLIC RELEASE.** ~~Next in line~~ —
+    **the operator queued two more fixes ahead of the release (2026-09-06):
+    subtitle-language selection from the launcher, and a skip-boot-logos toggle.
+    `docs/localization-and-bootskip-plan.md` IS THE PLAN (recon done: six languages
+    ship, the logos are the LegalScreen/BCGIntro top-level states, and the
+    "stuck on Capcom logo" report may itself be part 98's bug).** The public v1.0.0
     artifacts still carry the part-83 behaviour that the release-thread stutter reports
     hit (session one pre-warms 0 of 1,365 — gotcha 508); the fix (async pipeline
     creation + the pre-warm chain, `phase5-notes.md` §6eq) is in the tree at 49c895c,

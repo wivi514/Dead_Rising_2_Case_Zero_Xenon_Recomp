@@ -1120,7 +1120,13 @@ findings gotchas 508-509):
 * **v1.0.1 IS THE OWED FOLLOW-UP** (part98-kickoff §1): rebuild both artifacts at
   head, re-gate, fresh SHAs, update the published Release — the frozen-tag rule.
   A stutter report that does NOT fade by session two is a different defect; do not
-  close it against part 98.
+  close it against part 98. **AND AS OF 2026-09-06 TWO MORE FIXES ARE QUEUED AHEAD
+  OF IT (operator instruction): subtitle-language selection from the launcher and a
+  skip-boot-logos toggle — `docs/localization-and-bootskip-plan.md` IS THE LIVE
+  PLAN**, its §0 recon is done (six languages ship: en fr it es ja ko; the logos
+  are the LegalScreen/BCGIntro top-level states, table 0x82A6912C), and its §2
+  step 0 notes the "stuck on Capcom logo" report may itself be part 98's
+  session-one compile stall — get the reporter's log before closing it either way.
 
 **Older per-part status blocks (parts 28-54, the superseded mid-part-44 closure and the
 superseded MID-PART-46 block) moved to `docs/port-history.md`, NOW INCLUDING PARTS 60-91's** — part 98 moved part 91's out in the same commit that added its own block, part 91 moved part 89's out in the same commit that added its own block, part 90 moved part 88's out in the same commit that added its own block, part 89 moved part 87's out in the same commit that added its own block, part 88 moved part 86's out in the same commit that added its own block, part 87 moved part 85's out in the same commit that added its own block, part 86 moved part 84's out in the same commit that added its own block, part 85 moved part 83's out in the same commit that added its own block, part 84 moved part 82's out in the same commit that added its own block, part 83 moved part 81's out in the same commit that added its own block, part 82 moved part 80's out in the same commit that added its own block, part 78 moved part 76's out in the same commit that added its own block, part 76 moved part 74's out in the same commit that added its own block, part 74 moved part 72's out in the same commit that added its own block, part 73 moved part 71's out in the same commit that added its own block, part 72 moved part 70's out in the same commit that added its own block, part 71 moved part 69's out in the same commit that added its own block, part 70 moved part 68's out in the same commit that added its own block, part 69 moved part 67's out in the same commit that added its own block, part 68 moved part 66's out in the same commit that added its own block, part 67 moved part 65's out the same way, part 65 moved part 63's out the same way, part 64 moved parts 61/62's out the same way, part 63 moved part 60's out the same way, part 61 moved part 59's out the same way, part 59 moved part 57's out the same way, part 57 moved part 55's out the same way, part 55 moved part 53's
