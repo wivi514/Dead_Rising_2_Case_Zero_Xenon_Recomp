@@ -1434,9 +1434,11 @@ bool Host_RunLauncher()
                         "continuing without the launcher\n", drv);
         return true;
     }
+    // 460 tall: 9 rows at 34px from y=96 put the footer at y=416, which the old
+    // 420 clipped (part 99 added SUBTITLES and SKIP INTRO LOGOS).
     SDL_Window* win = SDL_CreateWindow("Dead Rising 2: Case Zero",
                                        SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
-                                       720, 420, SDL_WINDOW_ALLOW_HIGHDPI);
+                                       720, 460, SDL_WINDOW_ALLOW_HIGHDPI);
     if (!win)
         return true;
     SDL_Renderer* ren = SDL_CreateRenderer(win, -1, 0);
@@ -1506,6 +1508,7 @@ bool Host_RunLauncher()
             { "FPS CAP", Settings_FpsCap() ? fpsBuf : "OFF" },
             { "FOV", Settings_Fov() ? fovBuf : "DEFAULT" },
             { "SUBTITLES", kLangNames[langIdx] },
+            { "SKIP INTRO LOGOS", Settings_SkipIntroLogos() ? "ON" : "OFF" },
         };
         constexpr int kRows = int(sizeof(rows) / sizeof(rows[0]));
 
@@ -1657,6 +1660,9 @@ bool Host_RunLauncher()
                     break;
                 case 7:
                     Settings_SetLanguage(kLangIds[(langIdx + dir + 6) % 6]);
+                    break;
+                case 8:
+                    Settings_SetSkipIntroLogos(!Settings_SkipIntroLogos());
                     break;
                 }
             break;

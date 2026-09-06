@@ -293,6 +293,7 @@ add_executable(cz_runtime
     cpu/native_kbm.cpp               # part 92: native KB/M via the title's own input layer
     cpu/camera_fov.cpp               # part 62: the fov-property watch (culling fix)
     cpu/shadow_distance.cpp          # part 93: the shadow-distance slider (cascade scale)
+    cpu/boot_skip.cpp                # part 99: the skip-intro-logos launcher toggle
     cpu/thread_budget.cpp
     kernel/klog.cpp
     kernel/memory.cpp

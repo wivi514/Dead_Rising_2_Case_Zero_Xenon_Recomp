@@ -892,6 +892,58 @@ def main():
     open(dst_layout, 'wb').write(bytes(layout))
     print(f'{dst_layout}: {patched_records} size records updated')
 
+    # THE BOOT-SKIP LAYER (part 99): assets/game_bootskip/ carries ONE file — the
+    # patched fecmn.big with intro.txt's logo timeline collapsed. intro.txt is the
+    # whole Capcom/BlueCastle/Dolby sequence: an event-chained cFEAnim timeline
+    # (rating -> "capcom" -> "bcg" -> "dolby" -> "DR2Logo" -> "animation_done",
+    # ~18 s of UseRealTime keyframes). Renumbering every keyframe Time to a
+    # per-anim 1,2,3... keeps every anim playing and every event firing, in
+    # order, through the title's own machinery — each logo becomes a one-tick
+    # flash. The transform is LINE-based on purpose (reset the counter on a
+    # cFEAnim line, renumber Time= lines in order): overlay_gen.cpp must produce
+    # byte-identical output and neither side should need a layout parser. The
+    # runtime VFS serves this layer only while skip_intro_logos is on, so with
+    # the toggle off the stock timeline is untouched. Note the bootskip archive
+    # is SMALLER than layout.bin's pinned size for fecmn.big — measured
+    # tolerable: the loose-archive path parses by content and a full boot to the
+    # title ran clean on exactly this configuration.
+    #
+    # Do NOT skip startup.txt (the black legal card): its duration is
+    # load-driven, not timed, and it is the honest face of the boot's real work.
+    raw_b, ds_b, no_b, entries_b = read_big(dst_big)
+    intro = next(e for e in entries_b if e['name'] == 'intro.txt')
+    text = decompress_entry(intro['stored']).decode('ascii')
+    out_lines = []
+    counter = 0
+    for line in text.split('\n'):
+        if line.startswith('cFEAnim'):
+            counter = 0
+        if line.startswith('Time='):
+            counter += 1
+            line = f'Time={counter}'
+        out_lines.append(line)
+    collapsed = '\n'.join(out_lines)
+    assert collapsed != text, \
+        'intro.txt: the collapse changed nothing — the timeline layout moved'
+    data_b = collapsed.encode('ascii')
+    intro['stored'] = lzx_encode_stream(data_b)
+    verify_fake_lzx(intro['stored'], data_b)
+    intro['size2'] = len(data_b)
+    bs_frontend = os.path.join(REPO, 'assets/game_bootskip/data/frontend')
+    os.makedirs(bs_frontend, exist_ok=True)
+    dst_bs = os.path.join(bs_frontend, 'fecmn.big')
+    write_big(dst_bs, raw_b, ds_b, no_b, entries_b)
+    # Repack gate, same shape as the patched archive's.
+    _, _, _, entries_bs = read_big(dst_bs)
+    by_name_bs = {e['name']: e for e in entries_bs}
+    _, _, _, patched_entries = read_big(dst_big)
+    for e in patched_entries:
+        want = intro['stored'] if e['name'] == 'intro.txt' else e['stored']
+        assert by_name_bs[e['name']]['stored'] == want, \
+            f'bootskip repack verification failed on {e["name"]}'
+    print(f'{dst_bs}: intro.txt timeline collapsed '
+          f'({len(text)} -> {len(data_b)} bytes text)')
+
 
 if __name__ == '__main__':
     main()

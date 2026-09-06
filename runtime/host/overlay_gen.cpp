@@ -1243,6 +1243,7 @@ struct Paths
     fs::path game;      // assets/game
     fs::path patched;   // assets/game_patched
     fs::path kbm;       // assets/game_kbm
+    fs::path bootskip;  // assets/game_bootskip (part 99: the collapsed intro)
     fs::path chips;     // the shipped key-cap texel blobs, or empty if absent
 };
 
@@ -1264,6 +1265,7 @@ Paths MakePaths()
     p.game = HostPaths::Game();
     p.patched = p.game.parent_path() / (p.game.filename().string() + "_patched");
     p.kbm = p.game.parent_path() / (p.game.filename().string() + "_kbm");
+    p.bootskip = p.game.parent_path() / (p.game.filename().string() + "_bootskip");
     p.chips = FindChipsDir();
     return p;
 }
@@ -1424,6 +1426,91 @@ void GeneratePatchedLayer(const Paths& p,
             Refuse("layout.bin: only " + std::to_string(patchedRecords) + " of " +
                    std::to_string(overridden.size()) + " records found");
         WriteFileBytes(p.patched / "layout.bin", layout);
+    }
+}
+
+// --- layer 1b: assets/game_bootskip (gen_pc_options.py --bootskip) ---------
+
+// Collapse every cFEAnim keyframe Time in intro.txt to a per-anim 1,2,3...
+// sequence. Line-based on purpose: the transform must be byte-identical to the
+// Python reference, and "reset the counter on a cFEAnim line, renumber Time=
+// lines in order" needs no layout parsing in either language. Events ride on
+// keyframes, so every one of them ("capcom", "bcg", "dolby", "DR2Logo",
+// "animation_done") still fires, in order — the whole ~18 s sequence becomes a
+// few ticks. See cpu/boot_skip.cpp for why the state machine is untouchable.
+std::string CollapseIntroTimes(const std::string& text)
+{
+    std::string out;
+    out.reserve(text.size());
+    int counter = 0;
+    size_t pos = 0;
+    while (pos <= text.size())
+    {
+        const size_t nl = text.find('\n', pos);
+        std::string line = text.substr(pos, nl == std::string::npos
+                                                ? std::string::npos : nl - pos);
+        if (line.rfind("cFEAnim", 0) == 0)
+            counter = 0;
+        if (line.rfind("Time=", 0) == 0)
+            line = "Time=" + std::to_string(++counter);
+        out += line;
+        if (nl == std::string::npos)
+            break;
+        out += '\n';
+        pos = nl + 1;
+    }
+    return out;
+}
+
+// The bootskip layer: the PATCHED fecmn.big (so the part-60 options screens
+// survive) with intro.txt rewritten. One file; served by vfs.cpp only while the
+// skip_intro_logos toggle is on, which is why it is its own directory and not a
+// game_patched edit.
+void GenerateBootskipLayer(const Paths& p,
+                           const std::function<void(const char*, float)>& progress)
+{
+    if (progress)
+        progress("PREPARING MENUS - BOOT SKIP VARIANT", 0.55f);
+
+    const fs::path src = p.patched / "data" / "frontend" / "fecmn.big";
+    BigArchive fecmn = ReadBig(src);
+    BigEntry* entry = nullptr;
+    for (BigEntry& e : fecmn.entries)
+        if (e.name == "intro.txt")
+            entry = &e;
+    if (!entry)
+        Refuse("fecmn.big: no intro.txt entry");
+    const Bytes original = LzxDecodeEntry(entry->stored, "intro.txt");
+    const std::string rewritten =
+        CollapseIntroTimes(std::string(original.begin(), original.end()));
+    if (rewritten == std::string(original.begin(), original.end()))
+        Refuse("intro.txt: the collapse changed nothing — the timeline layout "
+               "moved; refusing to ship a no-op skip");
+    const Bytes data(rewritten.begin(), rewritten.end());
+    entry->stored = LzxEncodeStream(data);
+    VerifyEncodedStream(entry->stored, data, "intro.txt");
+    entry->size2 = uint32_t(data.size());
+
+    const BigArchive orig = ReadBig(src);
+    WriteBig(p.bootskip / "data" / "frontend" / "fecmn.big", fecmn, 4);
+
+    BigArchive check = ReadBig(p.bootskip / "data" / "frontend" / "fecmn.big");
+    if (check.entries.size() != orig.entries.size())
+        Refuse("bootskip fecmn.big repack changed the entry count");
+    for (const BigEntry& oe : orig.entries)
+    {
+        const Bytes& want = (oe.name == "intro.txt") ? entry->stored : oe.stored;
+        bool found = false;
+        for (const BigEntry& ce : check.entries)
+            if (ce.name == oe.name)
+            {
+                if (ce.stored != want)
+                    Refuse("bootskip fecmn.big repack verification failed on " +
+                           oe.name);
+                found = true;
+            }
+        if (!found)
+            Refuse("bootskip fecmn.big repack lost " + oe.name);
     }
 }
 
@@ -1607,8 +1694,9 @@ void GenerateKbmLayer(const Paths& p,
 // art change (re-export tools/release/kbm_chips with gen_kbm_icons.py
 // --export-chips in the same commit): a shipped update must not keep serving a
 // player's stale banks (the gotcha-13 shape, on disk).
-constexpr int kGeneratorVersion = 3;   // 3: id-4049 MASH in all six language banks
-                                       // (part 99); 2: y_button_ig legended Q
+constexpr int kGeneratorVersion = 4;   // 4: the bootskip layer (part 99);
+                                       // 3: id-4049 MASH in all six banks;
+                                       // 2: y_button_ig legended Q
 
 fs::path StampPath(const Paths& p)
 {
@@ -1640,6 +1728,7 @@ bool OutputsCurrent(const Paths& p)
         p.patched / "data" / "frontend" / "fecmn.big",
         p.patched / "data" / "preload4.big",
         p.patched / "layout.bin",
+        p.bootskip / "data" / "frontend" / "fecmn.big",
     };
     for (const std::string& f : StrBankNames(frontend))
         wanted.push_back(p.patched / "data" / "frontend" / f);
@@ -1686,6 +1775,7 @@ bool Generate(const std::function<void(const char*, float)>& progress, std::stri
     {
         const Paths p = MakePaths();
         GeneratePatchedLayer(p, progress);
+        GenerateBootskipLayer(p, progress);
         if (!p.chips.empty())
             GenerateKbmLayer(p, progress);
         else

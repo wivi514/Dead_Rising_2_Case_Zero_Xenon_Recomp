@@ -31,6 +31,8 @@ struct State
                                 // 6=it 7=ko — the six banks the disc carries).
                                 // Read ONCE at boot by the two HLE sites, so the
                                 // launcher (pre-boot) is its home (part 99).
+    bool skipIntroLogos = false; // skip LegalScreen/BCGIntro at boot (part 99).
+                                 // OFF by default: they are legal notices.
 };
 
 // The frame-cap values the panel offers. A set rather than a range because the vblank
@@ -77,10 +79,12 @@ void SaveLocked()
             "aspect=%d\n"          // 0 = 16:9, 1 = 21:9 (applies at next launch)
             "rt_shadows=%d\n"     // 0 = OG, 1 = RT LOW (needs a ray-query device)
             "mouse_sens=%d\n"     // 1..10
-            "language=%d\n",      // Xbox ID: 1=en 2=ja 4=fr 5=es 6=it 7=ko
+            "language=%d\n"       // Xbox ID: 1=en 2=ja 4=fr 5=es 6=it 7=ko
+            "skip_intro_logos=%d\n", // 1 = jump straight to the title screen
             int(g_state.displayMode), g_state.resW, g_state.resH, g_state.renderScale,
             g_state.vsync ? 1 : 0, g_state.shadowTier, g_state.fpsCap, g_state.fov,
-            g_state.aspect, g_state.rtShadows, g_state.mouseSens, g_state.language);
+            g_state.aspect, g_state.rtShadows, g_state.mouseSens, g_state.language,
+            g_state.skipIntroLogos ? 1 : 0);
     fclose(f);
 }
 
@@ -141,6 +145,8 @@ void Settings_Load(const std::string& path)
         // every other retired key gets.
         else if (!strcmp(key, "mouse_sens") && v >= 1 && v <= 10)
             g_state.mouseSens = int(v);
+        else if (!strcmp(key, "skip_intro_logos"))
+            g_state.skipIntroLogos = v != 0;
         else if (!strcmp(key, "language"))
         {
             // Only the six IDs whose banks the disc carries. 3 (de) and 8 (zh)
@@ -315,6 +321,19 @@ void Settings_SetMouseSens(int s)
 {
     std::lock_guard<std::mutex> lock(g_mutex);
     g_state.mouseSens = s < 1 ? 1 : (s > 10 ? 10 : s);
+    SaveLocked();
+}
+
+bool Settings_SkipIntroLogos()
+{
+    std::lock_guard<std::mutex> lock(g_mutex);
+    return g_state.skipIntroLogos;
+}
+
+void Settings_SetSkipIntroLogos(bool on)
+{
+    std::lock_guard<std::mutex> lock(g_mutex);
+    g_state.skipIntroLogos = on;
     SaveLocked();
 }
 

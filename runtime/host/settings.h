@@ -120,6 +120,14 @@ void Settings_SetMouseSens(int s);
 // row would silently not apply. CZ_LANGUAGE=N (dev arm) wins over this.
 int  Settings_Language();
 void Settings_SetLanguage(int id);
+
+// SKIP INTRO LOGOS (part 99): jump the boot straight from Startup to FrontEnd,
+// past the LegalScreen (Capcom / Blue Castle / Dolby) and BCGIntro states — the
+// hook is cpu/boot_skip.cpp. Default OFF: they are legal notices, so the skip is
+// opt-in. Read once at boot; the launcher is its home. CZ_SKIP_INTRO=1|0 (dev
+// arm) wins over this.
+bool Settings_SkipIntroLogos();
+void Settings_SetSkipIntroLogos(bool on);
 void Settings_SetRtShadows(int tier);
 void Settings_SetAspect(int aspect);
 

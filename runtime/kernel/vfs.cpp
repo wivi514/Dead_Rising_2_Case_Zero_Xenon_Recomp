@@ -1,5 +1,6 @@
 #include "vfs.h"
 
+#include "../cpu/boot_skip.h"
 #include "../cpu/native_kbm.h"
 
 #include <algorithm>
@@ -151,6 +152,39 @@ std::string VfsResolveExisting(const std::string& guestPath)
     std::error_code ec;
 
     static const bool overlayOff = getenv("CZ_NO_PATCHED_ASSETS") != nullptr;
+
+    // THE BOOT-SKIP OVERLAY (part 99). assets/game_bootskip/ holds one file —
+    // fecmn.big with intro.txt's logo-timeline keyframes collapsed (see
+    // cpu/boot_skip.cpp for why this is a data patch and not a hook). Its own
+    // layer, not a game_patched edit, because the launcher toggle must pick at
+    // boot between the stock timeline and the collapsed one without
+    // regenerating anything. Checked FIRST: the file it carries is generated
+    // FROM the patched layer, so it supersedes it. Toggle off = the layer is
+    // never consulted, so the stock boot stays byte-for-byte identical.
+    if (!overlayOff && BootSkip_Enabled())
+    {
+        std::string gameRoot;
+        {
+            std::lock_guard lock(g_mutex);
+            auto it = g_mounts.find("game");
+            if (it != g_mounts.end())
+                gameRoot = it->second;
+        }
+        if (!gameRoot.empty() && direct.rfind(gameRoot + "/", 0) == 0)
+        {
+            const std::string patched =
+                gameRoot + "_bootskip/" + direct.substr(gameRoot.size() + 1);
+            if (fs::exists(patched, ec))
+            {
+                KLOG("VFS: '%s' served from the BOOT-SKIP overlay -> %s "
+                     "(skip_intro_logos; CZ_SKIP_INTRO=0 restores the logos)\n",
+                     guestPath.c_str(), patched.c_str());
+                std::lock_guard lock(g_mutex);
+                g_resolved.emplace(guestPath, patched);
+                return patched;
+            }
+        }
+    }
 
     // THE KEYBOARD-PROMPT OVERLAY (part 92). assets/game_kbm/ holds the banks
     // tools/gen_kbm_icons.py generates — fecmn.tex with the pad-button glyphs
