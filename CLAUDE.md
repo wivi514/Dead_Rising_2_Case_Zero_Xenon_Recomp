@@ -192,12 +192,12 @@ mask; trust the microcode's own swizzles.
     read `phase5-notes.md` §6ba before following anything in it.
   - **THE LIVE HAND-OFF IS ALWAYS THE HIGHEST-NUMBERED `partNN-kickoff.md`**, and it
     supersedes every earlier kickoff on "where the port is". **IT IS
-    `part92-kickoff.md` — BUT AS OF 2026-09-05 THE LIVE WORK POINTER IS
-    `docs/release-github-plan.md`** (the GitHub release; part92-kickoff's item 0, the
-    native KB/M build, is delivered and operator-accepted, and its item 1, the release
-    board, is superseded by that plan — its §0 overlay gap is the first work, its §1
-    decisions are ALL ANSWERED: v1.0.0, attach both artifacts, MSAA 2x, glibc floor as
-    known limitation). **Part 91 shipped the LIVE-RESOLUTION APPLY
+    `part97-kickoff.md` — the POST-RELEASE hand-off: v1.0.0 is PUBLISHED, the repo is
+    PUBLIC, and its §1 is the standing list (watch issues, topics, AppImage, macOS,
+    Case West).** ~~It is `part92-kickoff.md` — but as of 2026-09-05 the live work
+    pointer is `docs/release-github-plan.md`~~ — that plan is EXECUTED and CLOSED
+    (its §7 is the publication record; §1 decisions all answered: v1.0.0, attach both
+    artifacts, MSAA 2x, glibc floor as known limitation). **Part 91 shipped the LIVE-RESOLUTION APPLY
     (operator-verified; the part-60 freeze was the apply's mid-frame placement —
     §6em) and KEYBOARD/MOUSE v1 (merged into pad 0, mouse camera, panel rows —
     §6en), censused the PC input vocabulary ALREADY IN THE XEX, and left the
@@ -1055,44 +1055,6 @@ ground is and that PERFORMANCE IS PARKED. (This
 line has now named the wrong plan TWICE — the two-live-pointers defect the block-rotation note at the bottom of this file
 describes, and the reason that note asks for the rule and not just the name; gotcha 13.)
 
-Where the port is, as of 2026-08-31 (**PART 90 CLOSED — PERFORMANCE. THE REVIVED GPU
-SURFACE: DEFERRED SCOPED CLEARS SHIPPED ON BY DEFAULT, THE COPY CENSUS NAMED AND
-PARKED ITS ITEM.** ~~`docs/part91-kickoff.md` is the live hand-off~~ — it WAS, for
-one part; part 91 delivered its fixes and `part92-kickoff.md` is live; the records are
-`phase5-notes.md` §6ek (the clears, with the yellow-streak addendum) and §6el (the
-census); `perf-plan-part90.md` §4 is the executed plan):
-
-* **Step 0 confirmed §0b's regime flip by measurement**: crowd wall 11.10 / GPU 10.60 /
-  fence 0.00 (CPU-bound by ~0.5 ms), every band below 7,000 draws GPU-bound; `record`
-  fresh at 431 ns/draw; the GPU census attributes cleanly under parallel record
-  (residual 0.5%).
-* **Deferred scoped clears ON BY DEFAULT** (`CZ_VK_NO_DEFERRED_CLEAR=1` the control,
-  `CZ_VK_DEFER_FULL_RECT=1` the scoping-vs-ordering diagnostic): a resolve's clear
-  bits latch as a scoped rect and emit as `vkCmdClearAttachments` at the head of the
-  next pass's first instance — an instance the part-89 recorder already creates, so
-  there is no per-clear scope (the part-32 arm's wash). Flush-before-read fallback at
-  the three EDRAM readers, 13-15% of emissions, kill (<30%) did not fire. **Clear
-  class 0.66 → 0.009 ms (−98.5%); device frame −0.8 to −0.95 ms in all 10 bands,
-  monotone** — more than the class, because the 83.6 deleted TRANSFER_DST round-trips
-  also serialized the timeline. Gates: sync validation 0 hazards (both builds), era
-  medians inside the null, poison control two-sided.
-* **The operator's visual report was hunted, convicted and CLOSED across two days**:
-  20,000 headless frames reproduced nothing; their F9 characterized it (a
-  view-dependent giant sun-glow blow-out); their three-session A/B/A convicted the
-  clears' scoping; `CZ_VK_DEFER_FULL_RECT=1` split coverage from ordering in one more
-  session; and the fix — the scoped rect is the destination SURFACE's footprint, not
-  the resolve window, hardware's own semantics — was verified by the same eye at the
-  same view (§6ek addenda 6-9, gotchas 506-507). Bisection order for future picture
-  complaints: NO_DEFERRED_CLEAR → DEFER_FULL_RECT → NO_PAR_RECORD.**
-* **The copy census** (`CZ_VK_COPY_CENSUS=1`): 36.4% of resolve copies dead (13.1% of
-  pixels — the bloom pyramid, the shadow atlas), worth ~0.1-0.28 ms, prediction-only
-  mechanism with a silent-stale failure mode — NAMED, PARKED (§6el).
-* **The board after this: no known lead ≥0.5 ms on either side.** The crowd reads
-  wall ~11.2 vs GPU ~9.8 (CPU-bound by ~1.3-1.4 ms again — the clears re-opened
-  convertible room, §6ek addendum 7), a locked 60 fps with margin either way;
-  further wins buy headroom and resolution, not felt frame rate. Parking is an
-  honest outcome; surface it to the operator before spending more sessions here.
-
 Where the port is, as of 2026-09-01 (**PART 91 CLOSED — THE OPERATOR'S SMALL FIXES:
 LIVE RESOLUTION APPLY SHIPPED AND VERIFIED; KEYBOARD/MOUSE v1 SHIPPED; THE NATIVE
 KB/M PLAN COMMISSIONED.** **`docs/part92-kickoff.md` IS THE LIVE HAND-OFF**; the
@@ -1120,9 +1082,41 @@ records are `phase5-notes.md` §6em and §6en; the commissioned plan is
   shipped; the copyright question they asked is retired**. The commissioned work is
   `docs/native-kbm-plan.md` (A recon → B native keyboard → C raw mouse-look → D
   our-own-art icons), with v1 as the standing fallback arm.
-* **The release board waits behind the fixes** (their instruction), and the Windows
-  leg now trails by parts 87-91 INCLUDING new SDL-side input code — build czwin
-  before any operator session there.
+* **The release board waited behind the fixes** (their instruction) — and was then
+  executed to publication; see the part-97 block below.
+
+Where the port is, as of 2026-09-06 (**PART 97 CLOSED — THE RELEASE. v1.0.0 IS
+PUBLISHED AND THE REPO IS PUBLIC:
+https://github.com/wivi514/Dead_Rising_2_Case_Zero_Xenon_Recomp** —
+`docs/part97-kickoff.md` is the live hand-off; `docs/release-github-plan.md`
+§6/§7 + addenda 1-5 are the execution record):
+
+* **The overlay gap (§0) closed the honest way**: `runtime/host/overlay_gen.cpp`
+  regenerates both patched-asset overlays at a player's first run, byte-identical
+  to the Python generators (identity gate passed on the FIRST build; verified by
+  dev diff, container hash, and a fake-root automatic boot). The 26 key-cap chips
+  ship pre-baked, our art only. Transform changes must re-export chips + bump
+  kGeneratorVersion in the same commit — the Python docstrings say so.
+* **A same-day operator fix round preceded publication**: device-following prompt
+  WORDING (MASH keyboard-only — the string bank swaps in guest memory with the
+  glyph art), the always-on mouse camera (Visuals toggle retired, 7 rows), and
+  three Case West back-imports — XMA hardware loops (CZ hits the path, ~5,900
+  sustains a run), LRU texture-slot recycling (215/215 recycle/destroy pairing at
+  cap 256 under sync validation, 0 hazards), the Q glyph for in-game Y.
+* **Published and verified from the outside**: both public downloads pulled back
+  over the internet hash byte-identical to the gated artifacts (linux 0d1aa15c…,
+  windows d911ad17…; binaries commit 407eb79). Launch-night session: ~80-85 fps
+  at 3440x1440 in 9-10k-draw crowds. READMEs are player-first; level cap 50,
+  21:9 + FOV ≥ +10 tip, and the Sponsors link/button are live post-release adds.
+* **THE STANDING STATE (part97-kickoff §1)**: watch public issues (picture-
+  complaint bisection now includes CZ_VK_NO_TEX_LRU=1); topics unset (operator);
+  AppImage/glibc floor is the one shipped limitation with a known path; macOS is
+  milestone C; **Case West is the next port** and inherits everything;
+  performance/RT stay parked; the hair flicker stays the one open picture item.
+* **THE RELEASE IS FROZEN AT THE TAG**: any rebuild refreshes the SHAs in
+  `docs/release-notes-v1.0.0.md` first, re-gates, and updates the PUBLISHED
+  Release's assets — it is public now; a stale-hash download is a broken promise.
+
 
 **Older per-part status blocks (parts 28-54, the superseded mid-part-44 closure and the
 superseded MID-PART-46 block) moved to `docs/port-history.md`, NOW INCLUDING PARTS 60-89's** — part 91 moved part 89's out in the same commit that added its own block, part 90 moved part 88's out in the same commit that added its own block, part 89 moved part 87's out in the same commit that added its own block, part 88 moved part 86's out in the same commit that added its own block, part 87 moved part 85's out in the same commit that added its own block, part 86 moved part 84's out in the same commit that added its own block, part 85 moved part 83's out in the same commit that added its own block, part 84 moved part 82's out in the same commit that added its own block, part 83 moved part 81's out in the same commit that added its own block, part 82 moved part 80's out in the same commit that added its own block, part 78 moved part 76's out in the same commit that added its own block, part 76 moved part 74's out in the same commit that added its own block, part 74 moved part 72's out in the same commit that added its own block, part 73 moved part 71's out in the same commit that added its own block, part 72 moved part 70's out in the same commit that added its own block, part 71 moved part 69's out in the same commit that added its own block, part 70 moved part 68's out in the same commit that added its own block, part 69 moved part 67's out in the same commit that added its own block, part 68 moved part 66's out in the same commit that added its own block, part 67 moved part 65's out the same way, part 65 moved part 63's out the same way, part 64 moved parts 61/62's out the same way, part 63 moved part 60's out the same way, part 61 moved part 59's out the same way, part 59 moved part 57's out the same way, part 57 moved part 55's out the same way, part 55 moved part 53's

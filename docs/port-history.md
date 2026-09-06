@@ -6515,3 +6515,47 @@ part 90 executed its plan whole and `part91-kickoff.md` is live; the records are
   the PM4 walk and the resolve/change-detector half. The CW record-restructure item
   is SUBSUMED. Any new performance question starts with a fresh profiled
   decomposition, because every earlier table overstates `record` by ~30%.
+
+
+---
+
+## Part 90 status block (moved from CLAUDE.md by part 97, per the one-back rule)
+
+Where the port is, as of 2026-08-31 (**PART 90 CLOSED — PERFORMANCE. THE REVIVED GPU
+SURFACE: DEFERRED SCOPED CLEARS SHIPPED ON BY DEFAULT, THE COPY CENSUS NAMED AND
+PARKED ITS ITEM.** ~~`docs/part91-kickoff.md` is the live hand-off~~ — it WAS, for
+one part; part 91 delivered its fixes and `part92-kickoff.md` is live; the records are
+`phase5-notes.md` §6ek (the clears, with the yellow-streak addendum) and §6el (the
+census); `perf-plan-part90.md` §4 is the executed plan):
+
+* **Step 0 confirmed §0b's regime flip by measurement**: crowd wall 11.10 / GPU 10.60 /
+  fence 0.00 (CPU-bound by ~0.5 ms), every band below 7,000 draws GPU-bound; `record`
+  fresh at 431 ns/draw; the GPU census attributes cleanly under parallel record
+  (residual 0.5%).
+* **Deferred scoped clears ON BY DEFAULT** (`CZ_VK_NO_DEFERRED_CLEAR=1` the control,
+  `CZ_VK_DEFER_FULL_RECT=1` the scoping-vs-ordering diagnostic): a resolve's clear
+  bits latch as a scoped rect and emit as `vkCmdClearAttachments` at the head of the
+  next pass's first instance — an instance the part-89 recorder already creates, so
+  there is no per-clear scope (the part-32 arm's wash). Flush-before-read fallback at
+  the three EDRAM readers, 13-15% of emissions, kill (<30%) did not fire. **Clear
+  class 0.66 → 0.009 ms (−98.5%); device frame −0.8 to −0.95 ms in all 10 bands,
+  monotone** — more than the class, because the 83.6 deleted TRANSFER_DST round-trips
+  also serialized the timeline. Gates: sync validation 0 hazards (both builds), era
+  medians inside the null, poison control two-sided.
+* **The operator's visual report was hunted, convicted and CLOSED across two days**:
+  20,000 headless frames reproduced nothing; their F9 characterized it (a
+  view-dependent giant sun-glow blow-out); their three-session A/B/A convicted the
+  clears' scoping; `CZ_VK_DEFER_FULL_RECT=1` split coverage from ordering in one more
+  session; and the fix — the scoped rect is the destination SURFACE's footprint, not
+  the resolve window, hardware's own semantics — was verified by the same eye at the
+  same view (§6ek addenda 6-9, gotchas 506-507). Bisection order for future picture
+  complaints: NO_DEFERRED_CLEAR → DEFER_FULL_RECT → NO_PAR_RECORD.**
+* **The copy census** (`CZ_VK_COPY_CENSUS=1`): 36.4% of resolve copies dead (13.1% of
+  pixels — the bloom pyramid, the shadow atlas), worth ~0.1-0.28 ms, prediction-only
+  mechanism with a silent-stale failure mode — NAMED, PARKED (§6el).
+* **The board after this: no known lead ≥0.5 ms on either side.** The crowd reads
+  wall ~11.2 vs GPU ~9.8 (CPU-bound by ~1.3-1.4 ms again — the clears re-opened
+  convertible room, §6ek addendum 7), a locked 60 fps with margin either way;
+  further wins buy headroom and resolution, not felt frame rate. Parking is an
+  honest outcome; surface it to the operator before spending more sessions here.
+
