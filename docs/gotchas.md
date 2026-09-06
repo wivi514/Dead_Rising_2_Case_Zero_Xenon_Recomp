@@ -5793,3 +5793,24 @@ From phase C part 18 (the frame rate — and none of it was work):
      dense frame dump (CZ_VK_FRAME_DUMP_EVERY=4) with a temporal-anomaly detector and
      contact sheets, and BOTH returning clean still does not outrank the report
      (memory: operator report outranks the headless number).
+
+508. **A PRE-WARM CAN ONLY BUILD WHAT EXISTS AT BOOT — MEASURE THE STATE YOUR USER IS
+     ACTUALLY IN, WHICH IS SESSION ONE.** The shipped 1,364-key pipeline seed
+     pre-warmed **0 of 1,365** on a genuinely fresh install: every key names a vertex
+     shader, and vertex shaders only exist after first-sight translation delivers them
+     MID-PLAY (the disc holds none — release plan §1.4). The release gate's own number,
+     "757 of 1,365", was a session-TWO measurement (the vertex half had been born the
+     session before), and every dev-box run was session-N with an eighty-session driver
+     cache besides — so v1.0.0 shipped the part-83 stutter to every new player while
+     every machine that could have shown it was warm. The session-one simulation is
+     three variables — fresh CZ_ROOT, fresh XDG_CACHE_HOME, MESA_SHADER_CACHE_DISABLE=true
+     — and it reproduced the public stutter reports in one run (part 98,
+     `phase5-notes.md` §6eq).
+
+509. **PRIORITY BY FRONT-INSERTION IS LIFO.** Promoting a queue entry with push_front
+     means the MOST RECENTLY promoted job runs first and the longest-waiting runs
+     last — in a burst (an area arrival promoting dozens of keys in one frame) it
+     inverts the priority it was written to implement. A promotion needs a TIER (two
+     FIFO queues, urgent drained first), not a position. Found by counter, not by eye:
+     the skip counter read 5.78 M with no promotion, and the tier fix took it −87%
+     where the front-insertion version managed −72% (part 98).

@@ -20381,3 +20381,103 @@ injection (now dead), operator-confirmed "looks right" against the Xenia frame.
   / 032a3240, though that turned out to be d7182b's texture, not the floor).
 
 Full record: `~/DR2CZ-troubleshooting/black-rooftop/README.md`.
+
+## §6eq — Part 98: async pipeline creation + the pre-warm chain — the v1.0.0 stutter reports, reproduced and fixed (2026-09-06)
+
+**The trigger.** Within a day of the public release, multiple players reported heavy
+stutter (the operator's summary of the release thread; the thread itself is
+bot-walled from this network, so no report is quoted — the one fingerprint worth
+asking any reporter for is "does it fade by your second session?").
+
+**The mechanism was already in the file, measured (part 83)** — lazy
+`vkCreateGraphicsPipelines` on the frame thread at 1-200 ms a call against a cold
+driver cache — and the pre-warm shipped for it turned out to protect nobody on a
+fresh install. Gotcha 508 is the transferable finding: **a pre-warm can only build
+what exists at boot, and on session one that is nothing** — every one of the 1,364
+shipped keys names a vertex shader, vertex shaders are first-sight-only (release
+plan §1.4: the disc holds none), so session one pre-warms **0 of 1,365** and every
+pipeline the route needs compiles synchronously, mid-play, at first encounter. The
+release gate's "757 of 1,365" was a session-two number, and the dev boxes carry
+eighty-session driver caches on top — every machine that could have shown the
+defect was warm (the `GetPipeline` comment block had said exactly this and the
+session-one measurement had still never been run).
+
+**The session-one simulation** (now the standing recipe for "what does a new player
+feel"): fresh `CZ_ROOT` (shader cache rebuilt from disc = pixel half only, so
+first-sight vertex translation fires), fresh `XDG_CACHE_HOME` (no VkPipelineCache
+blob, no per-user keys — the shipped `prewarm.keys` is the seed), and
+`MESA_SHADER_CACHE_DISABLE=true MESA_DISK_CACHE_DISABLE=true` (every driver compile
+is a real cold compile). Route: the DebugJump crowd route. Harness:
+`~/DR2CZ-troubleshooting/part98/` holds every arm's log and frame stats.
+
+**Arm S (`CZ_VK_SYNC_PIPELINE=1` — what v1.0.0 ships):** 232 frame-thread creates,
+**8,886 ms** of frame-thread compiling, worst single frames **3,742 ms and
+2,616 ms** (area load-in: 97 and 43 pipelines inside one frame), then 519 / 257 /
+253 / 249 ms hitches through the OUTDOOR era at 5,000-6,200 draws; 35 frames over
+33 ms. That is the players' report, live, on a fast Linux box — Windows driver
+caches compile slower.
+
+**The fix, two commits plus one design repair:**
+
+1. **Async creation on miss (55a9d4e).** `GetPipeline`'s build body became a PURE
+   function (`BuildPipelineObject` — no counters, no map, no front cache; every
+   impure effect in `RegisterBuiltPipeline`, pump-thread only) and a miss hands the
+   key plus COPIES of the two `ShaderMeta` to one worker — the shaderjit shape one
+   level up, same visual contract (the draw skips under its own counter, as a draw
+   whose shader is still translating always has). Drains at the miss site and once
+   per frame in `DoSwapImpl`. The boot pre-warm stays synchronous — the async gate
+   (`pipelinejit::bootDone`) opens only after it. A pending key touches neither the
+   pipelines map nor the front cache: a registered null would read as refused
+   forever.
+2. **The pre-warm chain (0c50a4d).** Keys skipped at boot for a missing shader are
+   parked; when a first-sight translation lands in `shaderjit::Drain`, every parked
+   key it completes is queued to the worker — so pipelines build AHEAD of the first
+   draw that would otherwise skip, including the ones for areas the session never
+   visits (1,083 built on a route that drew 224-232), which is what makes later
+   areas and session two arrive pre-built.
+3. **The design repair (49c895c), found by the first measurement:** the chain's
+   first run logged **5.78 M skipped draws** — a visible material's build sat behind
+   hundreds of speculative ones at 10-40 ms each. Promotion (a skipping key's job
+   jumps the queue, once per key) cut it −72%; then the promotion itself turned out
+   to be push_front = **LIFO under burst** (gotcha 509 — the longest-waiting
+   material built LAST), and the two-tier FIFO (urgent drained before spare) took
+   the same route to **757 k, −87%**.
+
+**Arm C3 (shipping config, route-comparable with S — peak 7,360 vs 7,370 draws):**
+frame-thread creates **0** (the part-71 exit census prints 0.0 ms), 1,083 built in
+background, outdoor era **zero frames over 100 ms** (S: 7), 5 frames over 33 ms
+(S: 35), worst frame 225 ms on a 48-draw load frame whose time is NOT pipeline
+(creation reads 0.0 — texture/translation load work, present in every async arm,
+not chased). **Session two in the same root: 1,083 of 1,083 pre-warm at boot in
+101 ms** (0.09 ms each — the warm VkPipelineCache), zero skips, zero background
+builds: the self-heal loop closes.
+
+**Arm A (`CZ_VK_NO_PREWARM_CHAIN=1`, prediction 3):** works (0 frame-thread
+creates, outdoor clean) but demand-only — 224 pipelines, 5,995 skips per drawn
+pipeline against the chain's 1,519, and nothing pre-built for anywhere the route
+did not go.
+
+**Gates:** `CZ_VK_VALIDATION=1` on a fresh root with the machinery busy: only the
+standing `VUID-...-topology-08773` class (8 instances vs the standing 6 — same
+class, more instances because the chain builds the key-file superset; no new
+VUID). `no translated shader` = 0 in all six runs. `--smoke` OK. Dev-tree boot
+unchanged (409/409 sync at boot, 41.8 ms total — a warm dev cache never enters the
+async path at boot).
+
+**Honest caveats.** One run per arm — but every claim above is a structural counter
+or a >10x frame-time effect, not a mean (the 10-13% noise floor applies to neither).
+The C2 run's route drifted (gotcha 75's fixed-interval drift; peak 3,087 draws) and
+was used only for the promotion ratio, never cross-arm. Skipped draws are a real,
+visible cost: ~757 k over session one means materials pop in late at area arrivals,
+once per install — the DXVK-async trade, chosen deliberately over 2-4 s frozen
+frames. The parked lever if reports persist: a second worker for the burst
+(pipeline creation is driver CPU work and parallel-safe; the budget question —
+ThreadBudget granted `record` zero threads in part 80 — is why it was not spent
+tonight).
+
+**What is owed: the release.** These commits are in the tree, not in the published
+artifacts. A v1.0.1 needs: rebuild both artifacts, refresh the SHA-256s in
+`docs/release-notes-v1.0.0.md`'s successor, re-gate (container + czwin), publish —
+the standing "release is frozen at the tag" rule. The operator should also play one
+session with a wiped `~/.cache/cz-recomp` + `MESA_SHADER_CACHE_DISABLE=true` to
+feel session one themselves before shipping it.

@@ -91,3 +91,18 @@ The texture-hitch stutter class (closed in parts 74–77), the RT pipelines and 
 resolve/present pipelines (their own creation sites, all boot-time), and the boot
 pre-warm's synchronous placement. If player reports survive this fix, the next
 suspect needs new evidence, not this mechanism again.
+
+---
+
+## EXECUTED, same session (2026-09-06) — `phase5-notes.md` §6eq is the record
+
+Predictions 1, 2 and 4 confirmed as written; prediction 3 confirmed per drawn
+pipeline (5,995 vs 1,519 skips/pipeline) with the addendum that the chain's larger
+build count (1,083 vs 224) is the point, not an overhead — it is what pre-builds
+unvisited areas and session two (1,083 of 1,083 at boot, 101 ms, zero skips).
+One kill criterion nearly fired and forced a design repair before commit: the
+skipped-draw episodes did converge but were enormous (5.78 M), and the fix was a
+two-tier FIFO queue — the intermediate push_front promotion was LIFO under burst
+(gotchas 508, 509). Shipped: 55a9d4e + 0c50a4d + 49c895c, defaults ON,
+`CZ_VK_SYNC_PIPELINE=1` the control arm. The v1.0.1 rebuild/re-gate/publish is the
+owed follow-up.

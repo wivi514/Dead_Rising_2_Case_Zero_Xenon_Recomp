@@ -6559,3 +6559,33 @@ census); `perf-plan-part90.md` §4 is the executed plan):
   further wins buy headroom and resolution, not felt frame rate. Parking is an
   honest outcome; surface it to the operator before spending more sessions here.
 
+
+Where the port is, as of 2026-09-01 (**PART 91 CLOSED — THE OPERATOR'S SMALL FIXES:
+LIVE RESOLUTION APPLY SHIPPED AND VERIFIED; KEYBOARD/MOUSE v1 SHIPPED; THE NATIVE
+KB/M PLAN COMMISSIONED.** **`docs/part92-kickoff.md` IS THE LIVE HAND-OFF**; the
+records are `phase5-notes.md` §6em and §6en; the commissioned plan is
+`docs/native-kbm-plan.md`):
+
+* **Live internal-resolution apply, operator-verified** ("It is perfect tried
+  multiple resolution and it worked"): the panel's Resolution row steps a PENDING
+  value, **X saves + applies live** at the frame boundary, B/reopen discards. The
+  part-60 live path's freeze was its MID-FRAME apply placement (wait-idle cannot
+  cover recorded-but-unsubmitted references); relocated to BeginFrame's
+  non-recording entry. `CZ_VK_LIVE_RES_TEST=<frame>:<w>x<h>` is the headless gate,
+  run both directions under validation. §6em.
+* **Keyboard/mouse v1 (e8fe508)**: merged into PAD 0 (keyboard-as-pad-2 was
+  structurally dead — the title binds the player AND the panel pump to pad 0), the
+  drifting-pad guard (their pad idles at 18% deflection), mouse→right-stick camera
+  behind the panel's MOUSE CAMERA/MOUSE SENS rows. Two honest gaps the operator
+  felt: A/S/D tap delay and the stick turn-rate ceiling on the camera. §6en.
+* **The census that reshapes the follow-up**: Case Zero's XEX SHIPS most of the PC
+  input vocabulary (74 KEY_ tokens, BUTTON_1..4, the four KBOARD_EMULATE_LTHUMB
+  commands, the USER_CAM consumers, a padmap line-identical to DR2 PC's). The
+  operator installed DR2 PC (Steam 45740, Proton) as the living reference: movement
+  is the same stick-emulation idea, the camera is RAW deltas into the same commands
+  (no ceiling), prompts are generic key-cap chips — **no Capcom assets needed or
+  shipped; the copyright question they asked is retired**. The commissioned work is
+  `docs/native-kbm-plan.md` (A recon → B native keyboard → C raw mouse-look → D
+  our-own-art icons), with v1 as the standing fallback arm.
+* **The release board waited behind the fixes** (their instruction) — and was then
+  executed to publication; see the part-97 block below.

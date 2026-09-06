@@ -3330,6 +3330,27 @@ CZ_VK_NO_SHADER_JIT=1   **the control arm for D.4's first-sight translation.** W
                   translations; JIT on = 0 and 45. When the JIT is ON, an in-flight shader's
                   skipped draws land in their own counter (`draw: shader translating`) so
                   `grep -c "no translated shader"` keeps meaning "ended up missing".
+CZ_VK_SYNC_PIPELINE=1   **the control arm for part 98's async pipeline creation** — the
+                  whole part-83 behaviour, same binary: every GetPipeline miss compiles
+                  vkCreateGraphicsPipelines synchronously on the frame thread (1-200 ms a
+                  call on a cold driver cache), and the pre-warm chain is off too, since
+                  its builds drain through the same machinery. Fresh-player measurement
+                  (part 98): this arm shows 8.9 s of frame-thread compiling, worst frames
+                  3.7 s / 2.6 s, and 519/257/253/249 ms outdoor hitches — the v1.0.0
+                  players' stutter reports, reproduced. The default (async) shows ZERO
+                  frame-thread creates and zero outdoor frames over 100 ms. While a
+                  pipeline builds in the background its draws skip under
+                  `draw: skipped, pipeline creating in background` — the shaderjit visual
+                  contract one level up, momentary by construction.
+CZ_VK_NO_PREWARM_CHAIN=1  the bisection arm INSIDE part 98's feature: async on-miss
+                  creation keeps working, but the prewarm.keys entries parked at boot for
+                  a missing shader are NOT built when first-sight translation delivers
+                  that shader — every pipeline waits for a draw to ask. Session-one skips
+                  per drawn pipeline measured 5,995 with this set against 1,519 with the
+                  chain, and the chain also builds the full key-file superset (~1,083 on
+                  the crowd route against 224 demand-only), which is what makes UNVISITED
+                  areas and session two arrive pre-built (session two: 1,083 of 1,083 at
+                  boot in 101 ms, zero skips).
 CZ_DXC_LIB=path   where libdxcompiler.so / dxcompiler.dll is, overriding the search
                   (<exe>/lib, <exe>, then the sibling XenosRecomp checkout). The loader
                   prints one `[shxlate] dxcompiler:` line naming what it loaded.

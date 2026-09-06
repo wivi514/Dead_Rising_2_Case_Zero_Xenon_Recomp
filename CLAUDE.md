@@ -192,9 +192,13 @@ mask; trust the microcode's own swizzles.
     read `phase5-notes.md` §6ba before following anything in it.
   - **THE LIVE HAND-OFF IS ALWAYS THE HIGHEST-NUMBERED `partNN-kickoff.md`**, and it
     supersedes every earlier kickoff on "where the port is". **IT IS
-    `part97-kickoff.md` — the POST-RELEASE hand-off: v1.0.0 is PUBLISHED, the repo is
-    PUBLIC, and its §1 is the standing list (watch issues, topics, AppImage, macOS,
-    Case West).** ~~It is `part92-kickoff.md` — but as of 2026-09-05 the live work
+    `part98-kickoff.md` — the PUBLIC STUTTER REPORTS reproduced (session one
+    pre-warms 0 of 1,365, gotcha 508) and fixed in-tree by async pipeline creation +
+    the pre-warm chain, defaults ON; its §1 is the owed list and v1.0.1 HEADS IT.**
+    ~~It is `part97-kickoff.md` — the POST-RELEASE hand-off: v1.0.0 is PUBLISHED, the
+    repo is PUBLIC, and its §1 is the standing list (watch issues, topics, AppImage,
+    macOS, Case West)~~ — part 97's §1 standing list still stands EXCEPT that "watch
+    issues" now has part 98's fingerprint question attached. ~~It is `part92-kickoff.md` — but as of 2026-09-05 the live work
     pointer is `docs/release-github-plan.md`~~ — that plan is EXECUTED and CLOSED
     (its §7 is the publication record; §1 decisions all answered: v1.0.0, attach both
     artifacts, MSAA 2x, glibc floor as known limitation). **Part 91 shipped the LIVE-RESOLUTION APPLY
@@ -1055,41 +1059,11 @@ ground is and that PERFORMANCE IS PARKED. (This
 line has now named the wrong plan TWICE — the two-live-pointers defect the block-rotation note at the bottom of this file
 describes, and the reason that note asks for the rule and not just the name; gotcha 13.)
 
-Where the port is, as of 2026-09-01 (**PART 91 CLOSED — THE OPERATOR'S SMALL FIXES:
-LIVE RESOLUTION APPLY SHIPPED AND VERIFIED; KEYBOARD/MOUSE v1 SHIPPED; THE NATIVE
-KB/M PLAN COMMISSIONED.** **`docs/part92-kickoff.md` IS THE LIVE HAND-OFF**; the
-records are `phase5-notes.md` §6em and §6en; the commissioned plan is
-`docs/native-kbm-plan.md`):
-
-* **Live internal-resolution apply, operator-verified** ("It is perfect tried
-  multiple resolution and it worked"): the panel's Resolution row steps a PENDING
-  value, **X saves + applies live** at the frame boundary, B/reopen discards. The
-  part-60 live path's freeze was its MID-FRAME apply placement (wait-idle cannot
-  cover recorded-but-unsubmitted references); relocated to BeginFrame's
-  non-recording entry. `CZ_VK_LIVE_RES_TEST=<frame>:<w>x<h>` is the headless gate,
-  run both directions under validation. §6em.
-* **Keyboard/mouse v1 (e8fe508)**: merged into PAD 0 (keyboard-as-pad-2 was
-  structurally dead — the title binds the player AND the panel pump to pad 0), the
-  drifting-pad guard (their pad idles at 18% deflection), mouse→right-stick camera
-  behind the panel's MOUSE CAMERA/MOUSE SENS rows. Two honest gaps the operator
-  felt: A/S/D tap delay and the stick turn-rate ceiling on the camera. §6en.
-* **The census that reshapes the follow-up**: Case Zero's XEX SHIPS most of the PC
-  input vocabulary (74 KEY_ tokens, BUTTON_1..4, the four KBOARD_EMULATE_LTHUMB
-  commands, the USER_CAM consumers, a padmap line-identical to DR2 PC's). The
-  operator installed DR2 PC (Steam 45740, Proton) as the living reference: movement
-  is the same stick-emulation idea, the camera is RAW deltas into the same commands
-  (no ceiling), prompts are generic key-cap chips — **no Capcom assets needed or
-  shipped; the copyright question they asked is retired**. The commissioned work is
-  `docs/native-kbm-plan.md` (A recon → B native keyboard → C raw mouse-look → D
-  our-own-art icons), with v1 as the standing fallback arm.
-* **The release board waited behind the fixes** (their instruction) — and was then
-  executed to publication; see the part-97 block below.
-
 Where the port is, as of 2026-09-06 (**PART 97 CLOSED — THE RELEASE. v1.0.0 IS
 PUBLISHED AND THE REPO IS PUBLIC:
 https://github.com/wivi514/Dead_Rising_2_Case_Zero_Xenon_Recomp** —
-`docs/part97-kickoff.md` is the live hand-off; `docs/release-github-plan.md`
-§6/§7 + addenda 1-5 are the execution record):
+`docs/part97-kickoff.md` WAS the live hand-off, superseded by part 98's;
+`docs/release-github-plan.md` §6/§7 + addenda 1-5 are the execution record):
 
 * **The overlay gap (§0) closed the honest way**: `runtime/host/overlay_gen.cpp`
   regenerates both patched-asset overlays at a player's first run, byte-identical
@@ -1117,9 +1091,39 @@ https://github.com/wivi514/Dead_Rising_2_Case_Zero_Xenon_Recomp** —
   `docs/release-notes-v1.0.0.md` first, re-gates, and updates the PUBLISHED
   Release's assets — it is public now; a stale-hash download is a broken promise.
 
+Where the port is, as of 2026-09-06 late (**PART 98 CLOSED — THE PUBLIC STUTTER
+REPORTS, REPRODUCED AND FIXED IN-TREE; v1.0.1 IS OWED.**
+**`docs/part98-kickoff.md` IS THE LIVE HAND-OFF**; the record is
+`phase5-notes.md` §6eq, the plan `docs/async-pipeline-plan.md`, the transferable
+findings gotchas 508-509):
+
+* **The mechanism was part 83's, and the pre-warm never protected a new player**:
+  session ONE pre-warms **0 of 1,365** — every shipped key names a vertex shader,
+  and vertex shaders are first-sight-only (gotcha 508: a pre-warm can only build
+  what exists at boot; the gate's "757 of 1,365" was a session-TWO number). The
+  session-one simulation is three env vars (fresh CZ_ROOT + fresh XDG_CACHE_HOME +
+  MESA_SHADER_CACHE_DISABLE=true) and it reproduced the reports in one run:
+  8.9 s of frame-thread compiling, worst frames 3.7 s / 2.6 s, 250-519 ms outdoor
+  hitches.
+* **Shipped, defaults ON (55a9d4e, 0c50a4d, 49c895c)**: async pipeline creation on
+  miss (pure BuildPipelineObject + one worker + pump-thread-only registration — the
+  shaderjit shape one level up, same skip-while-building visual contract), the
+  pre-warm CHAIN (parked keys build the moment first-sight translation delivers
+  their shader, ahead of the first draw — 1,083 built where demand alone needed
+  224), and the two-tier FIFO queue (the first promotion design was LIFO under
+  burst, gotcha 509; skips 5.78 M → 757 k, −87%). Result: **zero frame-thread
+  creates, zero outdoor frames >100 ms** (sync arm: 7), and **session two
+  self-heals — 1,083 of 1,083 at boot in 101 ms, zero skips**.
+  `CZ_VK_SYNC_PIPELINE=1` is the whole-part-83 control arm and the FIRST bisection
+  step for any "objects appear late" report; `CZ_VK_NO_PREWARM_CHAIN=1` isolates
+  the chain.
+* **v1.0.1 IS THE OWED FOLLOW-UP** (part98-kickoff §1): rebuild both artifacts at
+  head, re-gate, fresh SHAs, update the published Release — the frozen-tag rule.
+  A stutter report that does NOT fade by session two is a different defect; do not
+  close it against part 98.
 
 **Older per-part status blocks (parts 28-54, the superseded mid-part-44 closure and the
-superseded MID-PART-46 block) moved to `docs/port-history.md`, NOW INCLUDING PARTS 60-89's** — part 91 moved part 89's out in the same commit that added its own block, part 90 moved part 88's out in the same commit that added its own block, part 89 moved part 87's out in the same commit that added its own block, part 88 moved part 86's out in the same commit that added its own block, part 87 moved part 85's out in the same commit that added its own block, part 86 moved part 84's out in the same commit that added its own block, part 85 moved part 83's out in the same commit that added its own block, part 84 moved part 82's out in the same commit that added its own block, part 83 moved part 81's out in the same commit that added its own block, part 82 moved part 80's out in the same commit that added its own block, part 78 moved part 76's out in the same commit that added its own block, part 76 moved part 74's out in the same commit that added its own block, part 74 moved part 72's out in the same commit that added its own block, part 73 moved part 71's out in the same commit that added its own block, part 72 moved part 70's out in the same commit that added its own block, part 71 moved part 69's out in the same commit that added its own block, part 70 moved part 68's out in the same commit that added its own block, part 69 moved part 67's out in the same commit that added its own block, part 68 moved part 66's out in the same commit that added its own block, part 67 moved part 65's out the same way, part 65 moved part 63's out the same way, part 64 moved parts 61/62's out the same way, part 63 moved part 60's out the same way, part 61 moved part 59's out the same way, part 59 moved part 57's out the same way, part 57 moved part 55's out the same way, part 55 moved part 53's
+superseded MID-PART-46 block) moved to `docs/port-history.md`, NOW INCLUDING PARTS 60-91's** — part 98 moved part 91's out in the same commit that added its own block, part 91 moved part 89's out in the same commit that added its own block, part 90 moved part 88's out in the same commit that added its own block, part 89 moved part 87's out in the same commit that added its own block, part 88 moved part 86's out in the same commit that added its own block, part 87 moved part 85's out in the same commit that added its own block, part 86 moved part 84's out in the same commit that added its own block, part 85 moved part 83's out in the same commit that added its own block, part 84 moved part 82's out in the same commit that added its own block, part 83 moved part 81's out in the same commit that added its own block, part 82 moved part 80's out in the same commit that added its own block, part 78 moved part 76's out in the same commit that added its own block, part 76 moved part 74's out in the same commit that added its own block, part 74 moved part 72's out in the same commit that added its own block, part 73 moved part 71's out in the same commit that added its own block, part 72 moved part 70's out in the same commit that added its own block, part 71 moved part 69's out in the same commit that added its own block, part 70 moved part 68's out in the same commit that added its own block, part 69 moved part 67's out in the same commit that added its own block, part 68 moved part 66's out in the same commit that added its own block, part 67 moved part 65's out the same way, part 65 moved part 63's out the same way, part 64 moved parts 61/62's out the same way, part 63 moved part 60's out the same way, part 61 moved part 59's out the same way, part 59 moved part 57's out the same way, part 57 moved part 55's out the same way, part 55 moved part 53's
 out in the same commit that added its own, which is what the rule below asks for. — CLAUDE.md keeps only the
 live part and one part back, per the 2026-08-08 split's rule, and **part 53 moved part
 51's out in the same commit that added its own**, which is what the rule below asks for.

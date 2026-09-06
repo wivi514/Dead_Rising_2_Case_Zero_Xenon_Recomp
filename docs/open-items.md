@@ -7,6 +7,18 @@ NOT the cause is what stops the next session re-buying it.
 
 Next, in order:
 
+0x. **v1.0.1 — SHIP PART 98'S STUTTER FIX TO THE PUBLIC RELEASE.** The public v1.0.0
+    artifacts still carry the part-83 behaviour that the release-thread stutter reports
+    hit (session one pre-warms 0 of 1,365 — gotcha 508); the fix (async pipeline
+    creation + the pre-warm chain, `phase5-notes.md` §6eq) is in the tree at 49c895c,
+    defaults ON, gated. What ships it: rebuild both artifacts at head (czwin for the
+    Windows leg), re-gate (`release_text_identity.sh`, container gate, ps1), fresh
+    SHA-256s in the release notes, update the PUBLISHED Release — the frozen-tag rule.
+    Operator pre-flight worth one sitting: wipe `~/.cache/cz-recomp`, run with
+    `MESA_SHADER_CACHE_DISABLE=true`, and feel session one before and after.
+    `part98-kickoff.md` §1. A parked lever if reports persist: a second async worker
+    for the area-arrival burst (757 k session-one skips concentrate there).
+
 0w. **THE STUTTER REMAINDER — PART 73 SPLIT IT INTO TWO POPULATIONS AND ONE OF THEM IS
     NOT IN THE RENDERER.** The slow-frame table ran for the first time (after its texture
     column had to be retracted — it counted CALLS to `UploadTexture`, gotcha 435). Rebuilt
