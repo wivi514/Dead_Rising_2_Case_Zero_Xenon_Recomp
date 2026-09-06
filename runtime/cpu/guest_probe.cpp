@@ -2500,3 +2500,111 @@ PPC_FUNC(sub_8243FE40)
     }
     fflush(stderr);
 }
+
+// ---------------------------------------------------------------------------------
+extern "C" PPC_FUNC(__imp__sub_82753228);
+extern "C" PPC_FUNC(__imp__sub_82721248);
+extern "C" PPC_FUNC(__imp__sub_827529C0);
+extern "C" PPC_FUNC(__imp__sub_82714510);
+
+// PART 100: the czamd boot hang — the zone-stream completion chain, probed link by
+// link. The frozen state (CZ_KOBJ_DUMP) says the loader parks polling a request
+// whose status never leaves 1, and the completion that would set it to 2 is a
+// virtual invoked by a STOP MESSAGE dispatcher that looks the request up by ID
+// ("Warning: Received stop message for non-existent ReqID = %d" is its own failure
+// print). These four probes say, on any machine: do stop messages arrive at all,
+// for which ReqIDs, does the lookup find the request, and does the completion run.
+// The healthy machine is the control arm (gotcha 30).
+
+// sub_82753228 — stop-message receive: r3 = dispatcher, r4 = message.
+PPC_FUNC(sub_82753228)
+{
+    if (!ProbeEnabled())
+    {
+        __imp__sub_82753228(ctx, base);
+        return;
+    }
+    static std::atomic<int> shown{ 0 };
+    const int n = shown.fetch_add(1, std::memory_order_relaxed);
+    if (n < 300)
+        fprintf(stderr, "[stream] stop-msg #%d dispatcher=%08X msg=%08X\n", n,
+                ctx.r3.u32, ctx.r4.u32);
+    __imp__sub_82753228(ctx, base);
+}
+
+// sub_82721248 — request lookup by ReqID: r3 = dispatcher, r4 = reqid; returns the
+// request or 0. The result is the interesting half, so print AFTER the call.
+PPC_FUNC(sub_82721248)
+{
+    if (!ProbeEnabled())
+    {
+        __imp__sub_82721248(ctx, base);
+        return;
+    }
+    static std::atomic<int> shown{ 0 };
+    const uint32_t reqid = ctx.r4.u32;
+    __imp__sub_82721248(ctx, base);
+    const int n = shown.fetch_add(1, std::memory_order_relaxed);
+    if (n < 300)
+        fprintf(stderr, "[stream] lookup #%d reqid=%d -> %08X%s\n", n, (int)reqid,
+                ctx.r3.u32, ctx.r3.u32 ? "" : "   *** NOT FOUND ***");
+}
+
+// sub_827529C0 — advance the found request with the message.
+PPC_FUNC(sub_827529C0)
+{
+    if (!ProbeEnabled())
+    {
+        __imp__sub_827529C0(ctx, base);
+        return;
+    }
+    static std::atomic<int> shown{ 0 };
+    const int n = shown.fetch_add(1, std::memory_order_relaxed);
+    if (n < 300)
+        fprintf(stderr, "[stream] advance #%d req=%08X msg=%08X\n", n, ctx.r3.u32,
+                ctx.r4.u32);
+    __imp__sub_827529C0(ctx, base);
+}
+
+// sub_82714510 — the completion itself: sets [r3+0x80] = 2 if the cookie at +0x84
+// is live. Print the pre-state so a call that declines (cookie == -1) is visible.
+PPC_FUNC(sub_82714510)
+{
+    if (!ProbeEnabled())
+    {
+        __imp__sub_82714510(ctx, base);
+        return;
+    }
+    static std::atomic<int> shown{ 0 };
+    const uint32_t obj = ctx.r3.u32;
+    const uint32_t status = obj ? PPC_LOAD_U32(obj + 0x80) : 0;
+    const uint32_t cookie = obj ? PPC_LOAD_U32(obj + 0x84) : 0;
+    const int n = shown.fetch_add(1, std::memory_order_relaxed);
+    if (n < 300)
+        fprintf(stderr, "[stream] complete #%d obj=%08X status=%u cookie=%08X%s\n", n,
+                obj, status, cookie,
+                cookie == 0xFFFFFFFFu ? "   *** DECLINED (cookie -1) ***" : "");
+    __imp__sub_82714510(ctx, base);
+}
+
+// sub_827144C0 — the status predicate the part-100 frozen loader polls. Prints the
+// object identity (vtable) and its status/cookie words, so the class of the request
+// that never completes — and the writer that should have completed it — can be
+// named instead of guessed. Rate-capped: first 40, then every 4096th.
+extern "C" PPC_FUNC(__imp__sub_827144C0);
+PPC_FUNC(sub_827144C0)
+{
+    if (!ProbeEnabled())
+    {
+        __imp__sub_827144C0(ctx, base);
+        return;
+    }
+    static std::atomic<uint64_t> calls{ 0 };
+    const uint64_t n = calls.fetch_add(1, std::memory_order_relaxed);
+    const uint32_t obj = ctx.r3.u32;
+    if (n < 40 || (n & 0xFFF) == 0)
+        fprintf(stderr, "[stream] poll #%llu obj=%08X vtbl=%08X status=%u cookie=%08X\n",
+                (unsigned long long)n, obj, obj ? PPC_LOAD_U32(obj) : 0,
+                obj ? PPC_LOAD_U32(obj + 0x80) : 0, obj ? PPC_LOAD_U32(obj + 0x84) : 0);
+    __imp__sub_827144C0(ctx, base);
+}
