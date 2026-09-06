@@ -205,6 +205,12 @@ unchanged. §2.5's prediction: the saving is the ~18 s logo timeline minus the
 load it overlaps (headless, roughly 10-12 s of visible logo time collapsed to
 ~1-2 s of flashes); no new kcall/file divergences appeared.
 
+**§2.4's recipe question is answered**: the WAITJUMP form is unaffected by the
+skip — with `CZ_SKIP_INTRO=1` the DebugJump manager appeared at 21 s, the held
+request was serviced, and the route reached its outdoor crowd (6,828+ draws,
+gate ≥6,000). Event anchoring is exactly why (gotcha 251); the fixed-interval
+recipes stay skip-OFF-only, which is their default.
+
 **§2 step 0 (the "stuck on Capcom logo" report) remains open** — it needs the
 reporter's log, and nothing here closes it either way.
 
