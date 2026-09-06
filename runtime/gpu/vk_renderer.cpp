@@ -7076,6 +7076,18 @@ void SavePipelineCache()
 // Defined further down, in this same namespace.
 VkPipeline GetPipeline(const PipelineKey& key, const ShaderMeta& vs, const ShaderMeta& ps);
 
+// The async pipeline builder (part 98), also defined further down. The pre-warm loop
+// below parks the keys it cannot build yet (their vertex shader only exists once
+// first-sight translation delivers it) in prewarmWaiting, and shaderjit::Drain calls
+// OnShaderArrived so those pipelines build in the background AHEAD of the first draw
+// that would otherwise skip on them.
+namespace pipelinejit
+{
+extern std::vector<PipelineKey> prewarmWaiting;
+bool ChainOn();
+void OnShaderArrived(uint64_t hash);
+} // namespace pipelinejit
+
 constexpr uint32_t kPrewarmMagic = 0x5750435A;   // 'ZCPW'
 constexpr uint32_t kPrewarmVersion = 1;
 
@@ -7236,7 +7248,15 @@ void PrewarmPipelines()
         if (vs == R->shadersMap.end() || ps == R->shadersMap.end())
         {
             // Not an error: the shader cache and the key file drift independently, and a
-            // key naming a shader we no longer hold simply is not ours to build.
+            // key naming a shader we no longer hold simply is not ours to build. On a
+            // FRESH install this is ~600 of the shipped 1,364 — every key naming a
+            // vertex shader, because those only exist once first-sight translation
+            // delivers them mid-play — so the keys are parked for the chain (part 98)
+            // rather than dropped: OnShaderArrived builds each one the moment its
+            // shader lands, in the background, which is what turns the part-83
+            // first-encounter stutter into work the player never feels.
+            if (pipelinejit::ChainOn())
+                pipelinejit::prewarmWaiting.push_back(key);
             ++missingShader;
             continue;
         }
@@ -7253,8 +7273,13 @@ void PrewarmPipelines()
             made, uint32_t(keys.size()), ms, made ? ms / made : 0.0,
             missingShader ? "" : "", failed ? "  (some FAILED — see the lines above)" : "");
     if (missingShader)
-        fprintf(stderr, "[vk]   %u key(s) skipped: their shader is not in this cache\n",
-                missingShader);
+        fprintf(stderr,
+                "[vk]   %u key(s) skipped: their shader is not in this cache%s\n",
+                missingShader,
+                pipelinejit::prewarmWaiting.empty()
+                    ? ""
+                    : " — they will build in the background as first-sight "
+                      "translations arrive (CZ_VK_NO_PREWARM_CHAIN=1 disables)");
 }
 
 // --- D.4: translate on first sight (docs/release-plan.md §3.D) ----------------------
@@ -7475,6 +7500,9 @@ bool Drain()
         R->shaders.Insert(d.hash, meta);
         R->shadersMap.emplace(d.hash, std::move(meta));
         any = true;
+        // Part 98: the shipped pre-warm keys waiting on this shader can build NOW, in
+        // the background, ahead of the first draw that would otherwise skip on them.
+        pipelinejit::OnShaderArrived(d.hash);
     }
     return any;
 }
@@ -11089,7 +11117,8 @@ std::condition_variable cv;
 std::deque<Job> queue;                    // guarded by mx
 std::vector<Done> finished;               // guarded by mx
 std::atomic<uint32_t> finishedCount{ 0 }; // == finished.size(); mutated under mx only
-std::unordered_set<PipelineKey, PipelineKeyHash> pending; // pump thread only
+std::unordered_set<PipelineKey, PipelineKeyHash> pending;  // pump thread only
+std::unordered_set<PipelineKey, PipelineKeyHash> promoted; // pump thread only
 std::vector<PipelineKey> prewarmWaiting;  // pump thread only — the pre-warm chain
 bool workerUp = false;                    // pump thread only
 bool bootDone = false;                    // set after PrewarmPipelines(): the async gate
@@ -11101,6 +11130,17 @@ bool AsyncOn()
 {
     static const bool syncArm = EnvOn("CZ_VK_SYNC_PIPELINE");
     return !syncArm && bootDone;
+}
+
+// The pre-warm chain rides the async machinery (its builds drain through Drain), so
+// the sync control arm turns BOTH off — that is what makes CZ_VK_SYNC_PIPELINE=1 the
+// whole part-83 behaviour. CZ_VK_NO_PREWARM_CHAIN=1 removes only the chain, for
+// bisection: async on-miss keeps working, but nothing builds ahead of its first draw.
+bool ChainOn()
+{
+    static const bool off =
+        EnvOn("CZ_VK_NO_PREWARM_CHAIN") || EnvOn("CZ_VK_SYNC_PIPELINE");
+    return !off;
 }
 
 void Worker()
@@ -11146,6 +11186,30 @@ void Enqueue(const PipelineKey& key, const ShaderMeta& vs, const ShaderMeta& ps,
     cv.notify_one();
 }
 
+// Pump thread, from the skip site: a draw is skipping on this key RIGHT NOW and the
+// key was queued speculatively (the chain). Move its job to the front of the queue,
+// ONCE per key — without this, the first fresh-player run measured 5.7 MILLION skipped
+// draws, because a visible material's pipeline sat behind hundreds of speculative
+// builds at ~10-40 ms each on one worker. With the front of the queue, the wait is
+// bounded by the build in progress plus its own, i.e. a frame or two.
+void Promote(const PipelineKey& key)
+{
+    if (!promoted.insert(key).second)
+        return; // already moved once — the worker has it or will take it next
+    std::lock_guard<std::mutex> lk(mx);
+    for (auto it = queue.begin(); it != queue.end(); ++it)
+        if (it->key == key)
+        {
+            if (it != queue.begin())
+            {
+                Job j = std::move(*it);
+                queue.erase(it);
+                queue.push_front(std::move(j));
+            }
+            break;
+        }
+}
+
 // Pump thread. Registers every finished build; returns true if anything landed, so the
 // miss site re-runs its lookup. The probe is one relaxed-ish atomic read — free on the
 // standing path.
@@ -11175,6 +11239,43 @@ bool Drain()
                     "moved off the frame thread)\n",
             batch.size(), double(ns) * 1e-6);
     return true;
+}
+
+// Pump thread, from shaderjit::Drain: a first-sight translation just landed. Queue
+// every parked pre-warm key it completes — speculative work, so it goes behind any
+// urgent on-miss job — and keep the ones whose other shader is still to come.
+void OnShaderArrived(uint64_t hash)
+{
+    if (prewarmWaiting.empty() || !ChainOn())
+        return;
+    size_t kept = 0;
+    uint32_t queued = 0;
+    for (const PipelineKey& k : prewarmWaiting)
+    {
+        if (k.vsHash != hash && k.psHash != hash)
+        {
+            prewarmWaiting[kept++] = k;
+            continue;
+        }
+        auto vs = R->shadersMap.find(k.vsHash);
+        auto ps = R->shadersMap.find(k.psHash);
+        if (vs == R->shadersMap.end() || ps == R->shadersMap.end())
+        {
+            prewarmWaiting[kept++] = k; // the other half is still to come
+            continue;
+        }
+        if (R->pipelines.count(k) || pending.count(k))
+            continue; // a draw got there first — built or already queued
+        Enqueue(k, vs->second, ps->second, /*urgent=*/false);
+        Count("pipeline: pre-warm chained after first-sight translation");
+        ++queued;
+    }
+    prewarmWaiting.resize(kept);
+    if (queued)
+        fprintf(stderr,
+                "[vk] pipeline pre-warm chain: %u queued behind shader %016llx "
+                "(%zu key(s) still waiting)\n",
+                queued, (unsigned long long)hash, prewarmWaiting.size());
 }
 } // namespace pipelinejit
 
@@ -11219,6 +11320,9 @@ VkPipeline GetPipeline(const PipelineKey& key, const ShaderMeta& vs, const Shade
         }
         if (pipelinejit::pending.count(key))
         {
+            // A draw is skipping on it, so it stops being speculative: jump the queue
+            // (once per key — Promote's own set makes repeats free).
+            pipelinejit::Promote(key);
             // Recurs every draw that wants the pipeline while it builds, so it takes
             // the cheap counter path — and it is deliberately NOT the "no translated
             // shader" class of report: a skip here is momentary by construction.
