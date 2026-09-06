@@ -1484,6 +1484,18 @@ bool Host_RunLauncher()
         snprintf(fovBuf, sizeof fovBuf, "+%d", Settings_Fov());
         static const char* kShadowNames[] = { "LOW", "MEDIUM", "HIGH" };
         static const char* kDispNames[] = { "WINDOW", "BORDERLESS", "FULLSCREEN" };
+        // The six Xbox language IDs whose banks the disc carries, in the order
+        // MEASURED in part 99 (CZ_LANGUAGE=N + CZ_FILE_TRACE: each ID opens
+        // exactly its own str_XX.bcs; 3 and 8 fall back to en, so they are not
+        // offered). ASCII names — this 5x7 font has no accents or CJK; the
+        // in-GAME text is what gets localized.
+        static const int   kLangIds[]   = { 1, 4, 6, 5, 2, 7 };
+        static const char* kLangNames[] = { "ENGLISH", "FRANCAIS", "ITALIANO",
+                                            "ESPANOL", "JAPANESE", "KOREAN" };
+        int langIdx = 0;
+        for (int i = 0; i < 6; ++i)
+            if (kLangIds[i] == Settings_Language())
+                langIdx = i;
         struct Row { const char* label; std::string value; };
         const Row rows[] = {
             { "PLAY", installed ? "" : "(GAME NOT INSTALLED YET)" },
@@ -1493,6 +1505,7 @@ bool Host_RunLauncher()
             { "SHADOWS", kShadowNames[Settings_ShadowTier() % 3] },
             { "FPS CAP", Settings_FpsCap() ? fpsBuf : "OFF" },
             { "FOV", Settings_Fov() ? fovBuf : "DEFAULT" },
+            { "SUBTITLES", kLangNames[langIdx] },
         };
         constexpr int kRows = int(sizeof(rows) / sizeof(rows[0]));
 
@@ -1641,6 +1654,9 @@ bool Host_RunLauncher()
                 }
                 case 6:
                     Settings_SetFov(std::clamp(Settings_Fov() + dir * 5, 0, 20));
+                    break;
+                case 7:
+                    Settings_SetLanguage(kLangIds[(langIdx + dir + 6) % 6]);
                     break;
                 }
             break;

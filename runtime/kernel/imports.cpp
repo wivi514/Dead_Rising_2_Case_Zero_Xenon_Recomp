@@ -2223,6 +2223,26 @@ GUEST_FUNCTION_STUB(__imp__KeUnlockL2)
 // System info / config / loader queries
 // ---------------------------------------------------------------------------
 
+// The console language, answered identically by ExGetXConfigSetting(3, 9) and
+// XGetLanguage — the two MUST agree, which is why both call this. Xbox IDs:
+// 1=en 2=ja 3=de 4=fr 5=es 6=it 7=ko 8=zh. The title reads it ONCE, at boot
+// (A1), so the launcher's pre-boot setting is live the same run. CZ_LANGUAGE=N
+// is the dev arm and wins over the persisted setting (the env-wins rule).
+static uint32_t CzLanguage()
+{
+    static const uint32_t lang = [] {
+        if (const char* env = getenv("CZ_LANGUAGE"))
+        {
+            const long v = strtol(env, nullptr, 10);
+            if (v >= 1 && v <= 8)
+                return uint32_t(v);
+            fprintf(stderr, "[kernel] CZ_LANGUAGE=%s is not 1..8 — ignored\n", env);
+        }
+        return uint32_t(Settings_Language());
+    }();
+    return lang;
+}
+
 // A1 asks for exactly two settings, both in the user category:
 //   ExGetXConfigSetting(0003, 000A, 40005F9C, 0004, 7018F980)  <- video flags
 //   ExGetXConfigSetting(0003, 0009, 7018FA84, 0004, 7018FA80)  <- language
@@ -2245,7 +2265,7 @@ static uint32_t ExGetXConfigSetting_x(uint16_t category, uint16_t setting, void*
         case 0x0003: // XCONFIG_USER_CATEGORY
             switch (setting)
             {
-                case 0x0009: value = 1; break;          // language: English
+                case 0x0009: value = CzLanguage(); break; // language (launcher setting)
                 case 0x000A: value = 0x00040000; break; // video flags: widescreen
                 case 0x000C: value = 1; break;          // retail flags
                 case 0x000E: value = 103; break;        // country: US
@@ -2271,7 +2291,7 @@ static uint32_t ExGetXConfigSetting_x(uint16_t category, uint16_t setting, void*
 // XexCheckExecutablePrivilege is defined below, after RtlImageXexHeaderField_x,
 // because it answers out of the XEX's own optional headers rather than a constant.
 
-static uint32_t XGetLanguage_x() { return 1; }        // English
+static uint32_t XGetLanguage_x() { return CzLanguage(); }
 static uint32_t XGetAVPack_x() { return 0; }
 static uint32_t XGetGameRegion_x() { return 0x03FF; } // region-free
 
