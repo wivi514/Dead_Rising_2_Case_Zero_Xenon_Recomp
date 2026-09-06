@@ -63,6 +63,7 @@
 // intrinsics headers are read) because timebase.h pulls <x86intrin.h> in itself
 // before shadowing, which sets the guard; nothing below re-declares __rdtsc.
 #include "../cpu/timebase.h"
+#include "../gpu/vk_renderer.h" // the exit paths save the pipeline cache (part 99)
 #include "../host/settings.h"
 #include "../host/window.h"   // XamInputGetState's device (phase 3)
 #include "content.h"          // the save-data layer: enumerators and their message
@@ -2175,11 +2176,49 @@ PPC_FUNC(__imp__KeBugCheckEx)
     abort();
 }
 
+// The title-requested exit, shared by the two imports below. The same sequence as
+// window.cpp's Shutdown and main.cpp's signal handler, for the same reasons: dump
+// the counters (an operator session's numbers must not vanish with the quit), write
+// the pipeline cache back (the next launch's warmth depends on this firing on the
+// NORMAL quit path), and _Exit rather than exit — other guest threads are still
+// executing recompiled code against guest memory, and running static destructors
+// underneath them turns an ordinary quit into a crash report. HalReturnToFirmware
+// used plain exit(0) from phase 1 until part 99, which was that crash risk plus a
+// silently discarded pipeline cache on any run that ended through it.
+[[noreturn]] static void TitleRequestedExit(const char* who)
+{
+    fprintf(stderr, "[kernel] %s — title requested exit; quitting to desktop\n", who);
+    VkRenderer_DumpStats();
+    VkRenderer_SavePipelineCache();
+    fflush(nullptr);
+    std::_Exit(0);
+}
+
 PPC_FUNC(__imp__HalReturnToFirmware)
 {
     KCALL("HalReturnToFirmware");
-    fprintf(stderr, "[kernel] HalReturnToFirmware(%u) — title requested exit\n", ctx.r3.u32);
-    exit(0);
+    char who[64];
+    snprintf(who, sizeof who, "HalReturnToFirmware(%u)", ctx.r3.u32);
+    TitleRequestedExit(who);
+}
+
+// The main menu's EXIT GAME -> YES path (part 99, operator request). An XBLA title
+// leaves by relaunching the dashboard — XamLoaderLaunchTitle(NULL, flags) — which the
+// generated stub answered with STATUS_NOT_IMPLEMENTED, so confirming the exit did
+// nothing (the operator's session log: one [kcall] XamLoaderLaunchTitle near the end,
+// game still running). On a single-title runtime every launch target means the same
+// thing — leave this title — so both spellings quit to the desktop, saying which was
+// asked for.
+PPC_FUNC(__imp__XamLoaderLaunchTitle)
+{
+    KCALL("XamLoaderLaunchTitle");
+    const uint32_t pathVa = ctx.r3.u32;
+    const char* path = pathVa ? reinterpret_cast<const char*>(base + pathVa) : nullptr;
+    char who[192];
+    snprintf(who, sizeof who, "XamLoaderLaunchTitle(%s%s%s, 0x%X)",
+             path ? "\"" : "", path ? path : "NULL (dashboard)", path ? "\"" : "",
+             ctx.r4.u32);
+    TitleRequestedExit(who);
 }
 
 // A1 raises 19 exceptions in the boot, and Xenia decodes every one of them as
