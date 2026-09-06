@@ -39,6 +39,15 @@ because none of this touched the renderer.
 
 ## §1 What is owed, in order
 
+0. **THE BOOT HANG COMES FIRST, AND v1.0.1 IS HELD BEHIND IT.**
+   `docs/part99-amd-hang.md` is the full record: the operator's second PC hangs
+   at the Capcom/Blue Castle logo, it is **NOT the GPU** (it hangs with
+   `CZ_VKDRAW=0`), and it **reproduces headlessly over SSH in under 100 s**.
+   Thirteen hypotheses are refuted there by measurement — read §2 before
+   forming a new one. Two candidate fixes are in the tree, default OFF and
+   UNVERIFIED (`CZ_APC_INLINE=1`, `CZ_APC_ALWAYS=1`); §4 is the order to test
+   them in. Both artifacts for v1.0.1 already exist and are gated, so
+   publishing is one step once the hang is understood.
 1. **v1.0.1** (`part98-kickoff.md` §1, `open-items.md` 0x): rebuild both
    artifacts at head — they now carry part 98's stutter fix AND both part-99
    features — re-gate (`release_text_identity.sh`, the container gate, the

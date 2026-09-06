@@ -85,6 +85,11 @@ namespace fs = std::filesystem;
 // looks like a hang rather than a missing feature.
 void SignalGuestEvent(uint32_t handle);
 void QueueThreadApc(uint32_t routine, uint32_t context, uint32_t ioStatusBlock);
+// CZ_APC_INLINE (part 99): run the completion routine at the read instead of
+// leaving it queued for an alertable wait that this title's loader threads may
+// never make. See the arms in kernel/imports.cpp.
+bool CzApcInlineEnabled();
+void CzDrainApcsNow();
 
 namespace {
 
@@ -660,7 +665,11 @@ uint32_t NtReadFile_x(uint32_t handle, uint32_t event, uint32_t apcRoutine,
     // APC and passes event = 0.
     SignalGuestEvent(event);
     if (apcRoutine)
+    {
         QueueThreadApc(apcRoutine, apcContext, iosb ? g_memory.MapVirtual(iosb) : 0);
+        if (CzApcInlineEnabled())
+            CzDrainApcsNow();
+    }
     return status;
 }
 
@@ -738,7 +747,11 @@ uint32_t NtWriteFile_x(uint32_t handle, uint32_t event, uint32_t apcRoutine,
 
     SignalGuestEvent(event);
     if (apcRoutine)
+    {
         QueueThreadApc(apcRoutine, apcContext, iosb ? g_memory.MapVirtual(iosb) : 0);
+        if (CzApcInlineEnabled())
+            CzDrainApcsNow();
+    }
     return status;
 }
 

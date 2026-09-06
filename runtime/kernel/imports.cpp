@@ -1066,9 +1066,28 @@ static void ReportStuckMultiWait(uint32_t count, const uint32_t* ids, int second
     CzDumpGuestBacktrace("blocked wait-any");
 }
 
+// Forward declarations — WaitObject (below) drains APCs under CZ_APC_ALWAYS.
+static bool DrainThreadApcs();
+static bool FireDueTimerApcs();
+static bool ApcAlways();
+
 static uint32_t WaitObject(KernelObject* obj, uint32_t timeoutMs, uint32_t id)
 {
     const bool waitTrace = WaitTraceOn();
+    // CZ_APC_ALWAYS: an infinite wait must not swallow this thread's APC queue.
+    // Poll in short slices and drain between them; a completion queued while the
+    // thread was already parked is then still delivered.
+    if (ApcAlways() && timeoutMs == WAIT_TIMEOUT_INFINITE)
+    {
+        for (;;)
+        {
+            const uint32_t r = obj->Wait(2);
+            if (r != STATUS_TIMEOUT)
+                return r;
+            DrainThreadApcs();
+            FireDueTimerApcs();
+        }
+    }
     if (!waitTrace || timeoutMs != WAIT_TIMEOUT_INFINITE)
         return obj->Wait(timeoutMs);
 
@@ -1136,8 +1155,34 @@ static uint32_t KeWaitForSingleObject_x(XDISPATCHER_HEADER* object, uint32_t rea
     return status == kWaitObjectUnusable ? STATUS_INVALID_PARAMETER : status;
 }
 
-static bool DrainThreadApcs();
-static bool FireDueTimerApcs();
+// PART 99 — THE APC-STARVATION ARMS, for the boot hang that reproduces on one
+// operator machine and not on two others (same binary, same data, same CPU
+// family; not the GPU — it hangs with CZ_VKDRAW=0).
+//
+// The shape: NtReadFile completes synchronously and queues the guest's
+// completion routine on the CALLING thread (t_apcQueue is thread-local, so no
+// other thread can run it). Every drain site is gated on `alertable` AND runs
+// only at wait ENTRY, and an infinite WaitObject is a true blocking wait — so an
+// APC queued to a thread that is already parked, or that parks non-alertably,
+// never runs at all. The zone streaming completion then never fires and the
+// title's loader polls its status word forever (two threads at 100%).
+//
+// Both arms are OFF by default, so the shipped path is bit-identical until one
+// of them is shown to be the fix on the machine that reproduces it.
+//   CZ_APC_INLINE=1  run a file-completion APC immediately, at the read — our
+//                    reads ARE synchronous, so the data is already there.
+//   CZ_APC_ALWAYS=1  drain regardless of `alertable`, and poll infinite waits so
+//                    an APC queued after a thread parked is still picked up.
+static bool ApcInline()
+{
+    static const bool on = getenv("CZ_APC_INLINE") != nullptr;
+    return on;
+}
+static bool ApcAlways()
+{
+    static const bool on = getenv("CZ_APC_ALWAYS") != nullptr;
+    return on;
+}
 
 // tid -> guest entry point, for naming stuck threads in the wait trace.
 static std::mutex g_threadEntryMutex;
@@ -1164,7 +1209,7 @@ static uint32_t LookupThreadEntryByPcr(uint32_t r13)
 static uint32_t NtWaitForSingleObjectEx_x(uint32_t handle, uint32_t mode, uint32_t alertable,
                                           be<int64_t>* timeout)
 {
-    if (alertable && (DrainThreadApcs() | (int)FireDueTimerApcs()))
+    if ((alertable || ApcAlways()) && (DrainThreadApcs() | (int)FireDueTimerApcs()))
         return STATUS_USER_APC;
     if (!IsKernelObject(handle) || !IsLiveKernelHandle(handle))
     {
@@ -1213,7 +1258,7 @@ static uint32_t WaitAnyPoll(uint32_t count, uint32_t timeoutMs, uint32_t alertab
     const auto start = std::chrono::steady_clock::now();
     for (uint64_t tick = 0;; tick++)
     {
-        if (alertable && drainApcs && (DrainThreadApcs() | (int)FireDueTimerApcs()))
+        if (((alertable && drainApcs) || ApcAlways()) && (DrainThreadApcs() | (int)FireDueTimerApcs()))
             return STATUS_USER_APC;
         for (uint32_t i = 0; i < count; i++)
             if (poll(i))
@@ -1505,6 +1550,10 @@ struct PendingApc
 };
 static thread_local std::vector<PendingApc> t_apcQueue;
 
+// CZ_APC_INLINE's entry point for kernel/file_imports.cpp — see the arms above.
+bool CzApcInlineEnabled() { return ApcInline(); }
+void CzDrainApcsNow() { DrainThreadApcs(); }
+
 void QueueThreadApc(uint32_t routine, uint32_t context, uint32_t ioStatusBlock)
 {
     t_apcQueue.push_back({ routine, context, ioStatusBlock });
@@ -1666,7 +1715,7 @@ static uint32_t KeDelayExecutionThread_x(uint32_t mode, uint32_t alertable,
         if (++sleeps % every == 0)
             CzDumpGuestBacktrace("KeDelayExecutionThread");
     }
-    if (alertable && (DrainThreadApcs() | (int)FireDueTimerApcs()))
+    if ((alertable || ApcAlways()) && (DrainThreadApcs() | (int)FireDueTimerApcs()))
         return STATUS_USER_APC;
 
     const uint32_t ms = GuestTimeoutToMs(interval);
