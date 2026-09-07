@@ -1100,7 +1100,33 @@ findings gotchas 508-509):
   step 0 notes the "stuck on Capcom logo" report may itself be part 98's
   session-one compile stall — get the reporter's log before closing it either way.
 
-Where the port is, as of 2026-09-06 latest (**PART 99 CLOSED — BOTH QUEUED LAUNCHER
+Where the port is, as of 2026-09-06 latest (**PART 100 IN PROGRESS — THE czamd BOOT
+HANG: ONE REAL FIX SHIPPED, HANG NOT YET FULLY CLOSED, v1.0.1 STILL UNPUBLISHED.
+`docs/part99-amd-hang.md` §5 IS THE LIVE RECORD**):
+
+* **The part-99 APC arms are REFUTED.** `CZ_APC_INLINE=1` regresses a working box
+  (hangs at file #1); `CZ_APC_ALWAYS=1` does not fix czamd; and `CZ_APC_TRACE=1`
+  (new) shows czamd's frozen state is APC-BALANCED (81–88 queued = drained, one
+  thread) — **APC starvation is not the mechanism.**
+* **The fix that shipped: `NtReleaseSemaphore` now honours `maximum`** (NT-correct:
+  `STATUS_SEMAPHORE_LIMIT_EXCEEDED` past the limit, count/out-param untouched; the
+  guest's release wrapper is Win32 `ReleaseSemaphore` and checks the status). Our
+  version let the count grow unbounded; the czamd pump was releasing a work-semaphore
+  at 660k/s (`CZ_KCALL_WHO` milestone backtraces named the loop:
+  `sub_82771D70` dispatch → ring push → release). **Measured effect:**
+  `UpdateStreaming` (`sub_82760CF0`) went from **0 calls (frozen) to continuous** on
+  czamd, and the dispatch loop now returns and re-loops. Local boot still reaches
+  FrontEnd; A5 gate exit 0 / 0 real. A correctness fix for everyone.
+* **The residual hang is precise:** still parks in Loading, frozen loading cube-map
+  `cc_03.bct` — slots 0 and 3 load, **slots 2 and 1 never do**; `A18DE998` polls
+  `status==1` forever; the completion APC runs but does not queue the next slot.
+  Game data byte-identical + deterministic decompress ⇒ **machine-dependent state in
+  OUR runtime on the cube/zone-streaming path** (gotcha 267 physical-address shape is
+  the lead). See §5.4 for the ordered next steps.
+* **New instruments (all OFF by default):** `CZ_APC_TRACE`, `CZ_KOBJ_DUMP=N`,
+  `CZ_KCALL_WHO` milestone backtraces, and streaming-chain probes in `guest_probe.cpp`.
+
+Where the port was, as of 2026-09-06 latest (**PART 99 CLOSED — BOTH QUEUED LAUNCHER
 FIXES SHIPPED; v1.0.1 IS NEXT IN LINE. `docs/part99-kickoff.md` IS THE LIVE
 HAND-OFF**; `docs/localization-and-bootskip-plan.md` §5 is the execution record,
 with its §0 boot-logo recon CORRECTED IN PLACE):

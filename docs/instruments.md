@@ -3716,3 +3716,23 @@ CZ_STATE_TRACE=1   every TOP-LEVEL state request (sub_827E68F8), named through t
                    FrontEnd, BCGIntro never requested) and refuted the plan's state-
                    skip mechanism.
 ```
+
+## Part 100 additions — the czamd boot-hang instruments
+
+```
+CZ_APC_TRACE=1     per-thread IO-completion APC counts: queued vs drained, any
+                   imbalance with its age, and a balanced summary every 10 s so
+                   silence means "not armed", never "nothing pending". Refuted APC
+                   starvation as the czamd hang mechanism (frozen state is balanced)
+CZ_KOBJ_DUMP=N     every N s, walk the live kernel-handle registry and print each
+                   semaphore's count/max/waiters and each waited-on event's state,
+                   with last-waiter/last-signaller tids. The only enumeration of the
+                   live sync objects; built to read a frozen boot's stuck hand-off
+```
+
+`CZ_KCALL_WHO` now dumps the guest backtrace on MILESTONES too (every 65536th hit),
+not just first call — which is what names the caller of a frozen hot loop (a stuck
+boot calls an import 500k+/s and the first-call stack, taken at healthy boot, says
+nothing about who is looping now). The streaming-chain `CZ_ARG_PROBE` blocks
+(`sub_82760CF0`, `sub_82771D70`, `sub_827144C0`, and the stop-message completion
+chain) live in `runtime/cpu/guest_probe.cpp`.
