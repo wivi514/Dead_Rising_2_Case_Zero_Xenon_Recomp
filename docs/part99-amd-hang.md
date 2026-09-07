@@ -206,3 +206,36 @@ for the next session.
    the next slot on czamd.
 3. Only then publish v1.0.1 (artifacts + hashes staged; the semaphore fix should be
    rebuilt into them once the hang is fully closed).
+
+---
+
+## §6 SOLVED — it was the semaphore limit (part 100, operator-confirmed)
+
+**The boot hang is FIXED.** The operator confirmed the game reaches the MAIN TITLE on
+czamd, and the state trace shows `request FrontEnd`. The fix is §5.1's
+`NtReleaseSemaphore` maximum-limit enforcement — nothing else.
+
+**Bisected on czamd, current build (semaphore + thread-floor + depth-format all in):**
+- `CZ_WORKERS=1` → reaches FrontEnd ⇒ NOT the thread-budget floor.
+- `CZ_VKDRAW=0` → reaches FrontEnd ⇒ NOT the depth-format fix (renderer off).
+
+So the semaphore fix is the whole thing. **Why §5.2 looked unsolved:** with the fix the
+cube-load phase COMPLETES but takes ~90-130s on czamd, and the part-100 probe/guest-log
+runs were killed at 90-100s — before FrontEnd. The "slots 0,3 then nothing" reads were
+slow progress + buffered-log lag, not a true freeze. Lesson: a czamd boot is SLOW
+(~2 min to title); do not call it hung under ~150s.
+
+**v1.0.1 is now unblocked** — rebuild both artifacts at head, re-gate, fresh SHAs, update
+the published Release.
+
+### Two new reports at the title / in-game (open, part 100 tail)
+- **Stutter:** the known part-98 session-ONE compile stutter (gotcha 508) — the log shows
+  many `first-sight translation` (32-52 ms) and background async-pipeline builds; pre-warm
+  only 23-32 keys on a fresh machine because they name vertex shaders (first-sight-only).
+  Expected to self-heal on the second playthrough; confirm before treating as new.
+- **Flickering black square, centre screen:** a shape question needing the operator's eye
+  + a frame capture. Candidates: the dead reflection cube `01330000` (log: "4x4 uploaded
+  ENTIRELY BLACK - every reflection sampling it is dead"), an AMD D32 depth-resolve
+  artifact, or the self-rendered reflection cube `06805000` going black some frames.
+  Capture with `CZ_VK_FRAME_DUMP` / `CZ_VK_SNAP_DUMP`. Note it also appeared during the
+  hang, so it is not necessarily caused by the depth change.
