@@ -5993,10 +5993,52 @@ bool FormatHasStencil(VkFormat f)
 // (float depth with stencil), the faithful match, keeping depth-write and occlusion. The
 // D24_UNORM default is the same-binary control arm. Everything downstream reads
 // R->depth.format, and the depth clear/sample paths are normalised 0..1 floats either way.
+// The depth format actually chosen for THIS device, pinned once at init by
+// ChooseEdramDepthFormat below. VK_FORMAT_UNDEFINED until then.
+static VkFormat g_edramDepthFormat = VK_FORMAT_UNDEFINED;
+
 VkFormat EdramDepthFormat()
 {
+    if (g_edramDepthFormat != VK_FORMAT_UNDEFINED)
+        return g_edramDepthFormat;
+    // Pre-init fallback (a caller before ChooseEdramDepthFormat ran): keep the
+    // historical behaviour so nothing changes on the path this used to cover.
     static const bool wantFloat = EnvOn("CZ_VK_DEPTH_FLOAT");
     return wantFloat ? VK_FORMAT_D32_SFLOAT_S8_UINT : VK_FORMAT_D24_UNORM_S8_UINT;
+}
+
+// Decide the EDRAM depth format for this physical device, once, after it is chosen.
+//
+// D24_UNORM_S8_UINT is the historical default and the format every NVIDIA test used,
+// but AMD does not advertise SAMPLED_IMAGE for it (the hardware stores depth as D32
+// internally), so on AMD a sampled depth resolve — a depth snapshot bound through the
+// bindless heap, or the RT depth input — would be UNDEFINED rather than merely wrong.
+// When the default format is not sampleable we fall back to D32_SFLOAT_S8_UINT, which
+// AMD does support sampled and which is ALSO the more faithful match to Xenos float
+// depth (see EdramDepthFormat's comment and CZ_VK_DEPTH_FLOAT). NVIDIA keeps
+// D24_UNORM_S8_UINT and is unchanged. CZ_VK_DEPTH_FLOAT still forces float everywhere.
+void ChooseEdramDepthFormat(VkPhysicalDevice phys)
+{
+    if (EnvOn("CZ_VK_DEPTH_FLOAT"))
+    {
+        g_edramDepthFormat = VK_FORMAT_D32_SFLOAT_S8_UINT;
+        fprintf(stderr, "[vk] EDRAM depth format: D32_SFLOAT_S8_UINT (CZ_VK_DEPTH_FLOAT)\n");
+        return;
+    }
+    VkFormatProperties fp{};
+    vkGetPhysicalDeviceFormatProperties(phys, VK_FORMAT_D24_UNORM_S8_UINT, &fp);
+    if (fp.optimalTilingFeatures & VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT)
+    {
+        g_edramDepthFormat = VK_FORMAT_D24_UNORM_S8_UINT;
+        fprintf(stderr, "[vk] EDRAM depth format: D24_UNORM_S8_UINT\n");
+    }
+    else
+    {
+        g_edramDepthFormat = VK_FORMAT_D32_SFLOAT_S8_UINT;
+        fprintf(stderr, "[vk] EDRAM depth format: D24_UNORM_S8_UINT is NOT sampleable on "
+                        "this device (AMD) — using D32_SFLOAT_S8_UINT so depth resolves "
+                        "are readable\n");
+    }
 }
 
 // THE STAGE AND ACCESS MASKS A LAYOUT IMPLIES (part 78 item 1).
@@ -6384,6 +6426,8 @@ bool CreateDevice()
     fprintf(stderr, "[vk] device: %s (Vulkan %u.%u.%u)\n", props.deviceName,
             VK_VERSION_MAJOR(props.apiVersion), VK_VERSION_MINOR(props.apiVersion),
             VK_VERSION_PATCH(props.apiVersion));
+    // Pin the depth format to one this device can sample (AMD cannot sample D24S8).
+    ChooseEdramDepthFormat(R->physical);
     vkGetPhysicalDeviceMemoryProperties(R->physical, &R->memProps);
     // THE TIMESTAMP PERIOD, and the two ways a device can decline to answer. A queue whose
     // `timestampValidBits` is 0 cannot write them at all, and a period of 0 would silently
@@ -28115,37 +28159,44 @@ void DoSwapImpl(uint8_t* base, uint32_t frontBuffer, uint32_t width, uint32_t he
                 fprintf(f, "P6\n%u %u\n255\n", snap.image.width, snap.image.height);
                 if (snap.fromDepth)
                 {
-                    // The depth aspect of D24_UNORM_S8_UINT comes back one 32-bit word
-                    // per texel with the value in the low 24 bits. A perspective depth
-                    // buffer's values all sit within a hair of 1.0, so a linear grey
-                    // would be a white rectangle whatever it contained — the image is
-                    // therefore stretched between the surface's OWN min and max, and
-                    // the filename says `_depth` so nobody reads it as a colour
-                    // surface. The range is printed with it, because the stretch is a
-                    // display choice and the numbers are the measurement.
-                    uint32_t lo = 0xFFFFFFFFu, hi = 0;
-                    for (size_t i = 0; i < n; i += 4)
-                    {
+                    // The depth aspect comes back one 32-bit word per texel. For
+                    // D24_UNORM_S8_UINT the depth is the low 24 bits (a 0..2^24-1
+                    // integer); for D32_SFLOAT_S8_UINT (the AMD path) it is a 32-bit
+                    // float in 0..1. Read both as a normalised 0..1 double so the rest
+                    // of the dump is format-agnostic. A perspective depth buffer's
+                    // values all sit within a hair of 1.0, so a linear grey would be a
+                    // white rectangle whatever it contained — the image is therefore
+                    // stretched between the surface's OWN min and max, and the filename
+                    // says `_depth` so nobody reads it as a colour surface.
+                    const bool isFloat = R->depth.format == VK_FORMAT_D32_SFLOAT_S8_UINT;
+                    auto readNorm = [&](size_t i) -> double {
+                        if (isFloat)
+                        {
+                            float fv;
+                            memcpy(&fv, R->readback.mapped + i, 4);
+                            return double(fv);
+                        }
                         uint32_t v;
                         memcpy(&v, R->readback.mapped + i, 4);
-                        v &= 0xFFFFFFu;
-                        lo = std::min(lo, v);
-                        hi = std::max(hi, v);
+                        return double(v & 0xFFFFFFu) / 16777215.0;
+                    };
+                    double lo = 1e30, hi = -1e30;
+                    for (size_t i = 0; i < n; i += 4)
+                    {
+                        const double d = readNorm(i);
+                        lo = std::min(lo, d);
+                        hi = std::max(hi, d);
                     }
-                    const double span = hi > lo ? double(hi - lo) : 1.0;
+                    const double span = hi > lo ? (hi - lo) : 1.0;
                     for (size_t i = 0; i < n; i += 4)
                     {
-                        uint32_t v;
-                        memcpy(&v, R->readback.mapped + i, 4);
-                        v &= 0xFFFFFFu;
-                        const uint8_t g = uint8_t(255.0 * double(v - lo) / span);
+                        const uint8_t g = uint8_t(255.0 * (readNorm(i) - lo) / span);
                         const uint8_t rgb[3] = { g, g, g };
                         fwrite(rgb, 1, 3, f);
                     }
-                    fprintf(stderr, "[vk]   %08X is a DEPTH snapshot, 24-bit range "
-                                    "%u..%u (%.6f..%.6f)\n",
-                            dest & 0x1FFFFFFF, lo, hi, double(lo) / 16777215.0,
-                            double(hi) / 16777215.0);
+                    fprintf(stderr, "[vk]   %08X is a DEPTH snapshot (%s), range "
+                                    "%.6f..%.6f\n",
+                            dest & 0x1FFFFFFF, isFloat ? "D32F" : "D24", lo, hi);
                 }
                 else
                 {
