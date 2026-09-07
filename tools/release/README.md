@@ -36,11 +36,12 @@ console); none block progress.
 2. Press PLAY.
 3. The first run sets everything up, once, with progress shown as it goes:
    * unpacks the package (825 MB in, ~832 MB out),
-   * prepares the game's shaders from its own disc data (1,265 of them, ~10 s),
+   * prepares the game's shaders from its own disc data (1,367 of them, ~10 s),
    * generates the patched menu and key-prompt assets from your own game data,
-   * warms up as you play — entering a new area for the first time may translate a
-     few more shaders on the fly (a fraction of a second each; the log says
-     `first-sight translation` when it happens).
+   * builds the graphics pipelines in the background while the game starts, so
+     the first session plays like the second. A place no one has recorded yet may
+     still translate a shader on the fly (a fraction of a second, in the
+     background; the log says `first-sight translation` when it happens).
 4. Subsequent launches skip all of that and start straight into the game.
 
 Settings (resolution, display mode, shadows) are in the in-game settings menu. Your

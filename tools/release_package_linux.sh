@@ -160,6 +160,25 @@ print(f"    prewarm.keys                    {n} keys")
 PY
 cp "$ROOT/tools/release/prewarm.keys" "$STAGE/"
 
+# THE VERTEX-SHADER RECIPES (part 102): per runtime vertex shader, which disc template
+# and which dwords the title's own bind patches — 102 recipes, ~10 KB — so the first-run
+# pass can translate the vertex half BEFORE the first frame and the seed above builds
+# every pipeline at boot on session one. Regenerate with tools/vs_recipes.py whenever
+# the seed is redone; header-checked here like the seed (magic ZCVR, v1).
+[ -f "$ROOT/tools/release/vs_recipes.bin" ] || fail "no tools/release/vs_recipes.bin"
+python3 - "$ROOT/tools/release/vs_recipes.bin" <<'PY' || fail "vs_recipes.bin failed its header check"
+import struct, sys
+d = open(sys.argv[1], 'rb').read()
+m, v, n = struct.unpack_from('<III', d, 0)
+assert m == 0x5256435A and v == 1 and n > 0, (hex(m), v, n)
+off = 12
+for i in range(n):
+    th, rh, dw, pc = struct.unpack_from('<QQII', d, off); off += 24 + pc * 8
+assert off == len(d), (off, len(d))
+print(f"    vs_recipes.bin                  {n} recipes")
+PY
+cp "$ROOT/tools/release/vs_recipes.bin" "$STAGE/"
+
 # THE KEY-CAP CHIPS (release-github §0): the 26 keyboard prompt icons as finished
 # DXT5 texel blobs — OUR art, no Capcom byte — which the first-run overlay
 # generator (host/overlay_gen.cpp) composes into the player's own fecmn.tex. All

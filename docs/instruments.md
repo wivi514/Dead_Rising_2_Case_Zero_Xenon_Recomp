@@ -3351,6 +3351,25 @@ CZ_VK_NO_PREWARM_CHAIN=1  the bisection arm INSIDE part 98's feature: async on-m
                   the crowd route against 224 demand-only), which is what makes UNVISITED
                   areas and session two arrive pre-built (session two: 1,083 of 1,083 at
                   boot in 101 ms, zero skips).
+CZ_NO_VS_RECIPES=1  **the control arm for part 102's vertex-shader recipes.** The first-run
+                  prebuild runs pixel-only (parts 84-101's behaviour) and every vertex shader
+                  waits for the draw that first binds it — first-sight translation plus a
+                  pipeline build per seed key, with every draw wanting one of those pipelines
+                  SKIPPED meanwhile. That skip is the session-one pop-in. With it unset the
+                  pass applies `vs_recipes.bin` (tools/vs_recipes.py: disc template + the
+                  2-32 dwords the title's own bind patches) and translates the vertex half
+                  before the first frame; the log line is `vs_recipes.bin: 102 recipes over
+                  142 disc templates ... -> 102 runtime vertex shaders reproduced, 0 refused`.
+                  A refused recipe is named and NEVER translated: the result did not hash to
+                  the runtime shader it claims. Same-binary A/B on the fresh-start route:
+                  first-sight 47 -> 4, skipped draws 850,417 -> 74.
+CZ_VK_SYNC_PREWARM=1  **the control arm for part 102's ASYNC boot warm.** The seed keys are
+                  created synchronously at boot, as parts 83-101 did. Priced on this box with
+                  an EMPTY driver cache: 1,365 x 28 ms = 38 s before the first frame (czamd:
+                  118 ms each, 138 s — part 101's addendum). Unset, the keys go to the async
+                  worker's spare tier and the boot proceeds; a draw arriving first promotes
+                  its key and is skipped until built, counted as `pipeline: speculative build
+                  promoted by a draw` — the number that says how far the warm ran behind.
 CZ_DXC_LIB=path   where libdxcompiler.so / dxcompiler.dll is, overriding the search
                   (<exe>/lib, <exe>, then the sibling XenosRecomp checkout). The loader
                   prints one `[shxlate] dxcompiler:` line naming what it loaded.

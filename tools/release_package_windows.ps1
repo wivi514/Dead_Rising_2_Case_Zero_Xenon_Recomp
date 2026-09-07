@@ -99,6 +99,24 @@ if ($pkMagic -ne 0x5750435A -or $pkVer -ne 1 -or $pkN -eq 0 -or $pkb.Length -ne 
 Copy-Item $pk $Stage
 Write-Host ("    {0,-20}          pre-warm seed, {1} keys" -f "prewarm.keys", $pkN)
 
+# The vertex-shader recipes (part 102): template + patched dwords per runtime vertex
+# shader, so the first-run pass builds the vertex half before the first frame.
+# Header-checked like the seed (magic ZCVR, v1, every recipe's extent summing to EOF).
+$vr = Join-Path $Root "tools\release\vs_recipes.bin"
+if (-not (Test-Path $vr)) { Fail "no tools\release\vs_recipes.bin" }
+$vrb = [IO.File]::ReadAllBytes($vr)
+$vrMagic = [BitConverter]::ToUInt32($vrb, 0); $vrVer = [BitConverter]::ToUInt32($vrb, 4)
+$vrN = [BitConverter]::ToUInt32($vrb, 8)
+$vrOff = 12
+for ($i = 0; $i -lt $vrN -and $vrOff + 24 -le $vrb.Length; $i++) {
+    $pc = [BitConverter]::ToUInt32($vrb, $vrOff + 20); $vrOff += 24 + $pc * 8
+}
+if ($vrMagic -ne 0x5256435A -or $vrVer -ne 1 -or $vrN -eq 0 -or $vrOff -ne $vrb.Length) {
+    Fail "vs_recipes.bin failed its header check (magic=$vrMagic ver=$vrVer n=$vrN end=$vrOff len=$($vrb.Length))"
+}
+Copy-Item $vr $Stage
+Write-Host ("    {0,-20}          vertex-shader recipes, {1}" -f "vs_recipes.bin", $vrN)
+
 # The key-cap chips (release-github §0): the 26 keyboard prompt icons as finished
 # DXT5 texel blobs — our art, no Capcom byte — composed into the player's own
 # fecmn.tex by the first-run overlay generator. All 26 or refuse: a partial set
