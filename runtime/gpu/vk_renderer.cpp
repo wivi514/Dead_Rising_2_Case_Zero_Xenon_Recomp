@@ -7130,6 +7130,8 @@ namespace pipelinejit
 extern std::vector<PipelineKey> prewarmWaiting;
 bool ChainOn();
 void OnShaderArrived(uint64_t hash);
+// Part 102: queue one seed key on the spare tier unless it is built or already queued.
+bool EnqueueSeed(const PipelineKey& key, const ShaderMeta& vs, const ShaderMeta& ps);
 } // namespace pipelinejit
 
 constexpr uint32_t kPrewarmMagic = 0x5750435A;   // 'ZCPW'
@@ -7305,8 +7307,22 @@ void PrewarmPipelines()
         fprintf(stderr, "[vk] pipeline pre-warm: no per-user key file yet — seeding "
                         "from the shipped %s\n", shipped.c_str());
 
+    // ASYNC BY DEFAULT SINCE PART 102. The boot warm was synchronous — "at load, where
+    // a player expects to wait" — and that was priced when the seed could only build the
+    // keys whose shaders the cache held. Two things changed the price: part 102's
+    // vertex recipes let session ONE hold every shader, so the loop now builds all
+    // 1,365 keys at boot instead of ~750; and a fresh DRIVER cache makes each create
+    // 28 ms here (NVIDIA) and 118 ms on czamd (part 101 addendum: 1,168 x 118 ms =
+    // 138 s of black screen), against 0.1 ms warm. 1,365 x 28 ms = 38 s measured on
+    // this box before the first frame. So the keys go to the async worker's SPARE tier
+    // instead — the same machinery the chain uses — and the boot proceeds; a draw that
+    // arrives before its pipeline is built promotes it to the urgent tier and is
+    // skipped until then (counted: "pipeline: speculative build promoted by a draw" is
+    // the seed arriving too late). CZ_VK_SYNC_PREWARM=1 is the control arm: the
+    // synchronous boot warm exactly as parts 83-101 shipped it.
+    const bool asyncWarm = pipelinejit::ChainOn() && !EnvOn("CZ_VK_SYNC_PREWARM");
     const auto t0 = std::chrono::steady_clock::now();
-    uint32_t made = 0, missingShader = 0, failed = 0;
+    uint32_t made = 0, missingShader = 0, failed = 0, queued = 0;
     for (const PipelineKey& key : keys)
     {
         auto vs = R->shadersMap.find(key.vsHash);
@@ -7326,6 +7342,12 @@ void PrewarmPipelines()
             ++missingShader;
             continue;
         }
+        if (asyncWarm)
+        {
+            if (pipelinejit::EnqueueSeed(key, vs->second, ps->second))
+                ++queued;
+            continue;
+        }
         if (GetPipeline(key, vs->second, ps->second) == VK_NULL_HANDLE)
             ++failed;
         else
@@ -7333,6 +7355,12 @@ void PrewarmPipelines()
     }
     const double ms = std::chrono::duration<double, std::milli>(
                           std::chrono::steady_clock::now() - t0).count();
+    if (asyncWarm)
+        fprintf(stderr,
+                "[vk] pipeline pre-warm: %u of %u queued to the background worker (async "
+                "boot warm, part 102; CZ_VK_SYNC_PREWARM=1 is the synchronous arm)\n",
+                queued, uint32_t(keys.size()));
+    else
     fprintf(stderr,
             "[vk] pipeline pre-warm: %u of %u created in %.0f ms (%.2f ms each)"
             "%s%s — this is the stutter that would otherwise have happened DURING play\n",
@@ -11249,13 +11277,46 @@ void Enqueue(const PipelineKey& key, const ShaderMeta& vs, const ShaderMeta& ps,
     if (!workerUp)
     {
         workerUp = true;
-        std::thread(Worker).detach();
+        // SEVERAL WORKERS SINCE PART 102, because the async boot warm queues the whole
+        // 1,365-key seed here and one worker on a fresh driver cache drains it in ~37 s
+        // (28 ms a create on NVIDIA, 118 on czamd's AMD) — the seed finished at 40-48 s
+        // on the outdoor route with the DebugJump landing at 35 s, and 46 keys were
+        // promoted by draws that got there first. BuildPipelineObject is written for
+        // concurrent callers (its statics are mutexed; a default VkPipelineCache is
+        // internally synchronized). These threads sit blocked on the condition variable
+        // except while a pipeline is actually being created, which is exactly when the
+        // frame thread would otherwise stall — so they are sized from the machine
+        // rather than taken from the busy-thread budget (thread_budget.h), like the one
+        // first-sight translation worker before them: physical cores minus two,
+        // clamped to 1..4. CZ_VK_PIPELINE_WORKERS=N overrides; =1 is the pre-part-102
+        // count.
+        unsigned n = 1;
+        if (const char* v = getenv("CZ_VK_PIPELINE_WORKERS"); v && *v)
+            n = std::max(1u, unsigned(strtoul(v, nullptr, 10)));
+        else
+        {
+            const unsigned phys = ThreadBudget_PhysicalCores();
+            n = phys > 2 ? std::min(4u, phys - 2) : 1u;
+        }
+        for (unsigned i = 0; i < n; i++)
+            std::thread(Worker).detach();
+        fprintf(stderr, "[vk] async pipeline: %u worker thread(s) (%s; CZ_VK_PIPELINE_WORKERS=N "
+                        "overrides)\n",
+                n, getenv("CZ_VK_PIPELINE_WORKERS") ? "env" : "physical cores - 2, 1..4");
     }
     {
         std::lock_guard<std::mutex> lk(mx);
         (urgent ? queueUrgent : queueSpare).push_back({ key, vs, ps });
     }
     cv.notify_one();
+}
+
+bool EnqueueSeed(const PipelineKey& key, const ShaderMeta& vs, const ShaderMeta& ps)
+{
+    if (R->pipelines.count(key) || pending.count(key))
+        return false;
+    Enqueue(key, vs, ps, /*urgent=*/false);
+    return true;
 }
 
 // Pump thread, from the skip site: a draw is skipping on this key RIGHT NOW and the
@@ -11275,6 +11336,10 @@ void Promote(const PipelineKey& key)
         {
             queueUrgent.push_back(std::move(*it));
             queueSpare.erase(it);
+            // The seed (or the chain) guessed right but built too late: a draw got
+            // here first. The exit dump's count of these is how far the async boot
+            // warm is behind the title on this machine.
+            Count("pipeline: speculative build promoted by a draw");
             break;
         }
 }
