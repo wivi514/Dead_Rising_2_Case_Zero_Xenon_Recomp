@@ -190,6 +190,23 @@ BudgetState& State()
         if (budget > cap)
             budget = cap;
 
+        // Core-count FLOOR (operator request, part 100). The subtract-reserve-and-commit
+        // formula hands a 6-core machine only 1 worker and a 4-core machine 0, which
+        // leaves mid-range CPUs — the majority of real players' machines — running the
+        // guards and record path almost serially. Floor the budget so a machine with
+        // enough cores gets real parallelism regardless of the reserve arithmetic:
+        //   >= 6 physical cores -> at least 3 workers
+        //   >= 4 physical cores -> at least 2 workers
+        // Still clamped by the cap above (which the floor never exceeds), and CZ_WORKERS
+        // below still overrides the whole thing.
+        unsigned floor = 0;
+        if (st.physical >= 6)
+            floor = 3;
+        else if (st.physical >= 4)
+            floor = 2;
+        if (budget < floor)
+            budget = floor;
+
         if (const char* s = Env("CZ_WORKERS"))
         {
             budget = unsigned(strtoul(s, nullptr, 10));
@@ -247,7 +264,7 @@ void ThreadBudget_Report()
     s.dirty = false;
     fprintf(stderr,
             "[threads] machine: %u physical cores, %u logical cpus%s -> budget %u worker%s"
-            "%s (reserve 2, committed 3, cap 6)\n",
+            "%s (reserve 2, committed 3, floor 3@6c/2@4c, cap 6)\n",
             s.physical, s.logical, s.topologyOk ? "" : " (topology unreadable, halved)",
             s.total, s.total == 1 ? "" : "s",
             s.overridden ? " [CZ_WORKERS override]" : "");

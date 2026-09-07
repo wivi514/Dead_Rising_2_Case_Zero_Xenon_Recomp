@@ -33,11 +33,16 @@
 //     physical  = counted from the machine, never divided by an assumed SMT factor
 //     reserved  = 2      # one for the OS/compositor, one for the user's own software
 //     committed = 3      # the graphics pump + the two busy guest threads, measured
-//     budget    = clamp(physical - reserved - committed, 0, 6)
+//     floor     = 3 if physical >= 6, else 2 if physical >= 4, else 0
+//     budget    = clamp(max(physical - reserved - committed, floor), 0, 6)
 //
-//   4-core laptop -> 0 workers, the fully serial path, which is the CORRECT answer and
-//                    not a degraded one; it is the control arm and it is gated.
-//   6-core        -> 1     8-core (the operator's) -> 3     12-core and up -> 6, capped.
+// The FLOOR was added in part 100 at the operator's request: the bare
+// subtract-reserve-and-commit formula gave a 6-core machine 1 worker and a 4-core
+// machine 0, leaving the mid-range CPUs most real players run almost serial. The floor
+// guarantees a machine with cores to spare actually uses them.
+//
+//   4-core laptop -> 2 workers (was 0)   6-core -> 3 (was 1)
+//   8-core (the operator's) -> 3     12-core and up -> 6, capped.
 //
 // THE CAP OF 6 IS NOT TIMIDITY, it is the ceiling in §0 of the plan: the PM4 walk is
 // serial because a command stream's meaning is positional, and draw submission is ordered
