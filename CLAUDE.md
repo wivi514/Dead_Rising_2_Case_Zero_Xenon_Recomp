@@ -1092,6 +1092,14 @@ appended; gotcha 513 is the transferable finding. THE OPERATOR HALF IS OWED**):
   `p101frames`. Owed: same-area-twice for the stutter verdict; reproduce the
   square and note when, then pull `p101frames` + `run_visible.err.log`. v1.0.1
   (semaphore + thread floor + AMD depth + 95611b9) remains unblocked.
+* **THE NEXT PLAN IS `docs/part102-no-popin-plan.md` (2026-09-07):** the operator
+  asked for hedge-dev's no-first-run-stutter design. Session-one pop-in is the
+  VERTEX half only (0 of 104 on disc verbatim); the title binds VS to declaration
+  LAZILY inside the draw flush (`sub_8284F1C0`/`sub_8284EF28`, only caller
+  `sub_8284F300`), so no load-time hook exists. But 102 of 104 runtime VS are a
+  disc template + 2-32 patched dwords (978 total), so the vertex half can be
+  regenerated at first run from a 7.8 KB recipe table and the seed pre-warm then
+  runs whole on session one. Its §3 item 0 is a question for the operator first.
 
 
 Where the port was, as of 2026-09-06 latest (**PART 100 CLOSED — the boot hang was
