@@ -120,3 +120,89 @@ verification run was interrupted before it completed**:
    workaround — the public "stuck on Capcom logo" report is very likely this
    same bug, and it is NOT part 98's compile stall.
 5. Only then publish v1.0.1 (artifacts and hashes are already staged).
+
+---
+
+## §5 Part 100: one real fix, a sharpened diagnosis, and the instruments
+
+**Status still NOT fully solved, but materially advanced. v1.0.1 stays unpublished.**
+
+### §5.1 The fix that shipped — `NtReleaseSemaphore` now honours the maximum
+
+The part-99 APC arms were both refuted by re-running them:
+- `CZ_APC_INLINE=1` **regresses a working machine** — it re-enters guest code at the
+  read, inside the loader's own lock, and hangs the dev box at file #1.
+- `CZ_APC_ALWAYS=1` does not fix czamd.
+
+And `CZ_APC_TRACE=1` (new: per-thread queued-vs-drained APC counts) settled the
+APC hypothesis itself: czamd's frozen state is **balanced, 81–88 queued = 81–88
+drained on one thread**. APC starvation is NOT the mechanism; every completion APC
+ran.
+
+`CZ_KCALL_WHO` (extended to fire on milestones, not just first call) named the hot
+loop: `NtReleaseSemaphore` at ~660k/s, backtrace
+`82822520 ← 827780FC ← 82778E5C ← 82771E58 ← 827617C8` — the streaming pump's
+listener-dispatch (`sub_82771D70`) posting work to a ring
+(`sub_82778060`) and releasing its work-semaphore, once per spin.
+
+Our `Semaphore::Release` ignored `Limit` and let the count grow unbounded; the guest
+creates every one with `maximum=0x10` and its release wrapper is Win32
+`ReleaseSemaphore`, which **checks the status and `SetLastError`s a failure**
+(`0x825da110` is `SetLastError`, not an assert). Enforcing the limit
+(`STATUS_SEMAPHORE_LIMIT_EXCEEDED` when `count+n > maximum`, count and out-param
+untouched) is NT-correct and shipped (commit on master, part 100). Local boot still
+reaches FrontEnd; A5 gate exit 0 / 0 real.
+
+**Effect on czamd, measured:** before the fix `UpdateStreaming` (`sub_82760CF0`,
+which ticks the stuck streaming manager `A18DE998`) ran **0 times** while the pump
+spun; after the fix it runs continuously and `sub_82771D70` returns and re-loops
+49k+ times. **The pump is no longer frozen.** This is a correctness fix for everyone
+regardless of whether it is the whole story.
+
+### §5.2 The residual hang — precisely located
+
+Even with the pump ticking, czamd still parks in **Loading, never FrontEnd**, frozen
+at the **exact same guest point**: cube-map `cc_03.bct` loads slot 0 and slot 3, and
+**slots 2 and 1 never load** (`[CUBES] Loading … slot N` stops). `CallbackLoadRequest`
+is never printed; the zone-load request object `A18DE998` polls `status==1` forever.
+
+- File I/O is healthy to the stop: the last ops are 4× `streamedassets.big`
+  71680 bytes @ 15646720 into two alternating buffers — **the same count the healthy
+  box issues** — then reads simply stop being issued. Healthy issues the next slot's
+  reads here; czamd issues nothing.
+- The completion APC (`82831B20`) runs (APC counts balanced), but its guest routine
+  neither issues the next slot's read nor marks the cube done. The step that decides
+  "what next" after the 4th read runs on czamd but does not advance.
+
+The game data is byte-identical (256 files / 859,007,897 bytes) and decompression is
+deterministic, so the read CONTENT is the same on both machines. That points the
+residual at a **machine-dependent state in OUR runtime** on the cube/zone-streaming
+path — most likely a host-allocation-layout dependency (cf. gotcha 267: a guest
+struct on this path may carry a PHYSICAL address that resolves differently depending
+where the host allocator placed it, which differs by machine/ASLR). This is the lead
+for the next session.
+
+### §5.3 Instruments added (all default OFF, free when off)
+
+- `CZ_APC_TRACE=1` — per-thread APC queued/drained counts + imbalance ages + a
+  balanced summary every 10 s (so silence ≠ zero pending). Refuted APC starvation.
+- `CZ_KOBJ_DUMP=N` — every N s, each live semaphore's count/max/waiters and each
+  waited-on event's state, with last-waiter/last-signaller tids. The only enumeration
+  of the live sync objects.
+- `CZ_KCALL_WHO` now dumps the guest backtrace on **milestones** too (every 65536th
+  hit), which is what names a frozen hot loop's caller.
+- `CZ_ARG_PROBE` streaming-chain probes in `guest_probe.cpp`: `sub_82760CF0`
+  (UpdateStreaming delta), `sub_82771D70` (dispatch listener count), `sub_827144C0`
+  (the status the loader polls), and the stop-message completion chain
+  (`82753228`/`82721248`/`827529C0`/`82714510`).
+
+### §5.4 Next session, in order
+
+1. Chase the residual as a physical-address / allocation-layout dependency on the
+   cube-slot streaming path: probe the addresses the slot-2/1 request carries on both
+   machines and compare (gotcha 267 is the template).
+2. The reads stop after the 4th `streamedassets` read — probe the guest routine the
+   4th read's completion APC runs (`82831B20`'s target) and see why it does not queue
+   the next slot on czamd.
+3. Only then publish v1.0.1 (artifacts + hashes staged; the semaphore fix should be
+   rebuilt into them once the hang is fully closed).
