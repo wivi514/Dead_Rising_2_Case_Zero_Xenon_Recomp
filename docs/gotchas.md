@@ -5852,3 +5852,20 @@ From phase C part 18 (the frame rate — and none of it was work):
      and the padmap grep that should have been read before the mapping was
      written. A held phantom input manifests only on held-semantics consumers —
      absence of a symptom on the edge-fired majority is not absence of the defect.
+
+513. **A FALLBACK SEED CONSULTED ONLY WHEN NOTHING ELSE EXISTS IS DESTROYED BY
+     THE FIRST PARTIAL SAVE — UNION IT, DON'T SHADOW IT.** The shipped 1,365-key
+     pipeline pre-warm seed was read only when no per-user key file existed; the
+     per-user file is (re)written every 32 pipeline creations. So the first
+     session that created ANY pipeline and then died — czamd's boot-hang
+     debugging sessions, which all parked on the Loading screen at ~32
+     pipelines — replaced the seed with a 32-key file forever. Even a healthy
+     install kept only what it had actually built, silently dropping the seed's
+     coverage of everywhere the player had not been yet. The general shape: any
+     "use the shipped default only if the user has none" pattern turns the
+     user's very first partial state into a permanent downgrade. Read both and
+     merge (part 101, 95611b9; the log line `N per-user + shipped seed -> M
+     after union` is the proof it engaged). And when a log says `X of N`, ask
+     what population N counts before explaining X — "23 of 32" was mis-read as
+     a vertex-shader gap for a day when 32 could only be the FILE's key count
+     (the seed's would have been 1,365).

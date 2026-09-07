@@ -122,3 +122,42 @@ AMD-renderer defect and chase it on czamd with the frame/snap dumps.
 See gotchas 506, 508; memories [[amd-gpu-depth-format-d24s8]],
 [[part100-semaphore-limit-and-czamd-hang]], [[the-operator-eye-answers-shape-questions]],
 [[part71-pipeline-cache-was-the-stutter]].
+
+---
+
+## Execution record (2026-09-06, same day — the local half is DONE; the operator half is owed)
+
+**The full record is `phase5-notes.md` §6er; gotcha 513 is the transferable finding.**
+
+**Issue A — root cause found, fixed, verified locally (95611b9, pushed, deployed to czamd).**
+The plan's reading of the czamd log was wrong: "23 of [32]" cannot be the
+vertex-shader gap (skipped keys stay in the denominator) — the per-user key file
+held only 32 keys because czamd's hang-debugging sessions each saved a tiny file
+from the Loading screen, and the per-user file SHADOWED the shipped 1,365-key
+seed (which is present and dated 2026-08-29 beside czamd's exe). Fix: the loader
+unions both files. Verified: fresh-start run (all caches parked, operator's
+request) then warm re-run — `1079 per-user + shipped seed -> 1365 after union`,
+first-sight 0, zero skipped draws, zero outdoor >100 ms frames.
+
+Answers to the plan's diagnostics, from the fresh-start pair on the dev box:
+- First-sight translation is ALREADY off the frame thread (`shaderjit::Worker`);
+  candidate fix 1 does not exist as work. The 32-52 ms czamd lines are worker
+  time; the felt cost is pop-in (draws skipped), not a stall.
+- Session one on a truly fresh machine here: 4 frames >100 ms of 19,506 (1
+  outdoor); the disc prebuild and the chain both work (1,079 background builds).
+- Step 0 (does czamd session two self-heal) is still the operator's to run, now
+  with the union binary swapped in there.
+
+**Issue B — the decisive bisection is done and NVIDIA+D32 is CLEAN.** 286
+outdoor frames at up to 8,024 draws under `CZ_VK_DEPTH_FLOAT=1`, tile-scanned
+for interior black; all 15 flags were scene content. The code audit found no
+D24-packing reader on the D32 path either (depth is copied between identical
+formats and sampled normalized; the MSAA depth resolve negotiates SAMPLE_ZERO
+with a loud refusal). The square is czamd-specific until czamd's own frames say
+otherwise: its `cz_play.bat` now arms `CZ_VK_FRAME_DUMP` into `p101frames`, so
+the operator's next sighting is recorded. Hypotheses 2 and 3 (cube snapshot
+faces, the deferred-clear bisection order) remain live for that session.
+
+**Owed:** operator on czamd — (1) same area twice for the stutter verdict, (2)
+reproduce the square and note when; then pull `p101frames` and
+`run_visible.err.log`. v1.0.1 remains unblocked and now also carries 95611b9.

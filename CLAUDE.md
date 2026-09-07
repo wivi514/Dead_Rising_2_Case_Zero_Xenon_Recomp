@@ -1062,46 +1062,40 @@ ground is and that PERFORMANCE IS PARKED. (This
 line has now named the wrong plan TWICE — the two-live-pointers defect the block-rotation note at the bottom of this file
 describes, and the reason that note asks for the rule and not just the name; gotcha 13.)
 
-Where the port is, as of 2026-09-06 late (**PART 98 CLOSED — THE PUBLIC STUTTER
-REPORTS, REPRODUCED AND FIXED IN-TREE; v1.0.1 IS OWED.**
-`docs/part98-kickoff.md` WAS the live hand-off, superseded by part 99's; the record is
-`phase5-notes.md` §6eq, the plan `docs/async-pipeline-plan.md`, the transferable
-findings gotchas 508-509):
+Where the port is, as of 2026-09-06 night (**PART 101 — LOCAL HALF DONE: the czamd
+stutter's persistence mechanism FOUND AND FIXED (the pre-warm seed was SHADOWED),
+and the black-square bisection says NVIDIA+D32 IS CLEAN. `phase5-notes.md` §6er is
+the record; `part101-stutter-and-blacksquare-plan.md` carries the execution record
+appended; gotcha 513 is the transferable finding. THE OPERATOR HALF IS OWED**):
 
-* **The mechanism was part 83's, and the pre-warm never protected a new player**:
-  session ONE pre-warms **0 of 1,365** — every shipped key names a vertex shader,
-  and vertex shaders are first-sight-only (gotcha 508: a pre-warm can only build
-  what exists at boot; the gate's "757 of 1,365" was a session-TWO number). The
-  session-one simulation is three env vars (fresh CZ_ROOT + fresh XDG_CACHE_HOME +
-  MESA_SHADER_CACHE_DISABLE=true) and it reproduced the reports in one run:
-  8.9 s of frame-thread compiling, worst frames 3.7 s / 2.6 s, 250-519 ms outdoor
-  hitches.
-* **Shipped, defaults ON (55a9d4e, 0c50a4d, 49c895c)**: async pipeline creation on
-  miss (pure BuildPipelineObject + one worker + pump-thread-only registration — the
-  shaderjit shape one level up, same skip-while-building visual contract), the
-  pre-warm CHAIN (parked keys build the moment first-sight translation delivers
-  their shader, ahead of the first draw — 1,083 built where demand alone needed
-  224), and the two-tier FIFO queue (the first promotion design was LIFO under
-  burst, gotcha 509; skips 5.78 M → 757 k, −87%). Result: **zero frame-thread
-  creates, zero outdoor frames >100 ms** (sync arm: 7), and **session two
-  self-heals — 1,083 of 1,083 at boot in 101 ms, zero skips**.
-  `CZ_VK_SYNC_PIPELINE=1` is the whole-part-83 control arm and the FIRST bisection
-  step for any "objects appear late" report; `CZ_VK_NO_PREWARM_CHAIN=1` isolates
-  the chain.
-* **v1.0.1 IS THE OWED FOLLOW-UP** (part98-kickoff §1): rebuild both artifacts at
-  head, re-gate, fresh SHAs, update the published Release — the frozen-tag rule.
-  A stutter report that does NOT fade by session two is a different defect; do not
-  close it against part 98. ~~AND AS OF 2026-09-06 TWO MORE FIXES ARE QUEUED AHEAD
-  OF IT (operator instruction): subtitle-language selection from the launcher and a
-  skip-boot-logos toggle — `docs/localization-and-bootskip-plan.md` IS THE LIVE
-  PLAN~~ — **EXECUTED BY PART 99 (its §5 is the record; the §0 claim repeated here
-  that the logos are the LegalScreen/BCGIntro states at table 0x82A6912C was WRONG
-  BOTH WAYS — see the part-99 block below)**, and its §2
-  step 0 notes the "stuck on Capcom logo" report may itself be part 98's
-  session-one compile stall — get the reporter's log before closing it either way.
+* **Issue A root cause:** `PrewarmPipelines` read the per-user key file OR the
+  shipped 1,365-key seed — and every czamd boot-hang session saved a ~32-key file
+  from the Loading screen, shadowing the seed forever ("23 of [32]" — the plan's
+  vertex-shader reading of that line was wrong; skipped keys stay in the
+  denominator). Fixed by UNION (95611b9, no arm — read both, dedupe, save still
+  writes only the per-user path). Verified same day: fresh-start run then warm
+  re-run — `1079 per-user + shipped seed -> 1365 after union`, first-sight 0,
+  zero skipped draws, zero outdoor >100 ms frames.
+* **The session-one experience was measured whole** (operator asked live: every
+  compiled-shader store parked, seed present, outdoor route): disc prebuild 1265
+  of 1265, pre-warm 0 of 1365 (all parked), chain built 1,079 in background, 47
+  first-sight translations all off-thread, **4 frames >100 ms of 19,506** (1
+  outdoor). First-sight translation was ALREADY async — the plan's candidate
+  fix 1 does not exist as work; the visible cost is pop-in (234,849 skipped
+  draws), not stalls.
+* **Issue B:** 286 outdoor D32 frames on NVIDIA tile-scanned — no black square
+  (all 15 flags were scene content: silhouettes, the smoke plume). No
+  D24-packing reader found on the D32 path either. The square is czamd-specific
+  until czamd's own frames say otherwise.
+* **czamd is staged for the operator:** part-101 exe swapped in (old kept as
+  `cz_runtime_pre101.exe.bak`), `cz_play.bat` arms `CZ_VK_FRAME_DUMP` into
+  `p101frames`. Owed: same-area-twice for the stutter verdict; reproduce the
+  square and note when, then pull `p101frames` + `run_visible.err.log`. v1.0.1
+  (semaphore + thread floor + AMD depth + 95611b9) remains unblocked.
 
-Where the port is, as of 2026-09-06 latest (**PART 100 IN PROGRESS — THE czamd BOOT
-HANG: ONE REAL FIX SHIPPED, HANG NOT YET FULLY CLOSED, v1.0.1 STILL UNPUBLISHED.
+
+Where the port was, as of 2026-09-06 latest (**PART 100 CLOSED — the boot hang was
+SOLVED (semaphore limit, `part99-amd-hang.md` §6) and it left part 101's plan; v1.0.1 STILL UNPUBLISHED.
 `docs/part99-amd-hang.md` §5 IS THE LIVE RECORD**):
 
 * **The part-99 APC arms are REFUTED.** `CZ_APC_INLINE=1` regresses a working box
@@ -1126,41 +1120,9 @@ HANG: ONE REAL FIX SHIPPED, HANG NOT YET FULLY CLOSED, v1.0.1 STILL UNPUBLISHED.
 * **New instruments (all OFF by default):** `CZ_APC_TRACE`, `CZ_KOBJ_DUMP=N`,
   `CZ_KCALL_WHO` milestone backtraces, and streaming-chain probes in `guest_probe.cpp`.
 
-Where the port was, as of 2026-09-06 latest (**PART 99 CLOSED — BOTH QUEUED LAUNCHER
-FIXES SHIPPED; v1.0.1 IS NEXT IN LINE. `docs/part99-kickoff.md` IS THE LIVE
-HAND-OFF**; `docs/localization-and-bootskip-plan.md` §5 is the execution record,
-with its §0 boot-logo recon CORRECTED IN PLACE):
-
-* **Subtitle language from the launcher**: six banks (en ja fr es it ko), the
-  ID→bank mapping MEASURED (one CZ_FILE_TRACE boot per CZ_LANGUAGE=N; 3=de and
-  8=zh fall back to en and are not offered), one CzLanguage() helper behind both
-  HLE sites, SUBTITLES launcher row persisting the Xbox ID, no in-game row on
-  purpose (the title reads it ONCE at boot — A1). The id-4049 MASH rewrite now
-  lands in all six banks (fr ships 'LS' without the trailing space).
-* **The skip-intro-logos toggle is a DATA PATCH, and the plan's mechanism is
-  refuted**: the logos are NOT the LegalScreen/BCGIntro states (BCGIntro is never
-  requested; the chain is Startup → LegalScreen(7 ms) → Loading → FrontEnd, per
-  the new CZ_STATE_TRACE) — they are fecmn.big's intro.txt cFEAnim timeline
-  (~18 s). All three state-substitution spellings crashed or hung (each state's
-  enter kicks work the next state waits on — boot_skip.cpp's header is the
-  record); what shipped is assets/game_bootskip/fecmn.big with the keyframe
-  times collapsed per-anim (every event still fires; each logo a one-tick
-  flash), its own VFS layer, consulted only while skip_intro_logos is on.
-  Default OFF (legal notices ship opt-in); CZ_SKIP_INTRO is the dev arm. The
-  black legal card is load-driven and untouched. The state table is at
-  0x82A5912C (the plan's 0x82A6912C was a typo).
-* **Gates**: three-layer C++/Python overlay identity (bootskip+patched+kbm,
-  diff -r clean, generator v4); A5 unchanged in both toggle states; skip ON
-  reaches deepest file #85 with zero faults; skip OFF never consults the layer.
-* **Owed (part99-kickoff §1)**: v1.0.1 rebuild + re-gate + fresh SHAs + update
-  the PUBLISHED Release (all three changes ride together); the operator eye
-  pass (a language pick — ja/ko glyphs likely but unproven — and the skip
-  toggle, one sitting); the "stuck on Capcom logo" report stays open pending
-  the reporter's log.
-
 
 **Older per-part status blocks (parts 28-54, the superseded mid-part-44 closure and the
-superseded MID-PART-46 block) moved to `docs/port-history.md`, NOW INCLUDING PARTS 60-91's AND 97's** — part 99 moved part 97's out in the same commit that added its own block, part 98 moved part 91's out in the same commit that added its own block, part 91 moved part 89's out in the same commit that added its own block, part 90 moved part 88's out in the same commit that added its own block, part 89 moved part 87's out in the same commit that added its own block, part 88 moved part 86's out in the same commit that added its own block, part 87 moved part 85's out in the same commit that added its own block, part 86 moved part 84's out in the same commit that added its own block, part 85 moved part 83's out in the same commit that added its own block, part 84 moved part 82's out in the same commit that added its own block, part 83 moved part 81's out in the same commit that added its own block, part 82 moved part 80's out in the same commit that added its own block, part 78 moved part 76's out in the same commit that added its own block, part 76 moved part 74's out in the same commit that added its own block, part 74 moved part 72's out in the same commit that added its own block, part 73 moved part 71's out in the same commit that added its own block, part 72 moved part 70's out in the same commit that added its own block, part 71 moved part 69's out in the same commit that added its own block, part 70 moved part 68's out in the same commit that added its own block, part 69 moved part 67's out in the same commit that added its own block, part 68 moved part 66's out in the same commit that added its own block, part 67 moved part 65's out the same way, part 65 moved part 63's out the same way, part 64 moved parts 61/62's out the same way, part 63 moved part 60's out the same way, part 61 moved part 59's out the same way, part 59 moved part 57's out the same way, part 57 moved part 55's out the same way, part 55 moved part 53's
+superseded MID-PART-46 block) moved to `docs/port-history.md`, NOW INCLUDING PARTS 60-91's, 97's, 98's AND 99's** — part 101 moved parts 98's and 99's out in the same commit that added its own block, part 99 moved part 97's out in the same commit that added its own block, part 98 moved part 91's out in the same commit that added its own block, part 91 moved part 89's out in the same commit that added its own block, part 90 moved part 88's out in the same commit that added its own block, part 89 moved part 87's out in the same commit that added its own block, part 88 moved part 86's out in the same commit that added its own block, part 87 moved part 85's out in the same commit that added its own block, part 86 moved part 84's out in the same commit that added its own block, part 85 moved part 83's out in the same commit that added its own block, part 84 moved part 82's out in the same commit that added its own block, part 83 moved part 81's out in the same commit that added its own block, part 82 moved part 80's out in the same commit that added its own block, part 78 moved part 76's out in the same commit that added its own block, part 76 moved part 74's out in the same commit that added its own block, part 74 moved part 72's out in the same commit that added its own block, part 73 moved part 71's out in the same commit that added its own block, part 72 moved part 70's out in the same commit that added its own block, part 71 moved part 69's out in the same commit that added its own block, part 70 moved part 68's out in the same commit that added its own block, part 69 moved part 67's out in the same commit that added its own block, part 68 moved part 66's out in the same commit that added its own block, part 67 moved part 65's out the same way, part 65 moved part 63's out the same way, part 64 moved parts 61/62's out the same way, part 63 moved part 60's out the same way, part 61 moved part 59's out the same way, part 59 moved part 57's out the same way, part 57 moved part 55's out the same way, part 55 moved part 53's
 out in the same commit that added its own, which is what the rule below asks for. — CLAUDE.md keeps only the
 live part and one part back, per the 2026-08-08 split's rule, and **part 53 moved part
 51's out in the same commit that added its own**, which is what the rule below asks for.

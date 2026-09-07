@@ -6624,3 +6624,77 @@ https://github.com/wivi514/Dead_Rising_2_Case_Zero_Xenon_Recomp** —
   `docs/release-notes-v1.0.0.md` first, re-gates, and updates the PUBLISHED
   Release's assets — it is public now; a stale-hash download is a broken promise.
 
+
+## Part 98 status block (moved out of CLAUDE.md by part 101)
+
+Where the port is, as of 2026-09-06 late (**PART 98 CLOSED — THE PUBLIC STUTTER
+REPORTS, REPRODUCED AND FIXED IN-TREE; v1.0.1 IS OWED.**
+`docs/part98-kickoff.md` WAS the live hand-off, superseded by part 99's; the record is
+`phase5-notes.md` §6eq, the plan `docs/async-pipeline-plan.md`, the transferable
+findings gotchas 508-509):
+
+* **The mechanism was part 83's, and the pre-warm never protected a new player**:
+  session ONE pre-warms **0 of 1,365** — every shipped key names a vertex shader,
+  and vertex shaders are first-sight-only (gotcha 508: a pre-warm can only build
+  what exists at boot; the gate's "757 of 1,365" was a session-TWO number). The
+  session-one simulation is three env vars (fresh CZ_ROOT + fresh XDG_CACHE_HOME +
+  MESA_SHADER_CACHE_DISABLE=true) and it reproduced the reports in one run:
+  8.9 s of frame-thread compiling, worst frames 3.7 s / 2.6 s, 250-519 ms outdoor
+  hitches.
+* **Shipped, defaults ON (55a9d4e, 0c50a4d, 49c895c)**: async pipeline creation on
+  miss (pure BuildPipelineObject + one worker + pump-thread-only registration — the
+  shaderjit shape one level up, same skip-while-building visual contract), the
+  pre-warm CHAIN (parked keys build the moment first-sight translation delivers
+  their shader, ahead of the first draw — 1,083 built where demand alone needed
+  224), and the two-tier FIFO queue (the first promotion design was LIFO under
+  burst, gotcha 509; skips 5.78 M → 757 k, −87%). Result: **zero frame-thread
+  creates, zero outdoor frames >100 ms** (sync arm: 7), and **session two
+  self-heals — 1,083 of 1,083 at boot in 101 ms, zero skips**.
+  `CZ_VK_SYNC_PIPELINE=1` is the whole-part-83 control arm and the FIRST bisection
+  step for any "objects appear late" report; `CZ_VK_NO_PREWARM_CHAIN=1` isolates
+  the chain.
+* **v1.0.1 IS THE OWED FOLLOW-UP** (part98-kickoff §1): rebuild both artifacts at
+  head, re-gate, fresh SHAs, update the published Release — the frozen-tag rule.
+  A stutter report that does NOT fade by session two is a different defect; do not
+  close it against part 98. ~~AND AS OF 2026-09-06 TWO MORE FIXES ARE QUEUED AHEAD
+  OF IT (operator instruction): subtitle-language selection from the launcher and a
+  skip-boot-logos toggle — `docs/localization-and-bootskip-plan.md` IS THE LIVE
+  PLAN~~ — **EXECUTED BY PART 99 (its §5 is the record; the §0 claim repeated here
+  that the logos are the LegalScreen/BCGIntro states at table 0x82A6912C was WRONG
+  BOTH WAYS — see the part-99 block below)**, and its §2
+  step 0 notes the "stuck on Capcom logo" report may itself be part 98's
+  session-one compile stall — get the reporter's log before closing it either way.
+
+## Part 99 status block (moved out of CLAUDE.md by part 101)
+
+Where the port was, as of 2026-09-06 latest (**PART 99 CLOSED — BOTH QUEUED LAUNCHER
+FIXES SHIPPED; v1.0.1 IS NEXT IN LINE. `docs/part99-kickoff.md` IS THE LIVE
+HAND-OFF**; `docs/localization-and-bootskip-plan.md` §5 is the execution record,
+with its §0 boot-logo recon CORRECTED IN PLACE):
+
+* **Subtitle language from the launcher**: six banks (en ja fr es it ko), the
+  ID→bank mapping MEASURED (one CZ_FILE_TRACE boot per CZ_LANGUAGE=N; 3=de and
+  8=zh fall back to en and are not offered), one CzLanguage() helper behind both
+  HLE sites, SUBTITLES launcher row persisting the Xbox ID, no in-game row on
+  purpose (the title reads it ONCE at boot — A1). The id-4049 MASH rewrite now
+  lands in all six banks (fr ships 'LS' without the trailing space).
+* **The skip-intro-logos toggle is a DATA PATCH, and the plan's mechanism is
+  refuted**: the logos are NOT the LegalScreen/BCGIntro states (BCGIntro is never
+  requested; the chain is Startup → LegalScreen(7 ms) → Loading → FrontEnd, per
+  the new CZ_STATE_TRACE) — they are fecmn.big's intro.txt cFEAnim timeline
+  (~18 s). All three state-substitution spellings crashed or hung (each state's
+  enter kicks work the next state waits on — boot_skip.cpp's header is the
+  record); what shipped is assets/game_bootskip/fecmn.big with the keyframe
+  times collapsed per-anim (every event still fires; each logo a one-tick
+  flash), its own VFS layer, consulted only while skip_intro_logos is on.
+  Default OFF (legal notices ship opt-in); CZ_SKIP_INTRO is the dev arm. The
+  black legal card is load-driven and untouched. The state table is at
+  0x82A5912C (the plan's 0x82A6912C was a typo).
+* **Gates**: three-layer C++/Python overlay identity (bootskip+patched+kbm,
+  diff -r clean, generator v4); A5 unchanged in both toggle states; skip ON
+  reaches deepest file #85 with zero faults; skip OFF never consults the layer.
+* **Owed (part99-kickoff §1)**: v1.0.1 rebuild + re-gate + fresh SHAs + update
+  the PUBLISHED Release (all three changes ride together); the operator eye
+  pass (a language pick — ja/ko glyphs likely but unproven — and the skip
+  toggle, one sitting); the "stuck on Capcom logo" report stays open pending
+  the reporter's log.

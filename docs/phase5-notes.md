@@ -20481,3 +20481,69 @@ artifacts. A v1.0.1 needs: rebuild both artifacts, refresh the SHA-256s in
 the standing "release is frozen at the tag" rule. The operator should also play one
 session with a wiped `~/.cache/cz-recomp` + `MESA_SHADER_CACHE_DISABLE=true` to
 feel session one themselves before shipping it.
+
+## §6er — Part 101: the pre-warm seed was SHADOWED by the per-user key file; NVIDIA+D32 shows no black square (2026-09-06)
+
+**The czamd stutter's persistence mechanism (issue A of `part101-stutter-and-blacksquare-plan.md`)
+was not the plan's "keys name vertex shaders" reading — it was the per-user key
+file shadowing the shipped seed.** `PrewarmPipelines` read the per-user file OR
+the shipped `prewarm.keys`, never both. Two measured costs:
+
+- A session that parks before gameplay — every czamd boot-hang debugging session
+  died on the Loading screen — saves a ~32-key per-user file, which then hides
+  the 1,365-key seed on every later launch. czamd's log said `pre-warm: 23 of
+  [32]` with the full 76,452-byte seed (verified present, 2026-08-29 date)
+  sitting unread beside the exe. The plan quoted that line and mis-read it: a
+  key skipped for a missing shader is still IN the "of N" denominator, so "of
+  32" can only mean the FILE held 32 keys — the shadowing, not the vertex-shader
+  gap. Gotcha 513.
+- Even a healthy install loses the seed after session one: the periodic save
+  keeps only pipelines actually CREATED, so every seed key for an area the
+  player has not reached was dropped at the first write.
+
+**Fix (95611b9, defaults on — there is no arm because there is no behaviour
+worth keeping):** the loader reads BOTH files and dedupes (`PipelineKeyHash`);
+the save still writes only the per-user path. Predicted and observed on the
+same-day A/B pair below: `1079 per-user + shipped seed -> 1365 keys after
+union`, first-sight 0, pre-warm `1079 of 1365 created in 102 ms`, 286 parked
+for the chain, **zero draws skipped for pipeline creation in the whole run**.
+
+**The session-one experience on a truly fresh machine, measured end to end**
+(operator asked for it live: every compiled-shader store parked — `assets/
+shader_spv`, `~/.cache/cz-recomp`, driver cache redirected to an empty dir —
+then the DebugJump outdoor route on the release-shaped tree, seed present):
+
+- The disc prebuild works: `1265 distinct pixel shaders … 1265 translated, 0
+  failed` at boot.
+- Pre-warm `0 of 1365` — every key parked, because on a fresh machine even the
+  PIXEL half arrives seconds later than the pre-warm runs. The chain then built
+  **1,079** pipelines in the background as first-sight translations landed (47
+  of them: 45 VS + 2 PS at 13–19 ms each, all off-thread).
+- Frame-time deltas over 19,506 frames: **4 frames >100 ms, exactly 1 of them
+  outdoors** (110 ms at 6,272 draws). The visible cost is pop-in: 234,849 draws
+  skipped while their pipeline built. The dumped frames (305, in
+  `~/DR2CZ-troubleshooting/part101-freshstart-frames/`) show the crowd scene
+  fully rendered.
+- Session two (union binary): first-sight 0, zero outdoor frames >100 ms, zero
+  skipped draws. Session two self-heals exactly as part 98 designed — czamd's
+  failure to self-heal was the shadowing above, plus its 32–52 ms translation
+  times (vs 13–19 here) on a machine with 3 workers.
+
+**Issue B — the flickering black square: NVIDIA + `CZ_VK_DEPTH_FLOAT=1` is
+CLEAN.** The plan's decisive bisection ran twice on the dev box (first run lost
+its pictures to a /tmp quota — frame dumps now go to real disk): outdoor route
+to 8,024 draws, 286 frames dumped, a 12x12-tile luma scan flagging any
+near-black interior tile in a lit frame. 15 flagged frames, every one
+legitimate content (zombie silhouettes at frame edges, the title's own smoke
+plume). **No central black square under D32 on NVIDIA**, which — with the
+plan's own note that the square predated the depth change on czamd — moves the
+suspicion off the D32 fallback and onto something czamd-specific. Next step is
+ground truth from czamd itself: its `cz_play.bat` now arms
+`CZ_VK_FRAME_DUMP=…\p101frames`, so the operator's next session records the
+square the moment they see it.
+
+**czamd deployment state:** part-101 exe (union fix) built on czwin, swapped in
+(old exe kept as `cz_runtime_pre101.exe.bak`), frame dump armed. Owed from the
+operator: (1) play the same area twice — session-two smoothness is the union
+fix's field test; (2) reproduce the black square and say roughly when, so the
+dumped frames around it can be pulled.
