@@ -7218,70 +7218,92 @@ void PrewarmPipelines()
     std::string path = PrewarmPath();
     if (path.empty())
         return;
-    FILE* f = fopen(path.c_str(), "rb");
-    if (!f)
-    {
-        // THE SHIPPED SEED (part 85, release §9.8). A fresh install has no per-user
-        // key file, and that very first session is the one place the part-83 stutter
-        // fix cannot reach — it needs a previous session to have recorded the keys.
-        // The bundle carries a key set harvested from an operator playthrough
-        // (tools/release/prewarm.keys, copied beside the executable by the packaging
-        // scripts); it seeds session ONE, and the per-user file takes over from
-        // session two on — the periodic save always writes to PrewarmPath(), never
-        // back into the bundle. Keys are OUR structs (shader hashes + render state),
-        // not game data, which is what §2.1's no-game-content rule permits. On a true
-        // first boot the vertex-shader half of the cache is still being born at first
-        // sight, so keys referencing an untranslated shader are skipped and counted —
-        // the seed's coverage completes by the second launch, and the log's
-        // missing-shader count below says exactly how partial it was.
-        const std::string shipped = (HostPaths::ExeDir() / "prewarm.keys").string();
-        f = fopen(shipped.c_str(), "rb");
-        if (f)
+    // THE SHIPPED SEED (part 85, release §9.8) IS UNIONED WITH THE PER-USER FILE,
+    // never shadowed by it (part 101). The first design read the per-user file OR
+    // the shipped one, and that either/or had two costs, both measured:
+    //   - a session that parks before gameplay — every czamd boot-hang debugging
+    //     session died on the Loading screen — saves a ~32-key per-user file, which
+    //     then hid the 1,365-key seed on every later launch. czamd pre-warmed 23
+    //     pipelines for the rest of its life while the seed sat unread beside the exe.
+    //   - even a healthy install loses the seed after session one: the periodic save
+    //     keeps only pipelines actually CREATED, so every seed key for an area the
+    //     player has not reached yet was dropped the first time the file was written.
+    // Reading BOTH and deduping keeps the seed's full-playthrough coverage alive in
+    // every session, while the per-user file contributes what this machine has seen.
+    // The save still writes only to PrewarmPath(), never into the bundle. Keys are
+    // OUR structs (shader hashes + render state), not game data (§2.1). Keys naming
+    // a shader this cache does not hold yet are parked for the chain below, exactly
+    // as before — the union only widens what the chain gets to park.
+    auto readKeys = [](const std::string& p, std::vector<PipelineKey>& out) -> bool {
+        FILE* f = fopen(p.c_str(), "rb");
+        if (!f)
+            return false;
+        uint32_t hdr[3] = {};
+        if (fread(hdr, sizeof hdr, 1, f) != 1 || hdr[0] != kPrewarmMagic ||
+            hdr[1] != kPrewarmVersion)
         {
-            fprintf(stderr, "[vk] pipeline pre-warm: no per-user key file yet — "
-                            "seeding from the shipped %s\n", shipped.c_str());
-            path = shipped;
+            fprintf(stderr, "[vk] pipeline pre-warm: %s is not a v%u key file — "
+                            "ignoring\n", p.c_str(), kPrewarmVersion);
+            fclose(f);
+            return false;
         }
-    }
-    if (!f)
+        // READ THE WHOLE FILE FIRST, then close it, THEN create anything.
+        //
+        // Creating a pipeline inserts into R->pipelines, which calls
+        // SavePipelineKeysIfDue, which REWRITES the per-user file — truncating it to
+        // the keys currently in memory while this loop is still reading it. The read
+        // position was then past the new EOF, fread failed, and the loop broke early.
+        // It stopped at exactly 72 keys every time, whether the file held 352, 416 or
+        // 522, because 72 creations is where the periodic save first fires and
+        // shortens the file beneath the reader.
+        //
+        // A constant that does not move when its input triples is not a coincidence,
+        // and that is what gave it away. Reading to a vector first removes the
+        // interaction entirely rather than papering over it with a "don't save while
+        // pre-warming" flag — which would have worked and would have left the same
+        // trap for the next caller.
+        out.reserve(out.size() + hdr[2]);
+        for (uint32_t i = 0; i < hdr[2]; ++i)
+        {
+            PipelineKey key{};
+            if (fread(&key, sizeof key, 1, f) != 1)
+                break;   // short file: take what is there, it is still valid
+            out.push_back(key);
+        }
+        fclose(f);
+        return true;
+    };
+    std::vector<PipelineKey> keys;
+    const bool haveUser = readKeys(path, keys);
+    const size_t userN = keys.size();
+    const std::string shipped = (HostPaths::ExeDir() / "prewarm.keys").string();
+    const bool haveShipped = readKeys(shipped, keys);
+    if (!haveUser && !haveShipped)
     {
         fprintf(stderr, "[vk] pipeline pre-warm: no key file yet (%s) — this session "
                         "builds one, and the NEXT start will be smooth\n", path.c_str());
         return;
     }
-    uint32_t hdr[3] = {};
-    if (fread(hdr, sizeof hdr, 1, f) != 1 || hdr[0] != kPrewarmMagic ||
-        hdr[1] != kPrewarmVersion)
+    if (keys.size() > userN)
     {
-        fprintf(stderr, "[vk] pipeline pre-warm: %s is not a v%u key file — ignoring\n",
-                path.c_str(), kPrewarmVersion);
-        fclose(f);
-        return;
+        // Dedupe only when the seed actually contributed; a per-user-only load is
+        // already duplicate-free by construction (it is a map's keys written out).
+        std::unordered_set<PipelineKey, PipelineKeyHash> seen;
+        seen.reserve(keys.size());
+        std::vector<PipelineKey> uniq;
+        uniq.reserve(keys.size());
+        for (const PipelineKey& k : keys)
+            if (seen.insert(k).second)
+                uniq.push_back(k);
+        keys.swap(uniq);
     }
-    // READ THE WHOLE FILE FIRST, then close it, THEN create anything.
-    //
-    // Creating a pipeline inserts into R->pipelines, which calls SavePipelineKeysIfDue,
-    // which REWRITES this very file — truncating it to the keys currently in memory
-    // while this loop is still reading it. The read position was then past the new EOF,
-    // fread failed, and the loop broke early. It stopped at exactly 72 keys every time,
-    // whether the file held 352, 416 or 522, because 72 creations is where the periodic
-    // save first fires and shortens the file beneath the reader.
-    //
-    // A constant that does not move when its input triples is not a coincidence, and
-    // that is what gave it away. Reading to a vector first removes the interaction
-    // entirely rather than papering over it with a "don't save while pre-warming" flag —
-    // which would have worked and would have left the same trap for the next caller.
-    std::vector<PipelineKey> keys;
-    keys.reserve(hdr[2]);
-    for (uint32_t i = 0; i < hdr[2]; ++i)
-    {
-        PipelineKey key{};
-        if (fread(&key, sizeof key, 1, f) != 1)
-            break;   // short file: take what is there, it is still valid
-        keys.push_back(key);
-    }
-    fclose(f);
-    f = nullptr;
+    if (haveUser && haveShipped)
+        fprintf(stderr, "[vk] pipeline pre-warm: %zu per-user + shipped seed -> %zu "
+                        "keys after union (%s + %s)\n",
+                userN, keys.size(), path.c_str(), shipped.c_str());
+    else if (haveShipped)
+        fprintf(stderr, "[vk] pipeline pre-warm: no per-user key file yet — seeding "
+                        "from the shipped %s\n", shipped.c_str());
 
     const auto t0 = std::chrono::steady_clock::now();
     uint32_t made = 0, missingShader = 0, failed = 0;
