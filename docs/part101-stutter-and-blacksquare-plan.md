@@ -161,3 +161,35 @@ faces, the deferred-clear bisection order) remain live for that session.
 **Owed:** operator on czamd — (1) same area twice for the stutter verdict, (2)
 reproduce the square and note when; then pull `p101frames` and
 `run_visible.err.log`. v1.0.1 remains unblocked and now also carries 95611b9.
+
+## Addendum — the czamd MENU FLICKER, caught on F8 (2026-09-06 evening)
+
+The operator's fresh-start session on czamd surfaced a better-shaped defect than
+the black square: **the main-menu zombies flicker**, and one F8 burst caught the
+transition. Frames 2705–2706 show four zombies; 2707 shows none — **with the
+identical drawFingerprint and the identical 928 zombie-VS
+(`vs_fa161b0fde7aa4d5`) draws in every frame, visible or not.** The NVIDIA
+control (same F8 instrument at the title screen) holds 928/frame with zombies
+continuously visible. So: czamd-specific, and the mechanism is *executed draws
+producing no pixels* — not shader warm-up (that run had 0 first-sight
+translations and 0 async pipeline builds), not draw-list churn.
+
+- **Bisection arm 1 REFUTED for this symptom**: `CZ_VK_NO_DEFERRED_CLEAR=1`
+  still flickers at the menu (operator, one relaunch). Next arms when resumed:
+  `CZ_VK_DEFER_FULL_RECT=1`, `CZ_VK_NO_PAR_RECORD=1`, then the dynamic-data
+  family (`CZ_VK_NO_PARALLEL_GUARD=1`, `CZ_VK_STREAM_GUARD_BYTES` raised).
+- **In-game does NOT flicker** (operator, same session) — the defect is
+  menu-era, or timing-dependent in a way gameplay load masks.
+- **PAUSED at the operator's instruction** ("we'll stop there"); czamd's
+  `cz_play.bat` is back to defaults with F8/F9 still armed (press-only cost).
+  Burst evidence: `~/DR2CZ-troubleshooting/part101-czamd-burst1/`, NVIDIA
+  control in `part101-devmenu-burst/`.
+- **New owed item: the boot pre-warm is SYNCHRONOUS and cost czamd 138 s of
+  black screen** (1,168 pipelines x 118 ms on a fresh AMD driver cache; the
+  union fix widened the population it builds). It should build through the
+  async pipeline machinery, or be budget-bounded with the rest parked for the
+  chain. One-time per fresh driver cache, but a first-run player sees it as a
+  hang — and the part-99 "stuck on Capcom logo" report should be re-read
+  against this number.
+- The czamd union line fired in the field: `1168 per-user + shipped seed ->
+  1366 keys after union`.
