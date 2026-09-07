@@ -1,11 +1,12 @@
 # Release notes — v1.0.1
 
 **This is the text to paste into the GitHub Release body.** Binaries are commit
-`20e098d` (Linux) / `ed6815d` (Windows — same tree, one docs commit later; no
-source difference). It carries part 98's stutter fix (async pipeline creation + the
-pre-warm chain) and part 99's four changes: subtitle-language selection, the
-skip-intro-logos toggle, the aim-trigger fix, and Exit Game quitting to the
-desktop.
+`052275c` (both legs; the last source change is `95611b9`). It carries part 98's
+stutter fix (async pipeline creation + the pre-warm chain), part 99's four
+changes (subtitle-language selection, the skip-intro-logos toggle, the
+aim-trigger fix, Exit Game quitting to the desktop), part 100's AMD boot-hang
+fix + EDRAM depth auto-negotiation + the worker floor, and part 101's pre-warm
+seed union.
 
 **The release is frozen at the tag**: if either artifact is EVER rebuilt,
 refresh its hash below before attaching.
@@ -38,6 +39,21 @@ regenerate once on the first launch.
   weapons emptied themselves; the handgun and shotgun were unaffected, which is
   why this survived to release. Right mouse now aims and nothing else.
 - **Exit Game → Yes now quits to the desktop** instead of doing nothing.
+- **Permanent freeze on the loading screen on some machines** (seen on an AMD
+  Ryzen 5 5500 / RX 6600 system). A kernel semaphore our runtime implemented
+  without its maximum let a work counter run away and starve the streaming
+  loader. Fixed; the same machine now reaches the title and gameplay.
+- **AMD GPUs: the renderer now negotiates its depth format.** The depth format
+  the Xbox 360 uses isn't sampleable on AMD cards; the renderer now falls back
+  to an equivalent one automatically. Required for the game to render at all on
+  Radeon.
+- **The smoothing seed no longer gets lost.** The shipped list of ~1,400
+  graphics pipelines to pre-build was silently replaced by a much smaller
+  per-machine list after the first session (or after any session that didn't
+  get past loading), bringing back first-encounter pop-in it was meant to
+  prevent. The two lists are now merged.
+- **Low-core-count machines get a fairer thread budget** (6-core CPUs now get 3
+  background workers instead of fewer).
 
 ### Added
 
@@ -77,6 +93,12 @@ these downloads.
 
 ### Known issues (minor)
 
+- **On AMD GPUs** (tested on an RX 6600): the zombies on the **main menu** may
+  flicker in and out — gameplay itself was unaffected in our testing — and a
+  **flickering black square** has been seen in-game. Both are actively being
+  investigated; NVIDIA is unaffected. Also on AMD, one launch after a GPU
+  driver update may sit on a black screen for a minute or two while the driver
+  recompiles its pipeline cache — it is not hung, and later launches are fast.
 - A subtle **shading flicker on Chuck's hair** in motion; real hardware does
   not show it and it is being tracked.
 - The occasional spot may shade slightly differently than the console.
@@ -97,6 +119,6 @@ XenosRecomp.
 ### Checksums (SHA-256)
 
 ```
-fe5a32743203c113b6b7d3075c0c247be5478766e5728fbfbabefeef60ac6e58  CaseZeroRecomp-linux-x86_64.tar.zst
-43a5bb5fa8be734317dcf536369b11c21a77735b34e880765820f8a0e1bebc2a  CaseZeroRecomp-windows-x86_64.zip
+7335141429d331c7b3b81da87beaf5ad9a859531f403a62f87a22a8a79c77fee  CaseZeroRecomp-linux-x86_64.tar.zst
+b5a5de41eeb7204b5b008f2acfbf216fb4cd95ce367c514841bc73c5378cc4e5  CaseZeroRecomp-windows-x86_64.zip
 ```
