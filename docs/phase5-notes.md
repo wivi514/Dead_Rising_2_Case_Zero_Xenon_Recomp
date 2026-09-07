@@ -20547,3 +20547,103 @@ square the moment they see it.
 operator: (1) play the same area twice — session-two smoothness is the union
 fix's field test; (2) reproduce the black square and say roughly when, so the
 dumped frames around it can be pulled.
+
+## §6es — Part 102: session-one pop-in closed — the vertex half is rebuilt from the disc by recipe, and the boot warm is async (2026-09-07)
+
+**The operator's question was hedge-dev's design** — shaders recompiled ahead of time,
+pipelines discovered at asset load and created on background workers, no draw ever
+waiting — *"could we implement something like this so no pop-in and no stutter from
+the beginning"*, followed by *"it's ours I can already tell you but it stop after we
+properly get the shader, it's just the first time we see it"*. `part102-no-popin-plan.md`
+is the assessment; this is the record.
+
+**What we already had of it.** The disc pixel prebuild (1,265, ~9 s) is their build-time
+layer; the shipped 1,365-key seed plus the part-98 chain is their load-time discovery,
+as a predetermined list at whole-game scale; draw time is a map lookup with async
+create-and-skip on a miss. The stutter half was already closed (§6er). What remained was
+the VERTEX half: 0 of 104 runtime vertex shaders are on disc verbatim because the title
+patches the fetch instructions at bind, so every one was translated at the draw that first
+bound it, and every draw wanting a pipeline on it was skipped meanwhile. That skip is the
+pop-in, and it is ours.
+
+**The hedge-dev hook does not exist in this title — measured.** Their lead time comes
+from the asset loader. The 360 D3D runtime has the equivalent (`Bind` at load) and the
+title never calls it: the bind is lazy inside the draw flush `sub_8284F300`, which is the
+ONLY caller of both the bound-check `sub_8284F1C0` and the binder `sub_8284EF28`
+(`tools/guest_callers.py --callers`), and the patch routine `sub_8284EDD8` is reached
+only through them. A guest hook would fire microseconds before the `IM_LOAD` we already
+see.
+
+**The route that works: template + recipe.** Diffing the 104 runtime vertex shaders
+against the 142 disc templates of the same length (`tools/vs_recipes.py`):
+
+```
+runtime VS 104 -> 102 = a disc template with 2..32 dwords rewritten (978 dwords, 10 KB file)
+            2 with no template: vs_539ea9e08aa83f0c / vs_a4ae7c2b7c1818c4, engine-synthesised,
+              the 2nd and 4th shaders the title ever binds — at boot, before any visible frame
+distinct templates used: 84 of 142; 12 templates bound under >1 declaration (max 5)
+seed prewarm.keys names 101 vertex shaders: 98 producible, 3 ORPHANS no dump holds
+  (vs_493c66172ad88e3d, vs_69b6efbe227d40ce, vs_8588a559f396b81d — seed keys no first run
+   can satisfy; a shelf-life defect of the seed, reported by the tool, not fatal)
+```
+
+The patched dwords are the vfetch triples with slot/offset/stride/format filled in from
+the declaration, zero on disc (`dw13 00000A88 -> 00393A88, dw14 0 -> 3, dw15 05F85000 ->
+03F85000`). `shader_prebuild.cpp` gained the vertex pass: parse the vs bank with the same
+container rule, apply each recipe, and translate ONLY if the result FNV-1a's to the runtime
+hash the recipe claims — a refused recipe is named and never translated. Markers:
+`vs_recipes.done` stamped with the recipe file's size, so an existing install (pixel pass
+done) runs the vertex pass once on its next boot, and a changed recipe file re-runs it.
+`CZ_NO_VS_RECIPES=1` is the control arm. `vs_recipes.bin` ships beside the exe like
+`prewarm.keys` (all three packaging scripts header-check it).
+
+**The A/B, fresh-start route, all three stores parked** (`assets/shader_spv`,
+`XDG_CACHE_HOME`/`XDG_DATA_HOME` to empty dirs, `__GL_SHADER_DISK_CACHE_PATH` to an empty
+dir — the DRIVER cache too, which §6er's "every store parked" run had NOT parked and
+which is what gotcha 515 is about), DebugJump outdoor route, same binary except where
+noted, logs in `~/DR2CZ-troubleshooting/part102-fresh/logs/`:
+
+| arm | first-sight | pre-warm at boot | skipped draws (shader + pipeline) | seed promoted by a draw | max draws |
+|---|---|---|---|---|---|
+| baseline (pixel-only prebuild) | 47 | 0 of 1,365 | 106,220 + 744,197 = **850,417** | — | 7,271 |
+| recipes, SYNC boot warm | 4 | 1,326 of 1,365 in **37.8 s** (28.5 ms each) | 26 + 48 = 74 | — | 3,097 (route broke: F2/START fired during the 38 s stall) |
+| recipes, async warm, 1 worker | 4 | 1,326 queued; drained at 40-48 s | 26 + 49,031 | 46 | 7,340 |
+| recipes, async warm, 4 workers | 4 | 1,326 queued; drained by ~18 s | 26 + 173 = **199** | 8 | 7,329 |
+| **session two** on the 4-worker root | **0** | 1,352 per-user + seed -> 1,365 | **0** | 0 | 7,441 |
+
+The 4 first-sight translations in every recipe arm are the two synthesised vertex shaders
+and the two pixel shaders the disc lacks (`ps_438c2af84c78a133`, `ps_a15c6c9c2d249375`),
+all at boot; the 26 shader-translating skips are theirs. Frames over 100 ms: 0 in every
+arm (this route; §6er's 4 were a different afternoon). Two things the sync arm taught:
+
+- **The synchronous boot warm was priced on a warm driver cache.** 0.1 ms a create for
+  eighteen parts; 28 ms on an empty NVIDIA driver cache (118 on czamd), and the recipes
+  made it worse by construction — session one now holds every shader, so the loop built
+  1,326 keys instead of ~750. 38 s before the first frame, and it broke the route's
+  fixed-interval presses. The warm now goes to the async worker's SPARE tier and the boot
+  proceeds (`CZ_VK_SYNC_PREWARM=1` is the old behaviour); a draw arriving first promotes
+  its key, and that promotion is COUNTED (`pipeline: speculative build promoted by a
+  draw`) — the number that says how far the warm ran behind on a machine.
+- **One worker ran behind the logos; four do not.** Physical cores minus two, clamped
+  1..4, sized from the machine like the first-sight worker rather than taken from the
+  busy-thread budget, because these threads sit on a condition variable except while a
+  pipeline is being created — which is exactly when the frame thread would otherwise
+  stall. `CZ_VK_PIPELINE_WORKERS=N` overrides. On czamd (6 cores, 118 ms a create): 4
+  workers, ~40 s for the seed against a 90-130 s boot to title.
+
+**Gates:** `--smoke` OK; `tools/vs_recipes.py` exit 0 (102 recipes reproduce, 3 seed
+orphans named); the upgrade path (pixel pass done, no vertex marker) runs the vertex pass
+alone — `1265 already in the cache, 0 to translate` / `102 to translate` — and stamps the
+marker; the boot after owes nothing (0 `[prebuild]` lines); the control arm prints its
+line and runs pixel-only.
+
+**Residual, honestly.** A vertex shader outside the 104 recorded (an era no run entered)
+still translates at first sight; a pipeline key outside the seed still builds async on
+its first draw; the seed's 3 orphan keys can never be built by anyone until their
+microcode is recovered from a live process (the standard `process_vm_readv` recovery).
+Owed: the operator's session-one on czamd with the recipe file beside the exe, and
+`release-plan.md` §9's owed list should carry "regenerate `vs_recipes.bin` with the seed".
+Licensing note for the operator's call, from the plan §2.1: the 978 patched dwords are
+instruction words derived from the title's own bind; option (B) — ship captured
+declarations and reimplement the ~85-instruction patch routine — is the stricter line and
+this file's recipes are its exact oracle.

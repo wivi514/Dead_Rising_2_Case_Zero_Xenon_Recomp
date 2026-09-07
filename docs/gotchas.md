@@ -5869,3 +5869,36 @@ From phase C part 18 (the frame rate — and none of it was work):
      what population N counts before explaining X — "23 of 32" was mis-read as
      a vertex-shader gap for a day when 32 could only be the FILE's key count
      (the seed's would have been 1,365).
+
+514. **"CANNOT BE PREBUILT" WAS A STATEMENT ABOUT VERBATIM COPIES, NOT ABOUT
+     REPRODUCIBILITY — WHEN A LOADER PATCHES AN ASSET, THE ASSET IS THE TEMPLATE
+     PLUS A SMALL RECIPE.** Release §1.4 retracted the disc vertex shaders as "0 of
+     104 verbatim, the title patches the fetch instructions at bind" and the port
+     shipped first-sight translation as the PRIMARY vertex path for seventeen parts,
+     which is where every session-one pop-in came from (850,417 skipped draws on
+     the outdoor route). A same-length dword diff of the 104 runtime blobs against
+     the 142 disc templates says 102 are a template with 2-32 dwords rewritten —
+     978 dwords in total, 7.8 KB — and applying that recipe to the player's own
+     disc reproduces every one byte-for-byte, gated by the cache's own hash
+     (`tools/vs_recipes.py`, part 102). The general shape: "the loader rewrites it"
+     is an argument that the DISC copy is not the runtime copy, not that the
+     runtime copy is unrecoverable; diff them before declaring a half of your
+     cache unbuildable. And the two the diff cannot explain (no same-length
+     template) turned out to be engine-synthesised at BOOT, before any visible
+     frame — so the residual was never a player-visible cost either.
+
+515. **A SYNCHRONOUS "AT LOAD, WHERE THE PLAYER EXPECTS TO WAIT" STEP IS PRICED ON
+     THE STORES IT WAS MEASURED WITH — EMPTY THEM ALL BEFORE BELIEVING THE PRICE.**
+     The boot pre-warm cost 0.1 ms a pipeline for eighteen parts, because every
+     measurement ran on a machine whose DRIVER cache already held the pipelines.
+     With `__GL_SHADER_DISK_CACHE_PATH` pointed at an empty directory the same
+     create is 28 ms on NVIDIA (118 ms on czamd's AMD, part 101's 138 s black
+     screen), and part 102's recipes then made it worse by design — session one
+     now holds every shader, so the loop built 1,365 keys instead of ~750: 38 s
+     before the first frame, measured. The fix was not a faster create but moving
+     the warm to the async worker's spare tier with four workers (drained by ~18 s,
+     under the logos), and the instrument that says whether it ran behind is the
+     count of speculative builds a draw PROMOTED (46 with one worker, 8 with
+     four). A first-run experience has three stores — shader cache, pipeline
+     keys, driver cache — and a "fresh machine" run that parks only the two you
+     own is a session-two measurement wearing session-one clothes.

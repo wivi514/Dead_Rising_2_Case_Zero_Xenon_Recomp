@@ -1092,14 +1092,22 @@ appended; gotcha 513 is the transferable finding. THE OPERATOR HALF IS OWED**):
   `p101frames`. Owed: same-area-twice for the stutter verdict; reproduce the
   square and note when, then pull `p101frames` + `run_visible.err.log`. v1.0.1
   (semaphore + thread floor + AMD depth + 95611b9) remains unblocked.
-* **THE NEXT PLAN IS `docs/part102-no-popin-plan.md` (2026-09-07):** the operator
-  asked for hedge-dev's no-first-run-stutter design. Session-one pop-in is the
-  VERTEX half only (0 of 104 on disc verbatim); the title binds VS to declaration
-  LAZILY inside the draw flush (`sub_8284F1C0`/`sub_8284EF28`, only caller
-  `sub_8284F300`), so no load-time hook exists. But 102 of 104 runtime VS are a
-  disc template + 2-32 patched dwords (978 total), so the vertex half can be
-  regenerated at first run from a 7.8 KB recipe table and the seed pre-warm then
-  runs whole on session one. Its §3 item 0 is a question for the operator first.
+* **PART 102 (2026-09-07) — SESSION-ONE POP-IN CLOSED ON THE DEV BOX;
+  `phase5-notes.md` §6es is the record, `part102-no-popin-plan.md` the plan with its
+  execution record appended, gotchas 514-515.** The operator asked for hedge-dev's
+  no-first-run-stutter design; the pop-in was the VERTEX half (0 of 104 on disc
+  verbatim, translated at the draw that first binds each). The title binds VS to
+  declaration LAZILY inside the draw flush (`sub_8284F1C0`/`sub_8284EF28`, only caller
+  `sub_8284F300`), so no load-time hook exists — but 102 of 104 runtime VS are a disc
+  template + 2-32 patched dwords, so `tools/vs_recipes.py` -> `tools/release/vs_recipes.bin`
+  (10 KB, ships beside the exe like prewarm.keys) and the first-run prebuild now
+  rebuilds the vertex half hash-gated (`CZ_NO_VS_RECIPES=1` the arm). Fresh-start
+  route, ALL THREE stores parked incl. the driver cache: skipped draws 850,417 -> 199,
+  first-sight 47 -> 4 (boot-only), session two 0/0. The boot pre-warm is ASYNC now on
+  4 workers (`CZ_VK_SYNC_PREWARM=1`, `CZ_VK_PIPELINE_WORKERS=N`) because synchronous
+  on an empty driver cache it cost 38 s here / 138 s on czamd. Owed: czamd session one
+  with the recipe file beside the exe; the plan's §2.1 licensing call; the seed's 3
+  orphan VS.
 
 
 Where the port was, as of 2026-09-06 latest (**PART 100 CLOSED — the boot hang was

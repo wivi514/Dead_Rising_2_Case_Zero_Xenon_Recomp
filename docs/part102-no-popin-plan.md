@@ -208,3 +208,28 @@ in another dress. **Optional item 3 below makes the second one invisible.**
 - Case West: the same three functions (bind check, bind, patch) will exist at other
   addresses in the same D3D runtime, and the same census answers the same question in
   an hour — record it in `reusability.md` when it lands.
+
+---
+
+## Execution record (2026-09-07, same day — DONE on the dev box; czamd owed)
+
+**`phase5-notes.md` §6es is the record; gotchas 514 and 515 are the transferable
+findings.** Item 0 was answered by the operator before it was asked (*"it's ours ... it's
+just the first time we see it"*) and confirmed by the baseline: 850,417 skipped draws on
+the fresh-start route, 47 first-sight translations. Items 1, 2 and 5 shipped as planned;
+item 3 (budgeted synchronous creation) was NOT needed and was not built — the residual
+after the async warm is 173 skipped draws in a 46,851-frame run, and 0 on session two.
+
+What the plan did not predict: **the synchronous boot warm was the next wall.** Fully
+populated on session one, and on an EMPTY driver cache, it cost 37.8 s before the first
+frame (28.5 ms a pipeline on NVIDIA; part 101's 118 ms on czamd). It is async now, on four
+workers, drained by ~18 s under the logos; `CZ_VK_SYNC_PREWARM=1` and
+`CZ_VK_PIPELINE_WORKERS=N` are the arms. The plan's §4 predictions held everywhere else:
+1,265 + 102 translated at first run, first-sight = the two synthesised shaders (plus the
+two disc-less pixel shaders), `draw: skipped` 173 (not 0 — 8 seed keys were promoted by
+draws before the four workers reached them), >100 ms frames 0.
+
+Owed: the czamd session (copy `vs_recipes.bin` beside the exe — the runtime says
+`no .../vs_recipes.bin — vertex shaders will translate at first sight instead` when it is
+missing, which is how the first dev run here fell back); the licensing decision in §2.1;
+recovering the seed's 3 orphan vertex shaders.
