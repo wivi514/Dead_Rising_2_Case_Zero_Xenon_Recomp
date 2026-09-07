@@ -2631,3 +2631,28 @@ PPC_FUNC(sub_82760CF0)
                 (unsigned long long)n, d, ctx.r3.u32, bad ? "  *** BAD DELTA ***" : "");
     __imp__sub_82760CF0(ctx, base);
 }
+
+// sub_82771D70 — the streaming listener-dispatch loop the part-100 hang spins in
+// (its bctr callback at +0xE4 posts work and releases a semaphore 660k/s on czamd,
+// and UpdateStreaming, which sits AFTER this call in the pump body, is then never
+// reached). The loop runs r28 in [0, [r3+0x50]). If [r3+0x50] grows without bound
+// the loop never returns — that is the whole hang, and this prints the count so a
+// growing list is visible against the healthy control (gotcha 30).
+extern "C" PPC_FUNC(__imp__sub_82771D70);
+PPC_FUNC(sub_82771D70)
+{
+    if (!ProbeEnabled())
+    {
+        __imp__sub_82771D70(ctx, base);
+        return;
+    }
+    static std::atomic<uint64_t> calls{ 0 };
+    const uint64_t n = calls.fetch_add(1, std::memory_order_relaxed);
+    const uint32_t self = ctx.r3.u32;
+    const uint32_t idx = ctx.r4.u32;
+    const uint32_t count = self ? PPC_LOAD_U32(self + 0x50) : 0;
+    if (n < 20 || (n & 0x3FFF) == 0)
+        fprintf(stderr, "[stream] dispatch #%llu self=%08X idx=%u listeners=%u\n",
+                (unsigned long long)n, self, idx, count);
+    __imp__sub_82771D70(ctx, base);
+}
