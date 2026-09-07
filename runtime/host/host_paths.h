@@ -62,6 +62,7 @@ std::filesystem::path Game();         // <root>/assets/game      the unpacked pa
 std::filesystem::path GameXex();      // <root>/assets/game/default.xex
 std::filesystem::path SaveDir();      // <root>/assets/save
 std::filesystem::path ShaderCache();  // <root>/assets/shader_spv
+std::filesystem::path VsRecipes();    // <exe>/vs_recipes.bin, else <root>/tools/release/
 
 // THE PER-USER SAVED-GAMES FOLDER (part 86, operator decision after a repackage wiped
 // the play copy: player data must live where no tool that touches the install tree

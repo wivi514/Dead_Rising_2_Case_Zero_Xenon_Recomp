@@ -193,7 +193,9 @@ int main(int argc, char** argv)
                            "deadrisingprologue-ps.big";
         const std::filesystem::path out =
             argc > 3 ? std::filesystem::path(argv[3]) : HostPaths::ShaderCache();
-        return ShaderPrebuild::BuildFromDisc(bank, out);
+        return ShaderPrebuild::BuildFromDisc(bank, out, {},
+                                             bank.parent_path() / "deadrisingprologue-vs.big",
+                                             HostPaths::VsRecipes());
     }
 
     // Release-github §0: the overlay generation by hand — what the first-run hook
@@ -347,7 +349,8 @@ int main(int argc, char** argv)
         // over; if the pass cannot run (game not unpacked, bank unreadable) it falls
         // through and the gate names what is actually missing. The marker files keep
         // this away from developer caches built from dumps (shader_prebuild.h).
-        if (renderer && ShaderPrebuild::WantedAtBoot(HostPaths::ShaderCache()))
+        if (renderer && ShaderPrebuild::WantedAtBoot(HostPaths::ShaderCache(),
+                                                     HostPaths::VsRecipes()))
         {
             const std::filesystem::path bank = HostPaths::Game() / "data" / "shaders" /
                                               "deadrisingprologue-ps.big";
@@ -362,7 +365,8 @@ int main(int argc, char** argv)
                         snprintf(l, sizeof l, "PREPARING SHADERS - %u OF %zu",
                                  done, total);
                         Host_ProgressUpdate(l, total ? float(done) / float(total) : 1.f);
-                    });
+                    },
+                    bank.parent_path() / "deadrisingprologue-vs.big", HostPaths::VsRecipes());
             }
         }
         // Release-github §0: the patched-asset overlays (the PC options screen,

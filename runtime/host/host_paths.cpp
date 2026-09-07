@@ -155,6 +155,15 @@ std::filesystem::path Game()        { return Assets() / "game"; }
 std::filesystem::path GameXex()     { return Game() / "default.xex"; }
 std::filesystem::path SaveDir()     { return Assets() / "save"; }
 std::filesystem::path ShaderCache() { return Assets() / "shader_spv"; }
+std::filesystem::path VsRecipes()
+{
+    // Shipped beside the exe like prewarm.keys; the dev tree finds the checked-in copy.
+    std::error_code ec;
+    const std::filesystem::path shipped = ExeDir() / "vs_recipes.bin";
+    if (std::filesystem::exists(shipped, ec))
+        return shipped;
+    return Root() / "tools" / "release" / "vs_recipes.bin";
+}
 std::filesystem::path Config()      { return Root() / "config"; }
 std::filesystem::path Tools()       { return Root() / "tools"; }
 
