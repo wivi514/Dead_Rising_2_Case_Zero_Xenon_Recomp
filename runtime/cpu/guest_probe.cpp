@@ -2608,3 +2608,26 @@ PPC_FUNC(sub_827144C0)
                 obj ? PPC_LOAD_U32(obj + 0x80) : 0, obj ? PPC_LOAD_U32(obj + 0x84) : 0);
     __imp__sub_827144C0(ctx, base);
 }
+
+// sub_82760CF0 — UpdateStreaming(mgr, arg, f1=frameDelta). The streamer budgets how
+// much to load this tick from the elapsed time in f1; a zero/negative/NaN delta
+// budgets zero and the zone never finishes loading — a deterministic per-machine
+// hang that survives single-core (part 100, the czamd freeze). Prints the delta and
+// a pending-work word so a starved budget is visible against the healthy control.
+extern "C" PPC_FUNC(__imp__sub_82760CF0);
+PPC_FUNC(sub_82760CF0)
+{
+    if (!ProbeEnabled())
+    {
+        __imp__sub_82760CF0(ctx, base);
+        return;
+    }
+    static std::atomic<uint64_t> calls{ 0 };
+    const uint64_t n = calls.fetch_add(1, std::memory_order_relaxed);
+    const double d = ctx.f1.f64;
+    const bool bad = !(d > 0.0);   // catches 0, negative and NaN
+    if (n < 20 || bad || (n & 0x3FF) == 0)
+        fprintf(stderr, "[stream] update #%llu delta=%.9g mgr=%08X%s\n",
+                (unsigned long long)n, d, ctx.r3.u32, bad ? "  *** BAD DELTA ***" : "");
+    __imp__sub_82760CF0(ctx, base);
+}
