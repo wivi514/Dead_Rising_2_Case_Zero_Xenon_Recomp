@@ -3257,6 +3257,11 @@ struct Buffer
     VkDeviceAddress address = 0;
     uint8_t* mapped = nullptr;
     VkDeviceSize size = 0;
+    // For a DEVICE-LOCAL twin of a host buffer with identical offsets (the stream store
+    // mirror, part 106): the HOST buffer's mapping, so the few CPU readers of a stream
+    // (`StreamLoc::bytes()`) read the bytes the twin was copied from rather than
+    // dereferencing memory that has no mapping at all.
+    uint8_t* shadowMapped = nullptr;
 };
 
 // Where UploadStream put a stream's bytes. Two buffers are now possible — the per-frame
@@ -3269,7 +3274,10 @@ struct StreamLoc
     VkDeviceSize at = 0;
     bool ok() const { return buf != nullptr; }
     VkBuffer handle() const { return buf->buffer; }
-    uint8_t* bytes() const { return buf->mapped + at; }
+    uint8_t* bytes() const
+    {
+        return (buf->mapped ? buf->mapped : buf->shadowMapped) + at;
+    }
     VkDeviceAddress address() const { return buf->address + at; }
     VkDeviceSize capacity() const { return buf->size; }
 };
@@ -4875,6 +4883,30 @@ struct Renderer
     // and being thrown away at the frame boundary.
     Buffer persist;
     VkDeviceSize persistCursor = 0;
+    // THE STORE'S DEVICE-LOCAL MIRROR (part 106). Part 106's decomposition put ~4.5 ms
+    // of the crowd's 8.9 ms device frame at 1080p in the VERTEX FETCH: the store above
+    // is host memory, so every vertex and index of every draw crossed PCIe, every frame,
+    // for every tile and cascade pass. `CZ_VK_VRAM_STREAMS=1` (a host-visible VRAM heap)
+    // read the GPU frame at 4.4 ms — but that heap is Resizable BAR, which a GTX 1060
+    // does not have, and its write-combined CPU stores are what lost part 73 its wall
+    // time. So the shippable form is a twin: same size, same offsets, plain VRAM, no
+    // mapping. The CPU keeps writing the host store exactly as before (cached writes);
+    // the ranges it wrote this frame are copied host -> mirror by ONE vkCmdCopyBuffer
+    // at the start of the NEXT frame's command buffer (~0.2 MB a frame once the store
+    // is warm), and a draw binds the mirror for any slot whose copy is already recorded
+    // ahead of it, the host store otherwise (its first frame). The ping-pong twins
+    // (`PersistEntry::alt`) make this race-free by the same argument that makes them
+    // safe for the host store: a slot rewritten in frame W is read from the mirror only
+    // by frames > W, whose command buffers carry its copy ahead of their draws, and a
+    // slot cannot be rewritten again until the frame that last read it has retired.
+    // CZ_VK_NO_STORE_MIRROR=1 is the same-binary control arm (the part-105 renderer).
+    Buffer persistDev;
+    std::vector<VkBufferCopy> mirrorPending;
+    // Bumped once per BeginFrame AFTER the pending copies are recorded. An entry stamps
+    // the generation it was written in; a hit reads the mirror iff that stamp is older
+    // than the current one — i.e. its copy sits in this or an earlier command buffer.
+    uint64_t mirrorGen = 1;
+    uint64_t mirrorCopies = 0, mirrorBytes = 0, mirrorHitsDev = 0, mirrorHitsHost = 0;
     // Raised when a persistent allocation did not fit; acted on at the frame boundary,
     // which is the only place the buffer is provably not being read by the GPU.
     VkDeviceSize persistWant = 0;
@@ -4896,6 +4928,7 @@ struct Renderer
         // thousands, so allocating a twin for every entry would double the store to
         // protect 1% of it.
         VkDeviceSize alt = VkDeviceSize(-1);
+        uint64_t mirrorSeq = 0;  // `mirrorGen` when `at` was last written (part 106)
         uint64_t guard = 0;      // StreamGuard over the guest bytes when it was copied
         uint64_t lastFrame = 0;  // for the age report; not an eviction policy yet
         uint32_t bytes = 0;
@@ -5908,6 +5941,117 @@ void PersistClear()
 {
     R->persistCache.Clear();
     R->persistCacheMap.clear();
+    R->mirrorPending.clear();
+}
+
+// Forward declarations for the store mirror (part 106); both are defined further down.
+bool CreateBuffer(Buffer& b, VkDeviceSize size, VkBufferUsageFlags usage,
+                  VkMemoryPropertyFlags props, bool deviceAddress,
+                  const char* vramName = nullptr);
+VkBufferUsageFlags PersistUsage();
+
+// Queue a host-store range for the mirror and stamp the entry (part 106).
+inline void MirrorMark(Renderer::PersistEntry& e, VkDeviceSize at, VkDeviceSize bytes)
+{
+    if (!R->persistDev.buffer)
+        return;
+    e.mirrorSeq = R->mirrorGen;
+    if (at + bytes <= R->persistDev.size)
+        R->mirrorPending.push_back(VkBufferCopy{ at, at, bytes });
+}
+
+// Which buffer a persist HIT binds: the mirror when its copy of this slot is already in
+// the queue ahead of this draw, the host store otherwise.
+inline StreamLoc PersistHitLoc(const Renderer::PersistEntry& e)
+{
+    if (R->persistDev.buffer && e.mirrorSeq < R->mirrorGen &&
+        e.at + e.bytes <= R->persistDev.size)
+    {
+        ++R->mirrorHitsDev;
+        return StreamLoc{ &R->persistDev, e.at };
+    }
+    ++R->mirrorHitsHost;
+    return StreamLoc{ &R->persist, e.at };
+}
+
+// Create (or re-create, after a growth) the mirror at the store's size, or as much of
+// it as a quarter of the device-local heap allows, or not at all — every outcome is
+// printed, because a performance number from an unknown memory placement is not
+// comparable with anything (the rule the arena's own line follows).
+void CreateStoreMirror()
+{
+    if (R->persistDev.buffer)
+    {
+        vkDestroyBuffer(R->device, R->persistDev.buffer, nullptr);
+        vkFreeMemory(R->device, R->persistDev.memory, nullptr);
+        R->persistDev = Buffer{};
+    }
+    R->mirrorPending.clear();
+    static const bool off = EnvOn("CZ_VK_NO_STORE_MIRROR");
+    if (off || !R->persistOn || !R->persist.buffer)
+    {
+        if (off)
+            fprintf(stderr, "[vk] CZ_VK_NO_STORE_MIRROR=1 — the stream store stays in "
+                            "system RAM and the GPU fetches every vertex over PCIe (the "
+                            "part-105 renderer, same binary)\n");
+        return;
+    }
+    VkDeviceSize heapBytes = 0;
+    for (uint32_t h = 0; h < R->memProps.memoryHeapCount; ++h)
+        if (R->memProps.memoryHeaps[h].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT)
+            heapBytes = std::max(heapBytes, R->memProps.memoryHeaps[h].size);
+    VkDeviceSize want = R->persist.size;
+    // A quarter of the largest device-local heap at most: the textures, the EDRAM
+    // stand-in and the driver's own allocations share it, and a mirror that pages is a
+    // regression wearing an optimisation's name. A smaller mirror is still a mirror —
+    // slots past its end simply stay on the host path.
+    while (want > heapBytes / 4 && want > (64ull << 20))
+        want /= 2;
+    if (!CreateBuffer(R->persistDev, want, PersistUsage() | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                      VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, /*deviceAddress=*/true,
+                      "cross-frame stream store MIRROR"))
+    {
+        R->persistDev = Buffer{};
+        fprintf(stderr, "[vk] the stream store mirror could not be allocated in video "
+                        "memory — the GPU reads the store from system RAM this run\n");
+        return;
+    }
+    R->persistDev.shadowMapped = R->persist.mapped;
+    fprintf(stderr,
+            "[vk] stream store MIRROR: %llu MB of the %llu MB store twinned in video "
+            "memory (device-local heap %llu MB); draws bind the mirror once a slot's "
+            "copy is queued ahead of them. CZ_VK_NO_STORE_MIRROR=1 is the control arm\n",
+            (unsigned long long)(R->persistDev.size >> 20),
+            (unsigned long long)(R->persist.size >> 20),
+            (unsigned long long)(heapBytes >> 20));
+}
+
+// Record this frame's host -> mirror copies at the top of the frame's command buffer
+// (no rendering instance is open here, which vkCmdCopyBuffer requires), then bump the
+// generation so this frame's hits on those slots bind the mirror.
+void MirrorFlush()
+{
+    if (R->persistDev.buffer && !R->mirrorPending.empty())
+    {
+        const std::vector<VkBufferCopy>& v = R->mirrorPending;
+        for (size_t i = 0; i < v.size(); i += 4096)
+            vkCmdCopyBuffer(R->cmd, R->persist.buffer, R->persistDev.buffer,
+                            uint32_t(std::min<size_t>(4096, v.size() - i)), v.data() + i);
+        VkMemoryBarrier mb{ VK_STRUCTURE_TYPE_MEMORY_BARRIER };
+        mb.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+        mb.dstAccessMask = VK_ACCESS_VERTEX_ATTRIBUTE_READ_BIT | VK_ACCESS_INDEX_READ_BIT |
+                           VK_ACCESS_SHADER_READ_BIT;
+        vkCmdPipelineBarrier(R->cmd, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                             VK_PIPELINE_STAGE_VERTEX_INPUT_BIT |
+                                 VK_PIPELINE_STAGE_VERTEX_SHADER_BIT |
+                                 VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                             0, 1, &mb, 0, nullptr, 0, nullptr);
+        R->mirrorCopies += v.size();
+        for (const VkBufferCopy& c : v)
+            R->mirrorBytes += c.size;
+        R->mirrorPending.clear();
+    }
+    ++R->mirrorGen;
 }
 size_t PersistSize()
 {
@@ -6106,7 +6250,7 @@ uint32_t FindMemoryTypePreferDevice(uint32_t typeBits, VkMemoryPropertyFlags pro
 
 bool CreateBuffer(Buffer& b, VkDeviceSize size, VkBufferUsageFlags usage,
                   VkMemoryPropertyFlags props, bool deviceAddress,
-                  const char* vramName = nullptr)
+                  const char* vramName)
 {
     b.size = size;
     VkBufferCreateInfo ci{ VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
@@ -6130,6 +6274,11 @@ bool CreateBuffer(Buffer& b, VkDeviceSize size, VkBufferUsageFlags usage,
     if (vramName)
     {
         const uint32_t heap = R->memProps.memoryTypes[type].heapIndex;
+        // "VIDEO MEMORY" is a fact about the TYPE chosen, not about which preference
+        // chose it: a plain DEVICE_LOCAL request (the store mirror) lands in VRAM without
+        // going through the ReBAR arm, and printed "system RAM" until part 106.
+        inVram = (R->memProps.memoryTypes[type].propertyFlags &
+                  VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) != 0;
         fprintf(stderr,
                 "[vk] %s: %llu MB in %s (memory type %u, heap %u of %llu MB)%s\n",
                 vramName, (unsigned long long)(size >> 20),
@@ -12297,8 +12446,9 @@ void GrowArenaIfNeeded()
 // here.
 VkBufferUsageFlags PersistUsage()
 {
+    // TRANSFER_SRC: the host store is the source of the mirror's copies (part 106).
     return VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT |
-           VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
+           VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT |
            (R->rtEnabled
                 ? VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR
                 : 0u);
@@ -12356,6 +12506,7 @@ void PersistMaintenance()
             const uint64_t fr0 = CycNow();
             vkDestroyBuffer(R->device, old.buffer, nullptr);
             vkFreeMemory(R->device, old.memory, nullptr);
+            CreateStoreMirror();   // the twin follows the store's size (device is idle)
             growFreeNs = CycNow() - fr0;
             const uint64_t growNs = CycNow() - growT0;
             g_persistGrowNs += growNs;
@@ -13055,6 +13206,9 @@ void BeginFrame()
                                 kStQueriesPerSlot);
             g_stNext[R->frameSlot] = 0;
         }
+        // The store mirror's copies for what last frame wrote (part 106) — here, at the
+        // top of the frame, before any rendering instance is open.
+        MirrorFlush();
     }
     // The arena is GROWN at the end of a frame, in `GrowArenaIfNeeded` — not here. What
     // remains here is the reset, which is the cheap half and has to be per frame. With
@@ -14711,7 +14865,7 @@ StreamLoc UploadStream(uint8_t* base, uint32_t va, uint64_t bytes, uint32_t endi
                 ++R->persistStats.hits;
                 R->persistStats.hitBytes += bytes;
                 copied = false;
-                loc = StreamLoc{ &R->persist, e.at };
+                loc = PersistHitLoc(e);
             }
             else
             {
@@ -14777,6 +14931,7 @@ StreamLoc UploadStream(uint8_t* base, uint32_t va, uint64_t bytes, uint32_t endi
                     e.guard = guard;
                     ++R->persistStats.stale;
                     R->persistStats.staleBytes += bytes;
+                    MirrorMark(e, e.at, bytes);
                     loc = StreamLoc{ &R->persist, e.at };
                 }
                 else
@@ -14804,6 +14959,7 @@ StreamLoc UploadStream(uint8_t* base, uint32_t va, uint64_t bytes, uint32_t endi
                 e.bytes = uint32_t(bytes);
                 e.preSlot = slot;
                 e.preFrame = R->frame + 1;
+                MirrorMark(e, at, bytes);
                 PersistInsert(key, e);
                 ++R->persistStats.fills;
                 R->persistStats.fillBytes += bytes;
@@ -26972,6 +27128,7 @@ bool InitCommon()
             R->persistOn = false;
         }
     }
+    CreateStoreMirror();
 
     // Two samplers, and one global choice per draw is a stated simplification: the
     // fetch constant carries per-texture filter and address modes that this does not
@@ -29983,6 +30140,23 @@ void DoSwapImpl(uint8_t* base, uint32_t frontBuffer, uint32_t width, uint32_t he
                         (unsigned long long)(R->persistCursor >> 20),
                         (unsigned long long)(R->persist.size >> 20),
                         (unsigned long long)p.flushes);
+                if (R->persistDev.buffer)
+                {
+                    fprintf(stderr,
+                            "[vkprof] store mirror: %.2f MB/frame copied host->VRAM in "
+                            "%.1f copies/frame; hits bound the MIRROR %.1f%% of the time "
+                            "(%llu dev, %llu host) this window\n",
+                            frames ? double(R->mirrorBytes) / double(frames) / 1048576.0 : 0.0,
+                            frames ? double(R->mirrorCopies) / double(frames) : 0.0,
+                            (R->mirrorHitsDev + R->mirrorHitsHost)
+                                ? 100.0 * double(R->mirrorHitsDev) /
+                                      double(R->mirrorHitsDev + R->mirrorHitsHost)
+                                : 0.0,
+                            (unsigned long long)R->mirrorHitsDev,
+                            (unsigned long long)R->mirrorHitsHost);
+                    R->mirrorCopies = R->mirrorBytes = 0;
+                    R->mirrorHitsDev = R->mirrorHitsHost = 0;
+                }
                 R->persistStats = Renderer::PersistStats{};
             }
             if (g_streamCensus)
@@ -31159,6 +31333,19 @@ void VkRenderer_DumpStats()
                     (unsigned long long)std::get<1>(byDead[i]),
                     double(std::get<0>(byDead[i])) / 1e9, std::get<3>(byDead[i]));
     }
+    if (R->persistDev.buffer)
+        fprintf(stderr,
+                "[vk]   store mirror: %.2f MB/frame copied host->VRAM in %.1f copies/frame "
+                "over the run; persist hits bound the MIRROR %.1f%% of the time (%llu dev, "
+                "%llu host)\n",
+                R->frame ? double(R->mirrorBytes) / double(R->frame) / 1048576.0 : 0.0,
+                R->frame ? double(R->mirrorCopies) / double(R->frame) : 0.0,
+                (R->mirrorHitsDev + R->mirrorHitsHost)
+                    ? 100.0 * double(R->mirrorHitsDev) /
+                          double(R->mirrorHitsDev + R->mirrorHitsHost)
+                    : 0.0,
+                (unsigned long long)R->mirrorHitsDev,
+                (unsigned long long)R->mirrorHitsHost);
     fprintf(stderr, "[vk]   pipelines=%zu shaders=%zu textures=%zu arenaHighWater=%llu KB\n",
             R->pipelines.size(), R->shadersMap.size(), TexSize(),
             (unsigned long long)(R->arenaHighWater >> 10));
