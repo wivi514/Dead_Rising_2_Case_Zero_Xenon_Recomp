@@ -187,6 +187,13 @@ if ($LASTEXITCODE -ne 0 -or $smoke -notmatch "OK: every generated symbol resolve
 Write-Host "==> archive"
 $zip = Join-Path $OutDir "$Name-windows-x86_64.zip"
 if (Test-Path $zip) { Remove-Item $zip }
+# Part 105: the runtime writes cz_runtime.log / cz_diag.txt beside its data root, which
+# for the stage IS the stage. --smoke never opens one, but a hand run from the stage
+# would, and a zip must never carry someone's log.
+foreach ($leftover in @("cz_runtime.log", "cz_runtime.log.1", "cz_diag.txt", "cz_diag.txt.1")) {
+    $p = Join-Path $Stage $leftover
+    if (Test-Path $p) { Remove-Item $p }
+}
 Compress-Archive -Path $Stage -DestinationPath $zip
 $hash = (Get-FileHash -Algorithm SHA256 $zip).Hash.ToLower()
 "$hash  $(Split-Path -Leaf $zip)" | Set-Content -Encoding ascii "$zip.sha256"

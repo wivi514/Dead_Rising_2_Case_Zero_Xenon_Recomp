@@ -81,6 +81,7 @@ for entry in "$STAGE"/* "$STAGE"/.[!.]*; do
     [ -e "$entry" ] || continue
     case "$(basename "$entry")" in
         assets) continue ;;   # NEVER inside the image — see the header
+        cz_runtime.log*|cz_diag.txt*) continue ;;   # a gate's leftovers (part 105)
     esac
     cp -a "$entry" "$APPDIR/usr/"
 done

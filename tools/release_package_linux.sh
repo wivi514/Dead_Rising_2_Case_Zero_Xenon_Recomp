@@ -266,6 +266,10 @@ echo "==> archive"
 mkdir -p "$OUT"
 TAR=$OUT/$NAME-linux-x86_64.tar.zst
 rm -f "$TAR"
+# Part 105: the runtime writes cz_runtime.log (and --diag writes cz_diag.txt) beside its
+# data root, which for the stage IS the stage — so a gate that ran the staged exe leaves
+# a log in it, and a re-package after a gate would ship someone's log. Never archive one.
+rm -f "$STAGE"/cz_runtime.log "$STAGE"/cz_runtime.log.1 "$STAGE"/cz_diag.txt "$STAGE"/cz_diag.txt.1
 tar --zstd -cf "$TAR" -C "$OUT" "$NAME"
 sha256sum "$TAR" > "$TAR.sha256"
 
