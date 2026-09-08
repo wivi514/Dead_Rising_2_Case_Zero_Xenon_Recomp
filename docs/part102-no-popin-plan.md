@@ -237,3 +237,13 @@ recovering the seed's 3 orphan vertex shaders.
 **2026-09-08, operator-verified on the dev box:** *"Perfect, did not get any stutter"*, *"did not get any pop in of assets"* —
 session one 1,920 skipped draws in 4 minutes, session two 10; seed grown to 1,378 keys
 from their route. czamd remains owed.
+
+**czamd, 2026-09-08:** release bundle built on czwin, gated, installed; session one on
+parked stores (shader cache, key file, AMD VkCache contents). Shader half clean (4
+boot-only first-sights). The async warm ran into gameplay at 155 ms a pipeline on four
+workers (211 s of worker time; 97 seed keys promoted, 158,706 skips) and the operator
+felt it as stutter — first-run-only (warm: 0.2 ms a pipeline). §6es carries the full
+table. **Owed, in order:** (1) `cz_play.bat` steady-state run for the stutter verdict
+(counter only); (2) if session-one stutter matters, budget-aware sizing or lower priority
+for the pipeline workers, re-measured with VkCache parked; (3) the black-square arms
+`cz_arm_fif1` -> `noclear` -> `norecord`.

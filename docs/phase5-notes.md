@@ -20658,3 +20658,42 @@ union line read `1364 per-user + shipped seed -> 1377` — their route found 12 
 the seed lacked, and the seed is now that union (1,378 keys; `vs_recipes.py` still
 reports 0 refused, 3 orphans). The one boot log line that was wrong — "saves COULD NOT
 BE CREATED" on a directory that exists — was a stale `error_code`, fixed in edbff16.
+
+**czamd (RX 6600, Ryzen 5 5500, 6 cores), 2026-09-08 — the release-shaped bundle,
+session one on parked stores, then a diagnostic run. THE STUTTER RECORD, complete:**
+
+| | session one (all three stores parked) | diag run (warm; every-64th frame dump + F9) |
+|---|---|---|
+| shaders on the fly | 4, boot only (27-42 ms each) | 0 |
+| pipelines built in background | 1,366 at **154.7 ms each** (291 in the first batches), 211 s of worker time on 4 workers | 1,371 at **0.2 ms each**, 0.33 s |
+| seed builds a draw beat to it | 97 | — |
+| draws skipped for a pipeline | 158,706 | — |
+| frame-time lines | none armed | 19 windows: median 19-25 ms at 1,300-4,600 draws, **p99 60-70 ms in every window, >2x-median share 1.5-1.8%** |
+
+Two different stutters, and neither is a steady-state defect:
+
+1. **Session one: the async boot warm ran INTO gameplay and oversubscribed the box.**
+   At 155 ms a pipeline the 1,339-key seed needs over a minute of wall time even on
+   four workers, so it was still compiling when the operator reached the streets — and
+   four compile threads plus the pump, the guest's busy threads and three guard workers
+   on six physical cores is oversubscription. The operator's report: *"it stuttered from
+   moment to moment compared to the linux rtx 3070 rig"*. A first-run-only cost, gone
+   the moment the driver cache is warm (0.2 ms a pipeline, the diag run). The Linux
+   3070 box hides it because its cold create is 28 ms and the warm finishes under the
+   logos. **Owed:** size the pipeline pool against the busy-thread budget on small
+   machines, or drop its priority, or both — and measure it on czamd with the driver
+   cache parked again (`VkCache` contents removed; the folder itself is held open by
+   Radeon Software and cannot be renamed).
+2. **The diag run's stutter was the instrument.** `CZ_VK_FRAME_DUMP` reads back and
+   writes a 6 MB PPM every 64th frame; 1/64 = 1.56%, and the >2x-median share sat at
+   1.5-1.8% in every window whatever the draw count, with the p99 pinned near 70 ms.
+   Gotcha 7's shape, on a machine where the readback is slow. The worst frames (388,
+   668, 988 ms) are the F9 snapshot sets (79 files each) and loads. `cz_play.bat`
+   (frame-rate counter only) is the control for "does czamd stutter at steady state" —
+   **that run is owed and is the one that decides whether any steady-state work exists.**
+
+The black square: none of the 165 automatic frames nor the 16 F9 full-size snapshots
+holds it (tile scan, then by eye — every flagged block was content); the operator reports
+it VANISHES the moment any capture is taken, so a readback's forced GPU wait removes it.
+Cross-frame race is the lead; arms staged on czamd in order: `cz_arm_fif1.bat`
+(`CZ_VK_FRAMES_IN_FLIGHT=1`), `cz_arm_noclear.bat`, `cz_arm_norecord.bat`.
