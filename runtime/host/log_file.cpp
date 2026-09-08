@@ -106,7 +106,13 @@ unsigned PipeBytesPending()
 int OpenLog(const std::filesystem::path& p)
 {
 #if defined(_WIN32)
-    return _wopen(p.wstring().c_str(), _O_WRONLY | _O_CREAT | _O_TRUNC | _O_BINARY | _O_NOINHERIT,
+    // TEXT mode on purpose: the pipe carries bare LF (it is binary, and the CRT's own
+    // stderr writes are untranslated into it), and the console/redirect copy goes out
+    // through the ORIGINAL fd 2, which the CRT opened in text mode and so writes CRLF.
+    // A binary log here read 64 bytes short of a 64-line console copy on the first
+    // czwin run — one LF per line. Text mode makes the two copies byte-identical and
+    // gives a Windows player a log Notepad wraps correctly.
+    return _wopen(p.wstring().c_str(), _O_WRONLY | _O_CREAT | _O_TRUNC | _O_TEXT | _O_NOINHERIT,
                   _S_IREAD | _S_IWRITE);
 #else
     return ::open(p.string().c_str(), O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0644);
