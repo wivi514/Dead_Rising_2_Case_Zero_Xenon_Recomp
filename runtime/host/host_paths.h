@@ -24,6 +24,10 @@
 //   1. $CZ_ROOT, if set. Used verbatim. If it does not exist we say so and CARRY ON
 //      with the fallback rather than silently ignoring it — an override that is
 //      quietly dropped is worse than one that fails.
+//   1b. $APPIMAGE, when the executable lives inside $APPDIR (part 104): the directory
+//      BESIDE the .AppImage file. An AppImage's executable is a read-only mount that
+//      moves every launch, so the walk below cannot be the answer there; the file the
+//      player launched is the one fixed point. RootSource() reports "appimage".
 //   2. Walk up from the executable's own directory, at most kMaxWalk levels, and take
 //      the first directory that contains an `assets` subdirectory. This covers BOTH
 //      layouts with one rule:
@@ -49,7 +53,7 @@ const std::filesystem::path& ExeDir();
 // The installation root, resolved as above. Cached; the first call decides.
 const std::filesystem::path& Root();
 
-// How Root() was decided — "CZ_ROOT", "assets-walk" or "exe-dir". For the log line and
+// How Root() was decided — "CZ_ROOT", "appimage", "assets-walk" or "exe-dir". For the log line and
 // for anything that wants to refuse when the root was merely guessed.
 const char* RootSource();
 

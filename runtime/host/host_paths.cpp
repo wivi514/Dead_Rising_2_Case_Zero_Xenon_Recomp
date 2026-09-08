@@ -101,6 +101,41 @@ std::filesystem::path ResolveRoot()
     }
 
     const std::filesystem::path exeDir = HostPaths::ExeDir();
+
+    // THE APPIMAGE CASE (part 104, release-plan E.2). Inside an AppImage the executable
+    // is a file in a read-only squashfs that the AppImage runtime mounted under
+    // /tmp/.mount_XXXXXX for the life of the process, so the walk below would put the
+    // root INSIDE the mount: read-only, gone at exit, and holding no assets/ of ours (the
+    // AppDir ships none, on purpose — a shipped assets/ inside the image would be found
+    // by the walk and then refuse every write). The runtime exports two variables to the
+    // process: APPDIR, the mount, and APPIMAGE, the .AppImage FILE the player launched.
+    // The data root is the directory beside that file — where a player puts
+    // assets/package/ next to the thing they downloaded, and where every later launch of
+    // the same file finds it again (the mount point is different every launch).
+    //
+    // Honoured only when the executable really is inside APPDIR. A terminal emulator
+    // that is itself an AppImage exports APPIMAGE to every shell it opens, and a dev
+    // binary run from one would otherwise resolve its root to wherever that terminal's
+    // AppImage sits — the misroute this file exists to prevent, arriving through the
+    // environment. The containment test is what makes the variable ours and not theirs.
+    if (const char* ai = std::getenv("APPIMAGE"); ai && *ai)
+    {
+        const char* ad = std::getenv("APPDIR");
+        const std::filesystem::path img(ai);
+        const bool inside = ad && *ad && exeDir.string().rfind(std::string(ad), 0) == 0;
+        if (inside && std::filesystem::is_regular_file(img, ec)
+            && std::filesystem::is_directory(img.parent_path(), ec))
+        {
+            g_rootSource = "appimage";
+            return img.parent_path();
+        }
+        if (inside)
+            std::fprintf(stderr,
+                         "[paths] APPIMAGE=%s is not a file beside a directory — ignoring "
+                         "it and falling back to the executable walk.\n",
+                         ai);
+    }
+
     std::filesystem::path at = exeDir;
     for (int i = 0; i <= kMaxWalk; ++i)
     {
