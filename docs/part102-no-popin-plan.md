@@ -233,3 +233,7 @@ Owed: the czamd session (copy `vs_recipes.bin` beside the exe — the runtime sa
 `no .../vs_recipes.bin — vertex shaders will translate at first sight instead` when it is
 missing, which is how the first dev run here fell back); the licensing decision in §2.1;
 recovering the seed's 3 orphan vertex shaders.
+
+**2026-09-08, operator-verified on the dev box:** *"Perfect, did not get any stutter"*, *"did not get any pop in of assets"* —
+session one 1,920 skipped draws in 4 minutes, session two 10; seed grown to 1,378 keys
+from their route. czamd remains owed.

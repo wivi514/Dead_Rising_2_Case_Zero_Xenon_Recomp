@@ -20647,3 +20647,14 @@ Licensing note for the operator's call, from the plan §2.1: the 978 patched dwo
 instruction words derived from the title's own bind; option (B) — ship captured
 declarations and reimplement the ~85-instruction patch routine — is the stricter line and
 this file's recipes are its exact oracle.
+
+**Operator verdict, 2026-09-08 — *"Perfect, did not get any stutter"* and *"also did not get any pop in of assets"*.** A visible
+session on the dev box, release shape (launcher, their settings and saves), with the
+shader cache, key file and driver cache emptied; then session two chained on the same
+stores. Session one: 4 first-sight translations (the boot four), 1,326 seed keys queued
+async, **1,920 draws skipped over a 4-minute play** (8 seed builds promoted by a draw),
+worst 10-s window 94.9 ms once. Session two: first-sight 0, 10 draws skipped, and the
+union line read `1364 per-user + shipped seed -> 1377` — their route found 12 pipelines
+the seed lacked, and the seed is now that union (1,378 keys; `vs_recipes.py` still
+reports 0 refused, 3 orphans). The one boot log line that was wrong — "saves COULD NOT
+BE CREATED" on a directory that exists — was a stale `error_code`, fixed in edbff16.
