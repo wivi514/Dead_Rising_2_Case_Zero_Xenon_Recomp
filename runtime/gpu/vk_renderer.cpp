@@ -683,6 +683,13 @@ std::filesystem::path GoldenDir()
 void GoldenLoad()
 {
     if (g_noGolden) return;
+    // TIMED (part 103 item 5). This runs on the boot path before the first frame and it is
+    // one open+read per file — 3,811-5,266 files on czamd, 29,416 on the dev box — and on
+    // NTFS with a real-time scanner an open is not free (the WRITE of these same files was
+    // 2 ms each, gotcha 516). A boot cost with no number beside it cannot be ranked, so the
+    // line below carries the wall time and the file count, on every platform.
+    const auto t0 = std::chrono::steady_clock::now();
+    size_t files = 0;
     std::error_code ec;
     for (auto& e : std::filesystem::directory_iterator(GoldenDir(), ec))
     {
@@ -695,10 +702,16 @@ void GoldenLoad()
                                   std::istreambuf_iterator<char>());
         if (!data.empty() && data.size() <= kGoldenTexCap)
             g_goldenTex[sig] = std::move(data);
+        ++files;
     }
-    if (!g_goldenTex.empty())
-        fprintf(stderr, "[vk] golden texture store: preloaded %zu signatures from %s\n",
-                g_goldenTex.size(), GoldenDir().string().c_str());
+    const double ms = std::chrono::duration<double, std::milli>(
+                          std::chrono::steady_clock::now() - t0).count();
+    if (!g_goldenTex.empty() || files)
+        fprintf(stderr,
+                "[vk] golden texture store: preloaded %zu signatures (%zu files) in %.1f ms "
+                "(%.0f us a file) from %s\n",
+                g_goldenTex.size(), files, ms, files ? ms * 1000.0 / double(files) : 0.0,
+                GoldenDir().string().c_str());
 }
 // THE WRITE IS OFF THE FRAME THREAD SINCE PART 102 — and it was the czamd session-one
 // stutter. GoldenPersist ran synchronously inside the texture DECODE scope, one
@@ -786,6 +799,9 @@ void GoldenPersist(uint64_t sig, const std::vector<uint8_t>& px)
     {
         goldenwriter::up = true;
         goldenwriter::thread = std::thread(goldenwriter::Worker);
+        ThreadBudget_Note("golden", 1,
+                          "golden texture writer; blocked except while persisting a file");
+        ThreadBudget_Report();
     }
     {
         std::lock_guard<std::mutex> lk(goldenwriter::mx);
@@ -7621,6 +7637,10 @@ void OnFirstBind(uint32_t type, uint64_t hash, const uint8_t* code, uint32_t siz
     {
         workerUp = true;
         std::thread(Worker).detach();
+        ThreadBudget_Note("translate", 1,
+                          "first-sight shader translation; blocked except while a shader "
+                          "outside the cache is being translated");
+        ThreadBudget_Report();
     }
     inFlight.fetch_add(1);
     {
@@ -11342,15 +11362,34 @@ bool ChainOn()
 
 void Worker()
 {
+    // PRIORITY FOLLOWS THE TIER (part 103 item 4a). A SPARE job is the speculative
+    // warm — nobody is waiting for it, and on a cold driver cache it is 155 ms of pure
+    // compiler time per key on czamd, 1,339 keys, four of these threads: for the first
+    // minute of a session one they were runnable alongside the pump, the guest's two
+    // busy threads and the guard workers on six physical cores, and the operator felt
+    // that as stutter. Below normal, the scheduler hands the core to the game whenever
+    // it wants one and the warm takes what is left. An URGENT job is a draw being skipped
+    // RIGHT NOW, so it runs at normal priority: yielding it would trade the stutter for
+    // longer pop-in. The switch is a syscall per job against a 0.2-155 ms build.
+    bool lowNow = false;
     for (;;)
     {
         Job job;
+        bool urgent = false;
         {
             std::unique_lock<std::mutex> lk(mx);
             cv.wait(lk, [] { return !queueUrgent.empty() || !queueSpare.empty(); });
-            std::deque<Job>& q = queueUrgent.empty() ? queueSpare : queueUrgent;
+            urgent = !queueUrgent.empty();
+            std::deque<Job>& q = urgent ? queueUrgent : queueSpare;
             job = std::move(q.front());
             q.pop_front();
+        }
+        if (lowNow == urgent)
+        {
+            lowNow = !urgent;
+            if (ThreadBudget_SetLowPriority(lowNow))
+                COUNT(lowNow ? "pipeline: worker dropped to LOW priority for a spare job"
+                             : "pipeline: worker raised to NORMAL priority for an urgent job");
         }
         Done d;
         d.key = job.key;
@@ -11400,6 +11439,10 @@ void Enqueue(const PipelineKey& key, const ShaderMeta& vs, const ShaderMeta& ps,
         fprintf(stderr, "[vk] async pipeline: %u worker thread(s) (%s; CZ_VK_PIPELINE_WORKERS=N "
                         "overrides)\n",
                 n, getenv("CZ_VK_PIPELINE_WORKERS") ? "env" : "physical cores - 2, 1..4");
+        ThreadBudget_Note("pipeline", n,
+                          "blocked except while creating a pipeline; BELOW_NORMAL priority "
+                          "for the speculative warm, normal for a draw's own key");
+        ThreadBudget_Report();
     }
     {
         std::lock_guard<std::mutex> lk(mx);

@@ -46,6 +46,7 @@
 // `CZ_NO_XMA_DECODE=1` and `CZ_NO_AUDIO_OUT=1` restore the two old behaviours
 // independently on the same binary, which is what makes either one measurable.
 #include "audio.h"
+#include "../cpu/thread_budget.h"
 
 #include <atomic>
 #include <chrono>
@@ -1172,6 +1173,8 @@ uint32_t XAudioRegisterRenderDriverClient_x(be<uint32_t>* callbackPair,
     bool expected = false;
     if (g_pumpRunning.compare_exchange_strong(expected, true))
         std::thread(RenderDriverPump).detach();
+        ThreadBudget_Note("audio", 1, "the XAudio render-driver pump, 187.5 callbacks/s");
+        ThreadBudget_Report();
     return STATUS_SUCCESS;
 }
 
@@ -1475,6 +1478,9 @@ void Audio_Init()
 
     g_xmaDecodeRunning.store(true);
     std::thread(XmaDecodeThread).detach();
+    ThreadBudget_Note("xma", 1, "the XMA decode thread; blocked except while a context "
+                                "has work");
+    ThreadBudget_Report();
     fprintf(stderr, "[audio] XMA decoder running (poll 1 ms over %u contexts); "
                     "CZ_NO_XMA_DECODE=1 is the control arm\n",
             kXmaContextCount);

@@ -4,6 +4,7 @@
 #include <windows.h>
 #endif
 
+#include <cerrno>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -15,6 +16,9 @@
 
 #if defined(__linux__)
 #include <sched.h>
+#include <sys/resource.h>
+#include <sys/syscall.h>
+#include <unistd.h>
 #endif
 
 namespace
@@ -145,6 +149,7 @@ struct Grant
     unsigned granted = 0;
     unsigned desired = 0;
     const char* how = "budget";   // "budget", "env", or "starved"
+    bool noted = false;           // outside the budget (ThreadBudget_Note)
 };
 
 struct BudgetState
@@ -256,6 +261,54 @@ unsigned ThreadBudget_Take(const char* pool, unsigned desired, const char* overr
     return g.granted;
 }
 
+void ThreadBudget_Note(const char* pool, unsigned threads, const char* how)
+{
+    BudgetState& s = State();
+    const char* name = pool ? pool : "?";
+    for (Grant& g : s.grants)
+        if (g.pool == name)
+        {
+            if (g.granted != threads)
+            {
+                g.granted = threads;
+                s.dirty = true;
+            }
+            return;
+        }
+    Grant g;
+    g.pool = name;
+    g.desired = threads;
+    g.granted = threads;
+    g.how = how ? how : "outside the budget";
+    g.noted = true;
+    s.grants.push_back(g);
+    s.dirty = true;
+}
+
+bool ThreadBudget_SetLowPriority(bool low)
+{
+    static const bool off = Env("CZ_NO_LOW_PRIORITY") != nullptr;
+    if (off)
+        return false;
+#if defined(_WIN32)
+    return SetThreadPriority(GetCurrentThread(), low ? THREAD_PRIORITY_BELOW_NORMAL
+                                                     : THREAD_PRIORITY_NORMAL) != 0;
+#elif defined(__linux__)
+    // setpriority on a THREAD id adjusts that thread alone on Linux (nice is per-task
+    // there, whatever POSIX says). The process's own nice is the baseline for "normal".
+    static const int base = [] {
+        errno = 0;
+        const int n = getpriority(PRIO_PROCESS, 0);
+        return errno ? 0 : n;
+    }();
+    const pid_t tid = pid_t(syscall(SYS_gettid));
+    return setpriority(PRIO_PROCESS, id_t(tid), low ? base + 10 : base) == 0;
+#else
+    (void)low;
+    return false;
+#endif
+}
+
 void ThreadBudget_Report()
 {
     BudgetState& s = State();
@@ -268,10 +321,27 @@ void ThreadBudget_Report()
             s.physical, s.logical, s.topologyOk ? "" : " (topology unreadable, halved)",
             s.total, s.total == 1 ? "" : "s",
             s.overridden ? " [CZ_WORKERS override]" : "");
+    unsigned outside = 0;
     for (const Grant& g : s.grants)
-        fprintf(stderr, "[threads]   %-10s %u of %u wanted (%s)\n", g.pool.c_str(),
-                g.granted, g.desired, g.how);
+        if (!g.noted)
+            fprintf(stderr, "[threads]   %-12s %u of %u wanted (%s)\n", g.pool.c_str(),
+                    g.granted, g.desired, g.how);
     if (!s.grants.empty())
         fprintf(stderr, "[threads]   %u worker slot%s unclaimed\n", s.left,
                 s.left == 1 ? "" : "s");
+    // The threads the budget does NOT count, so the block names everything that can be
+    // runnable at once. A thread here is blocked except during a burst; the `how` says
+    // which burst and at what priority.
+    for (const Grant& g : s.grants)
+        if (g.noted)
+        {
+            outside += g.granted;
+            fprintf(stderr, "[threads]   %-12s %u outside the budget (%s)\n",
+                    g.pool.c_str(), g.granted, g.how);
+        }
+    if (outside)
+        fprintf(stderr,
+                "[threads]   total runnable at a burst: %u budget + %u outside + pump + "
+                "the guest's busy threads, on %u physical cores\n",
+                s.total, outside, s.physical);
 }

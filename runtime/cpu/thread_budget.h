@@ -90,3 +90,23 @@ unsigned ThreadBudget_Take(const char* pool, unsigned desired, const char* overr
 // prints only when something has changed since the last call, so the line that matters —
 // the final allocation — is the last one in the log.
 void ThreadBudget_Report();
+
+// THREADS OUTSIDE THE BUDGET, listed so the report names EVERY pool this process runs
+// (part 103 item 6). The budget counts busy workers; the runtime also runs threads that
+// sit blocked except during a burst — the async pipeline workers (busy for ~60 s on a cold
+// driver cache), the first-sight shader translator, the golden texture writer, the audio
+// pump and the XMA decoder. None of them takes from the budget, and until part 103 none of
+// them appeared in the `[threads]` block, so a log could not say how many threads a
+// six-core box was actually running during the boot warm (§6es: four compilers + pump +
+// guest + three guards = oversubscribed, and nothing printed it). Idempotent per name.
+void ThreadBudget_Note(const char* pool, unsigned threads, const char* how);
+
+// Move the CALLING thread's scheduling priority below the game's threads, or back to
+// normal (part 103 item 4a). For work that should yield the core to the pump and the
+// guest whenever they are runnable — the speculative pipeline warm on a cold driver cache
+// is the case: 155 ms a create on czamd, 1,339 keys, four workers, and the operator felt
+// it as "stuttered from moment to moment" for the first minute of session one. Windows:
+// THREAD_PRIORITY_BELOW_NORMAL; Linux: nice 10 on this thread only (Linux nice is
+// per-thread). `CZ_NO_LOW_PRIORITY=1` is the same-binary control arm — every call is then
+// a counted no-op. Returns whether the priority actually changed.
+bool ThreadBudget_SetLowPriority(bool low);
