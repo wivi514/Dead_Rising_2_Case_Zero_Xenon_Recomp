@@ -4,6 +4,7 @@
 #include "pump_stats.h"
 #include "shader_translator.h"
 #include "drawid_ps_spv.h"
+#include "null_ps_spv.h"
 #include "rt_factor_spv.h"
 #include "rt_shadow_spv.h"
 #include "xenos.h"
@@ -5257,6 +5258,12 @@ struct Renderer
     // The draw-ID pass: the substitute fragment module, and the frame it is armed for
     // (0 = disarmed, which is every frame unless CZ_VK_DRAW_ID is set and F9 pressed).
     VkShaderModule drawIdModule = VK_NULL_HANDLE;
+    // CZ_VK_NULL_PS=1 (part 106): the do-nothing fragment module bound in place of
+    // EVERY translated pixel shader — the "everything but pixel shading" arm of the
+    // GPU decomposition. See tools/null_ps.hlsl.
+    VkShaderModule nullPsModule = VK_NULL_HANDLE;
+    // pipelineStatisticsQuery was present and enabled (CZ_VK_GPU_STATS needs it).
+    bool pipeStats = false;
     // ARMED AS A FLAG, NOT AS A FRAME NUMBER, and that is the whole lesson of building
     // this: `R->frame` is incremented by the SWAP, so the draws of a frame are recorded
     // while the counter still holds the previous frame's value. Arming "frame + 1" from
@@ -5544,6 +5551,11 @@ enum GpCls : uint16_t
     kGpPass1,         // exactly one draw
     kGpPassSmall,     // 2..255
     kGpPassBig,       // >= 256 — the crowd
+    // THE SHADOW CASCADE (part 106): any render scope whose draws bound the 1040-pitch
+    // shadow surface (IsShadowSurface), whatever its draw count. Split out because a
+    // GTX-1060 budget has to know whether the cascade is a tenth of the frame or half of
+    // it, and by draw count alone it hides inside ">=256" next to the scene.
+    kGpPassShadow,
     kGpResolveCopy,   // vkCmdCopyImage: EDRAM -> the resolve snapshot
     kGpResolveClear,  // the title's own clear bits, honoured as vkCmdClear*Image
     kGpPresent,       // the swapchain blit, the letterbox clear and the F4 overlay
@@ -5565,6 +5577,7 @@ enum GpCls : uint16_t
 // measured it and it is free", which is a different claim from "it was not running".
 const char* const kGpNames[kGpClasses] = {
     "pass: 0 draws",   "pass: 1 draw",   "pass: 2-255 draws", "pass: >=256 draws",
+    "pass: shadow cascade",
     "resolve copy",    "resolve clear",  "present blit",      "present readback",
     "cube face refresh", "snapshot views", "pass-begin barriers", "resolve barriers",
 };
@@ -5584,7 +5597,8 @@ constexpr uint32_t kGpQueriesPerSlot = 2048;
 // shader or pass overhead on a 96x45 bloom target. A millisecond total cannot tell those
 // apart; an extent census can, and it is the same shape as `base untile: ns/unit` (§6ds §10)
 // — a total divided by the work it covers is what stops an argument.
-struct GpSeg { uint32_t q0, q1; uint16_t cls; uint64_t ext; };
+// `sq` is the pass's PIPELINE-STATISTICS query (CZ_VK_GPU_STATS, part 106), or ~0u.
+struct GpSeg { uint32_t q0, q1; uint16_t cls; uint64_t ext; uint32_t sq; };
 VkQueryPool g_gpPool = VK_NULL_HANDLE;
 std::vector<GpSeg> g_gpSegs[kMaxFramesInFlight];
 uint32_t g_gpNext[kMaxFramesInFlight] = {};
@@ -5609,7 +5623,7 @@ uint64_t g_gpClearFullPixels = 0, g_gpClearScopedPixels = 0, g_gpClearN = 0;
 // map lookup per pass in an instrumented one. Held as (count, ns) so the table can be read
 // as "N passes of this size, X us each" rather than as a share.
 struct GpExtentStat { uint64_t n = 0, ns = 0, draws = 0; };
-std::map<uint64_t, GpExtentStat> g_gpExtents[4];   // indexed by kGpPassEmpty..kGpPassBig
+std::map<uint64_t, GpExtentStat> g_gpExtents[5];   // indexed by kGpPassEmpty..kGpPassShadow
 // The render scope currently open, if any. One at a time by construction: BeginRendering
 // early-returns when a scope is already open and EndRendering when none is.
 int g_gpPassSeg = -1;
@@ -5628,6 +5642,44 @@ uint32_t g_gpPassDraws = 0;
 // this path).
 uint64_t g_gpPassExt = 0;
 uint64_t g_gpPassExtPx = 0;
+// Did any draw of the open scope bind the shadow surface? Set on the per-draw path under
+// the same `g_gpPassSeg >= 0` guard as the extent, folded into the class at close.
+bool g_gpPassShadow = false;
+
+// THE PIPELINE-STATISTICS CENSUS (CZ_VK_GPU_STATS=1, part 106). A GPU millisecond says
+// how long a pass took; it cannot say whether the pass was vertex work, pixel work, or
+// neither. The device can: a VK_QUERY_TYPE_PIPELINE_STATISTICS query around a render
+// scope counts the primitives assembled, the vertex-shader invocations, the primitives
+// that survived clipping and the FRAGMENT-SHADER INVOCATIONS — and fragment invocations
+// divided by the internal resolution's pixel count is the overdraw factor, the one
+// number that separates "the shaders are expensive" from "we shade the screen nine
+// times". Accumulated per pass class next to the timing, printed with it.
+//
+// One query per pass, begun and ended inside the pump's own command buffer, which is why
+// the arm forces the SERIAL recorder: a query cannot span command buffers, and under
+// parallel record a pass's draws live in worker chunks the pump never sees. The GPU
+// work is identical in both recorders (same draws, same order — the order gate proves
+// it), so the census is honest about the frame even though its wall time is the
+// part-88 recorder's.
+constexpr uint32_t kStQueriesPerSlot = 256;
+constexpr uint32_t kStCounters = 6;
+const char* const kStNames[kStCounters] = {
+    "IA vertices", "IA primitives", "VS invocations", "clip invocations",
+    "clip primitives", "FS invocations",
+};
+VkQueryPool g_stPool = VK_NULL_HANDLE;
+uint32_t g_stNext[kMaxFramesInFlight] = {};
+uint64_t g_stSum[kGpClasses][kStCounters] = {};
+uint64_t g_stN[kGpClasses] = {};
+uint64_t g_stOverflow = 0, g_stBadRead = 0;
+
+bool GpuStatsOn()
+{
+    static const bool on = EnvOn("CZ_VK_GPU_STATS");
+    return on;
+}
+// CZ_VK_SCISSOR_1PX (part 106), read once at renderer init; see DoDraw for the arm.
+bool g_scissor1px = false;
 
 bool GpuPassesOn()
 {
@@ -5649,7 +5701,7 @@ int GpuSegBegin()
     }
     const uint32_t q = slot * kGpQueriesPerSlot + g_gpNext[slot]++;
     vkCmdWriteTimestamp(R->cmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, g_gpPool, q);
-    g_gpSegs[slot].push_back(GpSeg{ q, ~0u, uint16_t(kGpClasses), 0 });
+    g_gpSegs[slot].push_back(GpSeg{ q, ~0u, uint16_t(kGpClasses), 0, ~0u });
     return int(g_gpSegs[slot].size()) - 1;
 }
 
@@ -6783,6 +6835,8 @@ static const FeatureReq kFeatureReqs[] = {
             "distance filtering stays trilinear without it (part 41)"),
     CZ_FEAT(Core, VkPhysicalDeviceFeatures, occlusionQueryPrecise, false,
             "CZ_VK_RT_COVERAGE cannot report sample counts without it"),
+    CZ_FEAT(Core, VkPhysicalDeviceFeatures, pipelineStatisticsQuery, false,
+            "CZ_VK_GPU_STATS (the per-pass vertex/fragment invocation census) needs it"),
     CZ_FEAT(Core, VkPhysicalDeviceFeatures, shaderClipDistance, false,
             "an XE_USER_CLIP_PLANES shader cache cannot run without it"),
     CZ_FEAT(Core, VkPhysicalDeviceFeatures, fillModeNonSolid, false,
@@ -7178,6 +7232,7 @@ bool CreateDevice()
         // table only says present/absent.
         if (f2.features.samplerAnisotropy)
             R->anisoLimit = props.limits.maxSamplerAnisotropy;
+        R->pipeStats = f2.features.pipelineStatisticsQuery == VK_TRUE;
     }
 
     // RT STAGE 2 (part 64): act on stage 0's probe. See the rtEnabled comment in the
@@ -11633,7 +11688,8 @@ static PipelineBuildResult BuildPipelineObject(const PipelineKey& key, const Sha
     // same vertex input, same depth test and write, same cull — so the ID image has the
     // SAME VISIBILITY as the picture it is explaining. Change any of that and the map
     // stops describing the frame it is supposed to describe.
-    stages[1].module = (key.passFlags & kPassDrawId) ? R->drawIdModule
+    stages[1].module = R->nullPsModule ? R->nullPsModule
+                       : (key.passFlags & kPassDrawId) ? R->drawIdModule
                        : (key.passFlags & kPassRtShadow) && ps.moduleRt ? ps.moduleRt
                                                                        : ps.module;
     stages[1].pName = "main";
@@ -12922,6 +12978,61 @@ void BeginFrame()
             g_gpFrameOf[R->frameSlot] = R->frame;
             g_gpPassSeg = -1;
         }
+        // THE PIPELINE-STATISTICS POOL (CZ_VK_GPU_STATS, part 106): rides on the
+        // per-region split (a stats query is attached to a timing segment), so it needs
+        // CZ_VK_GPU_PASSES too and says so rather than silently counting nothing.
+        if (GpuStatsOn() && !g_stPool && g_gpPool)
+        {
+            static bool said = false;
+            if (!R->pipeStats)
+            {
+                if (!said)
+                    fprintf(stderr, "[vk] CZ_VK_GPU_STATS: this device has no "
+                                    "pipelineStatisticsQuery — the invocation census "
+                                    "is unavailable\n");
+                said = true;
+            }
+            else if (R->parRec)
+            {
+                if (!said)
+                    fprintf(stderr, "[vk] CZ_VK_GPU_STATS: parallel record is ON and a "
+                                    "query cannot span its worker chunks — the census "
+                                    "is OFF (this should have forced the serial arm; "
+                                    "report it)\n");
+                said = true;
+            }
+            else
+            {
+                VkQueryPoolCreateInfo qi{ VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO };
+                qi.queryType = VK_QUERY_TYPE_PIPELINE_STATISTICS;
+                qi.queryCount = kMaxFramesInFlight * kStQueriesPerSlot;
+                qi.pipelineStatistics =
+                    VK_QUERY_PIPELINE_STATISTIC_INPUT_ASSEMBLY_VERTICES_BIT |
+                    VK_QUERY_PIPELINE_STATISTIC_INPUT_ASSEMBLY_PRIMITIVES_BIT |
+                    VK_QUERY_PIPELINE_STATISTIC_VERTEX_SHADER_INVOCATIONS_BIT |
+                    VK_QUERY_PIPELINE_STATISTIC_CLIPPING_INVOCATIONS_BIT |
+                    VK_QUERY_PIPELINE_STATISTIC_CLIPPING_PRIMITIVES_BIT |
+                    VK_QUERY_PIPELINE_STATISTIC_FRAGMENT_SHADER_INVOCATIONS_BIT;
+                if (vkCreateQueryPool(R->device, &qi, nullptr, &g_stPool) != VK_SUCCESS)
+                {
+                    g_stPool = VK_NULL_HANDLE;
+                    fprintf(stderr, "[vk] CZ_VK_GPU_STATS: query pool creation FAILED — "
+                                    "the invocation census is unavailable\n");
+                }
+                else
+                    fprintf(stderr, "[vk] CZ_VK_GPU_STATS: per-pass pipeline statistics "
+                                    "ARMED (%u queries x %u slots; %ux%u internal "
+                                    "pixels is the overdraw denominator)\n",
+                            kStQueriesPerSlot, kMaxFramesInFlight, g_internalW.load(),
+                            g_internalH.load());
+            }
+        }
+        if (g_stPool)
+        {
+            vkCmdResetQueryPool(R->cmd, g_stPool, R->frameSlot * kStQueriesPerSlot,
+                                kStQueriesPerSlot);
+            g_stNext[R->frameSlot] = 0;
+        }
     }
     // The arena is GROWN at the end of a frame, in `GrowArenaIfNeeded` — not here. What
     // remains here is the reset, which is the cheap half and has to be per frame. With
@@ -13083,6 +13194,23 @@ void BeginRendering()
     g_gpPassDraws = 0;
     g_gpPassExt = 0;
     g_gpPassExtPx = 0;
+    g_gpPassShadow = false;
+    // The pass's pipeline-statistics query, inside the rendering instance the segment
+    // is inside (a query begun inside an instance must end inside the same one — it
+    // does, in EndRendering, before the segment closes). Serial recorder only, by the
+    // pool's own creation rule.
+    if (g_gpPassSeg >= 0 && g_stPool && !R->parRec)
+    {
+        const uint32_t slot = R->frameSlot;
+        if (g_stNext[slot] < kStQueriesPerSlot)
+        {
+            const uint32_t q = slot * kStQueriesPerSlot + g_stNext[slot]++;
+            vkCmdBeginQuery(R->cmd, g_stPool, q, 0);
+            g_gpSegs[slot][g_gpPassSeg].sq = q;
+        }
+        else
+            ++g_stOverflow;
+    }
 }
 
 void EndRendering()
@@ -13107,7 +13235,13 @@ void EndRendering()
     if (g_gpPassSeg >= 0)
     {
         const uint32_t d = g_gpPassDraws;
-        GpuSegEnd(g_gpPassSeg, d == 0   ? kGpPassEmpty
+        {
+            const uint32_t sq = g_gpSegs[R->frameSlot][g_gpPassSeg].sq;
+            if (sq != ~0u && g_stPool)
+                vkCmdEndQuery(R->cmd, g_stPool, sq);
+        }
+        GpuSegEnd(g_gpPassSeg, g_gpPassShadow ? kGpPassShadow
+                               : d == 0   ? kGpPassEmpty
                                : d == 1 ? kGpPass1
                                : d < 256 ? kGpPassSmall
                                          : kGpPassBig,
@@ -14203,9 +14337,23 @@ int RetireOldestFrame()
                         g_gpNs[sg.cls] += ns;
                         ++g_gpN[sg.cls];
                         attrib += ns;
+                        if (sg.sq != ~0u && g_stPool)
+                        {
+                            uint64_t st[kStCounters] = {};
+                            if (vkGetQueryPoolResults(R->device, g_stPool, sg.sq, 1,
+                                                      sizeof st, st, sizeof st,
+                                                      VK_QUERY_RESULT_64_BIT) == VK_SUCCESS)
+                            {
+                                for (uint32_t k = 0; k < kStCounters; ++k)
+                                    g_stSum[sg.cls][k] += st[k];
+                                ++g_stN[sg.cls];
+                            }
+                            else
+                                ++g_stBadRead;
+                        }
                         // The extent census (part 79 item 2). Render scopes only, and only
                         // where an extent was recorded — a pass with no draws never set one.
-                        if (sg.cls <= kGpPassBig && sg.ext)
+                        if (sg.cls <= kGpPassShadow && sg.ext)
                         {
                             GpExtentStat& e = g_gpExtents[sg.cls][sg.ext];
                             ++e.n;
@@ -23852,6 +24000,14 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
         scissor.extent = { PassX(std::min(winX1, R->edramWidth) - winX, passW),
                            PassY(std::min(winY1, R->edramHeight) - winY, passH) };
     }
+    // CZ_VK_SCISSOR_1PX=1 (part 106): every draw's scissor collapsed to one pixel at
+    // its own origin. Vertex shading, primitive assembly, clipping and the per-draw
+    // fixed cost all stay; only the fragments go. The complement of CZ_VK_NULL_PS, and
+    // with it the two arms bracket what the title's passes are made of. Never a mode.
+    // A plain global set once at init, not a function-local static: a static-init guard
+    // load on the per-draw path is the shape gotcha 453 is about.
+    if (g_scissor1px)
+        scissor.extent = { 1, 1 };
 
     // CZ_VK_VIEWPORT_TRACE=1 — every DISTINCT viewport setup, once each. A per-draw
     // trace of 1.1 M draws is unreadable and a per-frame one hides the outlier that
@@ -25276,16 +25432,23 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
     // The pass's EXTENT, for part 79 item 2's census. Guarded on `g_gpPassSeg`, which is
     // -1 unless CZ_VK_GPU_PASSES is on AND a segment is open — a plain global compare, not
     // a static-init guard, so an ordinary run pays one predictable branch here.
+    // The draw's OWN scissor, not `R->bound.scissor`: under parallel record (part 89)
+    // the capture path never writes `R->bound`, so this read 0x0 on every draw and the
+    // extent census printed NOTHING for every run since — a blind instrument that
+    // looked like an empty table (gotcha 3). Found in part 106 when the 1080p census
+    // was needed; the serial recorder binds the same rectangle, so both arms agree.
     if (g_gpPassSeg >= 0)
     {
-        const uint64_t px = uint64_t(R->bound.scissor.extent.width) *
-                            uint64_t(R->bound.scissor.extent.height);
+        const uint64_t px = uint64_t(scissor.extent.width) *
+                            uint64_t(scissor.extent.height);
         if (px > g_gpPassExtPx)
         {
             g_gpPassExtPx = px;
-            g_gpPassExt = (uint64_t(R->bound.scissor.extent.width) << 32) |
-                          R->bound.scissor.extent.height;
+            g_gpPassExt = (uint64_t(scissor.extent.width) << 32) |
+                          scissor.extent.height;
         }
+        if (IsShadowSurface(regs))
+            g_gpPassShadow = true;
     }
     R->verticesThisPass += draw.indexCount;
 }
@@ -26833,6 +26996,25 @@ bool InitCommon()
             fprintf(stderr, "[vk] the draw-ID shader module failed to create — "
                             "CZ_VK_DRAW_ID will not work this run\n");
         }
+        // CZ_VK_NULL_PS=1 (part 106): every translated pixel shader replaced by the
+        // do-nothing fragment stage — the "everything but pixel shading" arm of the GPU
+        // decomposition (tools/null_ps.hlsl). Created only when asked, and the line
+        // below is the engagement evidence; the picture is garbage by design.
+        if (EnvOn("CZ_VK_NULL_PS"))
+        {
+            smi.codeSize = sizeof kNullPixelShaderSpv;
+            smi.pCode = kNullPixelShaderSpv;
+            if (vkCreateShaderModule(R->device, &smi, nullptr, &R->nullPsModule) != VK_SUCCESS)
+            {
+                R->nullPsModule = VK_NULL_HANDLE;
+                fprintf(stderr, "[vk] CZ_VK_NULL_PS: the null fragment module failed to "
+                                "create — the arm is NOT engaged\n");
+            }
+            else
+                fprintf(stderr, "[vk] CZ_VK_NULL_PS=1 — EVERY pixel shader is the "
+                                "do-nothing fragment stage this run (a GPU measurement "
+                                "arm; the picture is garbage by design)\n");
+        }
     }
 
     // The dummies. Slot 0 of every heap is a defined 1x1 white texel, so a shader that
@@ -27013,6 +27195,11 @@ bool InitCommon()
             fprintf(stderr, "[vk] parallel record OFF: no worker pool "
                             "(CZ_WORKERS=0 or CZ_VK_NO_PARALLEL_GUARD) — the serial "
                             "path is the control arm, not a degraded mode\n");
+        else if (GpuStatsOn())
+            fprintf(stderr, "[vk] parallel record OFF: CZ_VK_GPU_STATS is set and a "
+                            "pipeline-statistics query cannot span the worker chunks "
+                            "— the census runs on the serial recorder (same draws, "
+                            "same order; the wall time is the part-88 recorder's)\n");
         else
         {
             R->parRec = true;
@@ -27032,6 +27219,10 @@ bool InitCommon()
         fprintf(stderr, "[vk] CZ_VK_NO_PAR_RECORD=1 — parallel record OFF (the "
                         "part-88 serial recorder, same binary)\n");
     g_bindRunCensus = EnvOn("CZ_VK_BIND_RUN_CENSUS");
+    g_scissor1px = EnvOn("CZ_VK_SCISSOR_1PX");
+    if (g_scissor1px)
+        fprintf(stderr, "[vk] CZ_VK_SCISSOR_1PX=1 — every draw's scissor is 1x1 this run "
+                        "(a GPU measurement arm; the picture is garbage by design)\n");
     g_guardCensus = EnvOn("CZ_VK_GUARD_CENSUS");
     g_noBindBatch = EnvOn("CZ_VK_NO_BIND_BATCH");
     g_verifyBindBatch = EnvOn("CZ_VK_VERIFY_BIND_BATCH");
@@ -30426,6 +30617,53 @@ void VkRenderer_DumpStats()
                     double(g_gpN[c]) / f,
                     g_gpN[c] ? double(g_gpNs[c]) / double(g_gpN[c]) : 0.0);
         }
+        // THE INVOCATION CENSUS (CZ_VK_GPU_STATS). Per pass class: primitives in, vertex
+        // invocations, fragment invocations — and fragment invocations per INTERNAL
+        // PIXEL, which is the overdraw factor and the first number a GPU budget needs.
+        {
+            bool any = false;
+            for (int c = 0; c < kGpClasses; ++c)
+                any = any || g_stN[c];
+            if (any)
+            {
+                // The VISIBLE internal resolution, not the EDRAM stand-in (which carries the
+                // 1024-row guest surface below the 720 the title presents from): overdraw
+                // is "how many times the screen was shaded", and the screen is 1920x1080.
+                const double px = double(g_internalW.load()) * double(g_internalH.load());
+                uint64_t tot[kStCounters] = {};
+                fprintf(stderr,
+                        "[vk]   INVOCATION CENSUS (CZ_VK_GPU_STATS) — per frame, over %llu "
+                        "frames; overdraw = FS invocations / %ux%u internal pixels "
+                        "(overflow %llu, bad reads %llu)\n",
+                        (unsigned long long)g_gpFrames, g_internalW.load(),
+                        g_internalH.load(),
+                        (unsigned long long)g_stOverflow, (unsigned long long)g_stBadRead);
+                for (int c = 0; c < kGpClasses; ++c)
+                {
+                    if (!g_stN[c])
+                        continue;
+                    for (uint32_t k = 0; k < kStCounters; ++k)
+                        tot[k] += g_stSum[c][k];
+                    fprintf(stderr,
+                            "[vk]     %-20s %7.2f passes  IA prims %9.0f  VS inv %10.0f  "
+                            "clip prims %9.0f  FS inv %11.0f  = %.2f x pixels  "
+                            "(%.1f VS inv/prim)\n",
+                            kGpNames[c], double(g_stN[c]) / f, double(g_stSum[c][1]) / f,
+                            double(g_stSum[c][2]) / f, double(g_stSum[c][4]) / f,
+                            double(g_stSum[c][5]) / f, double(g_stSum[c][5]) / f / px,
+                            g_stSum[c][1] ? double(g_stSum[c][2]) / double(g_stSum[c][1])
+                                          : 0.0);
+                }
+                fprintf(stderr,
+                        "[vk]     %-20s          IA prims %9.0f  VS inv %10.0f  "
+                        "clip prims %9.0f  FS inv %11.0f  = %.2f x pixels\n",
+                        "ALL PASSES", double(tot[1]) / f, double(tot[2]) / f,
+                        double(tot[4]) / f, double(tot[5]) / f, double(tot[5]) / f / px);
+                for (uint32_t k = 0; k < kStCounters; ++k)
+                    fprintf(stderr, "[vk]       %-18s %14.0f /frame\n", kStNames[k],
+                            double(tot[k]) / f);
+            }
+        }
         fprintf(stderr,
                 "[vk]     resolve copies moved %.2f Mpixel/frame (%.1f full %ux%u "
                 "screens' worth)\n",
@@ -30454,7 +30692,7 @@ void VkRenderer_DumpStats()
         // overhead on a 96x45 bloom target. Truncated at 16 rows per class with the tail
         // SUMMED rather than dropped, because a silently truncated census reads as a
         // complete one (gotcha 3).
-        for (int c = kGpPassEmpty; c <= kGpPassBig; ++c)
+        for (int c = kGpPassEmpty; c <= kGpPassShadow; ++c)
         {
             if (g_gpExtents[c].empty())
                 continue;
