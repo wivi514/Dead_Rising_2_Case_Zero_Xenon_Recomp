@@ -21178,3 +21178,63 @@ cannot carry Capcom art).
 evidence (518), read a Windows test box with `CZ_VK_STATS` windows (519), name the present
 mode beside a cross-machine GPU number (517), the `[threads]` block first on a small-machine
 report, and the old-base/AppImage rule with its `$APPIMAGE` containment guard.
+
+## §6ev — Part 105: the Steam Deck plan executed on the dev box — a log file on every platform, `--diag`, the requirements table, gamescope measured (2026-09-08)
+
+**The operator's instruction:** *"Do the steam deck plan."* `docs/steam-deck-plan.md`
+§6 is the item-by-item record; this section holds what the renderer and host code
+gained, because the next reader of `vk_renderer.cpp` or `window.cpp` starts here.
+
+### 1. The log file (`host/log_file.{h,cpp}`)
+
+fd 2 → pipe → one thread → {original stderr, `cz_runtime.log`}. Beside the data root
+(`HostPaths::Root()`), rotated once, `CZ_LOG_FILE`/`CZ_NO_LOG_FILE` the knobs. Every
+process-ending path drains it first: `Shutdown` (window.cpp), `TitleRequestedExit`
+(imports.cpp), main's SIGTERM/SIGINT handler, and the crash reporter's four `_exit(139)`
+sites (now `Bye()`). Verified: 15,147-line renderer boot + SIGTERM byte-identical file vs
+console; SIGSEGV at 20 s, both copies end with `=== end guest fault ===`; off switch
+writes nothing. The one defect found was the tee's own teardown order (gotcha 527).
+The gate's `:ro` mount of the stage exercises the read-only-root fallback (temp dir,
+announced). All three packaging scripts strip `cz_runtime.log*`/`cz_diag.txt*` from the
+stage before archiving.
+
+### 2. `--diag` (main.cpp `RunDiag`, window.cpp `Host_DiagVideo`, vk_renderer.cpp `VkRenderer_Diag`)
+
+One line per fact; through the tee into `cz_diag.txt`; exit 0 iff the pick can run the
+renderer. Under Windows it names Wine's version through ntdll's `wine_get_version`,
+which is what makes a Proton report readable. The dev box's block (NVIDIA 610.43.03,
+every feature present, D24S8 sampleable, MSAA 2x available) is the reference shape.
+
+### 3. The requirements table (`kFeatureReqs`, `QueryDeviceCaps`, `EvaluateRequirements`)
+
+Twelve REQUIRED, five optional; bring-up and `--diag` read the same rows. A missing
+REQUIRED feature ends bring-up with the feature and the driver named; a device below
+Vulkan 1.3 is refused by name. `fillModeNonSolid` and `depthClamp` demoted to optional
+(no consumer); `shaderInt64` kept REQUIRED by census — Int64 in 450 of 450 translated
+shaders, after a scanner with the wrong enum constant read 0 (gotcha 528). The MSAA
+sample-count walk tries the request then the other count; its refusal is true now.
+`[vk] driver: <name> — <info>` prints at every bring-up.
+
+### 4. gamescope (window.cpp `UnderGamescope`, `PreferWaylandWhenOffered`)
+
+Measured, not reasoned: under `gamescope -W 1280 -H 800` on this box the window comes
+up on x11, the swapchain is 1280x800 MAILBOX, and 6,645 frames present in ~40 s. gamescope
+strips `WAYLAND_DISPLAY` and `SDL_VIDEODRIVER` from the child (gotcha 526), so the
+part-104 hint was inert there already; the guard changes nothing and prints the reason.
+Plan §2's H5 is closed on this box; the Deck's own gamescope is the same program.
+
+### 5. Numbers
+
+| what | number | condition |
+|---|---|---|
+| disc shader build, 4c/8t affinity | 12.52 s wall, 98.6 s user | Ryzen 7 5700 clocks, `taskset -c 0-3,8-11` |
+| same, unconstrained control | 7.03 s wall, 108.6 s user | same minute |
+| gamescope title screen | 6,645 frames / ~40 s | 1280x800, NVIDIA, x11 path |
+| gamescope + `SDL_VIDEODRIVER=wayland` outside | 5,463 frames / ~30 s, still x11 | the variable never reached the game |
+| Int64 capability | 450 of 450 `.spv` | `assets/shader_spv` |
+
+### 6. Owed
+
+The Windows compile (czwin unreachable all session); the artifact rebuild (v1.0.2's
+`dist/` predates every line of this — a Deck tester needs a build WITH the log); the
+operator's live-USB RADV run; the first Deck report. `part106-kickoff.md` §1.

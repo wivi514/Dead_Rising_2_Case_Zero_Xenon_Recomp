@@ -92,8 +92,14 @@ steps run again — your saves are unaffected, they live in the saved-games loca
 above. Deleting THAT folder removes your saves and settings; the game never does this
 itself.
 
-**A log of everything** is printed to the terminal; when reporting a problem, run from
-a terminal and include the output.
+**A log of everything** is written to `cz_runtime.log` next to the game folder's
+`assets/` (for the AppImage: next to the `.AppImage` file), and the previous run's log
+is kept as `cz_runtime.log.1`. When reporting a problem, attach that file. To describe
+your machine — OS, GPU, driver, which Vulkan features it has, which display driver the
+window uses — run `cz_runtime --diag` (Windows: `cz_runtime.exe --diag` from a command
+prompt): it prints one line per fact, writes the same to `cz_diag.txt`, and exits.
+Paste both into the issue. Say what you SAW — "closed after the progress bar", "black
+window", "slow" — rather than "didn't work"; the log usually says the rest.
 
 ## What is in this bundle
 

@@ -3803,3 +3803,47 @@ boot calls an import 500k+/s and the first-call stack, taken at healthy boot, sa
 nothing about who is looping now). The streaming-chain `CZ_ARG_PROBE` blocks
 (`sub_82760CF0`, `sub_82771D70`, `sub_827144C0`, and the stop-message completion
 chain) live in `runtime/cpu/guest_probe.cpp`.
+
+
+## The log file and `--diag` (part 105, `docs/steam-deck-plan.md` §3 item 1)
+
+Not instruments in the sense above — both are ON by default in every build, because
+their subject is the player who has no console. A double-clicked exe, an AppImage
+launched from a file manager, and Steam's Game Mode all discard stderr, which is why
+every Steam Deck report of v1.0.1 read "didn't work".
+
+```
+cz_runtime.log     EVERY LINE THIS PROCESS WRITES TO STDERR, ALSO WRITTEN TO A FILE —
+                   beside the data root (the bundle directory; beside the .AppImage; the
+                   repo root for a dev tree), rotated once to cz_runtime.log.1. The tee
+                   is at the file-descriptor level (host/log_file.cpp): fd 2 is a pipe
+                   and one thread copies it to the original stderr and the file, so it
+                   catches stdio, the crash reporter's raw write(2), SDL's and DXC's own
+                   messages. Verified byte-identical to the console over a 15,147-line
+                   renderer boot ending in SIGTERM, and through a SIGSEGV crash report
+                   (the exit paths drain the pipe first — LogFile::Flush). A read-only
+                   root (a /opt tree, the release gate's :ro mount) falls back to the
+                   temp directory and says so in the first line
+CZ_LOG_FILE=path   write the log THERE instead (a dev running two arms in parallel from
+                   one tree needs this: both would otherwise rotate the same file)
+CZ_NO_LOG_FILE=1   no file this run; prints one line saying so (an instrument that
+                   silently stopped is worse than none)
+cz_runtime --diag  PRINT THE MACHINE AND EXIT: build, OS (+ glibc; under Wine, the Wine
+                   version via ntdll's wine_get_version), the session variables that
+                   pick a video driver and name a Deck, the thread budget, the root and
+                   the first-run state, the settings a player may have carried over
+                   (a persisted 2560x1440 on a 1280x800 screen), SDL's drivers and the
+                   one that takes plus every display's mode, and for Vulkan: every
+                   physical device with its DRIVER NAME AND VERSION, the pick, the
+                   requirements table (each feature present/ABSENT, REQUIRED/optional,
+                   and what it is for), the EDRAM depth format decision, the MSAA sample
+                   counts, device-local memory. Goes through the same tee into
+                   cz_diag.txt. Exit 0 = the pick can run the renderer
+```
+
+The requirements table is ONE table (`kFeatureReqs` in `gpu/vk_renderer.cpp`), read by
+`--diag` and by device bring-up: a missing REQUIRED feature now ends bring-up with its
+name and the driver's (`THIS DEVICE CANNOT RUN THE RENDERER — missing REQUIRED Vulkan
+feature: …`) where before part 105 it was `vkCreateDevice failed: VkResult -7`. Bring-up
+also prints `[vk] driver: <name> — <info>` on every run, which is the line that
+separates a RADV report from an AMDVLK one.

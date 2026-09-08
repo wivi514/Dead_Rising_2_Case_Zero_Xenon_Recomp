@@ -6015,3 +6015,46 @@ From phase C part 18 (the frame rate — and none of it was work):
      box's (a real SDL2 against a compat shim) is a variable the gate must cover, not
      assume. Companion to 460 (a windowed-only cost is invisible headlessly) and 485
      (the first bundle passed every static check and died on its first instruction).
+
+525. **A SHIPPED BUILD THAT WRITES NO LOG FILE MAKES EVERY PLAYER REPORT "DIDN'T WORK",
+     AND THAT IS THE BUILD'S DEFECT, NOT THE PLAYER'S.** Three versions of this port
+     printed everything to stderr and nowhere else; a double-clicked exe, a file-manager
+     launched AppImage and Steam's Game Mode all discard it, so every Steam Deck report
+     of v1.0.1 was one phrase. The fix is a tee at the FILE DESCRIPTOR (fd 2 onto a
+     pipe, one thread copying to the original stderr and the file), because that catches
+     every writer in the process — stdio, a raw `write(2)` in a signal handler, SDL's and
+     a dlopened library's own messages — where a stdio hook or a logging macro catches
+     only the code that opted in. Two things the tee needs that a log macro does not: a
+     Flush that waits for the pipe to DRAIN on every path that `_Exit`s (the crash
+     report is the last thing written and the first thing lost), and a gate that
+     `cmp`s the file against the console copy over a real run. Part 105; companion to
+     109 (a capped or thinned log line is not a count) and 294 (the exit path that skips
+     the dump).
+526. **A COMPOSITOR CAN REWRITE THE CHILD'S ENVIRONMENT, SO A HINT KEYED ON AN
+     ENVIRONMENT VARIABLE IS INERT THERE — AND A LOG LINE THAT PROMISES "SET X TO
+     OVERRIDE" MUST BE TESTED BY SETTING X.** gamescope removes `WAYLAND_DISPLAY` and
+     `SDL_VIDEODRIVER` from the game it launches (`gamescope -- env` shows neither), so
+     part 104's Wayland-first hint could never fire under it and the Steam Deck's Game
+     Mode was never at risk from it; and the part-105 guard's first message promised
+     that `SDL_VIDEODRIVER=wayland` overrides the decision, which the control run
+     refuted in one line (set outside, absent inside). Ask what the launcher DOES to the
+     environment before designing a variable-keyed policy for it, and run the override
+     you advertise. Companion to 524.
+527. **CLOSING A DESCRIPTOR UNDER A THREAD STILL WRITING TO IT LOSES THE TAIL SILENTLY,
+     AND A TERMINAL NEVER SHOWS YOU.** The tee's `End()` restored fd 2 and closed the
+     saved original stderr before joining the copier; the copier's last `write` hit a
+     closed descriptor and the console copy was 5,828 bytes short of the file — on the
+     very first `--diag`, visible only because the gate was `cmp file console` and not
+     "it looked complete". Order for any tee: redirect away, JOIN, then close what the
+     thread was writing to. The shape of 30 (a test that has never failed has not been
+     shown capable of failing): the identity gate failed on its first run, which is the
+     evidence it works.
+528. **A CAPABILITY SCAN THAT ASKS FOR ONE BIT CAN BE WRONG ABOUT THE BIT AND READ A
+     CLEAN ZERO — PRINT THE WHOLE DISTRIBUTION.** "Is `shaderInt64` really required?" was
+     answered 0 of 450 by a SPIR-V scanner testing `OpCapability 22`; 22 is Int16 and
+     Int64 is 11, which is in 450 of 450. The scanner could not have matched (25's
+     shape), and the only thing that exposed it was printing every capability the
+     population declares (1, 11, 43, 50, 5302, 5347) instead of the yes/no asked for.
+     Had it been believed, `shaderInt64` would have gone optional and a device without
+     it would have failed at its first draw instead of at bring-up with a name. Rule:
+     when a census answers a yes/no with zero, print its marginals before believing it.

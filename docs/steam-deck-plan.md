@@ -152,3 +152,101 @@ builds fail" is therefore RADV itself, and §3 item 5 (czamd on a live USB) is t
   install path and whether the first run ever finished are three different reports.
 - Do not lower the Linux floor further for the Deck's sake; 2.35 is below every SteamOS,
   and 2.34 is the DXC prebuilt's hard limit (gotcha 520).
+
+## §6 Part 105 — what was built, what was measured, and what each of §3's items came to (2026-09-08)
+
+The operator's instruction opening the part: *"Do the steam deck plan."* Everything below
+was done on the dev box (NVIDIA, KDE Wayland, Fedora 44); nothing has touched a Deck or
+RADV. §3's numbering is kept.
+
+**Item 1 — the log file and `--diag`: BUILT.** `runtime/host/log_file.{h,cpp}`: fd 2 is
+redirected onto a pipe and one thread copies it to the original stderr and to
+`cz_runtime.log` beside the data root (the bundle directory; beside the `.AppImage`; the
+repo root for a dev tree), rotated once. It is a descriptor-level tee so it catches every
+writer — stdio, the crash reporter's raw `write(2)`, SDL's and DXC's own messages. The
+three `_Exit` quit paths, the SIGTERM/SIGINT handler and the crash reporter drain the pipe
+first (`LogFile::Flush`). Gated three ways, each of which could have failed: (a) a 45 s
+headless renderer boot ending in SIGTERM — the file is byte-identical to the console copy
+over 15,147 lines; (b) `kill -SEGV` at 20 s — both copies end with the crash report; (c)
+`CZ_NO_LOG_FILE=1` — no file, one line saying so. The first `--diag` run FAILED (b)'s
+sibling: the console copy was 5,828 bytes short of the file because `End()` closed the
+original stderr descriptor under the thread still writing the pipe's tail to it (fixed:
+restore fd 2, join, then close). `cz_runtime --diag` prints the OS and glibc (under Wine,
+the Wine version from ntdll's `wine_get_version`), the session variables that choose a
+video driver and name a Deck, the thread budget, the root and first-run state, the
+carried-over settings, SDL's drivers and displays, and every Vulkan device with its
+DRIVER NAME AND VERSION plus the requirements table verdict; it writes `cz_diag.txt`
+through the same tee and exits 0 when the pick can run the renderer. The dev box's own
+block is in `docs/instruments.md`'s new section.
+
+**Item 2 — §4's probes: they had finished; their two loose ends are closed.** (a) The
+MSAA sample-count walk now tries the request and then the other count (2x ↔ 4x) and the
+refusal message is true when it prints. (b) **The `SIBLING MISS` lines are NOT a Wine
+difference — retracted.** `cl.txt`, `serial.bin` and `capcom.txt` print on the Linux boot
+too (`part104/title_check.log` and `lavapipe.log`, six lines each); part 104 grepped the
+wrong log. They are the title probing files the package never carried (file_imports.cpp
+already documents `capcom.txt` and `serial.bin`); noise on every platform. The
+`VirtualAlloc2` fallback was NOT built — §5's rule: no log has named it.
+
+**Item 3 — the required-feature list is a table: BUILT.** `kFeatureReqs` in
+`gpu/vk_renderer.cpp`, one row per feature with where it lives, REQUIRED/optional, and
+the reason. Bring-up queries the device first, requests only what is present, and a
+missing REQUIRED feature ends bring-up with the feature named and the driver named
+(`THIS DEVICE CANNOT RUN THE RENDERER — missing REQUIRED Vulkan feature: …`) where it
+was `vkCreateDevice failed: VkResult -7`. A device below Vulkan 1.3 is refused by name
+too. `fillModeNonSolid` and `depthClamp` became OPTIONAL — a grep found no consumer
+(every `polygonMode` is FILL, no pipeline enables depth clamp). `shaderInt64` stayed
+REQUIRED on evidence: a capability census of the built cache finds Int64 in **450 of
+450** translated shaders. **That census first read 0 of 450** — the scanner tested for
+capability 22 (Int16) instead of 11 (Int64), and only printing the whole capability
+distribution (1, 11, 43, 50, 5302, 5347) exposed it (gotcha 528). `[vk] driver: <name>
+— <info>` now prints on every bring-up.
+
+**Item 4 — gamescope awareness: BUILT, and H5 is ANSWERED on this box.** Fedora's
+`gamescope` 3.16.23 was already installed. `gamescope -W 1280 -H 800 -- ./cz_runtime`
+with the renderer on: the detection line printed, the window came up on the **x11**
+driver, the swapchain took 1280x800 MAILBOX, and **6,645 frames presented in ~40 s**
+(~165 fps at the title) — not the desktop-XWayland 1 fps of §6eu §5. The control with
+`SDL_VIDEODRIVER=wayland` set outside gamescope read the SAME (5,463 frames in ~30 s,
+x11), which is how the second fact surfaced: **gamescope REMOVES `WAYLAND_DISPLAY` and
+`SDL_VIDEODRIVER` from the child's environment** (`gamescope -- env` shows neither; it
+sets `XDG_CURRENT_DESKTOP=gamescope`, `GAMESCOPE_WAYLAND_DISPLAY=gamescope-0`,
+`DISPLAY=:1`). So the part-104 hint could never have fired under gamescope and H5 was a
+non-issue from the start; the new check changes no behaviour there and exists so the log
+STATES the path. The log line's first wording promised "SDL_VIDEODRIVER=wayland
+overrides" — false under gamescope; corrected before commit (gotcha 526).
+
+**Item 5 — the operator's live-USB RADV test: NOT RUN (theirs).** Unchanged, and now
+better instrumented: bring `cz_diag.txt` and `cz_runtime.log` back rather than a
+description. `part106-kickoff.md` §1b carries it.
+
+**Item 6 — the Deck test request: WRITTEN.** `docs/steam-deck-testing.md` (the player's
+walk-through, Desktop Mode first, the "say what you saw" table) and
+`.github/ISSUE_TEMPLATE/steam-deck-report.md` (plus a general `bug-report.md` that asks
+for the log). Posting a pinned discussion is the operator's.
+
+**Item 7 — README rows: WRITTEN.** Requirements (glibc 2.35 from v1.0.2, a Steam Deck
+row that says "not yet verified"), Known issues (the Deck, Proton untested, Wine 11
+runs it), and the log/`--diag` sentence in the install section; the bundle README's
+"run from a terminal" paragraph became "attach `cz_runtime.log`, run `--diag`".
+
+**H4, priced on this box.** `--build-shader-cache` on the disc bank under `taskset
+-c 0-3,8-11` (four cores and their siblings — the Deck's shape, at a Ryzen 7 5700's
+clocks): **12.52 s wall** (98.6 s user) against **7.03 s** unconstrained the same minute.
+The Deck's Zen 2 at 2.4-3.5 GHz is slower per core, so the honest estimate is tens of
+seconds, under a minute; `steam-deck-testing.md` says "up to a minute". The shader step
+is the largest single first-run wait after the 825 MB unpack.
+
+**Packaging.** The runtime now writes beside its root, and for the release stage that IS
+the stage: `release_package_linux.sh`, `release_package_appimage.sh` and
+`release_package_windows.ps1` each drop `cz_runtime.log*` / `cz_diag.txt*` before
+archiving. The clean-container gate mounts the stage `:ro`, so there the log falls back
+to the temp directory and says so — the designed path, not a gate failure.
+
+**What is owed after this part.** (1) A Windows compile of the new code — czwin was
+unreachable (SSH banner timeout) all session; `log_file.cpp`'s `_pipe`/`_dup2`/
+`SetStdHandle` path and `RunDiag`'s `RtlGetVersion`/`wine_get_version` block have not
+been compiled by MSVC/clang-cl. (2) The three artifacts carry NONE of this: v1.0.2's
+`dist/` is at 482b47f. Either rebuild all three and refresh the notes' hashes, or ship
+v1.0.2 as gated and make this v1.0.3 — the operator's call; a Deck tester needs a build
+WITH the log file, so the rebuild is the useful one. (3) Item 5. (4) A Deck report.

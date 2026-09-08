@@ -6780,3 +6780,33 @@ appended; gotcha 513 is the transferable finding. THE OPERATOR HALF IS OWED**):
   gpu, fence 4.5 ms) — **THE NEXT PLAN IS `docs/part103-amd-windows-perf-plan.md`**,
   step 0 the GPU split on czamd. Still owed: the plan's §2.1 licensing call, the seed's 3
   orphan VS, the czamd black square (arms staged, `cz_arm_fif1.bat` first).
+
+
+## Part 103 status block (moved out of CLAUDE.md by part 105)
+
+Where the port was, as of 2026-09-08 (**PART 103 — THE AMD/WINDOWS PERFORMANCE BOARD
+RUN TO ITS END: the GPU split on czamd says the RX 6600 frame is the title's own shading
+at the hardware ratio (2.4-2.5x the 3070 at every load), OURS is ~1.2 ms of 20 and 1.08 of
+that is the MSAA resolve; MSAA 2x is REFUTED as a lever there (single-sample trades the
+resolve for 1.39 ms of colour-decompress barriers and is SLOWER under 6,000 draws); items
+2-3 dead by the 0.5 ms kill rule; items 4a/5/6 shipped. `phase5-notes.md` §6et is the
+record, `part103-amd-windows-perf-plan.md` §1b the execution table, gotchas 517-519,
+`docs/part104-kickoff.md` was the live hand-off**):
+
+* **Two things had to be built to read the split on czamd** (gotcha 519): the process
+  there is ended by `Stop-Process` = TerminateProcess, so there is NO exit dump on that
+  box and never was — `CZ_VK_STATS=1500` + `tools/gpu_split_window.py` reads the window
+  between two cumulative dumps. And every headless czamd GPU number carries a 1.12 ms
+  present readback the swapchain release never pays (gotcha 517) — read §6es's `gpu`
+  as `gpu − 1.1`.
+* **Shipped (ab80b87):** the speculative pipeline warm runs BELOW_NORMAL / nice+10 on
+  spare-tier jobs and normal on urgent ones (`CZ_NO_LOW_PRIORITY=1` the control); the
+  `[threads]` block names every pool including the six outside the budget; the golden
+  preload is timed — **czamd 5,679 files in 765 ms (135 us a file), dev box 29,932 in
+  1,290 ms** — a boot cost with a number now, and item 5's pack-or-lazy-load is the
+  one thing on the board still worth building.
+* **One czamd boot in five parked before its first frame** (no `vblank #1000` by 150 s,
+  KeDelayExecutionThread spinning) with and without instruments — the residual hang
+  `part99-amd-hang.md` §5.4 left open, still open, not correlated with anything this
+  part armed.
+

@@ -1,0 +1,72 @@
+# Part 106 kickoff — after part 105 (the Steam Deck plan executed on the dev box)
+
+**Written 2026-09-08 at the end of part 105. Supersedes `part105-kickoff.md` as the live
+hand-off.** Read `docs/steam-deck-plan.md` §6 (the item-by-item record) and
+`phase5-notes.md` §6ev before anything below.
+
+## §0 Where the port is
+
+- **Every build now writes `cz_runtime.log` beside its data root and has `cz_runtime
+  --diag`** (`host/log_file.{h,cpp}`; `docs/instruments.md`'s last section). The
+  renderer's required Vulkan features are ONE table read by bring-up and `--diag`; a
+  missing one is named, with the driver. gamescope is detected and the log states the
+  video path. All gated on the dev box; none of it compiled on Windows yet (czwin was
+  unreachable — SSH banner timeout — all session).
+- **The three v1.0.2 artifacts in `dist/` are at 482b47f and carry NONE of part 105.**
+  `docs/release-notes-v1.0.2.md` is still paste-ready for those. Decision for the
+  operator (§1b item 0): rebuild all three at the part-105 head and refresh the hashes
+  (the useful option — a Deck tester needs a build WITH the log file), or publish v1.0.2
+  as is and make part 105 v1.0.3.
+- **The Steam Deck hypotheses (`steam-deck-plan.md` §2):** H1 fixed (v1.0.2), H2 mostly
+  refuted (Wine 11 runs the zip end to end), H5 closed on this box (gamescope strips the
+  variables; x11 path presents at ~165 fps here), H4 priced (shader build 12.5 s on a
+  4c/8t mask at desktop clocks). **H3 — RADV — is the one that matters and nothing here
+  can test it**; the live-USB run (§1b item 1) and the first Deck report are the tests.
+- Performance stays parked on both boxes; the czamd park hunt stands as part 104 left it.
+
+## §1 Part 106 — autonomous, in order
+
+0. **Compile on Windows the moment czwin answers**: `git pull --ff-only`, build, run
+   `cz_runtime.exe --diag` and a renderer boot, and `cmp` the log against a captured
+   stderr as part 105 did on Linux. The Windows-only code is `log_file.cpp`'s
+   `_pipe`/`_dup2`/`SetStdHandle` block and `RunDiag`'s `RtlGetVersion` +
+   `wine_get_version` block. Also run the shipped zip under the dev box's Wine with
+   `--diag` — it should print `under Wine 11.x`.
+1. **If the operator chose the rebuild (§1b item 0): `tools/release_build_oldbase.sh`
+   (Linux tar + AppImage), the Windows zip on czwin, both gates, hashes into the notes** —
+   exactly part 104's §6eu §1 procedure. Add "Changed" lines to the notes: the log
+   file, `--diag`, the named-feature refusal, the gamescope line.
+2. **Part 105's §1 items 1-3 are unchanged**: the golden pack's czamd number, the
+   crowd-route confirmation on the old-base binary (three runs an arm), the park if it
+   recurs. `part105-kickoff.md` §1 has the detail.
+3. **Watch for the first Deck issue** (`.github/ISSUE_TEMPLATE/steam-deck-report.md`).
+   Read its `--diag` block against `steam-deck-plan.md` §2 in this order: the `[vk]
+   driver:` line (RADV vs AMDVLK, Mesa version), the requirements table (any ABSENT
+   REQUIRED row is the whole report), the depth-format line, the `[host] gamescope`
+   line, the settings line (a carried-over resolution). If the renderer was refused,
+   the fix is the named feature; if it was not, the log's last lines are the lead.
+
+## §1b Part 106 — the operator's
+
+0. **Rebuild v1.0.2 at the part-105 head, or publish as is and call this v1.0.3.**
+1. **The RADV test on czamd from a Fedora live USB** (`steam-deck-plan.md` §3 item 5):
+   run the AppImage's `--diag` first (that alone settles H3's feature half), then the
+   game; bring back `cz_diag.txt` and `cz_runtime.log`. This is the only RDNA2+RADV
+   in reach and it is the Deck's GPU generation under the Deck's driver.
+2. **Post the Deck test request** — `docs/steam-deck-testing.md` as a pinned discussion
+   or in the release notes, once a build with the log file is published.
+3. Part 105's §1b items (the czamd black square, the vertex-recipe licensing call, the
+   seed's orphan vertex shaders) stand unchanged.
+
+## §2 What already exists and must not be rewritten
+
+- `runtime/host/log_file.{h,cpp}` — the tee; `LogFile::Begin/Flush/End/Path`. Every
+  `_Exit`/`_exit` path already calls `Flush`; a NEW exit path must too.
+- `runtime/main.cpp` `RunDiag`, `runtime/host/window.cpp` `Host_DiagVideo` +
+  `UnderGamescope`, `runtime/gpu/vk_renderer.cpp` `kFeatureReqs`/`QueryDeviceCaps`/
+  `EvaluateRequirements`/`PrintDriverLine`/`PickEdramDepthFormat`/`VkRenderer_Diag`.
+  A new device feature goes in the TABLE, nowhere else.
+- `docs/steam-deck-testing.md`, `.github/ISSUE_TEMPLATE/{steam-deck-report,bug-report}.md`.
+- The packaging scripts' log-file exclusions (all three).
+- Everything in `part105-kickoff.md` §2 (the old-base build, the AppImage, the gates,
+  the czamd harness).

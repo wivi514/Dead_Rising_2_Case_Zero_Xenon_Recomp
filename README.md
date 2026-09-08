@@ -43,7 +43,10 @@ project is not affiliated with, or endorsed by, Capcom or Microsoft.
 
 If anything needed is missing, the game tells you exactly what and where — it
 never fails with a blank screen on purpose. A `README.md` inside the bundle has
-a troubleshooting section.
+a troubleshooting section. **Every run writes `cz_runtime.log`** next to the
+game folder's `assets/` (for the AppImage, next to the `.AppImage`), and
+`cz_runtime --diag` prints your OS, GPU, driver and display facts and exits —
+attach both to any bug report.
 
 Your **saves and settings live outside the game folder** (Windows:
 `Saved Games\Dead Rising 2 Case Zero\`; Linux:
@@ -89,7 +92,12 @@ game folder at any time without losing progress.
 
 - A GPU and driver with **Vulkan 1.3** support.
 - **Windows**: Windows 10 or later, x86-64.
-- **Linux**: x86-64 with glibc **2.43 or newer** (see known issues).
+- **Linux**: x86-64 with glibc **2.35 or newer** from v1.0.2 (v1.0.1 needed
+  2.43 — see known issues). An AppImage is provided from v1.0.2.
+- **Steam Deck**: not yet verified. v1.0.1 cannot start there (glibc); v1.0.2's
+  Linux build removes that cause but has not been run on a Deck by anyone on the
+  project. If you have one, `docs/steam-deck-testing.md` says exactly what to try
+  and what to send back.
 - **~2 GB free disk space** after first-run unpacking.
 - **Your own copy of the game** (see above).
 
@@ -99,9 +107,13 @@ game folder at any time without losing progress.
   (`docs/hair-flicker-part92.md` tracks it).
 - The occasional spot may shade slightly differently than original hardware;
   everything is being tracked and refined.
-- **Linux glibc floor**: distributions older than the build base (glibc 2.43)
-  refuse to start with a `GLIBC_x.yz not found` message. An AppImage-style
-  build is planned.
+- **Linux glibc floor**: v1.0.1 refuses to start on distributions below glibc
+  2.43 with a `GLIBC_x.yz not found` message (that includes every SteamOS).
+  v1.0.2 is built on an older base (floor 2.35) and also ships as an AppImage.
+- **Steam Deck**: untested by the project — see Requirements. The Windows build
+  under Proton is likewise untested; on the dev box the same zip runs end to end
+  under Wine 11, so a Deck failure there would be new information — please
+  report it with `PROTON_LOG=1`.
 - **No macOS build yet** — nothing blocks it in principle; it awaits test
   hardware.
 
