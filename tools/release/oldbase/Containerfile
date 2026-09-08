@@ -1,0 +1,74 @@
+# The OLD-BASE build image for the Linux release (docs/release-plan.md E.2, part 104).
+#
+# WHY. A Linux binary inherits the glibc of the machine that linked it: every symbol it
+# imports is versioned (GLIBC_2.43 for a 2.43 host), and a player on anything older gets
+# `GLIBC_2.43 not found` before main() runs. glibc cannot be bundled (it is not
+# relocatable against the host's ld.so — docs/release-plan.md §9.2 item 3), so the ONLY
+# way to lower the floor is to link on an old base. An AppImage runtime does not change
+# that: it is a mount, not a libc.
+#
+# WHY THIS BASE. Ubuntu 22.04 is glibc 2.35. The floor cannot usefully go below 2.34 anyway,
+# because the shipped shader translator (`lib/libdxcompiler.so`, the DXC prebuilt from
+# XenosRecomp's thirdparty, which the bundle dlopens) imports GLIBC_2.34 — measured with
+# `objdump -T` before this file was written, not assumed — so a 20.04 base (2.31) would
+# produce a runtime that starts and then refuses every shader translation on a 2.31 host.
+# 22.04 is also the oldest still-supported LTS and the base the AppImage community builds
+# on, so its floor is the floor a Linux game is expected to have. Rocky 9 (2.34 exactly) is
+# used as the GATE image instead: older than the build base, and old enough that a 2.35
+# symbol leaking in would refuse to start there.
+#
+# WHAT IS IN IT, and each line's reason:
+#   clang-15 + libstdc++-12   the runtime needs clang (__builtin_assume, CMakeLists.txt's
+#                             first comment) and C++20; jammy's clang is 15 and its newest
+#                             libstdc++ is GCC 12's. libstdc++ is BUNDLED by the packaging
+#                             script, so the GLIBCXX version is ours to ship, not the host's.
+#   gcc                       ffmpeg's configure insists on gcc for its C compiler test (the
+#                             first image had only clang and configure said "gcc is unable to
+#                             create an executable file"); the decoder is C + nasm, and gcc is
+#                             what the dev box's tools/build_ffmpeg_lgpl.sh uses too.
+#   nasm                      ffmpeg's x86 assembly — the dev box has none (release-plan
+#                             §9.2 item 2), so this is the first Linux artifact whose XMA
+#                             decoder carries it.
+#   the X11/Wayland/audio -dev packages
+#                             SDL2 dlopens every backend at run time but needs the headers
+#                             to compile them in (tools/build_sdl2.sh asserts X11 + Wayland).
+#   Vulkan-Headers 1.4.341    the dev box's header version, fetched as headers only so the
+#                             release compiles against the same vulkan_core.h every recorded
+#                             measurement did; the loader jammy ships (1.3.204) is linked
+#                             against and is the host's at run time anyway.
+#   squashfs-tools, file, binutils, zstd, python3
+#                             the packaging scripts' tools (mksquashfs for the AppImage,
+#                             objdump for the glibc-floor print, tar --zstd, the header
+#                             checks on prewarm.keys / vs_recipes.bin).
+#
+# Built and used by tools/release_build_oldbase.sh; nothing here is run by hand.
+FROM docker.io/library/ubuntu:22.04
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        ca-certificates curl git xz-utils zstd file binutils \
+        clang-15 lld-15 llvm-15 libstdc++-12-dev libc6-dev \
+        gcc cmake ninja-build make pkg-config nasm python3 \
+        libvulkan-dev \
+        libx11-dev libxext-dev libxrandr-dev libxcursor-dev libxi-dev libxfixes-dev \
+        libxss-dev libxkbcommon-dev libxxf86vm-dev \
+        libwayland-dev wayland-protocols libdecor-0-dev \
+        libegl1-mesa-dev libgl1-mesa-dev libgles2-mesa-dev libdrm-dev libgbm-dev \
+        libasound2-dev libpulse-dev libpipewire-0.3-dev \
+        libdbus-1-dev libudev-dev libibus-1.0-dev \
+        squashfs-tools \
+    && rm -rf /var/lib/apt/lists/* \
+    && update-alternatives --install /usr/bin/clang++ clang++ /usr/bin/clang++-15 100 \
+    && update-alternatives --install /usr/bin/clang clang /usr/bin/clang-15 100 \
+    && update-alternatives --install /usr/bin/llvm-objcopy llvm-objcopy /usr/bin/llvm-objcopy-15 100 \
+    && update-alternatives --install /usr/bin/ld.lld ld.lld /usr/bin/ld.lld-15 100
+# The dev box's Vulkan headers (1.4.341), headers only, copied OVER jammy's 1.3.204 in
+# /usr/include: find_package(Vulkan) hands that directory to the compiler as -isystem,
+# which outranks /usr/local/include, so they must replace rather than shadow. Pinned by
+# tag; the tarball is ~2 MB.
+ARG VULKAN_HEADERS=1.4.341
+RUN curl -fsSL "https://github.com/KhronosGroup/Vulkan-Headers/archive/refs/tags/v${VULKAN_HEADERS}.tar.gz" \
+        | tar xz -C /tmp \
+    && cp -r "/tmp/Vulkan-Headers-${VULKAN_HEADERS}/include/vulkan" /usr/include/ \
+    && cp -r "/tmp/Vulkan-Headers-${VULKAN_HEADERS}/include/vk_video" /usr/include/ \
+    && rm -rf /tmp/Vulkan-Headers-* \
+    && grep -m1 'define VK_HEADER_VERSION ' /usr/include/vulkan/vulkan_core.h

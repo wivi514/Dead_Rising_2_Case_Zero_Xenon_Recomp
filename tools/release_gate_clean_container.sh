@@ -26,7 +26,20 @@ set -uo pipefail
 STAGE=${1:-$(cd "$(dirname "$0")/.." && pwd)/dist/CaseZeroRecomp}
 IMAGE=${2:-registry.fedoraproject.org/fedora-minimal:latest}
 
-[ -x "$STAGE/cz_runtime" ] || { echo "FAIL: no $STAGE/cz_runtime" >&2; exit 1; }
+# THE APPIMAGE MODE (part 104). Given a .AppImage instead of a stage directory, the file
+# is mounted into the container, EXTRACTED there with the runtime's own --appimage-extract
+# (no FUSE in a container; a player's launch mounts it, and the extracted tree is the
+# same bytes), and every check below runs against the extracted usr/ tree — plus two the
+# directory form does not have: the image starts through its own runtime + AppRun, and
+# its data root resolves BESIDE the image (host_paths step 1b) with assets/package/ seeded.
+APPIMAGE_MODE=0
+if [ -f "$STAGE" ] && [ ! -d "$STAGE" ]; then
+    case "$STAGE" in *.AppImage) APPIMAGE_MODE=1 ;; *) echo "FAIL: $STAGE is a file but not a .AppImage" >&2; exit 1 ;; esac
+    STAGE=$(cd "$(dirname "$STAGE")" && pwd)/$(basename "$STAGE")
+else
+    [ -x "$STAGE/cz_runtime" ] || { echo "FAIL: no $STAGE/cz_runtime" >&2; exit 1; }
+    STAGE=$(cd "$STAGE" && pwd)   # podman reads a relative -v source as a VOLUME NAME
+fi
 command -v podman >/dev/null || { echo "FAIL: podman not installed" >&2; exit 1; }
 
 # One real microcode blob, so the container run can prove the DXC dlopen works — the
@@ -67,13 +80,32 @@ OVERLAY_SHA=$(sha256sum "$OVERLAY_REF" | cut -d' ' -f1)
 # clean-shutdown-and-still-report-a-number symptom, reproduced in a tool written the
 # same afternoon that gotcha was read. The marker check below is the belt to this
 # brace: the gate now requires evidence that its body executed, not just an exit code.
-echo "==> $IMAGE, bundle mounted read-only at /app"
+if [ "$APPIMAGE_MODE" = 1 ]; then
+    echo "==> $IMAGE, AppImage mounted read-only at /cz.AppImage (extracted in-container)"
+    MOUNT=(-v "$STAGE:/cz.AppImage:ro,Z")
+else
+    echo "==> $IMAGE, bundle mounted read-only at /app"
+    MOUNT=(-v "$STAGE:/app:ro,Z")
+fi
 LOG=$(mktemp)
 trap 'rm -f "$LOG"; rm -rf "$UCODE_DIR"' EXIT
-podman run --rm -i -v "$STAGE:/app:ro,Z" -v "$UCODE_DIR:/ucode:Z" \
+podman run --rm -i "${MOUNT[@]}" -v "$UCODE_DIR:/ucode:Z" \
     -v "$PKGFILE:/pkg/package:ro,Z" -e "CZ_GATE_OVERLAY_SHA=$OVERLAY_SHA" \
+    -e "APPIMAGE_MODE=$APPIMAGE_MODE" \
     "$IMAGE" /bin/sh -s > "$LOG" 2>&1 <<'IN'
 set -u
+
+# Where the bundle's tree is: the mounted stage, or the AppImage's extracted usr/.
+APP=/app
+if [ "$APPIMAGE_MODE" = 1 ]; then
+    echo "--- extracting the AppImage with its own runtime (--appimage-extract):"
+    cp /cz.AppImage /tmp/cz.AppImage && chmod +x /tmp/cz.AppImage
+    (cd /tmp && ./cz.AppImage --appimage-extract >/dev/null 2>&1) \
+        || { echo "    the AppImage runtime could not extract itself here"; exit 4; }
+    APP=/tmp/squashfs-root/usr
+    [ -x "$APP/cz_runtime" ] || { echo "    no usr/cz_runtime in the extracted image"; exit 4; }
+    echo "    ok: $APP"
+fi
 
 # The Vulkan LOADER is installed here on purpose, and it is the one library this gate
 # adds. It is not bundled (a bundled loader finds the wrong ICD or none — the plan says
@@ -83,18 +115,27 @@ set -u
 # missing library would hide. Installing it instead means the rule can be absolute:
 # NOTHING may be "not found".
 echo "--- installing the Vulkan loader (the one library a player's driver supplies):"
-microdnf -y --nodocs install vulkan-loader >/dev/null 2>&1 \
-    || { echo "    could not install vulkan-loader — gate cannot run"; exit 2; }
-echo "    ok"
+# Two package managers, because the gate runs in TWO images as of part 104: the one AT
+# the artifact's glibc floor (ubuntu:22.04 = 2.35, must PASS) and one BELOW it (Rocky 9 =
+# 2.34, must FAIL with `GLIBC_2.35 not found` — the proof that the floor is real and not
+# a number somebody wrote down). apt for Debian-family images, microdnf for the rest.
+if command -v apt-get >/dev/null 2>&1; then
+    (apt-get update && apt-get install -y --no-install-recommends libvulkan1) >/dev/null 2>&1 \
+        || { echo "    could not install libvulkan1 — gate cannot run"; exit 2; }
+else
+    microdnf -y --nodocs install vulkan-loader >/dev/null 2>&1 \
+        || { echo "    could not install vulkan-loader — gate cannot run"; exit 2; }
+fi
+echo "    ok ($(ldd --version 2>/dev/null | sed -n '1{s/.* //;p}') glibc in this image)"
 
 echo "--- the container has none of the dev packages:"
 clean=1
 for l in libSDL2-2.0.so.0 libavcodec.so.62 libavutil.so.60; do
-    if [ -e "/lib64/$l" ]; then
-        echo "    !! /lib64/$l EXISTS -- this image is not clean, the gate proves nothing"
+    if [ -e "/lib64/$l" ] || [ -e "/usr/lib/x86_64-linux-gnu/$l" ]; then
+        echo "    !! $l EXISTS in a system library directory -- this image is not clean, the gate proves nothing"
         clean=0
     else
-        echo "    /lib64/$l absent (good)"
+        echo "    $l absent from the system library directories (good)"
     fi
 done
 [ "$clean" = 1 ] || exit 3
@@ -110,8 +151,8 @@ if [ -e /lib64/libstdc++.so.6 ]; then
     echo "    /lib64/libstdc++.so.6 present -- good, it makes the RPATH check meaningful"
 fi
 
-echo "--- ldd /app/cz_runtime:"
-ldd /app/cz_runtime > /tmp/ldd.txt 2>&1
+echo "--- ldd $APP/cz_runtime:"
+ldd "$APP/cz_runtime" > /tmp/ldd.txt 2>&1
 sed 's/^\t/    /' /tmp/ldd.txt
 
 echo "--- verdict:"
@@ -128,7 +169,7 @@ fi
 #    list. `not found` lines are excluded first, or awk's $3 picks up the word "not"
 #    and reports it as a mysterious library outside the bundle.
 outside=$(grep -v "not found" /tmp/ldd.txt | awk '/=>/ {print $3}' \
-    | grep -v '^/app/' | grep -v '^$' \
+    | grep -v "^$APP/" | grep -v '^$' \
     | grep -vE '/(libc|libm|libvulkan|libdl|libpthread|librt)\.so')
 if [ -n "$outside" ]; then
     echo "    RESOLVED OUTSIDE THE BUNDLE and not on the permitted list:"
@@ -136,11 +177,11 @@ if [ -n "$outside" ]; then
     rc=1
 fi
 
-[ $rc -eq 0 ] && echo "    OK: every bundled dependency resolved inside /app; only libc,"
+[ $rc -eq 0 ] && echo "    OK: every bundled dependency resolved inside $APP; only libc,"
 [ $rc -eq 0 ] && echo "        libm, the Vulkan loader and ld.so are the host system's."
 
 echo "--- cz_runtime --smoke (the phase 0.2 link gate, in the PACKAGED binary):"
-/app/cz_runtime --smoke 2>&1 | tail -3 | sed 's/^/    /'
+$APP/cz_runtime --smoke 2>&1 | tail -3 | sed 's/^/    /'
 
 # THE DLOPEN GATE (part 85). The shader translator dlopens lib/libdxcompiler.so —
 # invisible to every ldd check above, and a bundle missing it boots into the black
@@ -149,7 +190,7 @@ echo "--- cz_runtime --smoke (the phase 0.2 link gate, in the PACKAGED binary):"
 # so the dev-checkout fallback path cannot rescue a broken bundle.
 echo "--- the DXC dlopen: translate one real shader inside the container:"
 mkdir -p /tmp/spv
-if HOME= /app/cz_runtime --translate-shaders /ucode/in /tmp/spv 2>&1 | sed 's/^/    /' \
+if HOME= $APP/cz_runtime --translate-shaders /ucode/in /tmp/spv 2>&1 | sed 's/^/    /' \
    && ls /tmp/spv/*.spv >/dev/null 2>&1; then
     echo "    dxc-translate OK: $(ls /tmp/spv/*.spv | head -1 | xargs -n1 basename)"
 else
@@ -158,7 +199,7 @@ fi
 
 echo "--- the bundle carries the release files:"
 for f in README.md THIRD_PARTY.md LICENSE cz_defaults.env prewarm.keys vs_recipes.bin lib/libdxcompiler.so lib/LICENSE.DXC; do
-    if [ -e "/app/$f" ]; then echo "    $f present"; else echo "    $f MISSING"; fi
+    if [ -e "$APP/$f" ]; then echo "    $f present"; else echo "    $f MISSING"; fi
 done
 
 # THE FIRST-RUN FLOW, END TO END (release-plan §5 item 3), on a machine that has
@@ -170,13 +211,13 @@ done
 echo "--- the first-run flow, end to end (extract -> shader build -> overlays -> boot):"
 mkdir -p /w/assets/game
 echo "    [1/4] in-process extract of the mounted package:"
-/app/cz_runtime --extract-package /pkg/package /w/assets/game 2>&1 | tail -1 | sed 's/^/    /'
+$APP/cz_runtime --extract-package /pkg/package /w/assets/game 2>&1 | tail -1 | sed 's/^/    /'
 echo "    [2/4] disc shader build (DXC, all cores):"
-/app/cz_runtime --build-shader-cache /w/assets/game/data/shaders/deadrisingprologue-ps.big \
+$APP/cz_runtime --build-shader-cache /w/assets/game/data/shaders/deadrisingprologue-ps.big \
     /w/assets/shader_spv 2>&1 | grep -E "translated|refused|FAIL" | tail -2 | sed 's/^/    /'
 echo "    [3/4] overlay generation (release-github §0: the options screen, KB/M"
 echo "          prompt icons and string edits, composed from the player's own data):"
-if CZ_ROOT=/w /app/cz_runtime --gen-overlays >/tmp/overlay.log 2>&1; then
+if CZ_ROOT=/w $APP/cz_runtime --gen-overlays >/tmp/overlay.log 2>&1; then
     ok=1
     for f in /w/assets/game_patched/data/frontend/fecmn.big \
              /w/assets/game_patched/layout.bin \
@@ -201,7 +242,7 @@ echo "    [4/4] boot from the extracted tree (no GPU in this container — the r
 echo "          cannot run here and is covered by the host-side first-run test):"
 mkdir -p /w/assets/save
 CZ_ROOT=/w CZ_VKDRAW=0 CZ_NO_WINDOW=1 CZ_NO_AUDIO_OUT=1 CZ_FILE_TRACE=1 \
-    timeout 45 /app/cz_runtime > /tmp/boot.log 2>&1
+    timeout 45 $APP/cz_runtime > /tmp/boot.log 2>&1
 bigs=$(grep -c "\.big" /tmp/boot.log)
 echo "    the guest referenced $bigs .big archives from the extracted tree in 45 s"
 if [ "$bigs" -gt 0 ]; then
@@ -211,11 +252,28 @@ else
     sed -n '1,20p' /tmp/boot.log | sed 's/^/      /'
 fi
 
+if [ "$APPIMAGE_MODE" = 1 ]; then
+    echo "--- the AppImage through its OWN runtime + AppRun (extract-and-run; a player's"
+    echo "    launch FUSE-mounts instead, same bytes), and the root beside the image:"
+    mkdir -p /tmp/beside && cp /tmp/cz.AppImage /tmp/beside/cz.AppImage
+    ai_smoke=$( (cd /tmp/beside && ./cz.AppImage --appimage-extract-and-run --smoke 2>&1) | tail -1)
+    echo "    $ai_smoke"
+    ai_root=$( (cd /tmp/beside && CZ_LAUNCHER=0 CZ_NO_WINDOW=1 CZ_NO_AUDIO_OUT=1 timeout 30 ./cz.AppImage --appimage-extract-and-run 2>&1) | grep -m1 '^\[paths\] root' || true)
+    echo "    $ai_root"
+    if echo "$ai_smoke" | grep -q "OK: every generated symbol resolved" \
+       && echo "$ai_root" | grep -q "root /tmp/beside (appimage)" \
+       && [ -f /tmp/beside/assets/package/PUT_YOUR_GAME_HERE.txt ]; then
+        echo "    appimage-run OK (smoke through AppRun, root beside the image, assets/package/ seeded)"
+    else
+        echo "    appimage-run FAILED"
+    fi
+fi
+
 echo "--- the first-run refusal, from a container with no game:"
 # CZ_ROOT because /app is read-only and the bundle's own assets/package is empty either
 # way; this is the state a player is in before they drop the package in.
 mkdir -p /tmp/empty/assets/package
-CZ_ROOT=/tmp/empty /app/cz_runtime 2>&1 | head -10 | sed 's/^/    /'
+CZ_ROOT=/tmp/empty $APP/cz_runtime 2>&1 | head -10 | sed 's/^/    /'
 
 exit $rc
 IN
@@ -227,7 +285,7 @@ echo
 # printed by code inside the container. An exit status is not evidence that a body
 # executed (see the -i note above).
 missing_marker=0
-for marker in "ldd /app/cz_runtime:" "verdict:" "cz_runtime --smoke" "first-run refusal"; do
+for marker in "--- ldd " "verdict:" "cz_runtime --smoke" "first-run refusal"; do
     grep -qF -- "$marker" "$LOG" || { echo "GATE DID NOT RUN: no \"$marker\" in the output" >&2
                                    missing_marker=1; }
 done
@@ -249,6 +307,12 @@ grep -q "dxc-translate OK" "$LOG" || {
 grep -q "overlay-gen OK" "$LOG" || {
     echo "GATE FAILED: overlay generation did not run or did not match the Python reference" >&2
     missing_marker=1; }
+# In AppImage mode, the image's own runtime path and the beside-the-image root.
+if [ "$APPIMAGE_MODE" = 1 ]; then
+    grep -q "appimage-run OK" "$LOG" || {
+        echo "GATE FAILED: the AppImage did not start through its runtime with the root beside it" >&2
+        missing_marker=1; }
+fi
 # And nothing the bundle must carry may be missing.
 grep -q " MISSING" "$LOG" && {
     echo "GATE FAILED: release files missing from the bundle (see above)" >&2
