@@ -131,7 +131,7 @@ held it (165 automatic frames + 16 F9 snapshots scanned in part 102).
 
 ## §4 How to reach czamd (unchanged)
 
-`ssh czamd` = `lisab@192.168.0.60`; PowerShell via `-EncodedCommand`; strip CLIXML by
+`ssh czamd` = `lisab@192.168.0.27` (**it was .60 until 2026-09-08; DHCP moved it** — if "No route to host", ask the operator for the address); PowerShell via `-EncodedCommand`; strip CLIXML by
 regex. Build on czwin (`wivi5@192.168.0.153`, `C:\cz\vc.bat`), deploy with
 `~/DR2CZ-troubleshooting/part102-fresh/deploy_czamd.sh` (its last `dir` line errors
 harmlessly). Headless route: `C:\Users\lisab\Desktop\CaseZeroRecomp\crowd_run.ps1`

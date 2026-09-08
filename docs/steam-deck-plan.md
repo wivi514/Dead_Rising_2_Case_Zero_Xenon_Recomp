@@ -246,8 +246,10 @@ to the temp directory and says so — the designed path, not a gate failure.
 **The Windows half, same evening (czwin came on):** clang-cl build clean; `--diag`'s
 file hash-identical to the console copy (after the text-mode fix, 31e035c — the binary
 log was one LF short per line, gotcha 529); a 45 s renderer boot's log 499,289 bytes ==
-console; the exe under Wine 11 prints `under Wine 11.0` in its os line. czamd was not
-on the network (no ARP), so no AMD `--diag` yet.
+console; the exe under Wine 11 prints `under Wine 11.0` in its os line. czamd had moved to
+192.168.0.27; its `--diag` (RX 6600, AMD proprietary 26.8.1) shows every REQUIRED
+feature present, D24S8 not sampleable → D32 chosen, 2x MSAA available — the
+AMD-proprietary half of H3 in one block; RADV on the same GPU remains the live-USB run.
 
 **What is owed after this part.** (1) ~~A Windows compile of the new code~~ — done
 (above); an AMD `--diag` on czamd when it answers. (2) The three artifacts carry NONE of this: v1.0.2's

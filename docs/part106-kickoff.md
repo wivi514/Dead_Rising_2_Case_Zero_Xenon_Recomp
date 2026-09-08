@@ -32,18 +32,21 @@ clang-cl, no warnings; `cz_runtime.exe --diag` on czwin (NVIDIA RTX 3070 Ti Lapt
 opened binary (31e035c opens it text-mode; gotcha 529). A 45 s headless renderer boot on
 czwin: log 499,289 bytes == console 499,289 bytes, with `[vk] driver: NVIDIA - 610.62`
 and `vblank #10000`. The same exe under the dev box's Wine 11 prints `[diag] os: Windows
-10.0 build 19045 under Wine 11.0` — the line a Proton report will carry. **czamd was
-NOT reachable** (no ping, no ARP at 192.168.0.60) so part 105's §1 item 1 and any AMD
-`--diag` still wait.
+10.0 build 19045 under Wine 11.0` — the line a Proton report will carry. **czamd's address had
+moved** (192.168.0.60 → .27 by DHCP; `~/.ssh/config` and `part103-amd-windows-perf-plan.md`
+§4 updated). Once reached: the part-105 exe deployed (**the previous exe, part 103's
+ab80b87, was overwritten** — the backup step failed on PowerShell syntax before the
+copy; `cz_runtime_part101/102/golden_sync.exe` remain and ab80b87 rebuilds from git),
+and **`--diag` on the RX 6600 under AMD's proprietary driver 26.8.1**: every REQUIRED
+feature present, `D24_UNORM_S8_UINT sampleable: no -> D32_SFLOAT_S8_UINT` (part 100's
+hand derivation, now printed by the tool), sample counts 0xf/0xf so 2x is available,
+timestamp period 10 ns, file == console by hash. That is the AMD-proprietary half of H3;
+RADV on the same GPU is still the operator's live-USB run.
 
 ## §1 Part 106 — autonomous, in order
 
-0. ~~**Compile on Windows the moment czwin answers**~~ — DONE (above). Still worth one
-   more thing when czamd answers: deploy the exe with
-   `~/DR2CZ-troubleshooting/part102-fresh/deploy_czamd.sh` and run `--diag` there — the
-   AMD proprietary driver's table on RDNA2 is the nearest thing to the Deck's hardware
-   this project can print, and its D24S8/MSAA lines are the ones part 100-103 derived
-   by hand. Original text:: `git pull --ff-only`, build, run
+0. ~~**Compile on Windows the moment czwin answers**~~ — DONE, and the czamd `--diag`
+   too (above). Original text:: `git pull --ff-only`, build, run
    `cz_runtime.exe --diag` and a renderer boot, and `cmp` the log against a captured
    stderr as part 105 did on Linux. The Windows-only code is `log_file.cpp`'s
    `_pipe`/`_dup2`/`SetStdHandle` block and `RunDiag`'s `RtlGetVersion` +

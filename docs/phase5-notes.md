@@ -21240,7 +21240,10 @@ run 5,665 vs 5,729 bytes — one byte a line, the CRT's text-mode fd 2 writing C
 the binary-mode log wrote LF (gotcha 529); the log now opens `_O_TEXT` on Windows and
 the two hash identical (5,729). Renderer boot 45 s: 499,289 == 499,289 bytes, driver
 line and vblanks present. The exe under Wine 11: `os: Windows 10.0 build 19045 under
-Wine 11.0`. czamd unreachable (no ARP at 192.168.0.60).
+Wine 11.0`. czamd had moved to 192.168.0.27 (DHCP); deployed there, `--diag` on the
+RX 6600 under AMD proprietary 26.8.1: all REQUIRED present, D24S8 not sampleable → D32,
+sample counts 0xf, timestamp period 10 ns, file == console by hash. The previous exe
+(ab80b87) was overwritten — the PowerShell backup step failed before the copy.
 
 ### 6. Owed
 
