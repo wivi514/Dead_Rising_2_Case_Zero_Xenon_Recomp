@@ -153,6 +153,7 @@ int Host_DisplayModeList(uint32_t*, int) { return 0; }
 
 #include "../gpu/vk_renderer.h"
 #include "host_paths.h"
+#include "png_icon.h"
 #include "settings.h"
 #include "../cpu/native_kbm.h"
 #include "stfs_extract.h"
@@ -1282,6 +1283,35 @@ uint32_t g_progLastDraw = 0;
 } // namespace
 
 
+// THE WINDOW ICON (part 104, operator request): the title's own 64x64 dashboard tile,
+// read from the player's unpacked game (host/png_icon.h says why it is read and never
+// shipped). Applied to every window this module creates; a missing or refused file leaves
+// SDL's default in place. SDL copies the pixels, so the surface is freed at once.
+static void ApplyGameIcon(SDL_Window* win)
+{
+    if (!win) return;
+    const PngIcon::Image& tile = PngIcon::GameTile();
+    if (tile.rgba.empty()) return;
+    SDL_Surface* s = SDL_CreateRGBSurfaceWithFormatFrom(
+        const_cast<uint8_t*>(tile.rgba.data()), int(tile.width), int(tile.height), 32,
+        int(tile.width) * 4, SDL_PIXELFORMAT_RGBA32);
+    if (!s) return;
+    SDL_SetWindowIcon(win, s);
+    SDL_FreeSurface(s);
+    // SDL2's Wayland backend has no SetWindowIcon (the protocol lets a compositor take the
+    // icon from the app-id's .desktop entry instead; SDL3 grew xdg-toplevel-icon), so on a
+    // Wayland session this call is a no-op and the line below says so rather than letting
+    // "the icon did not change" be read as a decoder failure. X11 and Windows honour it.
+    static bool said = false;
+    if (!said)
+    {
+        said = true;
+        if (const char* drv = SDL_GetCurrentVideoDriver(); drv && strcmp(drv, "wayland") == 0)
+            fprintf(stderr, "[icon] the wayland video driver takes no window icon (SDL2); "
+                            "the title bar keeps the compositor's default here\n");
+    }
+}
+
 // PREFER WAYLAND WHEN THE SESSION OFFERS IT (part 104). Real SDL2 — the bundled one since
 // part 82 — tries x11 before wayland on a Wayland desktop, where sdl2-compat/SDL3 (the
 // dev box's) tries wayland first. On this box (NVIDIA, XWayland) the x11 path presented
@@ -1319,6 +1349,7 @@ bool Host_ProgressBegin(const char* title)
                                     640, 200, SDL_WINDOW_ALLOW_HIGHDPI);
     if (!g_progWindow)
         return false;
+    ApplyGameIcon(g_progWindow);
     g_progRenderer = SDL_CreateRenderer(g_progWindow, -1, 0);
     if (!g_progRenderer)
     {
@@ -1458,6 +1489,7 @@ bool Host_RunLauncher()
                                        720, 460, SDL_WINDOW_ALLOW_HIGHDPI);
     if (!win)
         return true;
+    ApplyGameIcon(win);
     SDL_Renderer* ren = SDL_CreateRenderer(win, -1, 0);
     if (!ren)
     {
@@ -1864,6 +1896,7 @@ bool Host_WindowInit()
         SDL_Quit();
         return false;
     }
+    ApplyGameIcon(g_window);
 
     // The persisted EXCLUSIVE fullscreen upgrades the borderless creation flag here,
     // once the window exists to measure its display against (see the flags comment).
@@ -2591,11 +2624,14 @@ void Host_WindowRun()
                 std::lock_guard<std::mutex> lock(g_frameMutex);
                 rendering = g_havePixels;
             }
-            char title[192];
-            snprintf(title, sizeof(title),
-                     "Dead Rising 2: Case Zero — %s — %llu frames, %.1f fps",
-                     rendering ? "rendering" : "no renderer (CZ_VKDRAW=1 to enable)",
-                     (unsigned long long)presented, fps);
+            // The game's name and the frame rate, nothing else (operator request, part
+            // 104): the "no renderer (CZ_VKDRAW=1 to enable)" reminder that used to sit
+            // here was a dev-tree message in a player's title bar — the shipped
+            // cz_defaults.env turns the renderer on, and the log still says which arm
+            // is running.
+            (void)rendering;
+            char title[128];
+            snprintf(title, sizeof(title), "Dead Rising 2: Case Zero — %.1f fps", fps);
             SDL_SetWindowTitle(g_window, title);
         }
     }
