@@ -21154,6 +21154,24 @@ is "no gross regression", not "a null" — three runs an arm are owed before the
 change is called free (part105-kickoff §1 item 2). At the title (30 s, one run each): dev
 227 fps, old-base 222.
 
+### 6. Same session, operator request: the window title and icon (482b47f)
+
+The title bar read "Dead Rising 2: Case Zero — no renderer (CZ_VKDRAW=1 to enable) — N
+frames, F fps" — a dev-tree diagnostic in a player's title bar. It is now the name and the
+frame rate. And every window (game, launcher, progress) wears the title's OWN dashboard
+tile, `assets/game/X_IMAGEID_GAME.PNG` (64x64 RGBA), read from the player's unpacked game
+and never shipped — the file does not exist before the extract, so `GameTile()` caches only
+a success (the progress window is created before the extract, the game window after it).
+Nothing in the tree could decode a PNG (the LGPL ffmpeg has two XMA codecs and no zlib, SDL2
+no image loader, XenonUtils LZX not DEFLATE), so `host/png_icon.cpp` is a self-contained
+inflate + PNG reader for 8-bit RGB/RGBA/palette, non-interlaced, refusing everything else
+with a line. **Gate: byte-identical to PIL on all five game PNGs tried** (two 64x64 RGBA,
+the 1920x1320 and 584x800 RGB backgrounds, an achievement tile). One honest limit: SDL2's
+Wayland backend has no `SetWindowIcon`, so on the operator's own (now Wayland-first)
+session the title bar keeps the compositor's default and the log says so; X11 and Windows
+show the tile. The exe's own file icon on Windows stays ours (a compiled-in resource
+cannot carry Capcom art).
+
 ### 4. Item 4 — Case West notes
 
 `docs/reusability.md` gained a "Parts 103-104" section: no MSAA-off row on one GPU's

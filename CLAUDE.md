@@ -1097,7 +1097,9 @@ THE LIVE HAND-OFF**):
   1.0 fps on a Wayland+NVIDIA desktop** — real SDL2 picks x11 first, the dev box's SDL3 shim
   picks wayland, and the x11 path there is one frame a second; the published v1.0.1 bundle
   measured it. `window.cpp` now hints `wayland,x11` when the session offers Wayland; gotcha
-  524. Both legs rebuilt at 79ef1b7.
+  524. Then the operator asked for the title bar (name + fps only) and the window icon (the
+  title's own X_IMAGEID_GAME.PNG from the unpacked game, via a new PIL-identical PNG decoder,
+  `host/png_icon.cpp`; §6eu §6). Both legs rebuilt at 482b47f.
 * **Owed:** the golden pack's czamd number (its store is ~70 MB; the "under ~50 ms" gate was
   written for that count), the crowd-route A/B on the old-base binary, and the publication
   itself (operator: tag, attach `dist/`'s three artifacts, paste the notes).

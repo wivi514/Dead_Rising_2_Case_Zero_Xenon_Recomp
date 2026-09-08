@@ -9,7 +9,7 @@ before anything below.
 - **v1.0.2 is BUILT, GATED AND PASTE-READY, NOT PUBLISHED.** `docs/release-notes-v1.0.2.md`
   carries the three SHA-256s; the artifacts are in `dist/` (Linux `.tar.zst` 26 MB and
   `.AppImage` 25 MB built on Ubuntu 22.04 with glibc floor **2.35**, Windows zip 21 MB
-  built on czwin), all from source `79ef1b7`, which also carries the Wayland-first fix (§6eu §5: every
+  built on czwin), all from source `482b47f`, which also carries the Wayland-first fix and the title/icon change (§6eu §6) (§6eu §5: every
   shipped Linux build presented at 1.0 fps on a Wayland+NVIDIA desktop; gotcha 524). Tagging and attaching are the operator's,
   as for v1.0.1. **If any artifact is rebuilt, its hash in the notes must be refreshed.**
 - **The Linux glibc floor is 2.35, measured off the artifact per file** and gated in two
@@ -70,6 +70,8 @@ before anything below.
   while a gate is running (bash reads scripts lazily; §6eu §1).
 - `tools/release_package_linux.sh` — prints the floor per file; `CZ_FFMPEG_WORK`,
   `CZ_SDL2_PREFIX`, `CZ_DXC_LIB` are its container-side knobs.
+- `runtime/host/png_icon.{h,cpp}` — the PNG decoder behind the window icon (PIL-identical on
+  the five game PNGs); `window.cpp` `ApplyGameIcon` at the three window sites.
 - `runtime/host/host_paths.cpp` step 1b (`$APPIMAGE` + the `$APPDIR` containment guard);
   `runtime/gpu/vk_renderer.cpp` `GoldenLoad`/`goldenwriter` (the pack, its arm
   `CZ_VK_NO_GOLDEN_PACK=1`).

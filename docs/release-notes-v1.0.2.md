@@ -1,10 +1,10 @@
 # Release notes — v1.0.2
 
 **This is the text to paste into the GitHub Release body.** Binaries are commit
-`79ef1b7` (all three artifacts were built from that source; the docs commits after it
-change no code). It carries part 104's three runtime changes (the golden texture store
-as one pack file, the AppImage data root, Wayland-first on Linux) and the first Linux
-artifacts built on the old base.
+`482b47f` (all three artifacts were built from that source; the docs commits after it
+change no code). It carries part 104's runtime changes (the golden texture store as one
+pack file, the AppImage data root, Wayland-first on Linux, the window title and icon) and
+the first Linux artifacts built on the old base.
 
 **The release is frozen at the tag**: if any artifact is EVER rebuilt, refresh its hash
 below before attaching.
@@ -45,6 +45,15 @@ shader cache are reused.
   each — and that directory was being re-read file by file at every launch, one second
   and growing. It is now a single pack file; the old per-file store is folded into it on
   the first launch and removed.
+
+### Changed
+
+- **The window title is just the game's name and the frame rate.** The developer note
+  about enabling the renderer is gone from the title bar.
+- **The window wears the game's own icon** — the 64x64 tile from your unpacked game
+  (`assets/game/X_IMAGEID_GAME.PNG`), so it is read from your copy and never shipped. It
+  appears once the first run has unpacked the game. On Linux under Wayland the title bar
+  keeps the desktop's icon (SDL2 cannot set one there); Windows and X11 show it.
 
 ### Everything from v1.0.1 still applies
 
