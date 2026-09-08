@@ -21080,6 +21080,42 @@ an SSH-started process there dies with the session — gotcha 522), every boot w
 `CZ_FILE_TRACE`, and the engine's own log on every second boot:
 [[CZAMD]]
 
+### 5. FOUND BY THE CONFIRMATION RUN: every shipped Linux build presented at 1.0 fps on a Wayland desktop (fixed, 79ef1b7)
+
+The one crowd-route run of the old-base binary was REJECTED by the route script — 152
+draws for the whole run, i.e. it never left the title — and the `[fps]` lines said why:
+**5 frames in 5.0 s, 1.0 fps mean, 1000 ms median**, against 2,263 frames for the dev
+binary in the same window. Bisected in 30-s title-screen runs, one variable a run:
+
+| binary | libs | driver | fps |
+|---|---|---|---|
+| old-base bundle | bundled | x11 (SDL2's default here) | **1.0** |
+| old-base bundle | bundled | headless | 204 |
+| old-base bundle | host-built real SDL2 | x11 | **1.0** |
+| dev (clang 22) | host sdl2-compat → SDL3 | wayland (SDL3's default) | 227 |
+| dev | same, `SDL_VIDEODRIVER=x11` | x11 | **1.0** |
+| old-base bundle | bundled, `SDL_VIDEODRIVER=wayland` | wayland | 222 |
+| **the PUBLISHED v1.0.1 bundle** (pulled from GitHub, hash matches) | as shipped | x11 | **1.0** |
+| the published v1.0.1 bundle, `SDL_VIDEODRIVER=wayland` | as shipped | wayland | 224 |
+
+So it is the SDL video driver, not the compiler, not the bundle: real SDL2 (bundled since
+part 82, in every shipped Linux artifact) tries x11 before wayland on a Wayland desktop,
+where the dev box's sdl2-compat/SDL3 tries wayland first — and on this box (NVIDIA,
+XWayland) the x11 present path delivers exactly one frame a second. **Every Linux player on
+a Wayland desktop with this driver stack has had this since v1.0.0**, and no headless gate
+could see it (gotcha 460's shape: a windowed-only cost is invisible headlessly), nor did the
+operator, whose sessions run the dev binary. The fix (79ef1b7, `window.cpp`
+`PreferWaylandWhenOffered`): when `WAYLAND_DISPLAY` is set and the player has not set
+`SDL_VIDEODRIVER`, hint `wayland,x11` before every SDL video init — a comma list SDL2 ≥
+2.0.22 walks in order, so a broken wayland driver still falls back to x11 and an X11
+session is untouched; a player's own `SDL_VIDEODRIVER` outranks the hint (measured: forcing
+x11 still gives 1.0 fps, the player's choice). Verified with the real SDL2 the bundle
+ships: default now 226 fps at the title. The old-base and Windows artifacts were rebuilt
+at 79ef1b7 and re-gated; the crowd-route confirmation of the compiler change is re-run on
+the rebuilt bundle (its verdict is in §1's owed line if it did not land in this part).
+**The compiler change, at the one load both arms reached** (the title, 30 s): dev 227 fps,
+old-base 222 fps — one run each, within the noise (gotcha 159); the crowd A/B is owed.
+
 ### 4. Item 4 — Case West notes
 
 `docs/reusability.md` gained a "Parts 103-104" section: no MSAA-off row on one GPU's

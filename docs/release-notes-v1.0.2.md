@@ -1,16 +1,19 @@
 # Release notes — v1.0.2
 
 **This is the text to paste into the GitHub Release body.** Binaries are commit
-`c7ee332` (all three artifacts were built from that source; the tooling and docs commits after it change no code). It carries
-part 104's two runtime changes (the golden texture store as one pack file, and the
-AppImage data root) and the first Linux artifacts built on the old base.
+`79ef1b7` (all three artifacts were built from that source; the docs commits after it
+change no code). It carries part 104's three runtime changes (the golden texture store
+as one pack file, the AppImage data root, Wayland-first on Linux) and the first Linux
+artifacts built on the old base.
 
 **The release is frozen at the tag**: if any artifact is EVER rebuilt, refresh its hash
 below before attaching.
 
 ---
 
-A maintenance release for Linux, plus one boot-time improvement on both platforms.
+A maintenance release for Linux — the glibc requirement drops, there is an AppImage, and
+a one-frame-per-second defect on Wayland desktops is fixed — plus one boot-time
+improvement on both platforms.
 
 **Upgrading from v1.0.1:** unpack over your existing folder, or anywhere — saves and
 settings live outside the game folder and are untouched. Your unpacked game data and
@@ -27,6 +30,11 @@ shader cache are reused.
   executable, run it. It creates `assets/package/` NEXT TO ITSELF on the first launch —
   that is where your game package goes (or drag the package onto the launcher). The
   `.tar.zst` is still provided and is the same build.
+- **Fixed: one frame per second on Wayland desktops.** The Linux builds preferred X11
+  (through XWayland) over Wayland, and on at least NVIDIA + XWayland that path presented
+  exactly one frame a second — v1.0.0 and v1.0.1 both did this. The game now uses Wayland
+  when the session offers it and falls back to X11 otherwise; setting `SDL_VIDEODRIVER`
+  yourself still wins.
 - The bundled XMA audio decoder now carries its hand-written x86 assembly (the earlier
   Linux builds shipped the plain-C fallback).
 
@@ -94,7 +102,7 @@ XenonRecomp and XenosRecomp.
 ### Checksums (SHA-256)
 
 ```
-9bf180c74322647dc9ebdb872954a59293ba7b4bba21d04978c4249c8909f58f  CaseZeroRecomp-linux-x86_64.tar.zst
-ec5f263b45e15cd67c727d3677cfa825cbd70b44366e44fd4ad2a057c33c0a45  CaseZeroRecomp-linux-x86_64.AppImage
-ab69a837c519af71344686167c13f798876a48f4f51d61666843835f23cf5975  CaseZeroRecomp-windows-x86_64.zip
+9c67d39d508186b757797c2d76d916c03d4bb12bbade6c9f5f6626aa81b752bd  CaseZeroRecomp-linux-x86_64.tar.zst
+563fdbca1b843b389edb8fdf7e7f83c0a661d848098181c346abd3284fe9ed7a  CaseZeroRecomp-linux-x86_64.AppImage
+4248f018afdfec40ceba76fc09bf0160777c2a3046a482cab92b72ef2e96f249  CaseZeroRecomp-windows-x86_64.zip
 ```

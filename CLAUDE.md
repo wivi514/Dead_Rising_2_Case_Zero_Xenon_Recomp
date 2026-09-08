@@ -42,7 +42,7 @@ the part a future Case West port will reuse verbatim:
 
 ## Transferable gotchas
 
-**THE FULL NUMBERED LEDGER IS `docs/gotchas.md` — 523 entries, and every "gotcha N"
+**THE FULL NUMBERED LEDGER IS `docs/gotchas.md` — 524 entries, and every "gotcha N"
 reference in this repo and in the docs resolves there.** It was split out of this file
 on 2026-08-08, when this file reached 308 KB and was being loaded into every session
 whole. Read it **before making a measurement claim, adding an instrument, believing a
@@ -192,8 +192,11 @@ mask; trust the microcode's own swizzles.
     read `phase5-notes.md` §6ba before following anything in it.
   - **THE LIVE HAND-OFF IS ALWAYS THE HIGHEST-NUMBERED `partNN-kickoff.md`**, and it
     supersedes every earlier kickoff on "where the port is". **IT IS
-    `part104-kickoff.md` — the AMD/Windows performance board is CLOSED by measurement
-    (part 103), and its §1 is the owed list.** ~~It is `part99-kickoff.md` — BOTH
+    `part105-kickoff.md` — v1.0.2 is BUILT AND GATED (Linux on an old base, glibc floor
+    2.35, plus an AppImage), NOT PUBLISHED; its §1 is the autonomous list and §1b the
+    operator's.** ~~It is `part104-kickoff.md` — the AMD/Windows performance board is
+    CLOSED by measurement (part 103), and its §1 is the owed list~~ — part 104 ran that
+    list. ~~It is `part99-kickoff.md` — BOTH
     operator-queued launcher fixes (subtitle language + the skip-intro-logos toggle)
     are IN-TREE and gated; its §1 is the owed list and v1.0.1 — now carrying part 98's
     stutter fix AND both features — HEADS IT~~ — v1.0.1 shipped with those.
@@ -1064,14 +1067,46 @@ ground is and that PERFORMANCE IS PARKED. (This
 line has now named the wrong plan TWICE — the two-live-pointers defect the block-rotation note at the bottom of this file
 describes, and the reason that note asks for the rule and not just the name; gotcha 13.)
 
-Where the port is, as of 2026-09-08 (**PART 103 — THE AMD/WINDOWS PERFORMANCE BOARD
+Where the port is, as of 2026-09-08 (**PART 104 — v1.0.2 BUILT AND GATED, NOT PUBLISHED:
+the Linux release is linked on an OLD BASE (Ubuntu 22.04 in podman, `tools/release_build_oldbase.sh`)
+so its glibc floor is **2.35** instead of this machine's 2.43 — measured off the artifact
+per file, gated at the floor (pass) and below it (Rocky 9 refuses with the named symbol);
+there is an **AppImage** (`tools/release_package_appimage.sh`, root resolved beside the image
+via `host_paths` step 1b); the golden texture store is ONE PACK FILE (dev box preload
+1,301-1,331 → 475-509 ms for 345 MB; `CZ_VK_NO_GOLDEN_PACK=1` the arm); and the czamd
+one-in-five pre-frame park was hunted with every instrument armed. `phase5-notes.md` §6eu is
+the record, `release-plan.md` §9.9 the programme's view, gotchas 520-523,
+`docs/release-notes-v1.0.2.md` paste-ready with all three hashes, **`docs/part105-kickoff.md`
+THE LIVE HAND-OFF**):
+
+* **The floor could not go below 2.34 whatever the base**: `lib/libdxcompiler.so` (the DXC
+  prebuilt the translator dlopens) imports GLIBC_2.34 — gotcha 520, found with `objdump -T`
+  before any container existed. 22.04's 2.35 is one above it; the executable itself is 2.34,
+  jammy's `libgcc_s` and the container-built `libavutil` set 2.35.
+* **One line in the tree needed changing for clang 15** (a structured-binding lambda
+  capture, c7ee332); the identity gate holds within the toolchain (RelWithDebInfo vs Release,
+  byte-identical `.text`) and the compiler change is a stated, unmeasured code-generation
+  change — the crowd-route confirmation is owed (part105-kickoff §1 item 2).
+* **The park:** [[CZAMD_SHORT]] `vblank #1000` is printed 5 s into a healthy boot, not at the
+  first frame (gotcha 521); the loop's scripts are `tools/czamd/p104_*.ps1`, run as scheduled
+  tasks because an SSH-started process there dies with the session (gotcha 522).
+* **FOUND BY THE CONFIRMATION RUN AND FIXED (79ef1b7): every shipped Linux build presented at
+  1.0 fps on a Wayland+NVIDIA desktop** — real SDL2 picks x11 first, the dev box's SDL3 shim
+  picks wayland, and the x11 path there is one frame a second; the published v1.0.1 bundle
+  measured it. `window.cpp` now hints `wayland,x11` when the session offers Wayland; gotcha
+  524. Both legs rebuilt at 79ef1b7.
+* **Owed:** the golden pack's czamd number (its store is ~70 MB; the "under ~50 ms" gate was
+  written for that count), the crowd-route A/B on the old-base binary, and the publication
+  itself (operator: tag, attach `dist/`'s three artifacts, paste the notes).
+
+Where the port was, as of 2026-09-08 (**PART 103 — THE AMD/WINDOWS PERFORMANCE BOARD
 RUN TO ITS END: the GPU split on czamd says the RX 6600 frame is the title's own shading
 at the hardware ratio (2.4-2.5x the 3070 at every load), OURS is ~1.2 ms of 20 and 1.08 of
 that is the MSAA resolve; MSAA 2x is REFUTED as a lever there (single-sample trades the
 resolve for 1.39 ms of colour-decompress barriers and is SLOWER under 6,000 draws); items
 2-3 dead by the 0.5 ms kill rule; items 4a/5/6 shipped. `phase5-notes.md` §6et is the
 record, `part103-amd-windows-perf-plan.md` §1b the execution table, gotchas 517-519,
-`docs/part104-kickoff.md` THE LIVE HAND-OFF**):
+`docs/part104-kickoff.md` was the live hand-off**):
 
 * **Two things had to be built to read the split on czamd** (gotcha 519): the process
   there is ended by `Stop-Process` = TerminateProcess, so there is NO exit dump on that

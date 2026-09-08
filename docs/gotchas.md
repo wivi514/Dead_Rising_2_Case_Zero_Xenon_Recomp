@@ -6001,3 +6001,17 @@ From phase C part 18 (the frame rate — and none of it was work):
      thing. Rule: when a copy of a large file into new memory reads slow, the lever is
      to not copy (mmap and point into the mapping), not to change the copy's API; and
      say what the split was before naming the fix (gotcha 238's shape).
+
+524. **A WINDOWED-ONLY DEFECT IN A SHIPPED BUNDLE SURVIVES EVERY HEADLESS GATE AND EVERY
+     DEV-BINARY SESSION.** The published v1.0.1 Linux bundle presented at exactly 1.0 fps
+     on a Wayland+NVIDIA desktop, because the real SDL2 it bundles picks the x11 driver
+     first where the dev box's sdl2-compat/SDL3 picks wayland — so the operator's
+     sessions (dev binary) never saw it, and the clean-container gate (headless, no GPU)
+     could not. It surfaced only because part 104 ran the CROWD ROUTE on the release
+     binary, windowed, and the route script refused a run that never left the title.
+     Rule: at least one gate must run the SHIPPED bundle windowed on a real desktop, with
+     the bundle's own libraries, and read a frame rate — a `--smoke` in a container is a
+     link test, not a play test — and any library whose defaults differ from the dev
+     box's (a real SDL2 against a compat shim) is a variable the gate must cover, not
+     assume. Companion to 460 (a windowed-only cost is invisible headlessly) and 485
+     (the first bundle passed every static check and died on its first instruction).
