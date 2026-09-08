@@ -287,8 +287,12 @@ control runs read 8.87 GPU / 10.53 wall at the crowd — the baseline, as they m
 | 7,000-8,000 | 7.71 | 3.77 / 3.78 / 3.80 | 9.95 | 9.66 / 9.62 / 9.57 |
 | 8,000-9,000 | 8.84 | **4.00 / 4.11 / 4.04** | 10.66 | 10.29 / 10.61 / 10.39 |
 
-The mirror reads the same GPU column as the ReBAR arm (4.03-4.11) to within the run
-floor — the copies' own cost is the split's residual, 0.05-0.07 ms a frame — and the
+A fourth run on the build with the `TRANSFER_SRC` fix (campaign 5) reads the same:
+**3.98 crowd / 3.24 light, wall −4.1% / −24.7%**; its third control run 8.78 / 4.98. The
+mirror's own bookkeeping over that run: **0.32-0.34 MB/frame copied host → VRAM in ~30
+copies/frame, and persist hits bound the mirror 100.0% of the time** (the host-store
+binding is a slot's first frame only). The mirror reads the same GPU column as the ReBAR
+arm (4.03-4.11) to within the run floor — the copies' own cost is the split's residual, 0.05-0.07 ms a frame — and the
 wall column is a small GAIN even at the CPU-bound crowd (−0.5 to −3.4%), where the ReBAR
 arm was a null: the CPU never touches write-combined memory in this form. Validation:
 the first boot found the host store lacking `TRANSFER_SRC` (fixed, TRANSFER_SRC is in

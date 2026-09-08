@@ -21346,7 +21346,10 @@ Three runs, default ON, against seven pooled baselines and two control runs
 to within the floor, the copies' own cost being the split's 0.05-0.07 ms residual —
 **and wall −22 to −24% in the light bands, −0.5 to −3.4% at the CPU-bound crowd**
 (a small gain where the ReBAR arm was a null, because no CPU write is write-combined in
-this form). Synchronization validation: 0 hazards. `docs/perf-plan-part106.md` §4-§5
+this form). A fourth run on the fixed build: 3.98 / 3.24, wall −4.1% / −24.7%; 0.32 MB/frame copied
+in ~30 copies, hits bound the mirror 100.0% of the time. Validation: only the four
+pre-existing `topology-08773` lines; synchronization validation 0 hazards on both
+builds. `docs/perf-plan-part106.md` §4-§5
 carry the tables and what remains: on the §0.2 scaling a GTX 1060 goes from ~34 to
 ~14-15 ms at the crowd and ~11 in an empty street, so the GPU half of the target is met
 on paper and the CPU half (10.6 ms of pump time here at the crowd; 1.3-1.6x that on a
