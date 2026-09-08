@@ -21233,8 +21233,17 @@ Plan §2's H5 is closed on this box; the Deck's own gamescope is the same progra
 | gamescope + `SDL_VIDEODRIVER=wayland` outside | 5,463 frames / ~30 s, still x11 | the variable never reached the game |
 | Int64 capability | 450 of 450 `.spv` | `assets/shader_spv` |
 
+### 5b. Windows, same evening
+
+czwin came on: clang-cl build clean. `--diag` file vs `cmd`-redirected console: first
+run 5,665 vs 5,729 bytes — one byte a line, the CRT's text-mode fd 2 writing CRLF where
+the binary-mode log wrote LF (gotcha 529); the log now opens `_O_TEXT` on Windows and
+the two hash identical (5,729). Renderer boot 45 s: 499,289 == 499,289 bytes, driver
+line and vblanks present. The exe under Wine 11: `os: Windows 10.0 build 19045 under
+Wine 11.0`. czamd unreachable (no ARP at 192.168.0.60).
+
 ### 6. Owed
 
-The Windows compile (czwin unreachable all session); the artifact rebuild (v1.0.2's
+~~The Windows compile~~ (done, §5b); an AMD `--diag` on czamd; the artifact rebuild (v1.0.2's
 `dist/` predates every line of this — a Deck tester needs a build WITH the log); the
 operator's live-USB RADV run; the first Deck report. `part106-kickoff.md` §1.

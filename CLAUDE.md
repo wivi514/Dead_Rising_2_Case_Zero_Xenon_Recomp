@@ -1086,7 +1086,9 @@ the child, so the x11 path is the only one and it presents at ~165 fps here (pla
 closed); H4 priced (disc shader build 12.5 s on a 4c/8t mask at desktop clocks). Gotchas
 525-528, `steam-deck-plan.md` §6 the item record, `phase5-notes.md` §6ev, a player guide
 `docs/steam-deck-testing.md` + issue templates, README rows. **`docs/part106-kickoff.md`
-IS THE LIVE HAND-OFF.** Owed: the WINDOWS COMPILE (czwin unreachable all session), the
+IS THE LIVE HAND-OFF.** The Windows half was gated the same evening on czwin (file ==
+console by hash for `--diag` and a renderer boot, after a text-mode fix — gotcha 529;
+Wine 11 names itself in `--diag`). Owed: an AMD `--diag` on czamd (unreachable), the
 ARTIFACT REBUILD (v1.0.2's `dist/` is at 482b47f and carries none of this — a Deck
 tester needs a build WITH the log; operator decision: rebuild v1.0.2 or call it v1.0.3),
 the operator's live-USB RADV test (H3, the one that matters), the first Deck report**):

@@ -10,8 +10,8 @@ hand-off.** Read `docs/steam-deck-plan.md` §6 (the item-by-item record) and
   --diag`** (`host/log_file.{h,cpp}`; `docs/instruments.md`'s last section). The
   renderer's required Vulkan features are ONE table read by bring-up and `--diag`; a
   missing one is named, with the driver. gamescope is detected and the log states the
-  video path. All gated on the dev box; none of it compiled on Windows yet (czwin was
-  unreachable — SSH banner timeout — all session).
+  video path. Gated on the dev box AND on czwin (Windows: file == console by hash for
+  both `--diag` and a renderer boot; Wine 11 names itself in `--diag`).
 - **The three v1.0.2 artifacts in `dist/` are at 482b47f and carry NONE of part 105.**
   `docs/release-notes-v1.0.2.md` is still paste-ready for those. Decision for the
   operator (§1b item 0): rebuild all three at the part-105 head and refresh the hashes
@@ -24,9 +24,26 @@ hand-off.** Read `docs/steam-deck-plan.md` §6 (the item-by-item record) and
   can test it**; the live-USB run (§1b item 1) and the first Deck report are the tests.
 - Performance stays parked on both boxes; the czamd park hunt stands as part 104 left it.
 
+**Item 0's Windows half — DONE the same evening, once czwin was on.** Built with
+clang-cl, no warnings; `cz_runtime.exe --diag` on czwin (NVIDIA RTX 3070 Ti Laptop,
+610.62) writes `cz_diag.txt` **hash-identical to a `cmd`-redirected console copy**
+(5,729 bytes both) — after one fix: the first Windows run's file was 64 bytes short of a
+64-line console, because the CRT's original fd 2 is in TEXT mode (CRLF) and the log was
+opened binary (31e035c opens it text-mode; gotcha 529). A 45 s headless renderer boot on
+czwin: log 499,289 bytes == console 499,289 bytes, with `[vk] driver: NVIDIA - 610.62`
+and `vblank #10000`. The same exe under the dev box's Wine 11 prints `[diag] os: Windows
+10.0 build 19045 under Wine 11.0` — the line a Proton report will carry. **czamd was
+NOT reachable** (no ping, no ARP at 192.168.0.60) so part 105's §1 item 1 and any AMD
+`--diag` still wait.
+
 ## §1 Part 106 — autonomous, in order
 
-0. **Compile on Windows the moment czwin answers**: `git pull --ff-only`, build, run
+0. ~~**Compile on Windows the moment czwin answers**~~ — DONE (above). Still worth one
+   more thing when czamd answers: deploy the exe with
+   `~/DR2CZ-troubleshooting/part102-fresh/deploy_czamd.sh` and run `--diag` there — the
+   AMD proprietary driver's table on RDNA2 is the nearest thing to the Deck's hardware
+   this project can print, and its D24S8/MSAA lines are the ones part 100-103 derived
+   by hand. Original text:: `git pull --ff-only`, build, run
    `cz_runtime.exe --diag` and a renderer boot, and `cmp` the log against a captured
    stderr as part 105 did on Linux. The Windows-only code is `log_file.cpp`'s
    `_pipe`/`_dup2`/`SetStdHandle` block and `RunDiag`'s `RtlGetVersion` +

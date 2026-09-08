@@ -243,10 +243,14 @@ the stage: `release_package_linux.sh`, `release_package_appimage.sh` and
 archiving. The clean-container gate mounts the stage `:ro`, so there the log falls back
 to the temp directory and says so — the designed path, not a gate failure.
 
-**What is owed after this part.** (1) A Windows compile of the new code — czwin was
-unreachable (SSH banner timeout) all session; `log_file.cpp`'s `_pipe`/`_dup2`/
-`SetStdHandle` path and `RunDiag`'s `RtlGetVersion`/`wine_get_version` block have not
-been compiled by MSVC/clang-cl. (2) The three artifacts carry NONE of this: v1.0.2's
+**The Windows half, same evening (czwin came on):** clang-cl build clean; `--diag`'s
+file hash-identical to the console copy (after the text-mode fix, 31e035c — the binary
+log was one LF short per line, gotcha 529); a 45 s renderer boot's log 499,289 bytes ==
+console; the exe under Wine 11 prints `under Wine 11.0` in its os line. czamd was not
+on the network (no ARP), so no AMD `--diag` yet.
+
+**What is owed after this part.** (1) ~~A Windows compile of the new code~~ — done
+(above); an AMD `--diag` on czamd when it answers. (2) The three artifacts carry NONE of this: v1.0.2's
 `dist/` is at 482b47f. Either rebuild all three and refresh the notes' hashes, or ship
 v1.0.2 as gated and make this v1.0.3 — the operator's call; a Deck tester needs a build
 WITH the log file, so the rebuild is the useful one. (3) Item 5. (4) A Deck report.

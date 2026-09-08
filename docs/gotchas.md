@@ -6058,3 +6058,11 @@ From phase C part 18 (the frame rate — and none of it was work):
      Had it been believed, `shaderInt64` would have gone optional and a device without
      it would have failed at its first draw instead of at bring-up with a name. Rule:
      when a census answers a yes/no with zero, print its marginals before believing it.
+529. **ON WINDOWS, TWO COPIES OF THE SAME BYTES DIFFER BY ONE BYTE A LINE IF ONE
+     DESCRIPTOR IS IN TEXT MODE.** The log tee's console copy went out through the CRT's
+     original fd 2 (text mode, LF → CRLF) and its file was opened `_O_BINARY`; the first
+     czwin `--diag` read 5,665 vs 5,729 bytes over 64 lines and every line "differed".
+     An identity gate that spans a Windows descriptor must pin the mode on BOTH sides —
+     here the file went to text mode, which is also what a player's Notepad wants. A
+     Linux-only gate would have passed this forever (524's shape: the gate must run on
+     the platform whose library defaults differ).
