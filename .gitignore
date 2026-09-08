@@ -44,5 +44,11 @@ tools/__pycache__/
 /dist/
 /thirdparty/sdl2/
 /thirdparty/ffmpeg-lgpl/
+# The old-base (container) build of the release (tools/release_build_oldbase.sh, part 104)
+# and the AppImage runtime it fetches; both regenerable.
+/thirdparty/oldbase/
+/thirdparty/appimage/
 build-release/
 build-relmatch/
+build-release-oldbase/
+build-relmatch-oldbase/

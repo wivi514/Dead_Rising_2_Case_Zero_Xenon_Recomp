@@ -161,6 +161,50 @@ title, and they should save Case West most of a part:
   beside every number (gotchas 384-385). Part 64 spent an hour on three
   "improvements" that were partial reads.
 
+## Parts 103-104: reading a second machine, and shipping on Linux — five rules for Case West
+
+Everything here was learned on the AMD/Windows test box (`czamd`, an RX 6600 / Ryzen 5
+5500) and on the Linux release, and none of it is Case Zero-specific.
+
+1. **Ship no "disable MSAA for performance" row on the strength of any one GPU**
+   (gotcha 518). On the RX 6600, `CZ_VK_MSAA=0` cut the resolve-copy class from 1.08 to
+   0.37 ms and RAISED the resolve-barrier class from 0.06 to 1.39 ms — AMD keeps a
+   single-sample colour attachment compressed (DCC) and decompresses the whole image on
+   every transition to TRANSFER_SRC, where the multisampled image was not compressed.
+   Net: single-sample is SLOWER at every load band under 6,000 draws there. A frame-time
+   A/B alone would have said "MSAA is free on AMD" and been right for the wrong reason.
+   Read the whole per-region GPU split for both arms before naming a mechanism, and let
+   the internal resolution be the one performance lever the launcher offers.
+2. **Read a Windows test box with the PERIODIC counter dump, never the exit dump**
+   (gotcha 519). Every remote run there ends in `Stop-Process -Force`, which is
+   `TerminateProcess`: the SIGTERM handler that prints the renderer's counters on the
+   Linux `timeout` path never runs, and a log with no counter block is a run that was
+   killed, not a run that counted zero. Arm `CZ_VK_STATS=N` and read windows between two
+   dumps (`tools/gpu_split_window.py`), which is also the only way to read the CROWD's
+   split rather than the whole run's. Check the block is there before quoting anything.
+3. **Name the present mode beside every cross-machine GPU number** (gotcha 517). A
+   headless run pays a per-frame present READBACK (1.12 ms at 1080p, `vkCmdCopyImageToBuffer`)
+   that a swapchain release never pays; a windowed run on the other box reads 0.000 in
+   that class. Same-machine A/Bs are fine either way; a headless-versus-shipped or
+   cross-box comparison needs `present readback` read out of the split and subtracted.
+4. **The `[threads]` block is the first read on a small-machine report.** It names every
+   pool, budgeted or not (pipeline, translate, golden, audio, xma), with a
+   `total runnable at a burst` line. A 6-core report that stutters is a thread-count
+   question before it is a renderer question, and the block answers it from the log.
+5. **On Linux, link the release on an OLD BASE and read the floor off the artifact**
+   (part 104, `tools/release_build_oldbase.sh`). A binary imports the glibc of the machine
+   that linked it, glibc cannot be bundled, and an AppImage runtime is a mount, not a
+   libc. Build in a container (Ubuntu 22.04 = 2.35), build SDL2 and ffmpeg in the same
+   container, run the PACKAGING inside it too (the bundled libstdc++ comes from wherever
+   `ldd` runs), and have the packaging script print the highest `GLIBC_x.y` any bundled
+   ELF imports — per file, because a prebuilt you did not compile (DXC's
+   `libdxcompiler.so`, GLIBC_2.34) can set the floor above the executable's. Gate in a
+   container OLDER than the build base. An AppImage needs one more thing from the
+   runtime: its executable is a read-only mount that moves every launch, so the data root
+   must resolve from `$APPIMAGE` (the file the player launched), guarded by "the
+   executable is inside `$APPDIR`" so a terminal that is itself an AppImage cannot misroute
+   a dev build through the environment.
+
 ## Part 99: two launcher features that transfer to Case West nearly verbatim
 
 Both are Blue Castle engine facts, not Case Zero facts:
