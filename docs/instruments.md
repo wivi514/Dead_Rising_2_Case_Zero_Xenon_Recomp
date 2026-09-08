@@ -3363,6 +3363,21 @@ CZ_VK_GOLDEN_SYNC=1  **the control arm for part 102's background golden-texture 
                   `golden`. A/B on czamd's crowd route with an EMPTY golden store per arm
                   (CZ_GOLDEN_DIR=<fresh>) is the measurement; note CZ_GOLDEN_DIR appends
                   `/golden` to whatever it is given.
+CZ_VK_NO_GOLDEN_PACK=1  **the control arm for part 104's golden PACK.** The golden store
+                  is one file now — `golden.pack` under the cache root: an 8-byte header
+                  then {sig u64, len u32, bytes} entries to EOF, read with one read at boot
+                  and APPENDED to by the writer thread as textures are captured (flushed
+                  per entry; a torn tail from a kill is cut at the next load, and the
+                  preload line says so). Loose `<sig>.bin` files from before the pack are
+                  folded in on the next boot and DELETED once the pack holds them, so the
+                  directory walk that cost the boot 1,290 ms here / ~1,070 ms on czamd
+                  (29,932 / ~5,950 opens) runs once more and then over an empty directory.
+                  Measured on the dev box, same store: walk 1,290 ms -> pack 495 ms for
+                  345 MB (the 3070 box's store is unusually large; czamd's is ~70 MB).
+                  This arm is the per-file store exactly as it was — the walk, one file per
+                  capture, the pack ignored — for the boot-time A/B. The preload line
+                  prints both populations (`pack N entries (M MB), K loose files walked`)
+                  and the exit block a `golden pack:` line with what this session appended.
 CZ_NO_VS_RECIPES=1  **the control arm for part 102's vertex-shader recipes.** The first-run
                   prebuild runs pixel-only (parts 84-101's behaviour) and every vertex shader
                   waits for the draw that first binds it — first-sight translation plus a

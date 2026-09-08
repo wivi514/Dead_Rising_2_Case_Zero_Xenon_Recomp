@@ -680,39 +680,39 @@ std::filesystem::path GoldenDir()
     std::filesystem::create_directories(base, ec);
     return base;
 }
-void GoldenLoad()
-{
-    if (g_noGolden) return;
-    // TIMED (part 103 item 5). This runs on the boot path before the first frame and it is
-    // one open+read per file — 3,811-5,266 files on czamd, 29,416 on the dev box — and on
-    // NTFS with a real-time scanner an open is not free (the WRITE of these same files was
-    // 2 ms each, gotcha 516). A boot cost with no number beside it cannot be ranked, so the
-    // line below carries the wall time and the file count, on every platform.
-    const auto t0 = std::chrono::steady_clock::now();
-    size_t files = 0;
-    std::error_code ec;
-    for (auto& e : std::filesystem::directory_iterator(GoldenDir(), ec))
-    {
-        if (ec) break;
-        if (!e.is_regular_file()) continue;
-        const uint64_t sig = strtoull(e.path().stem().string().c_str(), nullptr, 16);
-        if (!sig) continue;
-        std::ifstream f(e.path(), std::ios::binary);
-        std::vector<uint8_t> data((std::istreambuf_iterator<char>(f)),
-                                  std::istreambuf_iterator<char>());
-        if (!data.empty() && data.size() <= kGoldenTexCap)
-            g_goldenTex[sig] = std::move(data);
-        ++files;
-    }
-    const double ms = std::chrono::duration<double, std::milli>(
-                          std::chrono::steady_clock::now() - t0).count();
-    if (!g_goldenTex.empty() || files)
-        fprintf(stderr,
-                "[vk] golden texture store: preloaded %zu signatures (%zu files) in %.1f ms "
-                "(%.0f us a file) from %s\n",
-                g_goldenTex.size(), files, ms, files ? ms * 1000.0 / double(files) : 0.0,
-                GoldenDir().string().c_str());
-}
+// --- THE PACK (part 104 item 2) ---------------------------------------------------------
+// The per-file store's boot walk was the cost, measured before it was touched: one
+// open+read per file on the boot path before the first frame — czamd 5,923-5,958 files in
+// 1,048-1,095 ms (176-185 us a file on NTFS behind a real-time scanner), the dev box
+// 29,932 in 1,290 ms — and growing with every session that captured anything.
+// `golden.pack` is the same bytes as ONE file: an 8-byte header, then
+// {signature u64, length u32, bytes} entries to end-of-file, read back with one read at
+// boot and APPENDED to as textures are captured (the writer thread keeps it open and
+// flushes after every entry).
+//
+// Append-only rather than "rewritten from the map at exit", for two reasons that are the
+// same reason: a platform that ends the process with TerminateProcess never runs the exit
+// path (czamd's harness, gotcha 519 — and a crash anywhere is the same case), and a clean
+// exit would otherwise rewrite the whole store every time. An append survives a kill up to
+// its last flushed entry, and the one thing a kill can leave — a torn tail entry — is
+// detected at load by its own length field and cut off before the next append.
+//
+// Loose <sig>.bin files (an install that predates the pack, or a session under the
+// per-file arm) are folded in on the next boot: read into the map as before, then handed
+// to the writer, which appends each to the pack and DELETES the file. So the directory is
+// walked once more and then it is empty and the walk is free. A store that grew two ways
+// forever would carry both costs.
+//
+// CZ_VK_NO_GOLDEN_PACK=1 is the same-binary control arm: the per-file store exactly as it
+// was — the walk at boot, one file per capture, the pack ignored. It is what the preload
+// time is measured against, and it is also how a pack a reader distrusts can be bypassed.
+constexpr uint32_t kGoldenPackMagic   = 0x5047435Au; // "ZCGP"
+constexpr uint32_t kGoldenPackVersion = 1;
+bool g_noGoldenPack = false;
+size_t   g_goldenPackEntries = 0;  // entries the pack held at load
+uint64_t g_goldenPackBytes   = 0;  // and its byte length after the torn-tail cut
+std::filesystem::path GoldenPackPath() { return GoldenDir() / "golden.pack"; }
+
 // THE WRITE IS OFF THE FRAME THREAD SINCE PART 102 — and it was the czamd session-one
 // stutter. GoldenPersist ran synchronously inside the texture DECODE scope, one
 // create+write+rename per new small texture, unnamed by any of the decode split's
@@ -727,15 +727,29 @@ void GoldenLoad()
 // dropped and counted (the next session captures it again — it is a cache).
 namespace goldenwriter
 {
+struct Job
+{
+    uint64_t sig = 0;
+    std::vector<uint8_t> px;        // the bytes to persist; EMPTY for a fold-in, which
+                                    // the writer reads from `loose` itself (the load
+                                    // thread already read it once into the map, and a
+                                    // second copy of a 361 MB store is not a cost to
+                                    // pay for a migration)
+    std::filesystem::path loose;    // a loose <sig>.bin to delete once the pack holds it
+};
 std::mutex mx;
 std::condition_variable cv;
-std::deque<std::pair<uint64_t, std::vector<uint8_t>>> queue; // guarded by mx
+std::deque<Job> queue;                                          // guarded by mx
 bool up = false;                                                // frame thread only
 bool stop = false;                                              // guarded by mx
 std::thread thread;
 constexpr size_t kMaxQueued = 8192;
 uint64_t dropped = 0;                                           // frame thread only
+std::mutex packMx;                                              // the pack file below
+std::ofstream packOut;                                          // guarded by packMx
+uint64_t packAppended = 0, packAppendedBytes = 0, looseRemoved = 0; // guarded by packMx
 
+// The per-file form: the pre-part-104 store, kept whole as the control arm.
 void WriteOne(uint64_t sig, const std::vector<uint8_t>& px)
 {
     char name[32];
@@ -748,11 +762,81 @@ void WriteOne(uint64_t sig, const std::vector<uint8_t>& px)
     std::filesystem::rename(tmp, dir / name, ec);
 }
 
+// One entry onto the end of the pack. The stream is opened on the first append and
+// stays open for the writer's life (an open per entry is the 2 ms Windows cost the
+// writer thread was built to hide — off the frame now, but still 2 ms of the writer's
+// time each); flushed after every entry so a kill loses at most the entry in flight,
+// which the loader's torn-tail cut handles. A store that ends up torn is a cache short
+// one texture, and the next session captures it again.
+bool PackAppend(uint64_t sig, const std::vector<uint8_t>& px)
+{
+    if (px.empty() || px.size() > kGoldenTexCap)
+        return false;
+    std::lock_guard<std::mutex> lk(packMx);
+    if (!packOut.is_open())
+    {
+        std::error_code ec;
+        const std::filesystem::path p = GoldenPackPath();
+        const bool fresh = !std::filesystem::exists(p, ec) || std::filesystem::file_size(p, ec) == 0;
+        packOut.open(p, std::ios::binary | std::ios::app);
+        if (!packOut)
+            return false;
+        if (fresh)
+        {
+            const uint32_t hdr[2] = { kGoldenPackMagic, kGoldenPackVersion };
+            packOut.write(reinterpret_cast<const char*>(hdr), sizeof hdr);
+        }
+    }
+    const uint32_t len = uint32_t(px.size());
+    packOut.write(reinterpret_cast<const char*>(&sig), sizeof sig);
+    packOut.write(reinterpret_cast<const char*>(&len), sizeof len);
+    packOut.write(reinterpret_cast<const char*>(px.data()), std::streamsize(px.size()));
+    packOut.flush();
+    if (!packOut)
+        return false;
+    ++packAppended;
+    packAppendedBytes += 12 + px.size();
+    return true;
+}
+
+void Run(const Job& job)
+{
+    if (g_noGoldenPack)
+    {
+        WriteOne(job.sig, job.px);
+        return;
+    }
+    if (!job.px.empty())
+    {
+        PackAppend(job.sig, job.px);
+    }
+    else if (!job.loose.empty() && job.sig)
+    {
+        // A fold-in the pack did not already hold: read the loose file here, on the
+        // writer's time, and append it. If the append fails the file is KEPT — it is
+        // still the only copy — and the next boot tries again.
+        std::ifstream f(job.loose, std::ios::binary);
+        std::vector<uint8_t> px((std::istreambuf_iterator<char>(f)),
+                                std::istreambuf_iterator<char>());
+        if (!PackAppend(job.sig, px))
+            return;
+    }
+    if (!job.loose.empty())
+    {
+        std::error_code ec;
+        if (std::filesystem::remove(job.loose, ec))
+        {
+            std::lock_guard<std::mutex> lk(packMx);
+            ++looseRemoved;
+        }
+    }
+}
+
 void Worker()
 {
     for (;;)
     {
-        std::pair<uint64_t, std::vector<uint8_t>> job;
+        Job job;
         {
             std::unique_lock<std::mutex> lk(mx);
             cv.wait(lk, [] { return stop || !queue.empty(); });
@@ -761,8 +845,39 @@ void Worker()
             job = std::move(queue.front());
             queue.pop_front();
         }
-        WriteOne(job.first, job.second);
+        Run(job);
     }
+}
+
+void Start()
+{
+    if (up)
+        return;
+    up = true;
+    thread = std::thread(Worker);
+    ThreadBudget_Note("golden", 1,
+                      "golden texture writer; blocked except while persisting a file");
+    ThreadBudget_Report();
+}
+
+// `force` is the migration's flag: the fold-in of an old per-file store can be tens of
+// thousands of jobs (29,932 here) against a bound sized for a session's captures, and a
+// migration that dropped 21,000 of them would leave those files to be walked again on
+// every boot — the cost this exists to remove. The jobs carry no bytes, so an unbounded
+// migration queue is 30,000 paths, not 361 MB.
+bool Enqueue(Job&& job, bool force)
+{
+    {
+        std::lock_guard<std::mutex> lk(mx);
+        if (!force && queue.size() >= kMaxQueued)
+        {
+            ++dropped;
+            return false;
+        }
+        queue.emplace_back(std::move(job));
+    }
+    cv.notify_one();
+    return true;
 }
 
 // Exit: let the writer finish what is queued (bounded — a cache is not worth a hang).
@@ -778,8 +893,135 @@ void Drain()
     if (thread.joinable())
         thread.join();
     up = false;
+    std::lock_guard<std::mutex> lk(packMx);
+    if (packOut.is_open())
+        packOut.close();
 }
 } // namespace goldenwriter
+
+void GoldenLoad()
+{
+    if (g_noGolden) return;
+    g_noGoldenPack = getenv("CZ_VK_NO_GOLDEN_PACK") != nullptr;
+    // TIMED (part 103 item 5). This runs on the boot path before the first frame. A boot
+    // cost with no number beside it cannot be ranked, so the line below carries the wall
+    // time and both populations — the pack's entries and the loose files walked — on
+    // every platform.
+    const auto t0 = std::chrono::steady_clock::now();
+    size_t files = 0, folded = 0, packEntries = 0;
+    uint64_t torn = 0;
+    std::error_code ec;
+    const std::filesystem::path dir = GoldenDir();
+
+    // 1. The pack: one read, then a walk over the buffer. An entry whose length runs past
+    //    the end is the torn tail a kill leaves; everything before it is good, and the
+    //    file is cut back to that point so the next append lands on an entry boundary.
+    if (!g_noGoldenPack)
+    {
+        const std::filesystem::path pp = GoldenPackPath();
+        std::ifstream f(pp, std::ios::binary | std::ios::ate);
+        if (f)
+        {
+            const std::streamoff size = f.tellg();
+            std::vector<uint8_t> buf(size > 0 ? size_t(size) : 0);
+            f.seekg(0);
+            if (!buf.empty())
+                f.read(reinterpret_cast<char*>(buf.data()), std::streamsize(buf.size()));
+            f.close();
+            auto rd32 = [&](size_t o) { uint32_t v; memcpy(&v, buf.data() + o, 4); return v; };
+            auto rd64 = [&](size_t o) { uint64_t v; memcpy(&v, buf.data() + o, 8); return v; };
+            size_t off = 0;
+            if (buf.size() >= 8 && rd32(0) == kGoldenPackMagic && rd32(4) == kGoldenPackVersion)
+            {
+                off = 8;
+                while (off + 12 <= buf.size())
+                {
+                    const uint64_t sig = rd64(off);
+                    const uint32_t len = rd32(off + 8);
+                    if (len == 0 || len > kGoldenTexCap || off + 12 + len > buf.size())
+                        break; // torn (or foreign) tail — stop here, cut below
+                    auto& slot = g_goldenTex[sig];
+                    if (slot.empty())
+                        slot.assign(buf.begin() + std::ptrdiff_t(off + 12),
+                                    buf.begin() + std::ptrdiff_t(off + 12 + len));
+                    ++packEntries;
+                    off += 12 + len;
+                }
+                if (off != buf.size())
+                {
+                    torn = buf.size() - off;
+                    std::filesystem::resize_file(pp, off, ec);
+                }
+            }
+            else if (!buf.empty())
+            {
+                // Not ours. Set it aside rather than overwrite it — a file with that name
+                // that we did not write is a question, and a cache is not worth destroying
+                // someone's answer to it.
+                std::filesystem::rename(pp, dir / "golden.pack.foreign", ec);
+                fprintf(stderr, "[vk] golden texture store: %s had a foreign header — moved "
+                                "to golden.pack.foreign, starting a fresh pack\n",
+                        pp.string().c_str());
+            }
+            g_goldenPackEntries = packEntries;
+            g_goldenPackBytes = off;
+        }
+    }
+
+    // 2. Loose files. Under the per-file arm this is the store; under the pack it is the
+    //    fold-in of whatever predates it or was written under the arm, and each file is
+    //    handed to the writer to append (if the pack lacks it) and delete.
+    for (auto& e : std::filesystem::directory_iterator(dir, ec))
+    {
+        if (ec) break;
+        if (!e.is_regular_file()) continue;
+        if (e.path().extension() != ".bin") continue; // the pack, .tmp leftovers, .foreign
+        const uint64_t sig = strtoull(e.path().stem().string().c_str(), nullptr, 16);
+        if (!sig) continue;
+        ++files;
+        auto& slot = g_goldenTex[sig];
+        const bool fresh = slot.empty();
+        if (fresh)
+        {
+            std::ifstream f(e.path(), std::ios::binary);
+            std::vector<uint8_t> data((std::istreambuf_iterator<char>(f)),
+                                      std::istreambuf_iterator<char>());
+            if (data.empty() || data.size() > kGoldenTexCap)
+            {
+                g_goldenTex.erase(sig);
+                continue;
+            }
+            slot = std::move(data);
+        }
+        if (!g_noGoldenPack)
+        {
+            // Fresh: the writer reads the file and appends it, then deletes it. Not
+            // fresh (the pack already holds this signature): sig 0 says "delete only".
+            goldenwriter::Job job;
+            job.sig = fresh ? sig : 0;
+            job.loose = e.path();
+            goldenwriter::Start();
+            goldenwriter::Enqueue(std::move(job), /*force=*/true);
+            ++folded;
+        }
+    }
+
+    const double ms = std::chrono::duration<double, std::milli>(
+                          std::chrono::steady_clock::now() - t0).count();
+    if (!g_goldenTex.empty() || files || packEntries)
+        fprintf(stderr,
+                "[vk] golden texture store: preloaded %zu signatures in %.1f ms from %s — "
+                "pack %zu entries (%.1f MB%s), %zu loose files walked%s%s\n",
+                g_goldenTex.size(), ms, dir.string().c_str(), packEntries,
+                double(g_goldenPackBytes) / (1024.0 * 1024.0),
+                torn ? ", torn tail cut" : "", files,
+                folded ? " and folded into the pack" : "",
+                g_noGoldenPack ? " [CZ_VK_NO_GOLDEN_PACK: per-file store, pack ignored]" : "");
+    if (torn)
+        fprintf(stderr, "[vk] golden texture store: cut %llu torn bytes off the end of the "
+                        "pack (a previous session was ended mid-write)\n",
+                (unsigned long long)torn);
+}
 
 void GoldenPersist(uint64_t sig, const std::vector<uint8_t>& px)
 {
@@ -791,28 +1033,19 @@ void GoldenPersist(uint64_t sig, const std::vector<uint8_t>& px)
     if (syncArm)
     {
         // The pre-part-102 behaviour — the file written on the frame thread — kept as
-        // the same-binary control arm for the czamd stutter.
-        goldenwriter::WriteOne(sig, px);
+        // the same-binary control arm for the czamd stutter. Under the pack it is the
+        // append done synchronously; under the per-file arm the file.
+        goldenwriter::Job job;
+        job.sig = sig;
+        job.px = px;
+        goldenwriter::Run(job);
         return;
     }
-    if (!goldenwriter::up)
-    {
-        goldenwriter::up = true;
-        goldenwriter::thread = std::thread(goldenwriter::Worker);
-        ThreadBudget_Note("golden", 1,
-                          "golden texture writer; blocked except while persisting a file");
-        ThreadBudget_Report();
-    }
-    {
-        std::lock_guard<std::mutex> lk(goldenwriter::mx);
-        if (goldenwriter::queue.size() >= goldenwriter::kMaxQueued)
-        {
-            ++goldenwriter::dropped;
-            return;
-        }
-        goldenwriter::queue.emplace_back(sig, px);
-    }
-    goldenwriter::cv.notify_one();
+    goldenwriter::Start();
+    goldenwriter::Job job;
+    job.sig = sig;
+    job.px = px;
+    goldenwriter::Enqueue(std::move(job), /*force=*/false);
 }
 struct TexGuardStats
 {
@@ -30899,6 +31132,14 @@ void VkRenderer_DumpStats()
                 "uploads served real bytes (%zu entries held)\n",
                 (unsigned long long)g_goldenStored, (unsigned long long)g_goldenServed,
                 g_goldenTex.size());
+    if (!g_noGolden && !g_noGoldenPack
+        && (goldenwriter::packAppended || goldenwriter::looseRemoved || g_goldenPackEntries))
+        fprintf(stderr,
+                "[vk]   golden pack: %zu entries at load + %llu appended this session "
+                "(%.1f MB written), %llu loose files folded in and removed\n",
+                g_goldenPackEntries, (unsigned long long)goldenwriter::packAppended,
+                double(goldenwriter::packAppendedBytes) / (1024.0 * 1024.0),
+                (unsigned long long)goldenwriter::looseRemoved);
     if (g_texGuardStats.hits)
     {
         const TexGuardStats& g = g_texGuardStats;
