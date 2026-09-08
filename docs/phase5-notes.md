@@ -21263,3 +21263,93 @@ sample counts 0xf, timestamp period 10 ns, file == console by hash. The previous
 ~~The Windows compile~~ (done, §5b); an AMD `--diag` on czamd; the artifact rebuild (v1.0.2's
 `dist/` predates every line of this — a Deck tester needs a build WITH the log); the
 operator's live-USB RADV run; the first Deck report. `part106-kickoff.md` §1.
+
+## §6ew — Part 106: the GPU frame decomposed for the first time — half of it was vertex fetch over PCIe; the store mirror (2026-09-08)
+
+**The operator's instruction, closing the Steam Deck work:** *"search for way to improve
+performance on linux that could also work on all platform this game should be atleast
+playable 60fps locked at 1080p on gtx 1060."* `docs/perf-plan-part106.md` is the plan
+and carries every table; this section is the record of what the evening established and
+how, for the next reader and for Case West.
+
+### 1. The target arithmetic changed the question (plan §0)
+
+Parts 71-91 optimised the crowd on an RTX 3070 where it is CPU-bound by ~1.4 ms and a
+GPU saving converts to nothing. A GTX 1060 is ~4x slower than that card on the GPU and
+sits on PCIe 3.0. Scaling the two boxes this project has measured (3070: 8.2 ms device
+frame at the crowd at 1080p 2x; RX 6600: 20.1 ms) puts a 1060 near 34 ms at the crowd and
+~20 ms in an EMPTY street — so the frame's FIXED cost had to fall by half before crowds
+were even the question, and the GPU side, which no part had ever decomposed below "passes
+by draw count", was the place to look. The part-103 verdict that the frame was "the
+title's shading at the hardware's price" was a ratio between two cards, not a cost
+against the work (gotcha 531).
+
+### 2. Three arms and a census (plan §1-§2; commits ff286b9, e4a59e8)
+
+`CZ_VK_GPU_STATS` (pipeline statistics per pass: primitives, VS and FS invocations,
+overdraw per visible pixel; serial recorder only, because a query cannot span the
+parallel recorder's chunks), `CZ_VK_NULL_PS` (a do-nothing fragment stage on every
+pipeline), `CZ_VK_SCISSOR_1PX` (every draw's scissor 1x1), `CZ_VK_TRI1` (every draw's
+first primitive only), and a `pass: shadow cascade` class in the split. Found on the way:
+**the pass extent census had printed nothing since part 89** — it read `R->bound.scissor`,
+which the parallel recorder's capture path never writes (gotcha 530). All in
+`docs/instruments.md`.
+
+At the crowd (~9,000 draws, 1080p 2x, headless, RTX 3070; base 8.86 ms of which 0.63 is
+the headless readback):
+
+| arm | GPU | reads as |
+|---|---|---|
+| 1x1 scissor | 7.69 / 7.76 | **fragments are 1.1 ms** — pixel shaders, ROP, depth, MSAA, all of it; the same 1.1 at light load |
+| null PS | 5.62 / 5.61 | 2.1 ms more than the scissor arm: the pipeline link strips every vertex output the dead stage no longer consumes (gotcha 532) |
+| first primitive only | 3.72 | **the per-draw front end is ~1.1 ms** for ~9,000 draws (0.12 µs a draw) — not the story either |
+| `CZ_VK_VRAM_STREAMS=1` | **4.34 / 4.16** | **the vertex/index FETCH across PCIe is ~4.5 ms**, half the device frame |
+| MSAA off / shadow Low / aniso off | 8.55 / 8.74 / 8.94 | −0.3 / −0.1 / null |
+
+The census: 4.17 M primitives, 2.77 M vertex invocations and 19.8 M fragment invocations
+(9.5x the screen; the scene passes 4.2x) a frame. 2.4 M vertices in ~5 ms with no
+fragments is 2 ns a vertex — ten times this card's vertex throughput — which is what said
+the time was neither arithmetic nor pixels before the VRAM arm confirmed it.
+
+### 3. Why the ledger had it as refuted, and the split (plan §3)
+
+Both the 256 MB per-frame arena and the 1 GB cross-frame stream store were allocated
+`HOST_VISIBLE | HOST_COHERENT` — system RAM — since the day they were built, and every
+run's log had said so. Part 73's `CZ_VK_VRAM_STREAMS` arm moved both into the ReBAR heap
+and lost ~14% of WALL time at the operator's CPU-bound soak, because the arena carries
+~8 KB of shader constants a draw and write-combined PCIe stores of those cost the CPU
+more than the GPU saved (gotcha 363). The GPU column was never read. It is the STORE that
+matters — written 0.2 MB a frame, read ~100 MB a frame across every tile and cascade —
+and `CZ_VK_VRAM_STORE=1` (the store alone) reads **GPU 8.84 → 4.03 / 4.11 at the crowd and
+5.00 → 3.26 at light load with the crowd's wall a NULL and the light bands −18% wall.**
+Gotcha 363 is retracted in part, in place: the arena half stands.
+
+### 4. The shippable form: the store MIRROR (plan §3.1)
+
+The ReBAR arm cannot ship — a GTX 1060 has no Resizable BAR and the heap is a 256 MB
+window there — so the default is a DEVICE-LOCAL twin of the store, same offsets, filled
+by one `vkCmdCopyBuffer` of the ranges the CPU wrote last frame at the top of each
+frame's command buffer, with a persist hit binding the mirror once its slot's copy is
+queued ahead of it (a per-entry generation stamp) and the host store on the slot's
+first frame. The CPU's writes are unchanged and cached; the arena stays in RAM; the
+ping-pong twins make it race-free by the argument already written at `PersistEntry::alt`.
+`CZ_VK_NO_STORE_MIRROR=1` is the control arm. The first validation boot caught the host
+store lacking `TRANSFER_SRC` usage (ten `vkCmdCopyBuffer-srcBuffer-00118`) and the
+placement line calling the VRAM heap "system RAM" (it reused the ReBAR arm's flag) —
+both fixed before the mirror's route runs.
+
+### 5. The mirror measured
+
+Three runs, default ON, against seven pooled baselines and two control runs
+(`CZ_VK_NO_STORE_MIRROR=1`, which read the baseline as they must): **GPU 8.84 → 4.00 /
+4.11 / 4.04 ms at the crowd, 5.00 → 3.25-3.27 at light load** — the ReBAR arm's number
+to within the floor, the copies' own cost being the split's 0.05-0.07 ms residual —
+**and wall −22 to −24% in the light bands, −0.5 to −3.4% at the CPU-bound crowd**
+(a small gain where the ReBAR arm was a null, because no CPU write is write-combined in
+this form). Synchronization validation: 0 hazards. `docs/perf-plan-part106.md` §4-§5
+carry the tables and what remains: on the §0.2 scaling a GTX 1060 goes from ~34 to
+~14-15 ms at the crowd and ~11 in an empty street, so the GPU half of the target is met
+on paper and the CPU half (10.6 ms of pump time here at the crowd; 1.3-1.6x that on a
+1060 owner's CPU) is the next board. Owed: the operator's eye at the crowd (a wrong
+generation stamp is a one-frame stale mesh no headless number sees), czamd's GPU column
+(the nearest GPU-bound box), and a real 1060.

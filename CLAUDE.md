@@ -192,9 +192,17 @@ mask; trust the microcode's own swizzles.
     read `phase5-notes.md` §6ba before following anything in it.
   - **THE LIVE HAND-OFF IS ALWAYS THE HIGHEST-NUMBERED `partNN-kickoff.md`**, and it
     supersedes every earlier kickoff on "where the port is". **IT IS
+    `part107-kickoff.md` — PERFORMANCE IS LIVE AGAIN with a TARGET (60 fps locked at
+    1080p on a GTX 1060); part 106 decomposed the GPU frame for the first time, found
+    half of it was vertex fetch over PCIe, and SHIPPED the store MIRROR on by default
+    (crowd GPU 8.84 → 4.0 ms at 1080p; `CZ_VK_NO_STORE_MIRROR=1` the control and the
+    FIRST picture bisection now); its §1 item 0 is the mirror's operator eye test and
+    czamd column, item 1 the CPU half of the target.** ~~It is
     `part106-kickoff.md` — the Steam Deck plan has been RUN on the dev box (log file,
     `--diag`, the feature table, gamescope measured); its §1 item 0 is the Windows
-    compile and §1b item 0 the operator's rebuild-or-v1.0.3 decision.** ~~It is
+    compile and §1b item 0 the operator's rebuild-or-v1.0.3 decision~~ — part 106 ran
+    the Windows compile's successor (czamd's golden number) and the rebuild decision now
+    carries the mirror too. ~~It is
     `part105-kickoff.md` — v1.0.2 is BUILT AND GATED (Linux on an old base, glibc floor
     2.35, plus an AppImage), NOT PUBLISHED; its §1 is the autonomous list and §1b the
     operator's~~ — part 105 ran its item 0. ~~It is `part104-kickoff.md` — the AMD/Windows performance board is
@@ -353,6 +361,11 @@ mask; trust the microcode's own swizzles.
     was worth, and the cap default moving 60 -> 500 took the route off the rung — the pump
     is 93.7% of a core there now, where part 53 closed at 50.3%. §6cg (part 50) and §6ch (part 51) are the earlier corrections.
     `perf-cpu-plan.md` and `perf-plan-part{47,48}.md` are executed predecessors.
+  - **`perf-plan-part106.md`** — THE LIVE PERFORMANCE PLAN as of part 106: the 60 fps /
+    1080p / GTX 1060 target's arithmetic (§0), the GPU decomposition (§2-§3: half the
+    device frame was vertex fetch over PCIe), the shipped store mirror (§3.1, §4) and
+    what remains (§5: the CPU half). Supersedes part 91's parking as the live document;
+    `phase5-notes.md` §6ew is the record.
   - **`steam-deck-plan.md`** (the Deck hypotheses and their tests; §6 is part 105's record)
     and **`steam-deck-testing.md`** (the player's walk-through; what a Deck report must
     contain). Every build writes `cz_runtime.log` and has `--diag` as of part 105.
@@ -1073,7 +1086,41 @@ ground is and that PERFORMANCE IS PARKED. (This
 line has now named the wrong plan TWICE — the two-live-pointers defect the block-rotation note at the bottom of this file
 describes, and the reason that note asks for the rule and not just the name; gotcha 13.)
 
-Where the port is, as of 2026-09-08 (**PART 105 — THE STEAM DECK PLAN EXECUTED ON THE
+Where the port is, as of 2026-09-08 (**PART 106 — PERFORMANCE IS LIVE AGAIN WITH A
+TARGET, AND THE GPU FRAME IS HALVED.** The operator's instruction closing the Deck work:
+*"search for way to improve performance on linux that could also work on all platform
+this game should be atleast playable 60fps locked at 1080p on gtx 1060."* Three new
+same-binary arms (`CZ_VK_NULL_PS`, `CZ_VK_SCISSOR_1PX`, `CZ_VK_TRI1`) and a per-pass
+pipeline-statistics census (`CZ_VK_GPU_STATS`) decomposed the title's own passes for
+the first time in 28 parts: at the crowd at 1080p 2x on the RTX 3070, the 8.84 ms device
+frame was **~4.5 ms of VERTEX/INDEX FETCH ACROSS PCIe** (the 1 GB cross-frame stream
+store had lived in system RAM since it was built), 1.1 ms fragments, ~1.1 ms per-draw
+front end. **SHIPPED ON BY DEFAULT: a device-local MIRROR of the store** (the CPU keeps
+its cached host writes; last frame's written ranges are copied host → VRAM at the top of
+each frame; hits bind the mirror once their copy is queued ahead of them) — **crowd GPU
+8.84 → 4.00-4.11 ms, light load 5.00 → 3.25, wall −22 to −24% where GPU-bound and a small
+gain at the CPU-bound crowd**; validation clean, sync validation 0 hazards, 3 runs vs 7
+baselines + controls. `CZ_VK_NO_STORE_MIRROR=1` is the control and the FIRST picture
+bisection from now on. Gotcha 363 ("geometry in VRAM is wrong for a recompiler") is
+retracted in part — its arena half stands; gotchas 530-532; the pass extent census had
+been blind since part 89 and is fixed. On the project's own scaling a GTX 1060 goes from
+~34 to ~14-15 ms at the crowd — the GPU half of the target on paper; **the CPU half
+(10.6 ms of pump time here at the crowd) is part 107's item 1.** `docs/perf-plan-part106.md`
+is the plan and record, `phase5-notes.md` §6ew the narrative, **`docs/part107-kickoff.md`
+IS THE LIVE HAND-OFF.** Owed: the operator's eye at the crowd with the mirror (a wrong
+generation stamp is a one-frame stale mesh no headless number sees), czamd's GPU column,
+a real 1060, and the artifact rebuild that now carries both the log file and the mirror):
+
+* **The ledger's "at the hardware's price" was a ratio between two cards, not a cost
+  against the work** (gotcha 531): both cards fetched every vertex over PCIe in
+  proportion to their bandwidth, so the ratio was perfect and the cost was double.
+* **The null-PS arm measured CHEAPER than the no-fragment arm** — the pipeline link
+  strips every vertex output a dead fragment stage no longer consumes (gotcha 532).
+* **Every earlier GPU number stands as measured; every "GPU-bound" reading of czamd and
+  every 1080p projection from before this part is a fetch-bound reading.** Re-derive
+  from §6ew before quoting one.
+
+Where the port was, as of 2026-09-08 (**PART 105 — THE STEAM DECK PLAN EXECUTED ON THE
 DEV BOX: every build now writes `cz_runtime.log` beside its data root (a descriptor-level
 stderr tee, `host/log_file.cpp`, drained on every exit path incl. the crash reporter —
 byte-identical to the console over a 15,147-line boot and through a SIGSEGV) and has
@@ -1103,45 +1150,8 @@ the operator's live-USB RADV test (H3, the one that matters), the first Deck rep
   closed the saved stderr under the copier thread) — which is the evidence it can fail
   (gotcha 527). Packaging scripts strip `cz_runtime.log*`/`cz_diag.txt*` from the stage.
 
-Where the port was, as of 2026-09-08 (**PART 104 — v1.0.2 BUILT AND GATED, NOT PUBLISHED:
-the Linux release is linked on an OLD BASE (Ubuntu 22.04 in podman, `tools/release_build_oldbase.sh`)
-so its glibc floor is **2.35** instead of this machine's 2.43 — measured off the artifact
-per file, gated at the floor (pass) and below it (Rocky 9 refuses with the named symbol);
-there is an **AppImage** (`tools/release_package_appimage.sh`, root resolved beside the image
-via `host_paths` step 1b); the golden texture store is ONE PACK FILE (dev box preload
-1,301-1,331 → 475-509 ms for 345 MB; `CZ_VK_NO_GOLDEN_PACK=1` the arm); and the czamd
-one-in-five pre-frame park was hunted with every instrument armed. `phase5-notes.md` §6eu is
-the record, `release-plan.md` §9.9 the programme's view, gotchas 520-523,
-`docs/release-notes-v1.0.2.md` paste-ready with all three hashes, `docs/part105-kickoff.md`
-was the live hand-off — its §1 item 0 was `docs/steam-deck-plan.md`, which part 105 ran):
-
-* **The floor could not go below 2.34 whatever the base**: `lib/libdxcompiler.so` (the DXC
-  prebuilt the translator dlopens) imports GLIBC_2.34 — gotcha 520, found with `objdump -T`
-  before any container existed. 22.04's 2.35 is one above it; the executable itself is 2.34,
-  jammy's `libgcc_s` and the container-built `libavutil` set 2.35.
-* **One line in the tree needed changing for clang 15** (a structured-binding lambda
-  capture, c7ee332); the identity gate holds within the toolchain (RelWithDebInfo vs Release,
-  byte-identical `.text`) and the compiler change is a stated, unmeasured code-generation
-  change — the crowd-route confirmation is owed (part105-kickoff §1 item 2).
-* **The park:** **122 armed boots on czamd (112 rapid, 6 full-length at part 103's cadence, 4 with cold
-  caches) and NOT ONE parked** — the one-in-five did not hold under any of the three forms; the
-  untested candidate is the first boot after a fresh exe deploy, which every recorded hang
-  followed. The instruments are the deliverable and stay staged as scheduled tasks. `vblank #1000` is printed 5 s into a healthy boot, not at the
-  first frame (gotcha 521); the loop's scripts are `tools/czamd/p104_*.ps1`, run as scheduled
-  tasks because an SSH-started process there dies with the session (gotcha 522).
-* **FOUND BY THE CONFIRMATION RUN AND FIXED (79ef1b7): every shipped Linux build presented at
-  1.0 fps on a Wayland+NVIDIA desktop** — real SDL2 picks x11 first, the dev box's SDL3 shim
-  picks wayland, and the x11 path there is one frame a second; the published v1.0.1 bundle
-  measured it. `window.cpp` now hints `wayland,x11` when the session offers Wayland; gotcha
-  524. Then the operator asked for the title bar (name + fps only) and the window icon (the
-  title's own X_IMAGEID_GAME.PNG from the unpacked game, via a new PIL-identical PNG decoder,
-  `host/png_icon.cpp`; §6eu §6). All three artifacts were rebuilt at 482b47f (the Windows zip once czwin was back on the network).
-* **Owed:** the golden pack's czamd number (its store is ~70 MB; the "under ~50 ms" gate was
-  written for that count), the crowd-route A/B on the old-base binary, and the publication
-  itself (operator: tag, attach `dist/`'s three artifacts, paste the notes).
-
 **Older per-part status blocks (parts 28-54, the superseded mid-part-44 closure and the
-superseded MID-PART-46 block) moved to `docs/port-history.md`, NOW INCLUDING PARTS 60-91's, 97's, 98's, 99's, 100's, 101's AND 103's** — part 105 moved part 103's out in the same commit that added its own block, part 104 moved part 101's out in the same commit that added its own block, part 103 moved part 100's out in the same commit that added its own block, part 101 moved parts 98's and 99's out in the same commit that added its own block, part 99 moved part 97's out in the same commit that added its own block, part 98 moved part 91's out in the same commit that added its own block, part 91 moved part 89's out in the same commit that added its own block, part 90 moved part 88's out in the same commit that added its own block, part 89 moved part 87's out in the same commit that added its own block, part 88 moved part 86's out in the same commit that added its own block, part 87 moved part 85's out in the same commit that added its own block, part 86 moved part 84's out in the same commit that added its own block, part 85 moved part 83's out in the same commit that added its own block, part 84 moved part 82's out in the same commit that added its own block, part 83 moved part 81's out in the same commit that added its own block, part 82 moved part 80's out in the same commit that added its own block, part 78 moved part 76's out in the same commit that added its own block, part 76 moved part 74's out in the same commit that added its own block, part 74 moved part 72's out in the same commit that added its own block, part 73 moved part 71's out in the same commit that added its own block, part 72 moved part 70's out in the same commit that added its own block, part 71 moved part 69's out in the same commit that added its own block, part 70 moved part 68's out in the same commit that added its own block, part 69 moved part 67's out in the same commit that added its own block, part 68 moved part 66's out in the same commit that added its own block, part 67 moved part 65's out the same way, part 65 moved part 63's out the same way, part 64 moved parts 61/62's out the same way, part 63 moved part 60's out the same way, part 61 moved part 59's out the same way, part 59 moved part 57's out the same way, part 57 moved part 55's out the same way, part 55 moved part 53's
+superseded MID-PART-46 block) moved to `docs/port-history.md`, NOW INCLUDING PARTS 60-91's, 97's, 98's, 99's, 100's, 101's, 103's AND 104's** — part 106 moved part 104's out in the same commit that added its own block, part 105 moved part 103's out in the same commit that added its own block, part 104 moved part 101's out in the same commit that added its own block, part 103 moved part 100's out in the same commit that added its own block, part 101 moved parts 98's and 99's out in the same commit that added its own block, part 99 moved part 97's out in the same commit that added its own block, part 98 moved part 91's out in the same commit that added its own block, part 91 moved part 89's out in the same commit that added its own block, part 90 moved part 88's out in the same commit that added its own block, part 89 moved part 87's out in the same commit that added its own block, part 88 moved part 86's out in the same commit that added its own block, part 87 moved part 85's out in the same commit that added its own block, part 86 moved part 84's out in the same commit that added its own block, part 85 moved part 83's out in the same commit that added its own block, part 84 moved part 82's out in the same commit that added its own block, part 83 moved part 81's out in the same commit that added its own block, part 82 moved part 80's out in the same commit that added its own block, part 78 moved part 76's out in the same commit that added its own block, part 76 moved part 74's out in the same commit that added its own block, part 74 moved part 72's out in the same commit that added its own block, part 73 moved part 71's out in the same commit that added its own block, part 72 moved part 70's out in the same commit that added its own block, part 71 moved part 69's out in the same commit that added its own block, part 70 moved part 68's out in the same commit that added its own block, part 69 moved part 67's out in the same commit that added its own block, part 68 moved part 66's out in the same commit that added its own block, part 67 moved part 65's out the same way, part 65 moved part 63's out the same way, part 64 moved parts 61/62's out the same way, part 63 moved part 60's out the same way, part 61 moved part 59's out the same way, part 59 moved part 57's out the same way, part 57 moved part 55's out the same way, part 55 moved part 53's
 out in the same commit that added its own, which is what the rule below asks for. — CLAUDE.md keeps only the
 live part and one part back, per the 2026-08-08 split's rule, and **part 53 moved part
 51's out in the same commit that added its own**, which is what the rule below asks for.

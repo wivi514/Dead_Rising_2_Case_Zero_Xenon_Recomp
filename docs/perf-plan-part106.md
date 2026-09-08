@@ -208,6 +208,21 @@ every load** — 8.84 → 4.2-4.3 at the crowd, 5.0 → 3.0 in an empty street �
 yet, but the first change in this port's history that moves a 1060 into the 60 fps
 conversation, and it moves an RX 6600 from 20 ms to ~10.
 
+**Campaign 3 — the SPLIT, `CZ_VK_VRAM_STORE=1` (store in the host-visible VRAM heap, arena
+in RAM), two runs against seven baselines:**
+
+| band | base GPU | vstore GPU | base wall | vstore wall |
+|---|---|---|---|---|
+| 2,000-3,000 | 5.00 | **3.26 / 3.25** | 5.06 | **4.11 / 4.20 (−18%)** |
+| 5,000-6,000 | 6.20 | 3.49 / 3.48 | 8.18 | 8.07 / 7.96 |
+| 8,000-9,000 | 8.84 | **4.03 / 4.11** | 10.66 | 10.53 / 10.69 (a null) |
+| 9,000-10,000 | 9.10 | 4.33 / 4.34 | 11.37 | 11.23 / 11.27 |
+
+The whole GPU saving is the STORE's, and with the arena left in RAM the wall-time cost
+part 73 measured is gone: the crowd reads a null on wall and the GPU-bound bands convert
+the saving 1:1 (an empty street −18% wall). This is the design confirmed by its own
+control: the arena half of gotcha 363 was right, the store half was not.
+
 **Why the ledger had refuted it.** Part 73 measured `CZ_VK_VRAM_STREAMS` at the
 operator's soak as ~14% SLOWER — on WALL time, on this box, where the crowd is
 CPU-bound: the arm moves the per-frame arena too, and the arena is where the pump writes
@@ -245,6 +260,11 @@ CPU's cached writes and gives the GPU its fetch:
   frame that last read it has retired.
 - The per-frame arena — constants, first-touch geometry, expanded index lists — stays in
   RAM: it is the half of gotcha 363 that was right.
+- ONE path everywhere, on purpose: on a Resizable-BAR box the host-visible arm
+  (`CZ_VK_VRAM_STORE=1`) would do the same job with no copies, but it is a second code
+  path with a write-combined-read hazard on the rect-synthesis reader, and a GTX 1060
+  cannot take it at all. The mirror is the default on every device with a device-local
+  heap; the ReBAR arm stays a measurement arm.
 - Growth (`PersistMaintenance`) re-creates the twin at the new size with the device idle;
   the mirror's absence (no heap, allocation failure, the arm) is printed and is the
   part-105 renderer.
@@ -254,3 +274,64 @@ Gates: `CZ_VK_VALIDATION=1` clean, `CZ_VK_SYNC_VALIDATION=1` 0 hazards, the crow
 failure mode of a wrong generation stamp is a one-frame stale or torn mesh, which no
 headless number can see (gotcha 254's shape), so an operator session is owed before it
 ships in a release.
+
+## §4. The mirror measured (campaign 4, 2026-09-08 evening)
+
+Default ON, three runs, against the seven pooled baselines (`CZ_VK_NO_STORE_MIRROR=1`
+control runs read 8.87 GPU / 10.53 wall at the crowd — the baseline, as they must):
+
+| band | base GPU | mirror GPU (3 runs) | base wall | mirror wall |
+|---|---|---|---|---|
+| 2,000-3,000 | 5.00 | **3.25 / 3.26 / 3.27** | 5.06 | **3.94 / 3.96 / 3.85 (−22 to −24%)** |
+| 5,000-6,000 | 6.20 | 3.50 / 3.53 / 3.53 | 8.18 | 8.02 / 7.93 / 7.97 |
+| 7,000-8,000 | 7.71 | 3.77 / 3.78 / 3.80 | 9.95 | 9.66 / 9.62 / 9.57 |
+| 8,000-9,000 | 8.84 | **4.00 / 4.11 / 4.04** | 10.66 | 10.29 / 10.61 / 10.39 |
+
+The mirror reads the same GPU column as the ReBAR arm (4.03-4.11) to within the run
+floor — the copies' own cost is the split's residual, 0.05-0.07 ms a frame — and the
+wall column is a small GAIN even at the CPU-bound crowd (−0.5 to −3.4%), where the ReBAR
+arm was a null: the CPU never touches write-combined memory in this form. Validation:
+the first boot found the host store lacking `TRANSFER_SRC` (fixed, TRANSFER_SRC is in
+`PersistUsage()`); synchronization validation 0 hazards on a 100 s boot. The residual
+gate (`present blit` 1.00 regions/frame, overflow 0) holds in every run.
+
+**Windowed, the shipped build's crowd on this box goes from ~8.2 to ~3.4 ms of GPU.** On
+the §0.2 scaling that is the RX 6600 from 20 to ~8.5 ms and a GTX 1060 from ~34 to
+~14-15 ms at the crowd — inside the budget for the first time, with the light street at
+~11.
+
+## §5. What remains after the mirror, priced from the same runs
+
+With the fetch gone the crowd's device frame on this box is ~4.2 ms (headless; ~3.6
+windowed). On the §0.2 scaling a GTX 1060 sits near **16-17 ms at the crowd and ~12 ms in
+an empty street** — a locked 60 in ordinary play, on the edge in the heaviest crowds.
+What is left, from the arms above, in order of size at the crowd:
+
+| item | ms (3070, crowd) | 1060 estimate | what would move it |
+|---|---|---|---|
+| per-draw front end (TRI1's big passes) | ~1.1 | ~4 | fewer draws — the title's, not ours; or fewer state changes per draw (pipeline switches 30%, push constants 1.0/draw) |
+| fragments (base − 1PX) | 1.1 | ~4 | resolution and MSAA are the player's levers; nothing pathological here (4.2x overdraw is the crowd) |
+| MSAA resolve copies | 0.7 | ~2.5 | `CZ_VK_MSAA=0` is −0.3 here; the resolve is the picture decision's price |
+| shadow cascade | 0.86 | ~3 | the tier row exists; Low is −0.1 to −0.25 here |
+| vertex shading | ~0.6 | ~2 | the translated VS is small; the clip-plane cache adds six dot products a vertex (operator's play cache) |
+| post chain (1-draw passes) | 0.4 | ~1.5 | real shading, refuted as overhead in part 79 |
+| first-touch geometry still fetched from the arena | unmeasured | — | the arena's streams are the store's misses; a warm store serves 94% of lookups |
+
+None of these is a factor of two again; the next factor is the CPU. **The CPU side is
+the second half of the target and it has not moved: the crowd is 10.6 ms of pump time on
+a Ryzen 7 5700, and a 1060 owner's CPU is typically 1.3-1.6x slower per thread**, which
+puts their crowd at 14-17 ms of CPU against a 16.7 ms budget. The parked ledger's CPU
+items (part91-kickoff §0d: the PM4 walk ~3.1 ms serial, UploadStream's resolve half
+162 ns/draw, the remaining record cost 431 ns/draw) are the board for that half, and
+every one of them converts 1:1 on a CPU-bound box. A light street is CPU-light too
+(5.1 ms wall at 2,500 draws), so "playable 60 at 1080p on a 1060" is, after the mirror,
+a claim about ordinary play with the heaviest crowds as the known exception — until the
+CPU half is worked.
+
+**What is owed:** (1) the mirror's own gates (§3.1) and an operator session at the
+crowd — a wrong generation stamp is a one-frame stale mesh no headless number can see;
+(2) a GPU-bound box's confirmation — czamd (RX 6600) is the nearest thing to a 1060 the
+project can reach, and the mirror's GPU column there is the number to quote next to the
+3070's; (3) the CPU half, re-baselined on this box at 1080p (the 10.6 ms above) and
+worked from the parked board; (4) a real GTX 1060 measurement, by the operator or a
+player, before "locked" is claimed anywhere.

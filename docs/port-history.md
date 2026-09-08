@@ -6810,3 +6810,41 @@ record, `part103-amd-windows-perf-plan.md` §1b the execution table, gotchas 517
   `part99-amd-hang.md` §5.4 left open, still open, not correlated with anything this
   part armed.
 
+## Part 104 status block (moved out of CLAUDE.md by part 106)
+
+Where the port was, as of 2026-09-08 (**PART 104 — v1.0.2 BUILT AND GATED, NOT PUBLISHED:
+the Linux release is linked on an OLD BASE (Ubuntu 22.04 in podman, `tools/release_build_oldbase.sh`)
+so its glibc floor is **2.35** instead of this machine's 2.43 — measured off the artifact
+per file, gated at the floor (pass) and below it (Rocky 9 refuses with the named symbol);
+there is an **AppImage** (`tools/release_package_appimage.sh`, root resolved beside the image
+via `host_paths` step 1b); the golden texture store is ONE PACK FILE (dev box preload
+1,301-1,331 → 475-509 ms for 345 MB; `CZ_VK_NO_GOLDEN_PACK=1` the arm); and the czamd
+one-in-five pre-frame park was hunted with every instrument armed. `phase5-notes.md` §6eu is
+the record, `release-plan.md` §9.9 the programme's view, gotchas 520-523,
+`docs/release-notes-v1.0.2.md` paste-ready with all three hashes, `docs/part105-kickoff.md`
+was the live hand-off — its §1 item 0 was `docs/steam-deck-plan.md`, which part 105 ran):
+
+* **The floor could not go below 2.34 whatever the base**: `lib/libdxcompiler.so` (the DXC
+  prebuilt the translator dlopens) imports GLIBC_2.34 — gotcha 520, found with `objdump -T`
+  before any container existed. 22.04's 2.35 is one above it; the executable itself is 2.34,
+  jammy's `libgcc_s` and the container-built `libavutil` set 2.35.
+* **One line in the tree needed changing for clang 15** (a structured-binding lambda
+  capture, c7ee332); the identity gate holds within the toolchain (RelWithDebInfo vs Release,
+  byte-identical `.text`) and the compiler change is a stated, unmeasured code-generation
+  change — the crowd-route confirmation is owed (part105-kickoff §1 item 2).
+* **The park:** **122 armed boots on czamd (112 rapid, 6 full-length at part 103's cadence, 4 with cold
+  caches) and NOT ONE parked** — the one-in-five did not hold under any of the three forms; the
+  untested candidate is the first boot after a fresh exe deploy, which every recorded hang
+  followed. The instruments are the deliverable and stay staged as scheduled tasks. `vblank #1000` is printed 5 s into a healthy boot, not at the
+  first frame (gotcha 521); the loop's scripts are `tools/czamd/p104_*.ps1`, run as scheduled
+  tasks because an SSH-started process there dies with the session (gotcha 522).
+* **FOUND BY THE CONFIRMATION RUN AND FIXED (79ef1b7): every shipped Linux build presented at
+  1.0 fps on a Wayland+NVIDIA desktop** — real SDL2 picks x11 first, the dev box's SDL3 shim
+  picks wayland, and the x11 path there is one frame a second; the published v1.0.1 bundle
+  measured it. `window.cpp` now hints `wayland,x11` when the session offers Wayland; gotcha
+  524. Then the operator asked for the title bar (name + fps only) and the window icon (the
+  title's own X_IMAGEID_GAME.PNG from the unpacked game, via a new PIL-identical PNG decoder,
+  `host/png_icon.cpp`; §6eu §6). All three artifacts were rebuilt at 482b47f (the Windows zip once czwin was back on the network).
+* **Owed:** the golden pack's czamd number (its store is ~70 MB; the "under ~50 ms" gate was
+  written for that count), the crowd-route A/B on the old-base binary, and the publication
+  itself (operator: tag, attach `dist/`'s three artifacts, paste the notes).
