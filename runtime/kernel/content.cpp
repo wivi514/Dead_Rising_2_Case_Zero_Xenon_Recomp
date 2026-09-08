@@ -439,6 +439,11 @@ void ContentSetRootFromGameDir(const std::string& gameDir)
         g_saveRoot = HostPaths::SavedGames() / "default";
     std::error_code ec;
     std::filesystem::create_directories(g_saveRoot, ec);
+    // Captured HERE, because `ec` is reused by every filesystem call below and a stale
+    // value — `is_directory` on an old save root that does not exist, on a tree whose
+    // assets/save was never made — printed "COULD NOT BE CREATED, saving will fail" for
+    // a directory that exists and saves fine (part 102's fresh-root demo session).
+    const bool createFailed = bool(ec);
 
     // MIGRATION, once: an existing install has its saves at the old location and
     // must not appear to have lost them. Copy (never move — the old tree stays as a
@@ -482,7 +487,7 @@ void ContentSetRootFromGameDir(const std::string& gameDir)
     }
 
     KLOG("content: saves live in %s%s\n", g_saveRoot.string().c_str(),
-         ec ? " (COULD NOT BE CREATED — saving will fail)" : "");
+         createFailed ? " (COULD NOT BE CREATED — saving will fail)" : "");
 }
 
 std::filesystem::path ContentSettingsDir()
