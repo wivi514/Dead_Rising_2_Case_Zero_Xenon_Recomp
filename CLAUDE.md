@@ -192,9 +192,11 @@ mask; trust the microcode's own swizzles.
     read `phase5-notes.md` §6ba before following anything in it.
   - **THE LIVE HAND-OFF IS ALWAYS THE HIGHEST-NUMBERED `partNN-kickoff.md`**, and it
     supersedes every earlier kickoff on "where the port is". **IT IS
-    `part99-kickoff.md` — BOTH operator-queued launcher fixes (subtitle language +
-    the skip-intro-logos toggle) are IN-TREE and gated; its §1 is the owed list and
-    v1.0.1 — now carrying part 98's stutter fix AND both features — HEADS IT.**
+    `part104-kickoff.md` — the AMD/Windows performance board is CLOSED by measurement
+    (part 103), and its §1 is the owed list.** ~~It is `part99-kickoff.md` — BOTH
+    operator-queued launcher fixes (subtitle language + the skip-intro-logos toggle)
+    are IN-TREE and gated; its §1 is the owed list and v1.0.1 — now carrying part 98's
+    stutter fix AND both features — HEADS IT~~ — v1.0.1 shipped with those.
     ~~It is `part98-kickoff.md` — the PUBLIC STUTTER REPORTS reproduced (session one
     pre-warms 0 of 1,365, gotcha 508) and fixed in-tree by async pipeline creation +
     the pre-warm chain, defaults ON~~ — part 98's fix stands and ships in v1.0.1.
@@ -1062,7 +1064,33 @@ ground is and that PERFORMANCE IS PARKED. (This
 line has now named the wrong plan TWICE — the two-live-pointers defect the block-rotation note at the bottom of this file
 describes, and the reason that note asks for the rule and not just the name; gotcha 13.)
 
-Where the port is, as of 2026-09-06 night (**PART 101 — LOCAL HALF DONE: the czamd
+Where the port is, as of 2026-09-08 (**PART 103 — THE AMD/WINDOWS PERFORMANCE BOARD
+RUN TO ITS END: the GPU split on czamd says the RX 6600 frame is the title's own shading
+at the hardware ratio (2.4-2.5x the 3070 at every load), OURS is ~1.2 ms of 20 and 1.08 of
+that is the MSAA resolve; MSAA 2x is REFUTED as a lever there (single-sample trades the
+resolve for 1.39 ms of colour-decompress barriers and is SLOWER under 6,000 draws); items
+2-3 dead by the 0.5 ms kill rule; items 4a/5/6 shipped. `phase5-notes.md` §6et is the
+record, `part103-amd-windows-perf-plan.md` §1b the execution table, gotchas 517-519,
+`docs/part104-kickoff.md` THE LIVE HAND-OFF**):
+
+* **Two things had to be built to read the split on czamd** (gotcha 519): the process
+  there is ended by `Stop-Process` = TerminateProcess, so there is NO exit dump on that
+  box and never was — `CZ_VK_STATS=1500` + `tools/gpu_split_window.py` reads the window
+  between two cumulative dumps. And every headless czamd GPU number carries a 1.12 ms
+  present readback the swapchain release never pays (gotcha 517) — read §6es's `gpu`
+  as `gpu − 1.1`.
+* **Shipped (ab80b87):** the speculative pipeline warm runs BELOW_NORMAL / nice+10 on
+  spare-tier jobs and normal on urgent ones (`CZ_NO_LOW_PRIORITY=1` the control); the
+  `[threads]` block names every pool including the six outside the budget; the golden
+  preload is timed — **czamd 5,679 files in 765 ms (135 us a file), dev box 29,932 in
+  1,290 ms** — a boot cost with a number now, and item 5's pack-or-lazy-load is the
+  one thing on the board still worth building.
+* **One czamd boot in five parked before its first frame** (no `vblank #1000` by 150 s,
+  KeDelayExecutionThread spinning) with and without instruments — the residual hang
+  `part99-amd-hang.md` §5.4 left open, still open, not correlated with anything this
+  part armed.
+
+Where the port was, as of 2026-09-06 night (**PART 101 — LOCAL HALF DONE: the czamd
 stutter's persistence mechanism FOUND AND FIXED (the pre-warm seed was SHADOWED),
 and the black-square bisection says NVIDIA+D32 IS CLEAN. `phase5-notes.md` §6er is
 the record; `part101-stutter-and-blacksquare-plan.md` carries the execution record
@@ -1115,35 +1143,8 @@ appended; gotcha 513 is the transferable finding. THE OPERATOR HALF IS OWED**):
   orphan VS, the czamd black square (arms staged, `cz_arm_fif1.bat` first).
 
 
-Where the port was, as of 2026-09-06 latest (**PART 100 CLOSED — the boot hang was
-SOLVED (semaphore limit, `part99-amd-hang.md` §6) and it left part 101's plan; v1.0.1 STILL UNPUBLISHED.
-`docs/part99-amd-hang.md` §5 IS THE LIVE RECORD**):
-
-* **The part-99 APC arms are REFUTED.** `CZ_APC_INLINE=1` regresses a working box
-  (hangs at file #1); `CZ_APC_ALWAYS=1` does not fix czamd; and `CZ_APC_TRACE=1`
-  (new) shows czamd's frozen state is APC-BALANCED (81–88 queued = drained, one
-  thread) — **APC starvation is not the mechanism.**
-* **The fix that shipped: `NtReleaseSemaphore` now honours `maximum`** (NT-correct:
-  `STATUS_SEMAPHORE_LIMIT_EXCEEDED` past the limit, count/out-param untouched; the
-  guest's release wrapper is Win32 `ReleaseSemaphore` and checks the status). Our
-  version let the count grow unbounded; the czamd pump was releasing a work-semaphore
-  at 660k/s (`CZ_KCALL_WHO` milestone backtraces named the loop:
-  `sub_82771D70` dispatch → ring push → release). **Measured effect:**
-  `UpdateStreaming` (`sub_82760CF0`) went from **0 calls (frozen) to continuous** on
-  czamd, and the dispatch loop now returns and re-loops. Local boot still reaches
-  FrontEnd; A5 gate exit 0 / 0 real. A correctness fix for everyone.
-* **The residual hang is precise:** still parks in Loading, frozen loading cube-map
-  `cc_03.bct` — slots 0 and 3 load, **slots 2 and 1 never do**; `A18DE998` polls
-  `status==1` forever; the completion APC runs but does not queue the next slot.
-  Game data byte-identical + deterministic decompress ⇒ **machine-dependent state in
-  OUR runtime on the cube/zone-streaming path** (gotcha 267 physical-address shape is
-  the lead). See §5.4 for the ordered next steps.
-* **New instruments (all OFF by default):** `CZ_APC_TRACE`, `CZ_KOBJ_DUMP=N`,
-  `CZ_KCALL_WHO` milestone backtraces, and streaming-chain probes in `guest_probe.cpp`.
-
-
 **Older per-part status blocks (parts 28-54, the superseded mid-part-44 closure and the
-superseded MID-PART-46 block) moved to `docs/port-history.md`, NOW INCLUDING PARTS 60-91's, 97's, 98's AND 99's** — part 101 moved parts 98's and 99's out in the same commit that added its own block, part 99 moved part 97's out in the same commit that added its own block, part 98 moved part 91's out in the same commit that added its own block, part 91 moved part 89's out in the same commit that added its own block, part 90 moved part 88's out in the same commit that added its own block, part 89 moved part 87's out in the same commit that added its own block, part 88 moved part 86's out in the same commit that added its own block, part 87 moved part 85's out in the same commit that added its own block, part 86 moved part 84's out in the same commit that added its own block, part 85 moved part 83's out in the same commit that added its own block, part 84 moved part 82's out in the same commit that added its own block, part 83 moved part 81's out in the same commit that added its own block, part 82 moved part 80's out in the same commit that added its own block, part 78 moved part 76's out in the same commit that added its own block, part 76 moved part 74's out in the same commit that added its own block, part 74 moved part 72's out in the same commit that added its own block, part 73 moved part 71's out in the same commit that added its own block, part 72 moved part 70's out in the same commit that added its own block, part 71 moved part 69's out in the same commit that added its own block, part 70 moved part 68's out in the same commit that added its own block, part 69 moved part 67's out in the same commit that added its own block, part 68 moved part 66's out in the same commit that added its own block, part 67 moved part 65's out the same way, part 65 moved part 63's out the same way, part 64 moved parts 61/62's out the same way, part 63 moved part 60's out the same way, part 61 moved part 59's out the same way, part 59 moved part 57's out the same way, part 57 moved part 55's out the same way, part 55 moved part 53's
+superseded MID-PART-46 block) moved to `docs/port-history.md`, NOW INCLUDING PARTS 60-91's, 97's, 98's, 99's AND 100's** — part 103 moved part 100's out in the same commit that added its own block, part 101 moved parts 98's and 99's out in the same commit that added its own block, part 99 moved part 97's out in the same commit that added its own block, part 98 moved part 91's out in the same commit that added its own block, part 91 moved part 89's out in the same commit that added its own block, part 90 moved part 88's out in the same commit that added its own block, part 89 moved part 87's out in the same commit that added its own block, part 88 moved part 86's out in the same commit that added its own block, part 87 moved part 85's out in the same commit that added its own block, part 86 moved part 84's out in the same commit that added its own block, part 85 moved part 83's out in the same commit that added its own block, part 84 moved part 82's out in the same commit that added its own block, part 83 moved part 81's out in the same commit that added its own block, part 82 moved part 80's out in the same commit that added its own block, part 78 moved part 76's out in the same commit that added its own block, part 76 moved part 74's out in the same commit that added its own block, part 74 moved part 72's out in the same commit that added its own block, part 73 moved part 71's out in the same commit that added its own block, part 72 moved part 70's out in the same commit that added its own block, part 71 moved part 69's out in the same commit that added its own block, part 70 moved part 68's out in the same commit that added its own block, part 69 moved part 67's out in the same commit that added its own block, part 68 moved part 66's out in the same commit that added its own block, part 67 moved part 65's out the same way, part 65 moved part 63's out the same way, part 64 moved parts 61/62's out the same way, part 63 moved part 60's out the same way, part 61 moved part 59's out the same way, part 59 moved part 57's out the same way, part 57 moved part 55's out the same way, part 55 moved part 53's
 out in the same commit that added its own, which is what the rule below asks for. — CLAUDE.md keeps only the
 live part and one part back, per the 2026-08-08 split's rule, and **part 53 moved part
 51's out in the same commit that added its own**, which is what the rule below asks for.
