@@ -247,3 +247,9 @@ table. **Owed, in order:** (1) `cz_play.bat` steady-state run for the stutter ve
 (counter only); (2) if session-one stutter matters, budget-aware sizing or lower priority
 for the pipeline workers, re-measured with VkCache parked; (3) the black-square arms
 `cz_arm_fif1` -> `noclear` -> `norecord`.
+
+**Steady-state verdict (2026-09-08, crowd route replayed on both machines, counter
+only):** czamd 50 fps / p99 25 ms / 0.0% frames over 2x median at 8,600 draws, headless
+AND windowed; the 3070 78 fps / 0.0%. No steady-state stutter exists on czamd. Owed item
+(1) is CLOSED; (2) stands as a first-run-only polish item; (3) the black-square arms
+remain the live czamd question.

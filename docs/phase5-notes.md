@@ -20697,3 +20697,27 @@ holds it (tile scan, then by eye — every flagged block was content); the opera
 it VANISHES the moment any capture is taken, so a readback's forced GPU wait removes it.
 Cross-frame race is the lead; arms staged on czamd in order: `cz_arm_fif1.bat`
 (`CZ_VK_FRAMES_IN_FLIGHT=1`), `cz_arm_noclear.bat`, `cz_arm_norecord.bat`.
+
+**The steady-state verdict, measured on the operator's own crowd route (part 80's
+`config/part80_crowd_route.seq`, replayed unattended), counter only (`CZ_FPS_LOG=5`,
+no frame stats, no dumps), 1920x1080, warm caches, 2026-09-08:**
+
+| at the crowd, 8,200-9,800 draws | 3070 Linux, headless | czamd headless | czamd WINDOWED (swapchain, desktop) |
+|---|---|---|---|
+| median | 12.5-13.0 ms | 18.4-18.6 ms | 19.6-20.0 ms |
+| p99 | 15-17 ms | 23-25 ms | 23-26 ms |
+| worst 5-s window | 17-19 ms | 24-27 ms | 25-28 ms |
+| frames >2x median | 0.0% | 0.0% | 0.0% |
+
+**czamd does not stutter at steady state**, headless or windowed, on the heaviest place
+in the game; it is 50 fps there against the 3070's 78. The only windows with a >2x share
+on either machine are the AREA ARRIVALS — the seconds where the draw count jumps from
+150 to 6,000+ and the streaming loads land: worst 101/100 ms on czamd, 113 ms on the
+3070, 1-2% of frames for one or two windows, then 0.0%. So the operator's two reports
+resolve to: (1) session one — the cold-driver-cache pipeline warm running into gameplay
+(first run only); (2) the diag run — the frame-dump instrument; and (3) anything felt
+"while walking around" on a warm install is the arrival hitch class, which is the title's
+streaming plus our texture-upload burst (part 77's subject) and is not czamd-specific.
+The czamd visible run was launched through the `cz_play` task with a temporary
+`cz_play.bat`; the release-shape bat was restored afterwards (`cz_play_release.bat` is
+the copy). Logs: `part102-fresh/logs/crowd_{3070,czamd,visible}.err.log`.
