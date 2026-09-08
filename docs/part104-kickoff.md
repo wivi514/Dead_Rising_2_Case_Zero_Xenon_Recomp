@@ -22,13 +22,17 @@ hand-off.** Read `phase5-notes.md` §6et (part 103's record) and
   `CZ_VK_GPU_PASSES=1 CZ_VK_STATS=1500` + `tools/gpu_split_window.py` there (no exit
   dump on that box, gotcha 519), and its headless number carries a 1.12 ms readback the
   release never pays (gotcha 517).
+- **The cold-driver-cache warm on czamd is priced** (§6et §6): +1.5 ms at p99 for its 55 s,
+  nothing at the median, no >2x frames; the part-103 priority change recovers ~0.5 ms of
+  that at one run per arm. Items 4b/4c of the part-103 plan are not warranted.
 - **Performance on the 3070 stays parked** (`part91-kickoff.md` §0c-§0d) — no lead
   ≥0.5 ms on either side of the crowd.
 
 ## §1 Owed, in order
 
 1. **Item 5 of part 103 — the golden store's boot-time file walk.** Now measured:
-   **czamd 5,679 files in 765 ms (135 us a file), dev box 29,932 in 1,290 ms**, on the boot
+   **czamd 5,923-5,958 files in 1,048-1,095 ms (176-185 us a file; 765 ms / 135 us on a
+   warmer run), dev box 29,932 in 1,290 ms**, on the boot
    path before the first frame, and it grows with every session (every new small texture
    adds a file). The design is one packed file (`golden.pack`: signature + length + bytes,
    rewritten by the background writer at exit from the in-memory map) with the per-file

@@ -20889,3 +20889,42 @@ by 150 s is that hang and not a slow boot.
   signatures (N files) in M ms (us a file)`. Dev box: **29,932 files in 1,290 ms, 43 us a
   file** — 1.3 s of every boot on Linux already, before the first frame. czamd: see the
   addendum below.
+
+### 6. ADDENDUM, same night — item 4a measured on a COLD driver cache, and item 5's czamd number
+
+The session-one shape, headless: `p103_cold.ps1` empties `%LOCALAPPDATA%\AMD\VkCache`
+(4 of 5 files removed; the one the driver holds open is not the pipeline blob — creates
+read 154 ms each in both arms, so the arm IS cold) and parks our pipeline cache
+(`XDG_CACHE_HOME` to a fresh dir, which the pipeline cache honours first even on Windows;
+the golden store there reads `%LOCALAPPDATA%` and stays warm on purpose). The seed is
+1,365 keys; four workers; the first frame lands ~100 s in and gameplay at 2,480 draws
+starts two windows later, so the warm — 55 s at 154 ms a create — overlaps fps windows
+3-12 in both arms and drains by window 11-12. One run each, same binary, alternated with
+nothing (the runs are 6 min apiece):
+
+| czamd, cold driver cache, fps windows 3-12 (2,430-2,490 draws, warm running) | control `CZ_NO_LOW_PRIORITY=1` | BELOW_NORMAL on spare jobs (default) | after the drain (windows 13-14) |
+|---|---|---|---|
+| mean of the window medians | 12.25 ms | 12.20 ms | 12.3 |
+| mean of the window p99s | **16.50 ms** | **16.03 ms** | 14.9-15.2 |
+| worst frame in any window | 38.4 ms | 37.7 ms | 16.5 |
+| mean >2x-median share | 0.09% | 0.11% | 0.0% |
+| seed drained by window | 11 | 11 | — |
+| seed builds a draw beat to it | 79 | 84 | — |
+
+**Reading:** the cold warm costs czamd about +1.5 ms at p99 (16.5 against the 15.0 the
+same load reads once the seed has drained) and nothing at the median, and it does not
+produce >2x frames at this load headlessly — the 0.1% share is the same as steady state.
+The priority change recovers ~0.5 ms of that p99 at one run per arm, which is at the edge
+of what one run can claim, and drains the seed no later (the game does not use the cores
+it yields at 2,480 draws). It ships because it cannot cost anything — a spare-tier build
+that yields is a build nobody was waiting for — and because the operator's session-one
+report was a visible run on a fuller route than this; but the honest number is small, and
+**items 4b (size the pool from the budget) and 4c (order the seed by first use) are not
+warranted by it.** The larger half of the operator's felt session-one stutter was the
+golden writes (§6es, gotcha 516), already fixed.
+
+**Item 5 on czamd:** the golden preload reads **5,923-5,958 files in 1,048-1,095 ms (176-185
+us a file)** on these runs and 5,679 in 765 ms (135 us) on the warm one — about one second
+of every czamd boot, before the first frame, growing by every session's new textures. The
+dev box: 29,932 files, 1,290 ms, 43 us. That is the one boot cost on the board that is
+ours and has a number; `part104-kickoff.md` §1 item 1 is the pack-file design.

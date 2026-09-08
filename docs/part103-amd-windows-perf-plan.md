@@ -105,9 +105,9 @@ hardware ratio. Everything ours is ~1.2 ms of 20, and 1.08 of it is the MSAA res
 | 1 MSAA | **REFUTED as a lever** — single-sample is SLOWER at 2,000-5,500 draws (+0.2-0.4 ms) and a wash at 7,700; the resolve saving (1.08→0.37) is eaten by the barrier class rising 0.06→1.39 on the single-sample image (gotcha 518). Do not expose an MSAA-off performance row on this evidence | −0.3 to +0.4 ms |
 | 2 dead resolve copies | **DEAD by the kill rule** — 0.14-0.39 ms of a 1.08 class | <0.5 |
 | 3 barriers | **DEAD by the kill rule** — 0.06 ms on czamd; AMD is lighter than NVIDIA on the pass-begin transitions, the premise was wrong | 0.06 |
-| 4a warm-worker priority | **SHIPPED** (ab80b87): BELOW_NORMAL/nice+10 on spare-tier jobs, normal on urgent; `CZ_NO_LOW_PRIORITY=1` control | measured below |
-| 4b/4c | not built — 4a first; re-ask if the cold-cache A/B below says it is not enough | — |
-| 5 boot file work | **INSTRUMENTED** (the preload line); dev box 29,932 files / 1.29 s / 43 us a file; czamd number below | — |
+| 4a warm-worker priority | **SHIPPED** (ab80b87): BELOW_NORMAL/nice+10 on spare-tier jobs, normal on urgent; `CZ_NO_LOW_PRIORITY=1` control. Cold-cache A/B on czamd (§6et §6): the warm costs +1.5 ms at p99 during its 55 s and nothing at the median or the >2x share; the priority recovers ~0.5 ms of p99 at one run per arm | p99 16.50 → 16.03 |
+| 4b/4c | **not warranted** — the cold warm produces no >2x frames headlessly (0.1%, same as steady state) and drains in 55 s either way | — |
+| 5 boot file work | **INSTRUMENTED** (the preload line); dev box 29,932 files / 1.29 s / 43 us a file; **czamd 5,923-5,958 files / 1.05-1.09 s / 176-185 us a file** — the pack-file design is `part104-kickoff.md` §1 item 1 | ~1 s of boot |
 | 6 thread report | **SHIPPED** — every pool named, `total runnable at a burst` | — |
 
 ## §2 The black square (czamd only) — same box, separate subject
