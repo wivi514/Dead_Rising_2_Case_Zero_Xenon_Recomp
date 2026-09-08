@@ -301,8 +301,10 @@ done
 # sed, not head: `head -1` closes the pipe after one line, ldd takes SIGPIPE, and under
 # `set -o pipefail` that made this assignment exit the script SILENTLY, right here.
 here=$(ldd --version 2>/dev/null | sed -n '1{s/.* //;p}')
-echo "    FLOOR: ${floor#GLIBC_}   (this machine: $here)"
-if [ "${floor#GLIBC_}" = "$here" ]; then
+echo "    FLOOR: ${floor#GLIBC_}   (this machine: $here${CZ_OLDBASE_INSIDE:+, the old-base container})"
+if [ -n "${CZ_OLDBASE_INSIDE:-}" ]; then
+    : # inside the container the floor EQUALS this machine's by construction; no alarm
+elif [ "${floor#GLIBC_}" = "$here" ]; then
     cat <<MSG
     !! the floor EQUALS the build machine's glibc: this was not built on the old base.
        tools/release_build_oldbase.sh is the release path (release-plan E.2); a bundle

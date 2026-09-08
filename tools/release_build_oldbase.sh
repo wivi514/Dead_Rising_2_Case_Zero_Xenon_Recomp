@@ -77,6 +77,7 @@ RUN=(podman run --rm -i
      -e CZ_SDL2_PREFIX="$OB/sdl2" -e CZ_FFMPEG_PREFIX="$OB/ffmpeg-lgpl"
      -e CZ_OLDBASE_SKIP_DEPS="${CZ_OLDBASE_SKIP_DEPS:-}"
      -e TAR_OPTIONS=--no-same-owner
+     -e CZ_OLDBASE_INSIDE=1
      -w "$ROOT" "$IMAGE")
 
 if [ "${1:-}" = "--shell" ]; then
