@@ -89,6 +89,27 @@ two busy threads + 3 guard workers + 4 pipeline workers (idle except while creat
 golden threads should count against the budget. They should not while blocked; they do
 during a burst.
 
+## §1b EXECUTION RECORD (2026-09-08, same day) — `phase5-notes.md` §6et is the full record
+
+**Item 0 ran, and the table it produced closes items 1-3 and ships 4-6.** czamd at the crowd
+(8,400-8,600 draws, 1080p, 2x): GPU 21.2 ms of which 1.12 is the HEADLESS readback the
+release never pays (gotcha 517) — so 20.1; `pass: >=256 draws` 17.4 (82%), resolve copy
+1.08 (the MSAA resolve), 2-255-draw passes 0.80, 1-draw 0.69, **barriers 0.06, clears
+0.02, views 0.02, cube 0.005**. The 3070 windowed at the same band: 8.2, big passes 6.3,
+copy 0.70, barriers 0.10. Ratio 2.4-2.5x at every load, which is the RX 6600 / 3070
+hardware ratio. Everything ours is ~1.2 ms of 20, and 1.08 of it is the MSAA resolve.
+
+| item | verdict | number |
+|---|---|---|
+| 0 GPU split on czamd | DONE | table above; `tools/gpu_split_window.py` + `CZ_VK_STATS` because czamd has no exit dump (gotcha 519) |
+| 1 MSAA | **REFUTED as a lever** — single-sample is SLOWER at 2,000-5,500 draws (+0.2-0.4 ms) and a wash at 7,700; the resolve saving (1.08→0.37) is eaten by the barrier class rising 0.06→1.39 on the single-sample image (gotcha 518). Do not expose an MSAA-off performance row on this evidence | −0.3 to +0.4 ms |
+| 2 dead resolve copies | **DEAD by the kill rule** — 0.14-0.39 ms of a 1.08 class | <0.5 |
+| 3 barriers | **DEAD by the kill rule** — 0.06 ms on czamd; AMD is lighter than NVIDIA on the pass-begin transitions, the premise was wrong | 0.06 |
+| 4a warm-worker priority | **SHIPPED** (ab80b87): BELOW_NORMAL/nice+10 on spare-tier jobs, normal on urgent; `CZ_NO_LOW_PRIORITY=1` control | measured below |
+| 4b/4c | not built — 4a first; re-ask if the cold-cache A/B below says it is not enough | — |
+| 5 boot file work | **INSTRUMENTED** (the preload line); dev box 29,932 files / 1.29 s / 43 us a file; czamd number below | — |
+| 6 thread report | **SHIPPED** — every pool named, `total runnable at a burst` | — |
+
 ## §2 The black square (czamd only) — same box, separate subject
 
 Not performance, but it is the other open czamd item and the arms are staged there:

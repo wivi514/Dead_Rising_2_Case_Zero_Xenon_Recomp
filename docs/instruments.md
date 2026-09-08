@@ -3375,6 +3375,27 @@ CZ_NO_VS_RECIPES=1  **the control arm for part 102's vertex-shader recipes.** Th
                   A refused recipe is named and NEVER translated: the result did not hash to
                   the runtime shader it claims. Same-binary A/B on the fresh-start route:
                   first-sight 47 -> 4, skipped draws 850,417 -> 74.
+CZ_NO_LOW_PRIORITY=1  **the control arm for part 103 item 4a.** The async pipeline workers
+                   drop to BELOW_NORMAL (Windows) / nice +10 (Linux, this thread only) while
+                   building a SPARE-tier job — the speculative boot warm, 155 ms a create on
+                   czamd's cold driver cache, four workers on six cores — and return to
+                   normal for an URGENT job (a draw skipping on that key now). With this set
+                   every switch is a no-op. Engagement: `pipeline: worker dropped to LOW
+                   priority for a spare job` / `raised to NORMAL priority for an urgent job`
+                   in the counter block; the `[threads]` block lists the pool and its policy.
+                   The `[threads]` block itself names every pool as of part 103, including
+                   the ones OUTSIDE the budget (pipeline, translate, golden, audio, xma) and a
+                   `total runnable at a burst` line — read it before quoting a thread count.
+                   And `[vk] golden texture store: preloaded N signatures (N files) in M ms
+                   (us a file)` is the boot-path timing part 103 item 5 asked for: 29,932
+                   files / 1,290 ms / 43 us a file on the dev box.
+tools/gpu_split_window.py <log> [--all]   **reads the CZ_VK_GPU_PASSES split for a WINDOW.**
+                   The split's counters are cumulative and print at exit — and on czamd the
+                   process is ended by `Stop-Process` (TerminateProcess), so there IS no exit
+                   dump there (gotcha 519). Arm `CZ_VK_STATS=1500` and the tool subtracts
+                   consecutive dumps, printing each window with its `[fps]` draw band, which
+                   is also the only way to read the crowd's split rather than the run's
+                   (boot + menus dilute a cumulative mean). Part 103's tables came from it.
 CZ_VK_SYNC_PREWARM=1  **the control arm for part 102's ASYNC boot warm.** The seed keys are
                   created synchronously at boot, as parts 83-101 did. Priced on this box with
                   an EMPTY driver cache: 1,365 x 28 ms = 38 s before the first frame (czamd:

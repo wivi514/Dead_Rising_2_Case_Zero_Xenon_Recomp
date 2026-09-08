@@ -20756,3 +20756,136 @@ pipeline warm (first ~60 s, oversubscription) and then the golden writes (every 
 for the rest of the session) — and a warm install had neither, which is why the crowd-route
 steady-state runs read 0.0%.** A new Windows player paid the second one on every texture of
 their first session; it is gone in the next build. Gotcha 516.
+
+## §6et — Part 103: the GPU split on czamd — the AMD frame is the title's own shading scaled by the hardware, MSAA 2x is free there, and the board's GPU items are dead by measurement (2026-09-08)
+
+**The question** (`part103-amd-windows-perf-plan.md` §1 item 0): czamd (RX 6600, Ryzen 5
+5500, Windows 10) is GPU-bound at every load — wall equals gpu, the CPU waits 4.5 ms a frame
+on the fence (§6es) — so the GPU items part 80 parked as "dead on regime" on the 3070 are
+alive there, IF their classes are worth anything on RDNA2 under AMD's driver. Nobody had run
+`CZ_VK_GPU_PASSES=1` on anything but the 3070. Step 0 was to run it before choosing.
+
+**How it was run, and the two things that had to be built to read it.** The crowd route
+(`config/part80_crowd_route.seq`, the operator's own, replayed unattended by
+`crowd_run.ps1`'s shape — `p103_run.ps1 -Tag <t> -Extra K=V,K=V` is the parameterised
+form now on czamd) at 1920x1080, `CZ_FPS_LOG=5`, no frame stats, no dumps. (1) **The czamd
+process is ended by `Stop-Process`, which is `TerminateProcess` — there is no exit dump on
+that box and never was** (part 102's czamd logs carry none; its numbers came from the
+per-frame trace). `CZ_VK_STATS=1500` re-prints the counter block every 1,500 frames and the
+split's counters are cumulative, so two consecutive dumps give the window between them:
+`tools/gpu_split_window.py <log> --all` does the subtraction and prints each window with
+its `[fps]` draw band. (2) The 3070 comparison is the same route, same resolution, same
+binary, but WINDOWED (the script's default; the czamd run is `CZ_NO_WINDOW=1`) — and that
+difference shows up as a class, see the first finding.
+
+### 1. The split, at the crowd, both machines (one run each; the census reproduces to 0.001-0.03 ms/frame across windows)
+
+| ms/frame at the crowd, MSAA 2x | czamd, 8,400-8,600 draws (headless) | 3070, 8,650-8,750 draws (windowed) | ratio |
+|---|---|---|---|
+| GPU frame, measured | **21.2** (20.1 without the headless readback) | **8.2** | 2.45 |
+| pass: >=256 draws (the title's scene passes) | **17.4** (82%) | 6.3 (77%) | 2.8 |
+| resolve copy (the MSAA resolve of each tile, 22 Mpixel/frame) | 1.08 | 0.70 | 1.5 |
+| pass: 2-255 draws | 0.80 | 0.62 | 1.3 |
+| pass: 1 draw (the post chain, 31 passes) | 0.69 | 0.38 | 1.8 |
+| resolve barriers (102/frame) | 0.059 | 0.073 | 0.8 |
+| pass-begin barriers (41/frame) | 0.003 | 0.029 | 0.1 |
+| resolve clear | 0.01-0.02 | 0.010 | — |
+| snapshot views / cube face | 0.020 / 0.005 | 0.040 / 0.007 | — |
+| present readback | **1.12** (headless only — see below) | 0.000 | — |
+| present blit | 0 (headless) | 0.065 | — |
+| residual | 0.018 | 0.009 | — |
+
+And at the low-load end, the same run: czamd at 2,486 draws (the settle after the DebugJump)
+is 12.2 ms of GPU — big passes 8.0, copy 1.07, 1-draw 0.97, 2-255 0.80 — against the 3070's
+5.1 at 2,796 (2.4x). **The ratio is 2.4-2.5x across the whole load range, and an RX 6600
+against an RTX 3070 is 2.3x on shader throughput and 2.0x on memory bandwidth.** The czamd
+frame is the title's own rendering at the hardware's price; nothing in it is pathological.
+
+**What is OURS on czamd, at the crowd: ~1.2 ms of 20 — and 1.08 of that is the MSAA
+resolve, which is the price of the picture decision (part 93), not overhead.** Barriers
+0.06, clears 0.02, views 0.02, cube 0.005. Against the plan's own kill rule ("an item whose
+class reads under 0.5 ms on czamd is not worth its risk"): **items 2 (dead resolve copies:
+36.4% of copies, 13% of pixels — 0.14-0.39 ms of the 1.08 class) and 3 (barriers: 0.06 ms
+total, and AMD's driver is LIGHTER than NVIDIA's on the pass-begin transitions, not heavier
+as the plan guessed) are DEAD without a run.** The plan's premise that AMD treats a full
+barrier as a heavier flush was wrong for the narrowed masks this renderer has used since
+part 78.
+
+### 2. The headless readback is a headless-only class, and it is 5% of the czamd number
+
+`present readback 1.121 ms/frame, 1.00 regions/frame` on czamd where the 3070 read 0.000:
+the 3070 run was windowed and the czamd run headless, and the present path reads the frame
+back to the host whenever there is no swapchain (`doReadback = !R->wantSwapchain || ...`).
+That is a 7.9 MB `vkCmdCopyImageToBuffer` a frame at 1080p, 1.12 ms on the RX 6600's PCIe.
+**The release build presents through the swapchain and never pays it**, so every headless
+czamd GPU number in §6es and here carries ~1.1 ms the player does not — read `gpu` there as
+`gpu − 1.1`. This is gotcha 460's mirror image (a windowed-only cost invisible headlessly):
+a headless-only cost that inflates the headless number. The class exists precisely so this
+is visible; it is why the split prints it.
+
+### 3. Item 1, MSAA — REFUTED as a lever on czamd: the single-sample arm is not faster, and the reason is a class that swapped places
+
+Same binary, same route, `CZ_VK_MSAA=0` against the 2x default, `[fps]` windows binned by
+draw band (5-s windows; medians are per-window medians averaged over the band):
+
+| czamd, draw band | 2x default (two runs) | single-sample | delta |
+|---|---|---|---|
+| 2,000-2,499 | 12.29 / 12.32 ms | 12.53 ms | +0.2 (slower) |
+| 4,000-4,499 | 14.69 / 14.74 | 15.14 | +0.4 (slower) |
+| 5,000-5,499 | 15.11 / 15.33 | 15.67 | +0.4 (slower) |
+| 7,500-7,999 | 19.83 | 19.56 | −0.3 |
+| 8,000-8,499 | 20.19 / 21.18 | (route stopped at 7,800) | — |
+
+Inside the split the two arms trade one class for another, and that is the whole
+explanation:
+
+| czamd at ~7,700-8,500 draws | 2x | single-sample |
+|---|---|---|
+| resolve copy | 1.08 (a real 2->1 downsample) | 0.37 (a plain copy) |
+| **resolve barriers** | **0.06** | **1.39** (102/frame, 13.6 us each) |
+| copy + barriers | 1.14 | 1.76 |
+| pass: >=256 draws | 17.4 @ 8,441 | 15.1 @ 7,743 |
+
+**With single-sample EDRAM the transitions of the colour image between attachment and
+transfer layouts cost 1.4 ms a frame on the RX 6600; multisampled, 0.06.** The likely
+mechanism — stated as a hypothesis with the number that would test it — is delta colour
+compression: RDNA2 compresses a single-sample colour attachment and a transition to
+TRANSFER_SRC is a full-image decompress over the 1920x1536 stand-in, ~100 times a frame,
+while the multisampled image is not DCC-compressed and the resolve reads it directly. The
+test is `VK_IMAGE_CREATE_...` no-compression on the single-sample EDRAM colour image, or an
+`AMD_ALLOW_DCC`-style driver toggle, and the 1.39 → ~0.06 prediction. **Not run**: the
+default is 2x, the panel does not offer single-sample, and on this box single-sample is
+already the slower arm. So the MSAA decision costs the AMD player nothing measurable at any
+load band, and the 3070's +0.85 ms at 3440x1440 (`msaa-plan.md`) was the NVIDIA answer, not
+a universal one. **The launcher should NOT grow a "disable MSAA for performance" row on the
+strength of this box.**
+
+### 4. The one hang, recorded so it is not re-chased
+
+The first instrumented czamd run (`gpusplit1`) parked before its first frame: `[kbm]
+splice` printed, then only `[kcall+]` milestone lines (KeDelayExecutionThread at 720k
+hits, RtlEnter/LeaveCriticalSection at 1.37M) for the rest of a 330-s timeout, no `vblank
+#1000`. The control (no instrument) booted, and the SECOND instrumented run booted and
+reached the crowd. One hang in five czamd boots this part, not correlated with the
+instrument — the intermittent pre-frame park part 100 left as "the residual hang is
+precise" (`part99-amd-hang.md` §5.4), and still open. A czamd run with no `vblank #1000`
+by 150 s is that hang and not a slow boot.
+
+### 5. Items 4-6, shipped (ab80b87), and what they measured
+
+- **Item 4a — the speculative warm runs BELOW NORMAL.** The async pipeline worker drops
+  its own priority (`THREAD_PRIORITY_BELOW_NORMAL` on Windows, nice +10 on the thread on
+  Linux) for a SPARE-tier job and raises it back for an URGENT one — a draw skipping on that
+  key right now — counted both ways (`pipeline: worker dropped to LOW priority for a spare
+  job`). `CZ_NO_LOW_PRIORITY=1` is the same-binary control. The priority follows the tier
+  rather than the thread because yielding an urgent build trades the stutter for longer
+  pop-in.
+- **Item 6 — the `[threads]` block names every pool.** `ThreadBudget_Note` lists the
+  threads outside the budget (pipeline 4, translate 1, golden 1, audio 1, xma 1) with a
+  `total runnable at a burst` line. On the dev box: `3 budget + 6 outside + pump + the
+  guest's busy threads, on 8 physical cores`. On czamd: the same 6 outside on 6 cores —
+  which is the oversubscription §6es described, now printed by the process that has it.
+- **Item 5 — the golden preload is timed.** `[vk] golden texture store: preloaded N
+  signatures (N files) in M ms (us a file)`. Dev box: **29,932 files in 1,290 ms, 43 us a
+  file** — 1.3 s of every boot on Linux already, before the first frame. czamd: see the
+  addendum below.

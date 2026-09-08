@@ -5920,3 +5920,37 @@ From phase C part 18 (the frame rate — and none of it was work):
      nothing. Rules: never do file I/O on the frame thread for a cache (queue it); name
      every sub-scope of a phase you print a split for; and when parking stores, list
      every directory the process opened (strace/ProcMon), not every env var you know.
+
+517. **A HEADLESS RUN PAYS A CLASS THE SHIPPED BUILD NEVER DOES, AND IT SITS INSIDE THE
+     "GPU" NUMBER.** Every headless czamd GPU figure carried a 1.12 ms/frame present
+     readback (7.9 MB `vkCmdCopyImageToBuffer` at 1080p) because without a swapchain the
+     present path reads the frame back to the host on every frame; the windowed release
+     build presents through the swapchain and skips it. The 3070 comparison run was
+     windowed, so the class read 0.000 there and 1.121 on czamd — 5% of the czamd frame
+     charged to the machine, not the mode. Mirror of gotcha 460 (a windowed-only cost
+     invisible headlessly). Rule: a same-machine A/B is fine either way, but a
+     CROSS-machine or headless-versus-shipped GPU number needs the mode named beside it,
+     and the per-region split is what makes the class visible (`present readback` must
+     read 0 in a play run — part 76 wrote that rule, part 103 found the case it was for).
+
+518. **AN ARM THAT REMOVES ONE COST CAN ADD ANOTHER IN A DIFFERENT CLASS, AND ONLY A
+     SPLIT SHOWS THE TRADE.** `CZ_VK_MSAA=0` on the RX 6600 cut the resolve-copy class
+     from 1.08 to 0.37 ms and RAISED the resolve-barrier class from 0.06 to 1.39 ms —
+     102 layout transitions a frame on a single-sample colour attachment that AMD keeps
+     compressed (the transition to TRANSFER_SRC decompresses the whole 1920x1536 image),
+     where the multisampled image was not. Net: single-sample is SLOWER at every load
+     band under 6,000 draws and a wash above. A frame-time A/B alone would have said
+     "MSAA is free on AMD" and been right for the wrong reason; the split says which
+     class to touch if single-sample ever matters (DCC on that image). Read the whole
+     split for both arms, not the total, before naming the mechanism.
+
+519. **A PROCESS ENDED BY TerminateProcess HAS NO EXIT DUMP, AND EVERY WINDOWS TEST-BOX
+     RUN THIS PROJECT MADE WAS ENDED THAT WAY.** `Stop-Process -Force` is
+     `TerminateProcess`; the SIGTERM handler that prints the renderer's counters on the
+     Linux `timeout` path never runs on czamd, and part 102's czamd logs carry no
+     counter block at all — its numbers all came from the per-frame trace, which prints
+     as it goes. `CZ_VK_STATS=N` (the periodic counter dump, in the tree since part 30)
+     is the fix and `tools/gpu_split_window.py` reads the window between two dumps out
+     of the cumulative counters. Rule: on a platform where the run is KILLED rather
+     than signalled, every exit-time instrument is silent; arm the periodic form and
+     check the log has the block before quoting a zero from it (gotcha 25's shape).
