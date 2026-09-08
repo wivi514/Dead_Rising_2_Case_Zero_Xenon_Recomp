@@ -981,3 +981,30 @@ map would rot).
   that artifact is now standing equipment. `ACTIONS_RESULTS_URL` is exported too (cache
   service v2), which took vcpkg from ~80 to 28 minutes;
 * **macOS entirely** (milestone C, blocked on hardware).
+
+### 9.9 Part 104 — E.2 CLOSED: the Linux artifact is built on an old base, and there is an AppImage
+
+**§9.2 items 2, 3 and 4 close here**, and §2.1's Linux row is finally what it says.
+`phase5-notes.md` §6eu is the full record; this is the programme's view.
+
+* **The floor is 2.35, measured off the artifact** — per file, printed by
+  `tools/release_package_linux.sh` in place of the "known limitation" note. The
+  executable is 2.34; jammy's `libgcc_s` and the container-built `libavutil` are 2.35;
+  the DXC prebuilt the bundle dlopens is 2.34 and is why the base could not be 20.04
+  (gotcha 520). `tools/release_build_oldbase.sh` builds SDL2, ffmpeg (with nasm — §9.2
+  item 2), XenonRecomp's static libs, the runtime and the PACKAGE inside a podman image
+  from `tools/release/oldbase/Containerfile`. A.3's identity gate is run inside on a
+  matched pair (OK); across compilers (clang 15 vs 22) `.text` differs and that is a
+  real code-generation change stated, not measured, this part.
+* **`CaseZeroRecomp-linux-x86_64.AppImage`** (`tools/release_package_appimage.sh`):
+  type-2 runtime + zstd squashfs, no `assets/` inside, AppRun seeds `assets/package/`
+  beside the image, the runtime resolves its root from `$APPIMAGE` (host_paths step
+  1b). Our own icon. 25 MB.
+* **A.4's gate runs in two images now**: at the floor (ubuntu:22.04) both artifacts must
+  PASS — the tarball did, every section; and below it (Rocky 9, 2.34) the artifact must
+  refuse with `GLIBC_2.35 not found (required by libavutil.so.60)`, which it did — the
+  floor is a measurement. The gate gained an AppImage mode (extract in-container with
+  the runtime's own `--appimage-extract`, then run the image through its runtime +
+  AppRun and check the root lands beside it).
+* **Owed after 9.9:** the crowd-route confirmation run on the old-base binary (the
+  compiler changed); macOS (C) unchanged.

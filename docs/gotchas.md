@@ -5954,3 +5954,50 @@ From phase C part 18 (the frame rate — and none of it was work):
      of the cumulative counters. Rule: on a platform where the run is KILLED rather
      than signalled, every exit-time instrument is silent; arm the periodic form and
      check the log has the block before quoting a zero from it (gotcha 25's shape).
+
+520. **THE GLIBC FLOOR OF A BUNDLE IS SET BY THE PREBUILT YOU DID NOT COMPILE, NOT BY
+     YOUR EXECUTABLE — READ IT PER FILE.** Part 104 set out to build the Linux release
+     on Ubuntu 20.04 (glibc 2.31) and found first, with `objdump -T` over every ELF in
+     the bundle, that `lib/libdxcompiler.so` (the DXC prebuilt the shader translator
+     dlopens) imports GLIBC_2.34: a 2.31 base would have produced a runtime that starts
+     on a 2.31 host and then refuses every shader translation, with the "no translated
+     shader" line as the only symptom. The base became 22.04 (2.35) and the packaging
+     script prints the floor per file and takes the maximum. Rule: a bundle's floor is
+     the maximum over everything the process will map, including what dlopen loads
+     later; compute it from the artifact, and gate in a container OLDER than the build
+     base (Rocky 9's 2.34 here) so a leaked symbol refuses to start where it should.
+
+521. **A MILESTONE'S TIME MUST BE MEASURED BEFORE IT IS A HANG CRITERION.** Part 103's
+     hand-off said "boot to first frame is 90-130 s; a run with no `vblank #1000` by
+     150 s is the hang", and part 104 built a boot loop on it — then found a healthy
+     czamd boot prints `vblank #1000` FIVE SECONDS in (the counter is the vblank
+     interrupt's delivery count, and the interrupt runs from the kernel's first tick,
+     long before the first presented frame). The criterion still discriminates (the
+     parked boot never prints it), but every boot in the loop was going to be held
+     30x longer than it needed and the "first frame" reading of it was simply wrong.
+     Rule: before using a log line as a milestone, grep a healthy log for WHEN it
+     appears; a name that sounds like a late event may be an early one (gotcha 13's
+     shape — a plan's number has a shelf life, and this one never had a measurement).
+
+522. **A PROCESS STARTED FROM AN SSH SESSION ON WINDOWS DIES WITH THE SESSION.** The
+     first czamd hang loop was launched with `Start-Process -WindowStyle Hidden` over
+     `ssh czamd` and was found dead 5 s in — the moment the SSH shell returned — with
+     one 154 KB log and a summary that said only LOOP START. Windows OpenSSH ends the
+     session's job when the shell exits; `nohup`/`setsid` have no equivalent there.
+     `schtasks /create ... /sc once` + `schtasks /run` puts the loop in the Task
+     Scheduler's own process tree, which outlives the SSH session (it is what
+     `cz_play` on czwin already does for the same reason). Rule: on a Windows test box
+     any run longer than the SSH call that starts it goes through a scheduled task,
+     and the first thing to check after launching is that the process still exists
+     after the SSH session has closed.
+
+523. **COPYING N MB INTO FRESH MEMORY IS BOUND BY FIRST-TOUCH PAGE FAULTS, AND A
+     FASTER READ CALL IS A NULL THERE.** The golden pack's 345 MB read cost ~390 ms
+     from the page cache (0.9 GB/s, far below memcpy speed), and swapping an
+     `ifstream` into a zero-filled `std::vector` for one `fread` into an uninitialised
+     buffer changed nothing measurable — the time is the kernel faulting in 88,000
+     fresh 4 KB pages, which every form of "read into new memory" pays. The fill of
+     the map (30k allocations + the copy into them) is another ~270 ms of the same
+     thing. Rule: when a copy of a large file into new memory reads slow, the lever is
+     to not copy (mmap and point into the mapping), not to change the copy's API; and
+     say what the split was before naming the fix (gotcha 238's shape).

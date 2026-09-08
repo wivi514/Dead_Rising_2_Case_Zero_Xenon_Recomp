@@ -20928,3 +20928,161 @@ us a file)** on these runs and 5,679 in 765 ms (135 us) on the warm one — abou
 of every czamd boot, before the first frame, growing by every session's new textures. The
 dev box: 29,932 files, 1,290 ms, 43 us. That is the one boot cost on the board that is
 ours and has a number; `part104-kickoff.md` §1 item 1 is the pack-file design.
+
+## §6eu — Part 104: the Linux release on an old base + an AppImage, the golden pack, and the czamd park hunted with its instruments on (2026-09-08)
+
+**The operator's instruction, opening the part:** *"remove what you cannot do alone and
+put them for part 105 and add the work for appimage for linux to part 104"* — so
+`part104-kickoff.md` §1 is four items that need no operator, and this is their record.
+Every number below was measured in this part; the shelf-life rule (gotcha 13) applies.
+
+### 1. Item 1 — the glibc floor, 2.43 → 2.35, and the AppImage (SHIPPED, gated)
+
+**The floor is not the executable's to set.** The first thing done was `objdump -T` over
+every ELF the bundle maps, and it moved the plan before any container existed: the DXC
+prebuilt the shader translator dlopens (`lib/libdxcompiler.so`, from XenosRecomp's
+thirdparty) imports **GLIBC_2.34**. A 20.04 base (2.31), which the kickoff named, would
+have produced a runtime that starts on a 2.31 host and then declines every translation
+with one log line — gotcha 520. Ubuntu 22.04 (2.35) is the base: one above the hard floor,
+the oldest supported LTS, and what AppImages are conventionally built on.
+
+**What was built** (`tools/release_build_oldbase.sh`, `tools/release/oldbase/Containerfile`):
+a podman image (jammy + clang 15 + libstdc++-12 + gcc for ffmpeg's configure + nasm + the
+SDL2 backend headers + Vulkan-Headers 1.4.341 copied OVER jammy's 1.3.204 so the release
+compiles against the dev box's header); inside it, with the repo mounted at its own
+absolute path: SDL2 2.32.10, ffmpeg 8.1.2 (LGPL, xma1+xma2, **with nasm for the first
+time** — release-plan §9.2 item 2 closes with this), XenonRecomp's XenonUtils + fmt +
+xxHash (the runtime links them as static libs out of a build tree, and the host's tree
+was compiled against 2.43 headers), the Release runtime, a matched RelWithDebInfo runtime
+for the identity gate, and the PACKAGING — inside too, because the packaging script
+bundles what `ldd` resolves and an `ldd` on the host would have shipped the host's
+libstdc++ (GLIBCXX_3.4.35, glibc 2.43) and put the floor straight back.
+
+**Three things the container build refused before it ran, each a fact about the tree:**
+ffmpeg's configure wants `gcc` even with clang as the compiler (image rebuilt); the
+runtime compiles XenosRecomp's translator and links XenonRecomp's libs from checkouts that
+the CMakeLists derives from `$HOME` (mounted read-only and named explicitly); and
+**exactly one line in 30,000 used a C++20 feature clang 15 lacks** — a lambda capturing a
+structured binding (P1091), in the F8/F9 readback loop — now a plain reference (c7ee332).
+
+**The identity gate holds within the toolchain, and across toolchains it cannot** — jammy's
+clang 15 and the dev box's clang 22 generate different code for the same `-O2`, so the
+release's `.text` is NOT the dev build's. `tools/release_text_identity.sh` was run on the
+matched RelWithDebInfo/Release pair inside the container: **OK, byte-identical**, i.e. the
+build TYPE is still a null; the COMPILER change is a real code-generation change of the
+same class the Windows leg (clang-cl) has always carried, and it is stated here rather than
+smoothed over. It was not measured on the crowd route this part.
+
+**The floor, computed off the artifact per file** (`tools/release_package_linux.sh` now
+prints this instead of "known limitation"):
+
+| file | GLIBC floor |
+|---|---|
+| `cz_runtime` | 2.34 |
+| `libSDL2-2.0.so.0.3200.10` | 2.34 |
+| `libavcodec.so.62.28.102` | 2.34 |
+| `libavutil.so.60.26.102` | **2.35** |
+| `libdxcompiler.so` | 2.34 |
+| `libgcc_s.so.1` | **2.35** |
+| `libstdc++.so.6.0.30` | 2.34 |
+
+**FLOOR 2.35**, set by libavutil and jammy's own libgcc_s — the executable is 2.34. The
+script says so per file so a regression names its file, and calls out a floor equal to the
+running machine's glibc as "not built on the old base".
+
+**The AppImage** (`tools/release_package_appimage.sh`): type-2 runtime (fetched once,
+sha256 `1cc49bcf…`, cached under `thirdparty/appimage/`) + a zstd squashfs of the stage
+minus `assets/`, with an `AppRun` that seeds `assets/package/PUT_YOUR_GAME_HERE.txt`
+BESIDE the image on the first launch, a `.desktop` and our own icon
+(`tools/release/make_icon.py`, no Capcom byte). The runtime change it needed is
+`host_paths.cpp` step 1b: an AppImage's executable is a read-only mount under
+`/tmp/.mount_XXXX` that moves every launch, so the data root resolves from `$APPIMAGE`
+(the file the player launched), and only when the executable is inside `$APPDIR` — a
+terminal emulator that is itself an AppImage exports `APPIMAGE` to every shell it opens,
+and without the containment test a dev binary run from one would root itself beside that
+terminal. Self-checks on the host, all three passed: `--appimage-extract-and-run --smoke`,
+the FUSE mount path `--smoke`, and `[paths] root <dir-beside-image> (appimage)` with the
+marker seeded. **25 MB** (`ec5f263b…`); the `.tar.zst` is **26 MB** (`9bf180c7…`), the
+same build.
+
+**The gates, in TWO containers** — at the floor (ubuntu:22.04, 2.35) where every check
+must pass, and BELOW it (Rocky 9, 2.34) where the artifact must refuse to start with the
+exact symbol named, which is what makes "2.35" a measurement and not a number written down:
+
+| artifact | image | glibc | result |
+|---|---|---|---|
+| `.tar.zst` | ubuntu:22.04 | 2.35 | **GATE PASSED** — every bundled dependency inside the bundle, `--smoke` OK, DXC dlopen translated a shader, the whole first-run flow (extract, 1,265-shader build, overlays hash-identical to the Python reference, a boot reading the tree), the refusal |
+| `.tar.zst` | Rocky 9 | 2.34 | **refused as it must**: `/lib64/libm.so.6: version 'GLIBC_2.35' not found (required by lib/libavutil.so.60)` on every section |
+| `.AppImage` | ubuntu:22.04 | 2.35 | **GATE PASSED** — the same sections on the extracted `usr/`, plus the image through its own runtime + AppRun: `--smoke` OK and `[paths] root /tmp/beside (appimage)` with `assets/package/` seeded |
+| `.AppImage` | Rocky 9 | 2.34 | **refused as it must**, the same symbol, through the runtime too |
+
+The Rocky rows are not failures of the artifact; they are the floor's proof. A gate that
+only ever ran where it passes would have made "2.35" a claim (gotcha 30's shape).
+
+**The Windows leg** was rebuilt on czwin at the same source (c7ee332):
+`CaseZeroRecomp-windows-x86_64.zip` 21 MB, `ab69a837…`. All three hashes are in
+`docs/release-notes-v1.0.2.md`, which is paste-ready; tagging and attaching are the
+operator's (v1.0.1 was published the same way).
+
+**Two script defects found by running them, recorded because both were silent:** (a)
+`ldd --version | head -1 | ...` under `set -o pipefail` — `head` closes the pipe, ldd takes
+SIGPIPE, the assignment fails and `set -e` exits the script with NO message, right after
+the floor table (both packaging scripts; `sed -n '1{...}'` now, which reads to EOF); (b)
+editing a bash script while a process is still executing it — bash reads the file
+lazily, so the running gate executed garbage from the shifted offsets ("kage: command
+not found"). Neither is a gotcha of this project's kind; both are the reason the gate
+runs are repeated from a quiescent tree.
+
+### 2. Item 2 — the golden pack (SHIPPED; ff48698 + 5871178)
+
+`golden.pack` under the cache root: 8-byte header, then `{sig u64, len u32, bytes}` to
+EOF, one `fread` at boot, appended to by the writer thread as textures are captured
+(flushed per entry). **Append-only, not "rewritten at exit"**, because the platform this
+was built for ends the process with `TerminateProcess` (gotcha 519) — an exit rewrite
+would never run there — and a torn tail from a kill is detected by its own length field
+and cut at the next load. Loose `<sig>.bin` files are folded in on the next boot and
+DELETED once the pack holds them, so the walk runs once more and then over an empty
+directory. `CZ_VK_NO_GOLDEN_PACK=1` is the per-file store as it was.
+
+**Gates, on a COPY of the dev box's store (29,932 files, 361 MB):**
+
+| boot | preload line | pack after |
+|---|---|---|
+| 1, migration | 29,932 signatures, 3,581 ms, "29932 loose files walked and folded" | 345.1 MB, dir holds 1 file |
+| 2 | 29,932 in **495 ms**, "pack 29932 entries, 0 loose" | unchanged |
+| 3, 18 garbage bytes appended | 29,932, "torn tail cut", cut 18 bytes | back to 345.1 MB |
+| 4, one loose file added | 29,933, "1 loose file folded" | +33,868 bytes |
+| 5 | 29,933 from the pack, 0 loose | — |
+| 6, `CZ_VK_NO_GOLDEN_PACK=1` | the walk over the now-empty dir; 605 loose files written this session | pack ignored |
+
+**Preload, same store, three alternating pairs:** walk **1,301-1,331 ms** warm (3,412
+cold), pack **475-509 ms** — −62%. The remaining ~480 ms was split with a standalone
+program: the `fread` of 345 MB is ~390 ms (page-fault-bound at 0.9 GB/s, and swapping
+ifstream for fread changed nothing — gotcha 523) and the fill of the map ~270 ms. A store
+this size is the dev box's oddity (every small texture ever seen, 3070 sessions);
+**czamd's is ~70 MB and its number is OWED** — the kickoff's "under ~50 ms" was written
+for that count, and the release bundle was not deployed there this part because the hang
+campaign (item 3) was using the box under the part-103 exe. The serving path is untouched
+(the map's consumers did not change), so the `CZ_VK_NO_GOLDEN_TEX=1` pit gate reduces to
+"the same signatures load", which the table shows.
+
+### 3. Item 3 — the one-in-five pre-frame park, hunted with its instruments on
+
+**The milestone was mis-timed in the hand-off** (gotcha 521): `vblank #1000` is printed
+**5 s** into a healthy czamd boot, not at the first frame at 90-130 s — it is the
+vblank interrupt's delivery count. It still discriminates (the parked run never prints
+it), so the loop ends a healthy boot at 5 s and a parked one at 150 s + 30 s of dumps.
+
+**The campaign** (`tools/czamd/p104_{loop,full,cold}.ps1`, run as scheduled tasks because
+an SSH-started process there dies with the session — gotcha 522), every boot with
+`CZ_KCALL_WHO` milestone backtraces on the five imports the parked log was spinning in,
+`CZ_APC_TRACE`, `CZ_KOBJ_DUMP=20`, `CZ_WAIT_TRACE`, `CZ_CS_TRACE`, `CZ_SCREEN_TRACE`,
+`CZ_FILE_TRACE`, and the engine's own log on every second boot:
+[[CZAMD]]
+
+### 4. Item 4 — Case West notes
+
+`docs/reusability.md` gained a "Parts 103-104" section: no MSAA-off row on one GPU's
+evidence (518), read a Windows test box with `CZ_VK_STATS` windows (519), name the present
+mode beside a cross-machine GPU number (517), the `[threads]` block first on a small-machine
+report, and the old-base/AppImage rule with its `$APPIMAGE` containment guard.

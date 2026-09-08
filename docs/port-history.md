@@ -6726,3 +6726,57 @@ SOLVED (semaphore limit, `part99-amd-hang.md` §6) and it left part 101's plan; 
   the lead). See §5.4 for the ordered next steps.
 * **New instruments (all OFF by default):** `CZ_APC_TRACE`, `CZ_KOBJ_DUMP=N`,
   `CZ_KCALL_WHO` milestone backtraces, and streaming-chain probes in `guest_probe.cpp`.
+
+## Part 101 status block (moved out of CLAUDE.md by part 104, per the one-back rule)
+
+Where the port was, as of 2026-09-06 night (**PART 101 — LOCAL HALF DONE: the czamd
+stutter's persistence mechanism FOUND AND FIXED (the pre-warm seed was SHADOWED),
+and the black-square bisection says NVIDIA+D32 IS CLEAN. `phase5-notes.md` §6er is
+the record; `part101-stutter-and-blacksquare-plan.md` carries the execution record
+appended; gotcha 513 is the transferable finding. THE OPERATOR HALF IS OWED**):
+
+* **Issue A root cause:** `PrewarmPipelines` read the per-user key file OR the
+  shipped 1,365-key seed — and every czamd boot-hang session saved a ~32-key file
+  from the Loading screen, shadowing the seed forever ("23 of [32]" — the plan's
+  vertex-shader reading of that line was wrong; skipped keys stay in the
+  denominator). Fixed by UNION (95611b9, no arm — read both, dedupe, save still
+  writes only the per-user path). Verified same day: fresh-start run then warm
+  re-run — `1079 per-user + shipped seed -> 1365 after union`, first-sight 0,
+  zero skipped draws, zero outdoor >100 ms frames.
+* **The session-one experience was measured whole** (operator asked live: every
+  compiled-shader store parked, seed present, outdoor route): disc prebuild 1265
+  of 1265, pre-warm 0 of 1365 (all parked), chain built 1,079 in background, 47
+  first-sight translations all off-thread, **4 frames >100 ms of 19,506** (1
+  outdoor). First-sight translation was ALREADY async — the plan's candidate
+  fix 1 does not exist as work; the visible cost is pop-in (234,849 skipped
+  draws), not stalls.
+* **Issue B:** 286 outdoor D32 frames on NVIDIA tile-scanned — no black square
+  (all 15 flags were scene content: silhouettes, the smoke plume). No
+  D24-packing reader found on the D32 path either. The square is czamd-specific
+  until czamd's own frames say otherwise.
+* **czamd is staged for the operator:** part-101 exe swapped in (old kept as
+  `cz_runtime_pre101.exe.bak`), `cz_play.bat` arms `CZ_VK_FRAME_DUMP` into
+  `p101frames`. Owed: same-area-twice for the stutter verdict; reproduce the
+  square and note when, then pull `p101frames` + `run_visible.err.log`. v1.0.1
+  (semaphore + thread floor + AMD depth + 95611b9) remains unblocked.
+* **PART 102 (2026-09-07) — SESSION-ONE POP-IN CLOSED ON THE DEV BOX;
+  `phase5-notes.md` §6es is the record, `part102-no-popin-plan.md` the plan with its
+  execution record appended, gotchas 514-515.** The operator asked for hedge-dev's
+  no-first-run-stutter design; the pop-in was the VERTEX half (0 of 104 on disc
+  verbatim, translated at the draw that first binds each). The title binds VS to
+  declaration LAZILY inside the draw flush (`sub_8284F1C0`/`sub_8284EF28`, only caller
+  `sub_8284F300`), so no load-time hook exists — but 102 of 104 runtime VS are a disc
+  template + 2-32 patched dwords, so `tools/vs_recipes.py` -> `tools/release/vs_recipes.bin`
+  (10 KB, ships beside the exe like prewarm.keys) and the first-run prebuild now
+  rebuilds the vertex half hash-gated (`CZ_NO_VS_RECIPES=1` the arm). Fresh-start
+  route, ALL THREE stores parked incl. the driver cache: skipped draws 850,417 -> 199,
+  first-sight 47 -> 4 (boot-only), session two 0/0. The boot pre-warm is ASYNC now on
+  4 workers (`CZ_VK_SYNC_PREWARM=1`, `CZ_VK_PIPELINE_WORKERS=N`) because synchronous
+  on an empty driver cache it cost 38 s here / 138 s on czamd. **czamd DONE the same
+  night**: release bundle deployed, operator's main-road stutter FOUND (the golden
+  texture store's synchronous file write, 2 ms a texture on Windows, RESIDUAL 79.9% of
+  decode) and FIXED by a background writer (200f5b9; same-binary A/B on czamd 1.12 ->
+  0.10 ms a texture, crowd p99 42.9 -> 24.7 ms; gotcha 516). czamd is GPU-BOUND (wall ==
+  gpu, fence 4.5 ms) — **THE NEXT PLAN IS `docs/part103-amd-windows-perf-plan.md`**,
+  step 0 the GPU split on czamd. Still owed: the plan's §2.1 licensing call, the seed's 3
+  orphan VS, the czamd black square (arms staged, `cz_arm_fif1.bat` first).
