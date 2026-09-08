@@ -1281,12 +1281,33 @@ std::string g_progTitle;
 uint32_t g_progLastDraw = 0;
 } // namespace
 
+
+// PREFER WAYLAND WHEN THE SESSION OFFERS IT (part 104). Real SDL2 — the bundled one since
+// part 82 — tries x11 before wayland on a Wayland desktop, where sdl2-compat/SDL3 (the
+// dev box's) tries wayland first. On this box (NVIDIA, XWayland) the x11 path presented
+// at EXACTLY 1.0 fps: the published v1.0.1 Linux bundle measured 1.0 fps on its default
+// driver and 224 fps with SDL_VIDEODRIVER=wayland, and the dev binary read the same both
+// ways, so it is the path and not the build (phase5-notes §6eu §5). The hint is a comma
+// list SDL2 >= 2.0.22 walks in order: a Wayland session whose wayland driver fails falls
+// back to x11 as before, and an X11 session (no WAYLAND_DISPLAY) is untouched. A player's
+// own SDL_VIDEODRIVER wins — an environment variable outranks a default-priority hint —
+// and the game window's "up on SDL video driver" line says which one took. Idempotent, so
+// it is called at every SDL video init site rather than at one that may not be first.
+static void PreferWaylandWhenOffered()
+{
+#if !defined(_WIN32) && !defined(__APPLE__)
+    if (const char* wl = getenv("WAYLAND_DISPLAY"); wl && *wl && !getenv("SDL_VIDEODRIVER"))
+        SDL_SetHint(SDL_HINT_VIDEODRIVER, "wayland,x11");
+#endif
+}
+
 bool Host_ProgressBegin(const char* title)
 {
     if (getenv("CZ_NO_WINDOW"))
         return false;
     if (g_progWindow)
         return true;
+    PreferWaylandWhenOffered();
     if (!SDL_WasInit(SDL_INIT_VIDEO) && SDL_InitSubSystem(SDL_INIT_VIDEO) != 0)
     {
         fprintf(stderr, "[host] progress window: SDL video init failed (%s) — "
@@ -1410,6 +1431,7 @@ bool Host_RunLauncher()
 {
     if (getenv("CZ_NO_WINDOW"))
         return true;
+    PreferWaylandWhenOffered();
     if (!SDL_WasInit(SDL_INIT_VIDEO) && SDL_InitSubSystem(SDL_INIT_VIDEO) != 0)
     {
         fprintf(stderr, "[launcher] SDL video init failed (%s) — continuing without\n",
@@ -1696,6 +1718,7 @@ bool Host_WindowInit()
     // SDL call — `main()` calls this at line 310 and does not spawn the guest thread
     // until line 338.
     SDL_SetHint(SDL_HINT_NO_SIGNAL_HANDLERS, "1");
+    PreferWaylandWhenOffered();
 
     if (getenv("CZ_NO_WINDOW"))
     {
