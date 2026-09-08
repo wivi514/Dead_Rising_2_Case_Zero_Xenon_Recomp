@@ -64,6 +64,7 @@
 // before shadowing, which sets the guard; nothing below re-declares __rdtsc.
 #include "../cpu/timebase.h"
 #include "../gpu/vk_renderer.h" // the exit paths save the pipeline cache (part 99)
+#include "../host/log_file.h"  // the exit paths drain the log file's tee (part 105)
 #include "../host/settings.h"
 #include "../host/window.h"   // XamInputGetState's device (phase 3)
 #include "content.h"          // the save-data layer: enumerators and their message
@@ -2416,6 +2417,7 @@ PPC_FUNC(__imp__KeBugCheckEx)
     VkRenderer_DumpStats();
     VkRenderer_SavePipelineCache();
     fflush(nullptr);
+    LogFile::Flush(2000);
     std::_Exit(0);
 }
 

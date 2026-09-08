@@ -75,6 +75,12 @@ void VkRenderer_DumpStats();
 // to remove. Safe to call more than once; only the first call writes.
 void VkRenderer_SavePipelineCache();
 
+// `cz_runtime --diag` (part 105): every physical device, its driver, the requirements
+// table verdict on the one bring-up would pick, the depth format and MSAA facts — one
+// line per fact, no device created. Returns false when the pick cannot run the
+// renderer. Needs no window and no renderer state.
+bool VkRenderer_Diag();
+
 // Ask the swapchain to rebuild at the next present even though the drawable size is
 // unchanged — the seam a live VSync change needs (part 60): the present mode is a
 // property of the swapchain, so FIFO<->MAILBOX means recreating it. Callable from

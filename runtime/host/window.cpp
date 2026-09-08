@@ -117,6 +117,10 @@ bool Host_ProgressBegin(const char*) { return false; }
 void Host_ProgressUpdate(const char*, float) {}
 void Host_ProgressEnd() {}
 bool Host_RunLauncher() { return true; }
+void Host_DiagVideo()
+{
+    fprintf(stderr, "[diag] sdl: built with -DCZ_WINDOW=OFF — no SDL in this binary\n");
+}
 void Host_Present(uint32_t, uint32_t, uint32_t) {}
 void Host_PresentPixels(const uint8_t*, uint32_t, uint32_t) {}
 void Host_WindowRun() {}
@@ -153,6 +157,7 @@ int Host_DisplayModeList(uint32_t*, int) { return 0; }
 
 #include "../gpu/vk_renderer.h"
 #include "host_paths.h"
+#include "log_file.h"
 #include "png_icon.h"
 #include "settings.h"
 #include "../cpu/native_kbm.h"
@@ -1260,6 +1265,7 @@ void Shutdown(const char* why)
     // actually has to fire for the next launch to be warm.
     ::VkRenderer_SavePipelineCache();
     fflush(nullptr);
+    LogFile::Flush(2000); // the log file's tail, before an exit that skips every destructor
     // _Exit, not exit: guest threads are still running recompiled code against guest
     // memory, and running static destructors underneath them would turn an ordinary
     // quit into a crash report about a subsystem that was working.
@@ -1323,12 +1329,99 @@ static void ApplyGameIcon(SDL_Window* win)
 // own SDL_VIDEODRIVER wins — an environment variable outranks a default-priority hint —
 // and the game window's "up on SDL video driver" line says which one took. Idempotent, so
 // it is called at every SDL video init site rather than at one that may not be first.
+//
+// EXCEPT UNDER GAMESCOPE (part 105, docs/steam-deck-plan.md §3 item 4). The Steam
+// Deck's Game Mode — and any `gamescope -- game` session — is a Wayland compositor that
+// presents games through XWayland; its X11 path is the one every Steam title takes and
+// the one Valve tests. The 1 fps defect above is an NVIDIA + desktop-XWayland case, so
+// on a gamescope session the hint is NOT set and SDL2's default order (x11 first)
+// stands. gamescope names itself three ways depending on version and launcher:
+// GAMESCOPE_WAYLAND_DISPLAY in the game's environment, and "gamescope" in
+// XDG_CURRENT_DESKTOP or XDG_SESSION_DESKTOP; any one of them is enough.
+//
+// MEASURED ON THIS BOX (part 105, gamescope 3.16.23 nested on KDE Wayland, NVIDIA):
+// gamescope also REMOVES WAYLAND_DISPLAY and SDL_VIDEODRIVER from the child's
+// environment (`gamescope -- env` shows neither), so the part-104 hint could never
+// have fired under it and a player's SDL_VIDEODRIVER never reaches the game there —
+// x11 through XWayland is the only path gamescope offers, and it presented at the
+// title screen at ~165 fps here (6,645 frames in ~40 s), not the desktop-XWayland 1 fps.
+// The check below therefore changes no behaviour under gamescope; it exists so the
+// log STATES the path and the reason, which a Deck report needs.
+static bool UnderGamescope()
+{
+    if (const char* g = getenv("GAMESCOPE_WAYLAND_DISPLAY"); g && *g)
+        return true;
+    for (const char* var : { "XDG_CURRENT_DESKTOP", "XDG_SESSION_DESKTOP" })
+        if (const char* v = getenv(var); v && strstr(v, "gamescope"))
+            return true;
+    return false;
+}
+
 static void PreferWaylandWhenOffered()
 {
 #if !defined(_WIN32) && !defined(__APPLE__)
-    if (const char* wl = getenv("WAYLAND_DISPLAY"); wl && *wl && !getenv("SDL_VIDEODRIVER"))
+    static bool said = false;
+    if (getenv("SDL_VIDEODRIVER"))
+        return; // the player's own choice; nothing to add
+    if (UnderGamescope())
+    {
+        if (!said)
+            fprintf(stderr, "[host] gamescope session detected — SDL's default video-driver "
+                            "order stands (x11 through XWayland, the path Steam titles take; "
+                            "gamescope clears WAYLAND_DISPLAY and SDL_VIDEODRIVER from the "
+                            "game's environment, so it is the only path offered here)\n");
+        said = true;
+        return;
+    }
+    if (const char* wl = getenv("WAYLAND_DISPLAY"); wl && *wl)
         SDL_SetHint(SDL_HINT_VIDEODRIVER, "wayland,x11");
 #endif
+}
+
+// `cz_runtime --diag`'s SDL half (part 105): the library's version, every video driver
+// it was built with, the one that takes on this session with the same hint logic the
+// game uses, and each display's desktop mode. Tears the subsystem down again; nothing
+// else in the process is touched.
+void Host_DiagVideo()
+{
+    const char* T = "[diag] sdl:";
+    SDL_version compiled, linked;
+    SDL_VERSION(&compiled);
+    SDL_GetVersion(&linked);
+    fprintf(stderr, "%s compiled against %u.%u.%u, running %u.%u.%u (%s)\n", T,
+            compiled.major, compiled.minor, compiled.patch, linked.major, linked.minor,
+            linked.patch, SDL_GetRevision());
+    fprintf(stderr, "%s video drivers built in:", T);
+    for (int i = 0; i < SDL_GetNumVideoDrivers(); i++)
+        fprintf(stderr, " %s", SDL_GetVideoDriver(i));
+    fprintf(stderr, "\n");
+    PreferWaylandWhenOffered();
+    if (const char* h = SDL_GetHint(SDL_HINT_VIDEODRIVER))
+        fprintf(stderr, "%s video-driver hint: %s\n", T, h);
+    if (SDL_InitSubSystem(SDL_INIT_VIDEO) != 0)
+    {
+        fprintf(stderr, "%s SDL video init FAILED: %s — no window can open on this "
+                        "session\n", T, SDL_GetError());
+        return;
+    }
+    fprintf(stderr, "%s video driver that took: %s\n", T, SDL_GetCurrentVideoDriver());
+    const int n = SDL_GetNumVideoDisplays();
+    fprintf(stderr, "%s %d display%s\n", T, n, n == 1 ? "" : "s");
+    for (int i = 0; i < n; i++)
+    {
+        SDL_DisplayMode m{};
+        SDL_GetDesktopDisplayMode(i, &m);
+        SDL_Rect r{};
+        SDL_GetDisplayBounds(i, &r);
+        float ddpi = 0;
+        SDL_GetDisplayDPI(i, &ddpi, nullptr, nullptr);
+        fprintf(stderr, "%s   [%d] %s: desktop %dx%d @ %d Hz, bounds %d,%d %dx%d, %d modes, "
+                        "dpi %.0f\n", T, i, SDL_GetDisplayName(i), m.w, m.h, m.refresh_rate,
+                r.x, r.y, r.w, r.h, SDL_GetNumDisplayModes(i), ddpi);
+    }
+    fprintf(stderr, "%s game controllers: %d joystick%s seen at init\n", T,
+            SDL_NumJoysticks(), SDL_NumJoysticks() == 1 ? "" : "s");
+    SDL_QuitSubSystem(SDL_INIT_VIDEO);
 }
 
 bool Host_ProgressBegin(const char* title)

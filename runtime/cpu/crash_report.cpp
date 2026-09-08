@@ -32,6 +32,7 @@
 // gone off the rails must be distinguishable from a genuinely short stack, or an
 // unmarked bad walk reads as merely uninformative and quietly wastes the capture.
 #include "crash_report.h"
+#include "../host/log_file.h"
 
 #include <atomic>
 #include <csignal>
@@ -89,6 +90,16 @@ int Append(char* b, int cap, int n, const char* fmt, ...)
     if (r < 0)
         return n;
     return (r >= cap - n) ? cap - 1 : n + r;   // truncated: park at the end
+}
+
+// _exit(139), after giving the log-file tee (host/log_file.h) up to two seconds to
+// drain: the report above was written with raw write(2) into a pipe, and a process
+// that exits a microsecond later loses exactly the lines a player's report needs.
+// Two seconds is generous for a few KB; the wait ends as soon as the pipe is empty.
+[[noreturn]] void Bye()
+{
+    LogFile::Flush(2000);
+    _exit(139);
 }
 
 void Emit(const char* buf, size_t n)
@@ -149,7 +160,7 @@ void Report(int sig, const void* faultAddr, unsigned long long hostPc)
     // mid-line and there is no way to tell a truncated report from a finished one.
     const int depth = g_reported.fetch_add(1);
     if (depth > 1)
-        _exit(139); // a fault while reporting the fault in the report — just go
+        Bye(); // a fault while reporting the fault in the report — just go
     if (depth != 0)
     {
         char nb[256];
@@ -158,7 +169,7 @@ void Report(int sig, const void* faultAddr, unsigned long long hostPc)
                                 "host pc %016llX\n!!! the report above is TRUNCATED\n",
                                 sig, faultAddr, hostPc);
         Emit(nb, nn);
-        _exit(139);
+        Bye();
     }
 
     char b[4096];
@@ -276,7 +287,7 @@ void Report(int sig, const void* faultAddr, unsigned long long hostPc)
                       "no guest context on this thread (the fault is in host code)\n"
                       "=== end guest fault ===\n");
         Emit(b, n);
-        _exit(139);
+        Bye();
     }
 
     const uint32_t ctr = ctx->ctr.u32;
@@ -383,7 +394,7 @@ void Report(int sig, const void* faultAddr, unsigned long long hostPc)
 
     n = Append(b, int(sizeof b), n, "=== end guest fault ===\n");
     Emit(b, n);
-    _exit(139);
+    Bye();
 }
 
 #if defined(_WIN32)

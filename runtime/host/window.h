@@ -53,6 +53,10 @@ bool Host_WindowInit();
 // drawing, and MUST be called from the same thread as Begin — the SDL rule the
 // whole window module is built around.
 bool Host_ProgressBegin(const char* title);
+// `cz_runtime --diag` (part 105): SDL's version, its video drivers, the one that takes
+// on this session and every display's desktop mode. Inits and quits the video
+// subsystem itself; never opens a window.
+void Host_DiagVideo();
 void Host_ProgressUpdate(const char* line, float fraction);
 void Host_ProgressEnd();
 

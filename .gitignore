@@ -54,3 +54,10 @@ build-release-oldbase/
 build-relmatch-oldbase/
 # the container build's configure logs (tools/release_build_oldbase.sh)
 runtime/build-*-oldbase.configure.log
+
+# part 105: the runtime tees stderr into a log file beside the data root, which for
+# the dev tree is the repo root. CZ_NO_LOG_FILE=1 / CZ_LOG_FILE=path (docs/instruments.md)
+/cz_runtime.log
+/cz_runtime.log.1
+/cz_diag.txt
+/cz_diag.txt.1

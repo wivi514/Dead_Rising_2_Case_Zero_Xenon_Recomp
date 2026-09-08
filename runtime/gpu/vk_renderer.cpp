@@ -6372,6 +6372,20 @@ VkFormat EdramDepthFormat()
 // AMD does support sampled and which is ALSO the more faithful match to Xenos float
 // depth (see EdramDepthFormat's comment and CZ_VK_DEPTH_FLOAT). NVIDIA keeps
 // D24_UNORM_S8_UINT and is unchanged. CZ_VK_DEPTH_FLOAT still forces float everywhere.
+// The decision without the side effects: what the format WOULD be on this device and
+// why. `--diag` prints it for a device it never creates (part 105).
+static VkFormat PickEdramDepthFormat(VkPhysicalDevice phys, bool* d24Sampleable)
+{
+    VkFormatProperties fp{};
+    vkGetPhysicalDeviceFormatProperties(phys, VK_FORMAT_D24_UNORM_S8_UINT, &fp);
+    const bool ok = (fp.optimalTilingFeatures & VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT) != 0;
+    if (d24Sampleable)
+        *d24Sampleable = ok;
+    if (EnvOn("CZ_VK_DEPTH_FLOAT"))
+        return VK_FORMAT_D32_SFLOAT_S8_UINT;
+    return ok ? VK_FORMAT_D24_UNORM_S8_UINT : VK_FORMAT_D32_SFLOAT_S8_UINT;
+}
+
 void ChooseEdramDepthFormat(VkPhysicalDevice phys)
 {
     if (EnvOn("CZ_VK_DEPTH_FLOAT"))
@@ -6380,9 +6394,9 @@ void ChooseEdramDepthFormat(VkPhysicalDevice phys)
         fprintf(stderr, "[vk] EDRAM depth format: D32_SFLOAT_S8_UINT (CZ_VK_DEPTH_FLOAT)\n");
         return;
     }
-    VkFormatProperties fp{};
-    vkGetPhysicalDeviceFormatProperties(phys, VK_FORMAT_D24_UNORM_S8_UINT, &fp);
-    if (fp.optimalTilingFeatures & VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT)
+    bool d24 = false;
+    PickEdramDepthFormat(phys, &d24);
+    if (d24)
     {
         g_edramDepthFormat = VK_FORMAT_D24_UNORM_S8_UINT;
         fprintf(stderr, "[vk] EDRAM depth format: D24_UNORM_S8_UINT\n");
@@ -6645,6 +6659,205 @@ VkDeviceSize PersistAlloc(VkDeviceSize bytes, VkDeviceSize align = 16)
     }
     R->persistCursor = at + bytes;
     return at;
+}
+
+// ===================================================================================
+// Device requirements — ONE table, read by bring-up and by `--diag` (part 105,
+// docs/steam-deck-plan.md §3 item 3)
+// ===================================================================================
+//
+// Until part 105 the required features were assignments into three request structs,
+// and a device lacking any one of them failed at vkCreateDevice with "VkResult -7" —
+// one line, no name, and the same line for every missing feature. Nobody on this
+// project has run the renderer on RADV (the Steam Deck's driver, and the prime suspect
+// for v1.0.1 failing there on both builds), so the first RADV report needed to NAME
+// the feature, not the VkResult. The table below is that name: each entry says where
+// the feature lives, whether the renderer can run without it, and what it is for —
+// and the same table drives `cz_runtime --diag`, so a player can print the verdict
+// without a game boot.
+//
+// REQUIRED means a missing feature ends bring-up with the feature named. OPTIONAL means
+// it is requested when present and its absence is a named log line — and the three
+// that were required before part 105 without a consumer are now optional:
+// fillModeNonSolid (every pipeline's polygonMode is FILL), depthClamp (no pipeline
+// enables it), and nothing else. shaderInt64 stays REQUIRED on evidence: a part-105
+// census of the built cache found the Int64 capability in 450 of 450 translated
+// shaders (the raw-address constant loads), so a device without it cannot run one draw.
+struct DeviceCaps
+{
+    VkPhysicalDeviceProperties props{};
+    VkPhysicalDeviceDriverProperties driver{
+        VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRIVER_PROPERTIES
+    };
+    VkPhysicalDeviceFeatures2 f2{ VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2 };
+    VkPhysicalDeviceVulkan12Features v12{
+        VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES
+    };
+    VkPhysicalDeviceVulkan13Features v13{
+        VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES
+    };
+    std::vector<VkExtensionProperties> exts;
+    bool haveDriverProps = false;
+
+    bool HasExt(const char* name) const
+    {
+        for (const auto& e : exts)
+            if (!strcmp(e.extensionName, name))
+                return true;
+        return false;
+    }
+};
+
+static void QueryDeviceCaps(VkPhysicalDevice phys, DeviceCaps& c)
+{
+    vkGetPhysicalDeviceProperties(phys, &c.props);
+    // The 1.2/1.3 structs are only valid to chain on a device that reports that
+    // version; on an older device they stay zeroed, which reads as "absent" below —
+    // the honest answer, since the renderer needs them through the core structs.
+    const bool has12 = c.props.apiVersion >= VK_API_VERSION_1_2;
+    const bool has13 = c.props.apiVersion >= VK_API_VERSION_1_3;
+    if (has12)
+    {
+        VkPhysicalDeviceProperties2 p2{ VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2 };
+        p2.pNext = &c.driver;
+        vkGetPhysicalDeviceProperties2(phys, &p2);
+        c.haveDriverProps = true;
+    }
+    c.f2.pNext = nullptr;
+    c.v12.pNext = nullptr;
+    c.v13.pNext = nullptr;
+    if (has13)
+    {
+        c.v13.pNext = c.f2.pNext;
+        c.f2.pNext = &c.v13;
+    }
+    if (has12)
+    {
+        c.v12.pNext = c.f2.pNext;
+        c.f2.pNext = &c.v12;
+    }
+    vkGetPhysicalDeviceFeatures2(phys, &c.f2);
+    uint32_t n = 0;
+    vkEnumerateDeviceExtensionProperties(phys, nullptr, &n, nullptr);
+    c.exts.resize(n);
+    vkEnumerateDeviceExtensionProperties(phys, nullptr, &n, c.exts.data());
+}
+
+enum class FeatWhere { Core, V12, V13 };
+struct FeatureReq
+{
+    const char* name;
+    FeatWhere where;
+    size_t offset;
+    bool required;
+    const char* why;
+};
+#define CZ_FEAT(where, strct, field, req, why)                                         \
+    { #field, FeatWhere::where, offsetof(strct, field), req, why }
+static const FeatureReq kFeatureReqs[] = {
+    CZ_FEAT(V12, VkPhysicalDeviceVulkan12Features, bufferDeviceAddress, true,
+            "the translated shaders load constants through raw 64-bit addresses"),
+    CZ_FEAT(V12, VkPhysicalDeviceVulkan12Features, descriptorIndexing, true,
+            "the bindless texture/sampler heaps"),
+    CZ_FEAT(V12, VkPhysicalDeviceVulkan12Features, runtimeDescriptorArray, true,
+            "the bindless heaps are unsized arrays in the shaders"),
+    CZ_FEAT(V12, VkPhysicalDeviceVulkan12Features, descriptorBindingPartiallyBound, true,
+            "heap slots are bound as textures arrive"),
+    CZ_FEAT(V12, VkPhysicalDeviceVulkan12Features, descriptorBindingUpdateUnusedWhilePending,
+            true, "heap slots are written while a frame is in flight"),
+    CZ_FEAT(V12, VkPhysicalDeviceVulkan12Features, descriptorBindingSampledImageUpdateAfterBind,
+            true, "the texture heap is updated after the set is bound"),
+    CZ_FEAT(V12, VkPhysicalDeviceVulkan12Features, descriptorBindingVariableDescriptorCount,
+            true, "the heap's size comes from the device, not the layout"),
+    CZ_FEAT(V12, VkPhysicalDeviceVulkan12Features, shaderSampledImageArrayNonUniformIndexing,
+            true, "a draw's texture index is a per-draw constant"),
+    CZ_FEAT(V13, VkPhysicalDeviceVulkan13Features, dynamicRendering, true,
+            "no render-pass objects; the EDRAM target is one image"),
+    CZ_FEAT(Core, VkPhysicalDeviceFeatures, shaderInt64, true,
+            "the Int64 capability is in 450 of 450 translated shaders (part 105 census)"),
+    CZ_FEAT(Core, VkPhysicalDeviceFeatures, independentBlend, true,
+            "per-render-target blend state, as Xenos has"),
+    CZ_FEAT(Core, VkPhysicalDeviceFeatures, textureCompressionBC, true,
+            "the title's DXT1/3/5 textures are uploaded as BC"),
+    CZ_FEAT(Core, VkPhysicalDeviceFeatures, samplerAnisotropy, false,
+            "distance filtering stays trilinear without it (part 41)"),
+    CZ_FEAT(Core, VkPhysicalDeviceFeatures, occlusionQueryPrecise, false,
+            "CZ_VK_RT_COVERAGE cannot report sample counts without it"),
+    CZ_FEAT(Core, VkPhysicalDeviceFeatures, shaderClipDistance, false,
+            "an XE_USER_CLIP_PLANES shader cache cannot run without it"),
+    CZ_FEAT(Core, VkPhysicalDeviceFeatures, fillModeNonSolid, false,
+            "no consumer: every pipeline's polygonMode is FILL"),
+    CZ_FEAT(Core, VkPhysicalDeviceFeatures, depthClamp, false,
+            "no consumer: no pipeline enables depth clamp"),
+};
+#undef CZ_FEAT
+
+static VkBool32& FeatSlot(FeatWhere w, size_t off, VkPhysicalDeviceFeatures2& f2,
+                          VkPhysicalDeviceVulkan12Features& v12,
+                          VkPhysicalDeviceVulkan13Features& v13)
+{
+    char* base = w == FeatWhere::Core ? reinterpret_cast<char*>(&f2.features)
+                 : w == FeatWhere::V12 ? reinterpret_cast<char*>(&v12)
+                                       : reinterpret_cast<char*>(&v13);
+    return *reinterpret_cast<VkBool32*>(base + off);
+}
+static VkBool32 FeatHave(const DeviceCaps& c, const FeatureReq& r)
+{
+    DeviceCaps& m = const_cast<DeviceCaps&>(c); // read-only use of the slot helper
+    return FeatSlot(r.where, r.offset, m.f2, m.v12, m.v13);
+}
+
+// Walk the table against a device: set every PRESENT feature in the request structs,
+// collect the missing REQUIRED ones by name, and print each missing optional one. The
+// verdict (missing.empty()) is the same whether bring-up or --diag asked.
+static void EvaluateRequirements(const DeviceCaps& c, VkPhysicalDeviceFeatures2& reqF2,
+                                 VkPhysicalDeviceVulkan12Features& req12,
+                                 VkPhysicalDeviceVulkan13Features& req13,
+                                 std::vector<const char*>& missing, const char* tag,
+                                 bool listAll)
+{
+    for (const FeatureReq& r : kFeatureReqs)
+    {
+        const bool have = FeatHave(c, r) == VK_TRUE;
+        if (have)
+            FeatSlot(r.where, r.offset, reqF2, req12, req13) = VK_TRUE;
+        else if (r.required)
+            missing.push_back(r.name);
+        if (listAll)
+            fprintf(stderr, "%s   %-48s %-8s %s — %s\n", tag, r.name,
+                    have ? "present" : "ABSENT", r.required ? "REQUIRED" : "optional",
+                    r.why);
+        else if (!have)
+            fprintf(stderr, "%s device lacks %s (%s) — %s\n", tag, r.name,
+                    r.required ? "REQUIRED" : "optional", r.why);
+    }
+}
+
+static const char* DeviceTypeName(VkPhysicalDeviceType t)
+{
+    switch (t)
+    {
+    case VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU: return "discrete GPU";
+    case VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU: return "integrated GPU";
+    case VK_PHYSICAL_DEVICE_TYPE_VIRTUAL_GPU: return "virtual GPU";
+    case VK_PHYSICAL_DEVICE_TYPE_CPU: return "CPU (software)";
+    default: return "other";
+    }
+}
+
+// One line per fact about the device's driver, the same text at bring-up and in
+// --diag: "AMD open-source driver 24.1.2 (Mesa)" is the line that separates a RADV
+// report from an AMDVLK one, and it was never printed before part 105.
+static void PrintDriverLine(const DeviceCaps& c, const char* tag)
+{
+    if (c.haveDriverProps)
+        fprintf(stderr, "%s driver: %s — %s (driver id %d), conformance %u.%u.%u.%u\n", tag,
+                c.driver.driverName, c.driver.driverInfo, int(c.driver.driverID),
+                c.driver.conformanceVersion.major, c.driver.conformanceVersion.minor,
+                c.driver.conformanceVersion.subminor, c.driver.conformanceVersion.patch);
+    else
+        fprintf(stderr, "%s driver: (device is below Vulkan 1.2; no driver properties)\n",
+                tag);
 }
 
 // ===================================================================================
@@ -6917,29 +7130,55 @@ bool CreateDevice()
         }
     }
 
-    // The three features the translated shaders cannot run without, requested
-    // explicitly so a device that lacks one fails HERE with a name rather than at the
-    // first draw with a device-lost:
-    //   bufferDeviceAddress — the shaders load constants through raw 64-bit addresses
-    //   descriptorIndexing  — the bindless texture/sampler heaps
-    //   dynamicRendering    — no render-pass objects; the target is one image
+    // THE REQUIRED-FEATURE TABLE (part 105). Every feature the renderer needs is
+    // queried first and requested only when present; a missing REQUIRED one ends
+    // bring-up HERE with its name and the driver's, where before it was a bare
+    // "vkCreateDevice failed: VkResult -7". See kFeatureReqs above for the list and
+    // the reason each is required or optional.
+    DeviceCaps caps;
+    QueryDeviceCaps(R->physical, caps);
+    PrintDriverLine(caps, "[vk]");
+    if (caps.props.apiVersion < VK_API_VERSION_1_3)
+    {
+        fprintf(stderr, "[vk] this device reports Vulkan %u.%u.%u and the renderer needs "
+                        "1.3 (dynamic rendering, the 1.2 descriptor-indexing set). A newer "
+                        "driver is the only fix; running without a renderer.\n",
+                VK_VERSION_MAJOR(caps.props.apiVersion),
+                VK_VERSION_MINOR(caps.props.apiVersion),
+                VK_VERSION_PATCH(caps.props.apiVersion));
+        return false;
+    }
     VkPhysicalDeviceVulkan12Features v12{
         VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES
     };
-    v12.bufferDeviceAddress = VK_TRUE;
-    v12.descriptorIndexing = VK_TRUE;
-    v12.runtimeDescriptorArray = VK_TRUE;
-    v12.descriptorBindingPartiallyBound = VK_TRUE;
-    v12.descriptorBindingUpdateUnusedWhilePending = VK_TRUE;
-    v12.descriptorBindingSampledImageUpdateAfterBind = VK_TRUE;
-    v12.descriptorBindingVariableDescriptorCount = VK_TRUE;
-    v12.shaderSampledImageArrayNonUniformIndexing = VK_TRUE;
-
     VkPhysicalDeviceVulkan13Features v13{
         VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES
     };
-    v13.dynamicRendering = VK_TRUE;
     v13.pNext = &v12;
+    VkPhysicalDeviceFeatures2 f2{ VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2 };
+    f2.pNext = &v13;
+    {
+        std::vector<const char*> missing;
+        EvaluateRequirements(caps, f2, v12, v13, missing, "[vk]", /*listAll=*/false);
+        if (!missing.empty())
+        {
+            std::string list;
+            for (const char* m : missing)
+                list += std::string(list.empty() ? "" : ", ") + m;
+            fprintf(stderr, "[vk] THIS DEVICE CANNOT RUN THE RENDERER — missing REQUIRED "
+                            "Vulkan feature%s: %s (device %s, %s). `cz_runtime --diag` "
+                            "prints the whole table; running without a renderer.\n",
+                    missing.size() == 1 ? "" : "s", list.c_str(), caps.props.deviceName,
+                    caps.haveDriverProps ? caps.driver.driverInfo : "driver unknown");
+            return false;
+        }
+        // ANISOTROPIC FILTERING (part 41 item 1). Xenos filters up to 16:1 and the
+        // fetch constants carry a per-texture aniso field; the sampler decides whether
+        // to USE it (CZ_VK_NO_ANISO acts there). The limit is read here because the
+        // table only says present/absent.
+        if (f2.features.samplerAnisotropy)
+            R->anisoLimit = props.limits.maxSamplerAnisotropy;
+    }
 
     // RT STAGE 2 (part 64): act on stage 0's probe. See the rtEnabled comment in the
     // Renderer struct for the arms; the decision is made HERE because extensions and
@@ -6965,53 +7204,6 @@ bool CreateDevice()
         asFeat.pNext = v13.pNext;
         rqFeat.pNext = &asFeat;
         v13.pNext = &rqFeat;
-    }
-
-    VkPhysicalDeviceFeatures2 f2{ VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2 };
-    f2.pNext = &v13;
-    f2.features.shaderInt64 = VK_TRUE;
-    f2.features.independentBlend = VK_TRUE;
-    f2.features.fillModeNonSolid = VK_TRUE;
-    f2.features.depthClamp = VK_TRUE;
-    f2.features.textureCompressionBC = VK_TRUE;
-    // ANISOTROPIC FILTERING (part 41 item 1). Xenos filters up to 16:1 and the fetch
-    // constants carry a per-texture aniso field; until part 41 both samplers were
-    // plain trilinear, so every grazing-angle surface — the whole road at distance —
-    // went to mush well before the horizon. The feature is enabled whenever the
-    // device has it (the sampler decides whether to USE it, which is where
-    // CZ_VK_NO_ANISO acts); asked for blindly it would fail device creation on a
-    // device that lacks it, so it is checked first and its absence is a named
-    // configuration fact, not a silent picture change.
-    {
-        VkPhysicalDeviceFeatures haveF{};
-        vkGetPhysicalDeviceFeatures(R->physical, &haveF);
-        if (haveF.samplerAnisotropy)
-        {
-            f2.features.samplerAnisotropy = VK_TRUE;
-            R->anisoLimit = props.limits.maxSamplerAnisotropy;
-        }
-        else
-            fprintf(stderr, "[vk] device lacks samplerAnisotropy — distance "
-                            "filtering stays trilinear on this device\n");
-        // USER CLIP PLANES (part 57): a shader cache built with XE_USER_CLIP_PLANES
-        // exports six ClipDistance values, and a pipeline whose VS declares the
-        // built-in needs this feature whether or not any plane is enabled that draw.
-        // Same pattern as anisotropy: ask only if the device has it, and name its
-        // absence out loud, because on such a device the clip-plane cache would fail
-        // pipeline creation rather than silently not clip.
-        // Precise occlusion queries — CZ_VK_RT_COVERAGE's sample counts (part 64).
-        // Asked for only when the device has it; its absence is a named fact, not
-        // a silently meaningless percentage.
-        if (haveF.occlusionQueryPrecise)
-            f2.features.occlusionQueryPrecise = VK_TRUE;
-        else
-            fprintf(stderr, "[vk] device lacks occlusionQueryPrecise — "
-                            "CZ_VK_RT_COVERAGE cannot report sample counts\n");
-        if (haveF.shaderClipDistance)
-            f2.features.shaderClipDistance = VK_TRUE;
-        else
-            fprintf(stderr, "[vk] device lacks shaderClipDistance — an "
-                            "XE_USER_CLIP_PLANES shader cache cannot run on it\n");
     }
     // CZ_VK_ROBUST=1 — bound out-of-range buffer reads instead of undefined behaviour.
     // A Xenos vfetch past a stream's declared size returns ZERO (the fetch-constant
@@ -7152,9 +7344,18 @@ bool CreateDevice()
             const VkSampleCountFlags supported =
                 props.limits.framebufferColorSampleCounts &
                 props.limits.framebufferDepthSampleCounts;
-            uint32_t n = uint32_t(msaaReq);
-            while (n > 1 && !(supported & n))
-                n >>= 1;
+            // The request first, then the OTHER count the renderer supports. Until
+            // part 105 this only halved (4 -> 2 -> 1), so a device with 4x and no 2x
+            // (Mesa's lavapipe reports exactly that) was refused with a message saying
+            // "neither 4x nor 2x" — false for 4x. Going UP costs more per frame than
+            // the 2x default, and the clamp line below says so when it happens.
+            uint32_t n = 0;
+            for (uint32_t c : { uint32_t(msaaReq), msaaReq == 2 ? 4u : 2u })
+                if (supported & c)
+                {
+                    n = c;
+                    break;
+                }
             // SAMPLE_ZERO depth resolve is mandatory in Vulkan 1.2+, but "mandatory"
             // is a spec claim and this is a gate: ask the device rather than assume,
             // and refuse loudly if it declines (gotcha 5 — never guess).
@@ -7186,8 +7387,11 @@ bool CreateDevice()
             {
                 R->msaaSamples = VkSampleCountFlagBits(n);
                 if (uint32_t(msaaReq) != n)
-                    fprintf(stderr, "[vk] CZ_VK_MSAA=%ld clamped to %ux by the "
-                                    "device's framebuffer limits\n", msaaReq, n);
+                    fprintf(stderr, "[vk] CZ_VK_MSAA=%ld is not a framebuffer sample count "
+                                    "this device offers (colour %#x, depth %#x) — using "
+                                    "%ux instead\n", msaaReq,
+                            unsigned(props.limits.framebufferColorSampleCounts),
+                            unsigned(props.limits.framebufferDepthSampleCounts), n);
                 fprintf(stderr, "[vk] CZ_VK_MSAA — EDRAM is MULTISAMPLED at %ux "
                                 "(resolves at RB_COPY; SAMPLE_ZERO depth resolve)%s. "
                                 "CZ_VK_MSAA=0 is the single-sample control arm.\n",
@@ -31246,3 +31450,147 @@ void VkRenderer_DumpStats()
     }
 }
 
+
+// ===================================================================================
+// `cz_runtime --diag` — the Vulkan half (part 105, docs/steam-deck-plan.md §3 item 1)
+// ===================================================================================
+// Everything bring-up would decide, printed for a device that is never created: every
+// physical device the loader sees with its driver's own name and version, the one the
+// renderer would pick, the requirements table verdict on it, the EDRAM depth format,
+// the MSAA sample counts and the device-local memory. One line per fact so a player
+// can paste the block into an issue. Returns false when the loader has no device or
+// the pick fails the table — the exit code a script can read.
+bool VkRenderer_Diag()
+{
+    const char* T = "[diag] vulkan:";
+    uint32_t loaderVer = VK_API_VERSION_1_0;
+    if (vkEnumerateInstanceVersion)
+        vkEnumerateInstanceVersion(&loaderVer);
+    fprintf(stderr, "%s loader instance version %u.%u.%u\n", T, VK_VERSION_MAJOR(loaderVer),
+            VK_VERSION_MINOR(loaderVer), VK_VERSION_PATCH(loaderVer));
+
+    VkApplicationInfo app{ VK_STRUCTURE_TYPE_APPLICATION_INFO };
+    app.pApplicationName = "cz_runtime --diag";
+    app.apiVersion = VK_API_VERSION_1_3;
+    VkInstanceCreateInfo ici{ VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO };
+    ici.pApplicationInfo = &app;
+    VkInstance inst = VK_NULL_HANDLE;
+    const VkResult ir = vkCreateInstance(&ici, nullptr, &inst);
+    if (ir != VK_SUCCESS)
+    {
+        fprintf(stderr, "%s vkCreateInstance FAILED: VkResult %d — no Vulkan loader/ICD "
+                        "usable from this process (is a Vulkan driver installed?)\n",
+                T, int(ir));
+        return false;
+    }
+    uint32_t count = 0;
+    vkEnumeratePhysicalDevices(inst, &count, nullptr);
+    std::vector<VkPhysicalDevice> devices(count);
+    vkEnumeratePhysicalDevices(inst, &count, devices.data());
+    fprintf(stderr, "%s %u physical device%s\n", T, count, count == 1 ? "" : "s");
+    if (devices.empty())
+    {
+        vkDestroyInstance(inst, nullptr);
+        return false;
+    }
+    // The same pick as CreateDevice: the first discrete GPU, else the first device.
+    VkPhysicalDevice pick = devices[0];
+    for (VkPhysicalDevice d : devices)
+    {
+        VkPhysicalDeviceProperties p{};
+        vkGetPhysicalDeviceProperties(d, &p);
+        if (p.deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU)
+        {
+            pick = d;
+            break;
+        }
+    }
+    bool ok = true;
+    for (uint32_t i = 0; i < count; i++)
+    {
+        DeviceCaps c;
+        QueryDeviceCaps(devices[i], c);
+        fprintf(stderr, "%s   [%u] %s (%s) Vulkan %u.%u.%u vendor %#06x device %#06x%s\n", T,
+                i, c.props.deviceName, DeviceTypeName(c.props.deviceType),
+                VK_VERSION_MAJOR(c.props.apiVersion), VK_VERSION_MINOR(c.props.apiVersion),
+                VK_VERSION_PATCH(c.props.apiVersion), c.props.vendorID, c.props.deviceID,
+                devices[i] == pick ? "  <- the renderer would use this one" : "");
+        std::string tag = std::string(T) + "      ";
+        PrintDriverLine(c, tag.c_str());
+        if (devices[i] != pick)
+            continue;
+
+        if (c.props.apiVersion < VK_API_VERSION_1_3)
+        {
+            fprintf(stderr, "%s   VERDICT: CANNOT run the renderer — Vulkan 1.3 is required "
+                            "and this device reports %u.%u\n", T,
+                    VK_VERSION_MAJOR(c.props.apiVersion), VK_VERSION_MINOR(c.props.apiVersion));
+            ok = false;
+        }
+        VkPhysicalDeviceVulkan12Features r12{
+            VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES
+        };
+        VkPhysicalDeviceVulkan13Features r13{
+            VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES
+        };
+        VkPhysicalDeviceFeatures2 rf2{ VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2 };
+        std::vector<const char*> missing;
+        fprintf(stderr, "%s   features the renderer asks for:\n", T);
+        EvaluateRequirements(c, rf2, r12, r13, missing, T, /*listAll=*/true);
+        if (missing.empty())
+            fprintf(stderr, "%s   every REQUIRED feature is present\n", T);
+        else
+        {
+            fprintf(stderr, "%s   VERDICT: CANNOT run the renderer — missing REQUIRED:", T);
+            for (const char* m : missing)
+                fprintf(stderr, " %s", m);
+            fprintf(stderr, "\n");
+            ok = false;
+        }
+        fprintf(stderr, "%s   VK_KHR_swapchain: %s (needed to present into a window)\n", T,
+                c.HasExt(VK_KHR_SWAPCHAIN_EXTENSION_NAME) ? "present" : "ABSENT");
+        fprintf(stderr, "%s   ray query (parked feature): %s\n", T,
+                (c.HasExt("VK_KHR_acceleration_structure") && c.HasExt("VK_KHR_ray_query")
+                 && c.HasExt("VK_KHR_deferred_host_operations"))
+                    ? "supported" : "unsupported (fine; RT is parked)");
+
+        bool d24 = false;
+        const VkFormat depth = PickEdramDepthFormat(devices[i], &d24);
+        fprintf(stderr, "%s   D24_UNORM_S8_UINT sampleable: %s -> EDRAM depth format %s%s\n", T,
+                d24 ? "yes" : "no",
+                depth == VK_FORMAT_D24_UNORM_S8_UINT ? "D24_UNORM_S8_UINT"
+                                                     : "D32_SFLOAT_S8_UINT",
+                EnvOn("CZ_VK_DEPTH_FLOAT") ? " (CZ_VK_DEPTH_FLOAT)" : "");
+        VkFormatProperties fp{};
+        vkGetPhysicalDeviceFormatProperties(devices[i], VK_FORMAT_D32_SFLOAT_S8_UINT, &fp);
+        if (!(fp.optimalTilingFeatures & VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT))
+            fprintf(stderr, "%s   D32_SFLOAT_S8_UINT is not a depth attachment here — a "
+                            "device with neither depth format cannot run the renderer\n", T);
+        const VkSampleCountFlags sup = c.props.limits.framebufferColorSampleCounts
+                                       & c.props.limits.framebufferDepthSampleCounts;
+        fprintf(stderr, "%s   framebuffer sample counts: colour %#x depth %#x -> the 2x MSAA "
+                        "default %s\n", T,
+                unsigned(c.props.limits.framebufferColorSampleCounts),
+                unsigned(c.props.limits.framebufferDepthSampleCounts),
+                (sup & 2) ? "is available" : (sup & 4) ? "is unavailable; 4x would be used"
+                                                        : "is unavailable; single-sample");
+        VkPhysicalDeviceMemoryProperties mp{};
+        vkGetPhysicalDeviceMemoryProperties(devices[i], &mp);
+        uint64_t local = 0;
+        for (uint32_t h = 0; h < mp.memoryHeapCount; h++)
+            if (mp.memoryHeaps[h].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT)
+                local += mp.memoryHeaps[h].size;
+        fprintf(stderr, "%s   device-local memory: %llu MB in %u heap%s; max 2D image %u; "
+                        "sampled images per stage %u\n", T,
+                (unsigned long long)(local >> 20), mp.memoryHeapCount,
+                mp.memoryHeapCount == 1 ? "" : "s", c.props.limits.maxImageDimension2D,
+                c.props.limits.maxPerStageDescriptorSampledImages);
+        fprintf(stderr, "%s   timestamps: period %.3f ns%s\n", T,
+                double(c.props.limits.timestampPeriod),
+                c.props.limits.timestampPeriod > 0 ? "" : " (GPU frame time unavailable)");
+    }
+    fprintf(stderr, "%s VERDICT: the renderer %s on this machine's pick\n", T,
+            ok ? "CAN run" : "CANNOT run");
+    vkDestroyInstance(inst, nullptr);
+    return ok;
+}
