@@ -28583,8 +28583,12 @@ void DoSwapImpl(uint8_t* base, uint32_t frontBuffer, uint32_t width, uint32_t he
             std::filesystem::create_directories(snapDir, ec);
         }
         bool wroteOne = false;
-        for (const auto& [dest, snap] : R->snapshots)
+        for (const auto& [dest, snapBinding] : R->snapshots)
         {
+            // A plain reference for the lambda below: capturing a structured binding is
+            // C++20 (P1091) but clang 15 — the release's old-base compiler — rejects it,
+            // and this was the one line in the tree that did so (part 104).
+            const auto& snap = snapBinding;
             const size_t n = size_t(snap.image.width) * snap.image.height * 4;
             if (n > R->readback.size)
                 continue;
