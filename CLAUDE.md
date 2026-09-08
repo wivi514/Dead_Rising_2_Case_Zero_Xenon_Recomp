@@ -1105,9 +1105,14 @@ appended; gotcha 513 is the transferable finding. THE OPERATOR HALF IS OWED**):
   route, ALL THREE stores parked incl. the driver cache: skipped draws 850,417 -> 199,
   first-sight 47 -> 4 (boot-only), session two 0/0. The boot pre-warm is ASYNC now on
   4 workers (`CZ_VK_SYNC_PREWARM=1`, `CZ_VK_PIPELINE_WORKERS=N`) because synchronous
-  on an empty driver cache it cost 38 s here / 138 s on czamd. Owed: czamd session one
-  with the recipe file beside the exe; the plan's §2.1 licensing call; the seed's 3
-  orphan VS.
+  on an empty driver cache it cost 38 s here / 138 s on czamd. **czamd DONE the same
+  night**: release bundle deployed, operator's main-road stutter FOUND (the golden
+  texture store's synchronous file write, 2 ms a texture on Windows, RESIDUAL 79.9% of
+  decode) and FIXED by a background writer (200f5b9; same-binary A/B on czamd 1.12 ->
+  0.10 ms a texture, crowd p99 42.9 -> 24.7 ms; gotcha 516). czamd is GPU-BOUND (wall ==
+  gpu, fence 4.5 ms) — **THE NEXT PLAN IS `docs/part103-amd-windows-perf-plan.md`**,
+  step 0 the GPU split on czamd. Still owed: the plan's §2.1 licensing call, the seed's 3
+  orphan VS, the czamd black square (arms staged, `cz_arm_fif1.bat` first).
 
 
 Where the port was, as of 2026-09-06 latest (**PART 100 CLOSED — the boot hang was
