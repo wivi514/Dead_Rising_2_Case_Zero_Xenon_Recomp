@@ -1087,7 +1087,10 @@ THE LIVE HAND-OFF**):
   capture, c7ee332); the identity gate holds within the toolchain (RelWithDebInfo vs Release,
   byte-identical `.text`) and the compiler change is a stated, unmeasured code-generation
   change — the crowd-route confirmation is owed (part105-kickoff §1 item 2).
-* **The park:** [[CZAMD_SHORT]] `vblank #1000` is printed 5 s into a healthy boot, not at the
+* **The park:** **122 armed boots on czamd (112 rapid, 6 full-length at part 103's cadence, 4 with cold
+  caches) and NOT ONE parked** — the one-in-five did not hold under any of the three forms; the
+  untested candidate is the first boot after a fresh exe deploy, which every recorded hang
+  followed. The instruments are the deliverable and stay staged as scheduled tasks. `vblank #1000` is printed 5 s into a healthy boot, not at the
   first frame (gotcha 521); the loop's scripts are `tools/czamd/p104_*.ps1`, run as scheduled
   tasks because an SSH-started process there dies with the session (gotcha 522).
 * **FOUND BY THE CONFIRMATION RUN AND FIXED (79ef1b7): every shipped Linux build presented at

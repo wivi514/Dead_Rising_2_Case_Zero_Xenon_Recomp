@@ -18,8 +18,10 @@ before anything below.
 - **The golden store is one pack file** (`golden.pack`, append-only, torn tail cut at
   load, loose files folded in and removed). Dev box: 1,301-1,331 ms → 475-509 ms for
   29,932 signatures / 345 MB. **czamd's number is owed** — see §1 item 1.
-- **The czamd pre-frame park did not recur under its instruments** — see §6eu §3 for the
-  campaign's count. The instruments are staged (`tools/czamd/p104_*.ps1`); a boot with no
+- **The czamd pre-frame park did not recur under its instruments: 122 armed boots (112
+  rapid, 6 full-length, 4 cold), 0 parked** (§6eu §3). The untested candidate is the first
+  boot after a fresh exe deploy — every recorded hang followed one — so §1 item 1's deploy
+  of the v1.0.2 exe should itself be run through `p104_full.ps1` (armed), twice. The instruments are staged (`tools/czamd/p104_*.ps1`); a boot with no
   `vblank #1000` by 150 s is still the hang, and `vblank #1000` arrives at 5 s in a
   healthy boot (gotcha 521), not at the first frame.
 - Performance stays parked on both boxes (`part104-kickoff.md` §0 still describes it).

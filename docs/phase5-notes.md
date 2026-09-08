@@ -21017,7 +21017,9 @@ exact symbol named, which is what makes "2.35" a measurement and not a number wr
 | `.AppImage` | Rocky 9 | 2.34 | **refused as it must**, the same symbol, through the runtime too |
 
 The Rocky rows are not failures of the artifact; they are the floor's proof. A gate that
-only ever ran where it passes would have made "2.35" a claim (gotcha 30's shape).
+only ever ran where it passes would have made "2.35" a claim (gotcha 30's shape). **The
+table was produced at c7ee332 and reproduced at 79ef1b7** (the Wayland-first rebuild, §5):
+both jammy gates PASSED again and the Rocky AppImage gate refused again on the same symbol.
 
 **The Windows leg** was rebuilt on czwin at the same source (c7ee332):
 `CaseZeroRecomp-windows-x86_64.zip` 21 MB, `ab69a837…`. All three hashes are in
@@ -21078,7 +21080,30 @@ an SSH-started process there dies with the session — gotcha 522), every boot w
 `CZ_KCALL_WHO` milestone backtraces on the five imports the parked log was spinning in,
 `CZ_APC_TRACE`, `CZ_KOBJ_DUMP=20`, `CZ_WAIT_TRACE`, `CZ_CS_TRACE`, `CZ_SCREEN_TRACE`,
 `CZ_FILE_TRACE`, and the engine's own log on every second boot:
-[[CZAMD]]
+
+| form | boots | ended at | parked |
+|---|---|---|---|
+| rapid loop (`p104_loop.ps1`, killed at its first `vblank #1000`) | 112 | 5 s each | **0** |
+| full-length crowd route (`p104_full.ps1`, part 103's exact cadence, 330 s) | 6 | 333 s each, all reached the crowd | **0** |
+| cold: AMD driver cache emptied + our pipeline cache parked (`p104_cold.ps1`) | 4 | 333 s each | **0** |
+
+**122 armed boots, no park.** At part 103's one-in-five that is a probability of about
+10⁻¹¹ if the rate held under these conditions, so it did not: the park needs something
+none of the three forms reproduces. What the three cover: rapid re-boot (a warm process
+image and caches, 3 s apart), the exact part-103 shape (full runs with a
+`TerminateProcess` between them, guest log on alternate runs), and a session-one-shaped
+cold cache. What they do not: the first boot after a fresh exe DEPLOY (every hang in
+parts 99, 100 and 103 followed one — Defender's first scan of a new 40 MB exe, or a
+first-ever driver-cache build for that exe's pipelines, are the untested candidates), a
+boot from the operator's interactive desktop session rather than the Task Scheduler's,
+and the exe itself (the loop ran ab80b87; v1.0.2's exe was not deployed so as not to
+change the arm mid-campaign). **The diagnostic is the deliverable, as the kickoff
+allowed:** the three scripts stay on czamd's desktop as scheduled tasks
+(`cz_p104all`, `cz_p104cold`), a parked boot's log will carry the milestone backtraces,
+the 20-s KOBJ dumps and the APC balance, and part105-kickoff §1 item 3 says what to read
+first. The instruments' own cost is visible in the logs (4.1 MB a full run against
+0.3 MB uninstrumented, all of it `CZ_FILE_TRACE`) and did not change the boot: every
+instrumented boot printed `vblank #1000` at the same 5 s.
 
 ### 5. FOUND BY THE CONFIRMATION RUN: every shipped Linux build presented at 1.0 fps on a Wayland desktop (fixed, 79ef1b7)
 
@@ -21113,8 +21138,21 @@ x11 still gives 1.0 fps, the player's choice). Verified with the real SDL2 the b
 ships: default now 226 fps at the title. The old-base and Windows artifacts were rebuilt
 at 79ef1b7 and re-gated; the crowd-route confirmation of the compiler change is re-run on
 the rebuilt bundle (its verdict is in §1's owed line if it did not land in this part).
-**The compiler change, at the one load both arms reached** (the title, 30 s): dev 227 fps,
-old-base 222 fps — one run each, within the noise (gotcha 159); the crowd A/B is owed.
+**The compiler change, measured once each on the rebuilt bundle** (the crowd route, both
+arms on the wayland driver, `[fps]` windows binned by their draw median; dev = clang 22
+RelWithDebInfo, old-base = clang 15 Release, same source):
+
+| draw band | windows | dev median | old-base median | Δ |
+|---|---|---|---|---|
+| 0-3,000 | 7 | 7.17 ms | 7.19 ms | +0.3% |
+| 6,000-8,000 | 9 | 8.69 ms | 8.90 ms | +2.4% |
+| 8,000-10,000 | 22 | 11.33 ms | 11.68 ms | +3.1% |
+
+One run a side, against the route's measured ±2.9% floor (`part80_crowdroute.sh`'s own
+number): the crowd band reads at the edge of the floor and the other two inside it. That
+is "no gross regression", not "a null" — three runs an arm are owed before the compiler
+change is called free (part105-kickoff §1 item 2). At the title (30 s, one run each): dev
+227 fps, old-base 222.
 
 ### 4. Item 4 — Case West notes
 
