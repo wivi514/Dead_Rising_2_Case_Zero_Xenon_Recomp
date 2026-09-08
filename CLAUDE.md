@@ -1077,7 +1077,8 @@ via `host_paths` step 1b); the golden texture store is ONE PACK FILE (dev box pr
 one-in-five pre-frame park was hunted with every instrument armed. `phase5-notes.md` §6eu is
 the record, `release-plan.md` §9.9 the programme's view, gotchas 520-523,
 `docs/release-notes-v1.0.2.md` paste-ready with all three hashes, **`docs/part105-kickoff.md`
-THE LIVE HAND-OFF**):
+THE LIVE HAND-OFF — and its §1 item 0 is `docs/steam-deck-plan.md`, the operator's next
+subject: v1.0.1 did not run on the Steam Deck on either build**):
 
 * **The floor could not go below 2.34 whatever the base**: `lib/libdxcompiler.so` (the DXC
   prebuilt the translator dlopens) imports GLIBC_2.34 — gotcha 520, found with `objdump -T`

@@ -28,6 +28,12 @@ before anything below.
 
 ## §1 Part 105 — autonomous, in order
 
+0. **THE STEAM DECK — `docs/steam-deck-plan.md` IS THE PLAN and the operator asked for it
+   to be the next session's work.** v1.0.1 failed there on both builds; the Linux half was
+   the glibc floor (fixed in v1.0.2), the Windows half is not glibc. Part 104's probes
+   already refuted most of the Proton hypothesis from this box (Wine 11 runs the zip end to
+   end, DXC included); RADV is the prime suspect and the plan's §3 is the ordered list —
+   the log file + `--diag` first, then the czamd live-USB RADV test.
 1. **Deploy the v1.0.2 Windows bundle to czamd and read the golden pack's number there**
    (two boots: the migration, then the pack; `tools/gpu_split_window.py` is not needed —
    the preload line prints as it goes). The kickoff's "under ~50 ms" gate was written for
