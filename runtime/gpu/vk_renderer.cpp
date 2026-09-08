@@ -694,16 +694,103 @@ void GoldenLoad()
         fprintf(stderr, "[vk] golden texture store: preloaded %zu signatures from %s\n",
                 g_goldenTex.size(), GoldenDir().string().c_str());
 }
-void GoldenPersist(uint64_t sig, const std::vector<uint8_t>& px)
+// THE WRITE IS OFF THE FRAME THREAD SINCE PART 102 — and it was the czamd session-one
+// stutter. GoldenPersist ran synchronously inside the texture DECODE scope, one
+// create+write+rename per new small texture, unnamed by any of the decode split's
+// timers (it read as RESIDUAL 79.9%, 2,759 ms, on czamd against 0.0% here). On Linux a
+// 64 KB file in ~/.cache costs tens of microseconds and never showed; on Windows the
+// same write into %LOCALAPPDATA% costs ~2 ms (NTFS + the real-time scanner), so a frame
+// that streamed 25 zombie detail maps stalled 50 ms — 11-35 textures, 9-600 KB, 25-90 ms
+// of "decode" in the czamd trace, every one a first sight of that texture on that
+// install. A new player on Windows paid it on every texture of session one. The bytes
+// are already copied into g_goldenTex, so the file can be written whenever: a queue and
+// one writer thread, drained at exit. The queue is bounded; past the bound a persist is
+// dropped and counted (the next session captures it again — it is a cache).
+namespace goldenwriter
 {
-    if (g_noGolden || px.empty()) return;
+std::mutex mx;
+std::condition_variable cv;
+std::deque<std::pair<uint64_t, std::vector<uint8_t>>> queue; // guarded by mx
+bool up = false;                                                // frame thread only
+bool stop = false;                                              // guarded by mx
+std::thread thread;
+constexpr size_t kMaxQueued = 8192;
+uint64_t dropped = 0;                                           // frame thread only
+
+void WriteOne(uint64_t sig, const std::vector<uint8_t>& px)
+{
     char name[32];
     snprintf(name, sizeof name, "%016llx.bin", (unsigned long long)sig);
     std::error_code ec;
-    const std::filesystem::path tmp = GoldenDir() / (std::string(name) + ".tmp");
+    const std::filesystem::path dir = GoldenDir();
+    const std::filesystem::path tmp = dir / (std::string(name) + ".tmp");
     { std::ofstream f(tmp, std::ios::binary | std::ios::trunc);
       f.write(reinterpret_cast<const char*>(px.data()), std::streamsize(px.size())); }
-    std::filesystem::rename(tmp, GoldenDir() / name, ec);
+    std::filesystem::rename(tmp, dir / name, ec);
+}
+
+void Worker()
+{
+    for (;;)
+    {
+        std::pair<uint64_t, std::vector<uint8_t>> job;
+        {
+            std::unique_lock<std::mutex> lk(mx);
+            cv.wait(lk, [] { return stop || !queue.empty(); });
+            if (queue.empty())
+                return; // stop, and nothing left
+            job = std::move(queue.front());
+            queue.pop_front();
+        }
+        WriteOne(job.first, job.second);
+    }
+}
+
+// Exit: let the writer finish what is queued (bounded — a cache is not worth a hang).
+void Drain()
+{
+    if (!up)
+        return;
+    {
+        std::lock_guard<std::mutex> lk(mx);
+        stop = true;
+    }
+    cv.notify_all();
+    if (thread.joinable())
+        thread.join();
+    up = false;
+}
+} // namespace goldenwriter
+
+void GoldenPersist(uint64_t sig, const std::vector<uint8_t>& px)
+{
+    if (g_noGolden || px.empty()) return;
+    static const bool syncArm = [] {
+        const char* v = getenv("CZ_VK_GOLDEN_SYNC");
+        return v && *v && strcmp(v, "0") != 0;
+    }();
+    if (syncArm)
+    {
+        // The pre-part-102 behaviour — the file written on the frame thread — kept as
+        // the same-binary control arm for the czamd stutter.
+        goldenwriter::WriteOne(sig, px);
+        return;
+    }
+    if (!goldenwriter::up)
+    {
+        goldenwriter::up = true;
+        goldenwriter::thread = std::thread(goldenwriter::Worker);
+    }
+    {
+        std::lock_guard<std::mutex> lk(goldenwriter::mx);
+        if (goldenwriter::queue.size() >= goldenwriter::kMaxQueued)
+        {
+            ++goldenwriter::dropped;
+            return;
+        }
+        goldenwriter::queue.emplace_back(sig, px);
+    }
+    goldenwriter::cv.notify_one();
 }
 struct TexGuardStats
 {
@@ -3640,6 +3727,8 @@ uint64_t g_texDecMipChkNs = 0;   // the mostly-empty and endpoint-luma guards
 uint64_t g_texDecScanNs = 0;     // the all-black and uniform-block content scans
 uint64_t g_texDecGuardNs = 0;    // TextureGuard over the SOURCE, for the cache entry
 uint64_t g_texDecImageNs = 0;    // CreateImage (VkImage + view + allocation) + NameImage
+uint64_t g_texDecGoldenNs = 0;   // the golden store: store/serve + (part 102) the queue push.
+                                 // Named because it was the 79.9% RESIDUAL on czamd
 // How many units the base level untiled, so the base column can be quoted per unit —
 // a millisecond total cannot distinguish "the loop is slow" from "there are a lot of units".
 uint64_t g_texDecBaseUnits = 0;
@@ -10187,6 +10276,7 @@ uint32_t UploadTexture(uint8_t* base, const uint32_t* regs, uint32_t constIdx,
     bool uploadAllZero = !pixels.empty();
     for (uint8_t b : pixels) if (b) { uploadAllZero = false; break; }
     bool goldenRecovered = false;
+    const uint64_t decGoldenT0 = CycNow();
     if (!g_noGolden)
     {
         const uint64_t sig = GoldenSig(t.address, t.width, t.height, t.format);
@@ -10210,6 +10300,7 @@ uint32_t UploadTexture(uint8_t* base, const uint32_t* regs, uint32_t constIdx,
             }
         }
     }
+    g_texDecGoldenNs += CycNow() - decGoldenT0;
 
     // TARGETED GRAVEL for the gas-station rooftop pit (part 94). One signature only: the
     // 32x32 DXT1 detail map (default 0E522000) that loses the streaming race every session
@@ -29637,7 +29728,8 @@ void VkRenderer_DumpStats()
             {
                 const uint64_t named = g_texDecAllocNs + g_texDecBaseNs + g_texDecMipNs +
                                        g_texDecMipChkNs + g_texDecScanNs +
-                                       g_texDecGuardNs + g_texDecImageNs;
+                                       g_texDecGuardNs + g_texDecImageNs +
+                                       g_texDecGoldenNs;
                 const double tot = double(g_texDecodeNs);
                 auto pc = [&](uint64_t v) { return 100.0 * double(v) / tot; };
                 fprintf(stderr,
@@ -29645,7 +29737,7 @@ void VkRenderer_DumpStats()
                         "base-untile %.1f (%.1f%%)  mip-untile %.1f (%.1f%%)  "
                         "mip-guards %.1f (%.1f%%)  content-scan %.1f (%.1f%%)  "
                         "src-hash %.1f (%.1f%%)  vkCreateImage %.1f (%.1f%%)  "
-                        "RESIDUAL %.1f (%.1f%%)\n",
+                        "golden %.1f (%.1f%%)  RESIDUAL %.1f (%.1f%%)\n",
                         double(g_texDecAllocNs) / 1e6, pc(g_texDecAllocNs),
                         double(g_texDecBaseNs) / 1e6, pc(g_texDecBaseNs),
                         double(g_texDecMipNs) / 1e6, pc(g_texDecMipNs),
@@ -29653,6 +29745,7 @@ void VkRenderer_DumpStats()
                         double(g_texDecScanNs) / 1e6, pc(g_texDecScanNs),
                         double(g_texDecGuardNs) / 1e6, pc(g_texDecGuardNs),
                         double(g_texDecImageNs) / 1e6, pc(g_texDecImageNs),
+                        double(g_texDecGoldenNs) / 1e6, pc(g_texDecGoldenNs),
                         double(g_texDecodeNs - std::min(named, g_texDecodeNs)) / 1e6,
                         pc(g_texDecodeNs - std::min(named, g_texDecodeNs)));
                 fprintf(stderr,
@@ -30746,6 +30839,11 @@ void VkRenderer_DumpStats()
 
     // The texture-content guard. The question is the operator's: is a draw being served
     // an image built from pixels that are no longer at that address?
+    goldenwriter::Drain(); // part 102: finish the queued golden files before reporting
+    if (goldenwriter::dropped)
+        fprintf(stderr, "[vk] golden texture store: %llu persist(s) DROPPED — the writer "
+                        "queue was full (%zu); they will be captured again next session\n",
+                (unsigned long long)goldenwriter::dropped, goldenwriter::kMaxQueued);
     if (!g_noGolden && (g_goldenStored || g_goldenServed))
         fprintf(stderr,
                 "[vk]   golden texture store: %llu signatures remembered, %llu all-zero "
