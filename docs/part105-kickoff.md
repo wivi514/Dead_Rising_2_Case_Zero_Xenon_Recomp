@@ -34,11 +34,16 @@ before anything below.
    already refuted most of the Proton hypothesis from this box (Wine 11 runs the zip end to
    end, DXC included); RADV is the prime suspect and the plan's §3 is the ordered list —
    the log file + `--diag` first, then the czamd live-USB RADV test.
-1. **Deploy the v1.0.2 Windows bundle to czamd and read the golden pack's number there**
+1. ~~**Deploy the v1.0.2 Windows bundle to czamd and read the golden pack's number there**
    (two boots: the migration, then the pack; `tools/gpu_split_window.py` is not needed —
    the preload line prints as it goes). The kickoff's "under ~50 ms" gate was written for
    czamd's ~6,000-file / ~70 MB store; the dev box's 475 ms is for 345 MB. Deploying
-   swaps the exe the hang campaign ran under; keep `cz_runtime_part103.exe` beside it.
+   swaps the exe the hang campaign ran under; keep `cz_runtime_part103.exe` beside it.~~
+   **DONE in part 105** (the part-105 exe, not the v1.0.2 bundle): migration 24.9 s once,
+   pack read **94.0 ms** for 129 MB — the store was 9,819 files / 135 MB, not ~6,000 /
+   ~70 MB, so the gate was mis-sized; per MB both boxes read the same. `phase5-notes.md`
+   §6eu §2. (The part-103 exe was overwritten by a failed `copy /Y` before the deploy;
+   ab80b87 rebuilds it if the hang harness needs it — `part106-kickoff.md` §0.)
 2. **The crowd-route confirmation on the old-base binary.** Part 104's first attempt found
    the 1 fps defect instead (§6eu §5); the rebuilt bundle's run is in §6eu §5 if it landed,
    and one run a side is a coin flip on this workload (gotcha 159). Three runs an arm,

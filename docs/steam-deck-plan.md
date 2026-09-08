@@ -250,6 +250,9 @@ console; the exe under Wine 11 prints `under Wine 11.0` in its os line. czamd ha
 192.168.0.27; its `--diag` (RX 6600, AMD proprietary 26.8.1) shows every REQUIRED
 feature present, D24S8 not sampleable → D32 chosen, 2x MSAA available — the
 AMD-proprietary half of H3 in one block; RADV on the same GPU remains the live-USB run.
+The same deploy closed part 105's kickoff item 1 as a by-product: two full boots on czamd
+read the golden pack's number there (24.9 s migration once, then 94.0 ms for a 129 MB
+pack — `phase5-notes.md` §6eu §2).
 
 **What is owed after this part.** (1) ~~A Windows compile of the new code~~ — done
 (above); an AMD `--diag` on czamd when it answers. (2) The three artifacts carry NONE of this: v1.0.2's

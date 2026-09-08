@@ -21062,9 +21062,22 @@ cold), pack **475-509 ms** — −62%. The remaining ~480 ms was split with a st
 program: the `fread` of 345 MB is ~390 ms (page-fault-bound at 0.9 GB/s, and swapping
 ifstream for fread changed nothing — gotcha 523) and the fill of the map ~270 ms. A store
 this size is the dev box's oddity (every small texture ever seen, 3070 sessions);
-**czamd's is ~70 MB and its number is OWED** — the kickoff's "under ~50 ms" was written
+~~**czamd's is ~70 MB and its number is OWED** — the kickoff's "under ~50 ms" was written
 for that count, and the release bundle was not deployed there this part because the hang
-campaign (item 3) was using the box under the part-103 exe. The serving path is untouched
+campaign (item 3) was using the box under the part-103 exe.~~ **MEASURED IN PART 105
+(2026-09-08, the part-105 exe on czamd, `p104_full.ps1` as the harness, RX 6600 / AMD
+26.8.1):** the store was NOT ~70 MB — the "~6,000 files" was a stale count; it held
+**9,819 loose files**. Boot 1 (the migration): `preloaded 9819 signatures in 24,919.2
+ms ... pack 0 entries, 9819 loose files walked and folded`, and the directory afterwards
+holds one file, `golden.pack`, 135,469,040 bytes. Boot 2: `preloaded 9938 signatures in
+94.0 ms ... pack 9938 entries (129.0 MB), 0 loose files walked` (119 captured between the
+boots), and `vblank #10000` followed, so the boot was a full one. **The "under ~50 ms"
+gate does not hold at face value and was mis-sized: it was written for 70 MB, the store is
+129 MB, and 94 ms for 129 MB is the same ~0.7 ms/MB the dev box reads (475-509 ms for
+345 MB) — a read at the page-fault floor of gotcha 523, not a defect.** The 24.9 s
+migration is one boot, once, and it is the cost of the old per-file walk (its 9,819
+`CreateFile`s on that box's NTFS) plus the append; it will not recur. The number the
+kickoff should have asked for is the per-MB rate, and both boxes agree on it. The serving path is untouched
 (the map's consumers did not change), so the `CZ_VK_NO_GOLDEN_TEX=1` pit gate reduces to
 "the same signatures load", which the table shows.
 

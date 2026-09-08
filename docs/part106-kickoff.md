@@ -56,9 +56,13 @@ RADV on the same GPU is still the operator's live-USB run.
    (Linux tar + AppImage), the Windows zip on czwin, both gates, hashes into the notes** —
    exactly part 104's §6eu §1 procedure. Add "Changed" lines to the notes: the log
    file, `--diag`, the named-feature refusal, the gamescope line.
-2. **Part 105's §1 items 1-3 are unchanged**: the golden pack's czamd number, the
-   crowd-route confirmation on the old-base binary (three runs an arm), the park if it
-   recurs. `part105-kickoff.md` §1 has the detail.
+2. **Part 105's §1 items 2-3 are unchanged**: the crowd-route confirmation on the
+   old-base binary (three runs an arm), the park if it recurs. `part105-kickoff.md` §1
+   has the detail. ~~Item 1, the golden pack's czamd number~~ — **DONE, same evening**:
+   migration boot 24.9 s once (9,819 loose files folded into a 135 MB pack), then
+   **94.0 ms** from the pack on the next boot — the dev box's per-MB rate, so the
+   "under ~50 ms" gate was sized for a store half the real one (`phase5-notes.md`
+   §6eu §2, retraction in place).
 3. **Watch for the first Deck issue** (`.github/ISSUE_TEMPLATE/steam-deck-report.md`).
    Read its `--diag` block against `steam-deck-plan.md` §2 in this order: the `[vk]
    driver:` line (RADV vs AMDVLK, Mesa version), the requirements table (any ABSENT
