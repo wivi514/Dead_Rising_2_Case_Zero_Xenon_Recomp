@@ -6,7 +6,7 @@ before anything below.
 
 ## §0 Where the port is
 
-- **v1.0.2 is BUILT AND GATED ON LINUX, NOT PUBLISHED — the Windows zip needs one rebuild first (§1 item 0).** `docs/release-notes-v1.0.2.md`
+- **v1.0.2 is BUILT, GATED AND PASTE-READY, NOT PUBLISHED.** `docs/release-notes-v1.0.2.md`
   carries the three SHA-256s; the artifacts are in `dist/` (Linux `.tar.zst` 26 MB and
   `.AppImage` 25 MB built on Ubuntu 22.04 with glibc floor **2.35**, Windows zip 21 MB
   built on czwin), all from source `482b47f`, which also carries the Wayland-first fix and the title/icon change (§6eu §6) (§6eu §5: every
@@ -28,11 +28,6 @@ before anything below.
 
 ## §1 Part 105 — autonomous, in order
 
-0. **Rebuild the Windows zip at the source head** (`482b47f` or later) — czwin was off the
-   network at the end of part 104, so `dist/CaseZeroRecomp-windows-x86_64.zip` is the
-   `79ef1b7` build without the title/icon change. `ssh czwin`, pull, `cmake -S runtime -B
-   runtime\build` (a new source file), build, `release_package_windows.ps1`, scp the zip,
-   refresh its hash in `docs/release-notes-v1.0.2.md`. Until then v1.0.2 is not ready to tag.
 1. **Deploy the v1.0.2 Windows bundle to czamd and read the golden pack's number there**
    (two boots: the migration, then the pack; `tools/gpu_split_window.py` is not needed —
    the preload line prints as it goes). The kickoff's "under ~50 ms" gate was written for

@@ -1,10 +1,8 @@
 # Release notes — v1.0.2
 
 **This is the text to paste into the GitHub Release body.** Binaries are commit
-`482b47f` for the two Linux artifacts. **The Windows zip below is still the `79ef1b7`
-build** — czwin was unreachable when the title/icon change landed — so it lacks the
-window title and icon change; rebuild it there and refresh its hash before attaching
-(part105-kickoff §1 item 0). The docs commits after 482b47f change no code. It carries part 104's runtime changes (the golden texture store as one
+`482b47f` (all three artifacts were built from that source; the docs commits after it
+change no code). It carries part 104's runtime changes (the golden texture store as one
 pack file, the AppImage data root, Wayland-first on Linux, the window title and icon) and
 the first Linux artifacts built on the old base.
 
@@ -115,5 +113,5 @@ XenonRecomp and XenosRecomp.
 ```
 3e704f8869d5d5bb61ad353960da75628a5030cc10fd62f8b4d033d29d60f226  CaseZeroRecomp-linux-x86_64.tar.zst
 73b054185b68125d142df5deffe954dc7226de00ecef8fd8045f1b055e05f1ac  CaseZeroRecomp-linux-x86_64.AppImage
-4248f018afdfec40ceba76fc09bf0160777c2a3046a482cab92b72ef2e96f249  CaseZeroRecomp-windows-x86_64.zip
+56b5cb890884de1373eeace4abefda62013de23b73934d68f838ce59bf2f74ed  CaseZeroRecomp-windows-x86_64.zip
 ```

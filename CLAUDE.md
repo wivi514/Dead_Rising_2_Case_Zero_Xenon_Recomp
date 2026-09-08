@@ -1099,8 +1099,7 @@ THE LIVE HAND-OFF**):
   measured it. `window.cpp` now hints `wayland,x11` when the session offers Wayland; gotcha
   524. Then the operator asked for the title bar (name + fps only) and the window icon (the
   title's own X_IMAGEID_GAME.PNG from the unpacked game, via a new PIL-identical PNG decoder,
-  `host/png_icon.cpp`; §6eu §6). The Linux legs were rebuilt and re-gated at 482b47f; **the Windows zip is still 79ef1b7's** —
-  czwin went off the network — and part105-kickoff §1 item 0 is that rebuild.
+  `host/png_icon.cpp`; §6eu §6). All three artifacts were rebuilt at 482b47f (the Windows zip once czwin was back on the network).
 * **Owed:** the golden pack's czamd number (its store is ~70 MB; the "under ~50 ms" gate was
   written for that count), the crowd-route A/B on the old-base binary, and the publication
   itself (operator: tag, attach `dist/`'s three artifacts, paste the notes).
