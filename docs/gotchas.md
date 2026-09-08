@@ -3814,6 +3814,21 @@ From phase C part 18 (the frame rate — and none of it was work):
      nothing naming the cause. Images (textures, render targets, shadow maps) are a different
      case entirely and should be `DEVICE_LOCAL`: they are uploaded through a staging buffer,
      never CPU-mapped, and read many times per frame.
+     **RETRACTED IN PART (part 106, 2026-09-08).** The title is wrong and the mechanism is
+     half right. Everything above about the per-draw constant ARENA stands: write-combined
+     stores of 8 KB a draw cost the CPU more than they save, and the arena stays in RAM.
+     But the verdict was taken on WALL time in a CPU-bound regime, and the GPU column was
+     never read. Part 106 read it: the same arm takes the crowd's device frame at 1080p
+     from **8.84 to 4.2-4.3 ms** and an empty street's from 5.0 to 3.0, because the
+     cross-frame STORE — written 0.2 MB a frame, read ~100 MB a frame by the vertex fetch
+     across every tile and cascade pass — is the opposite shape from the arena, and a
+     recompiler's geometry, once it is in a store that survives the frame, is exactly the
+     "upload once, draw for a hundred frames" case this entry said recompilers were not.
+     The shippable form is a DEVICE_LOCAL mirror of the store filled by `vkCmdCopyBuffer`
+     of the ranges written each frame (`docs/perf-plan-part106.md` §3.1) — no host-visible
+     VRAM heap needed (a GTX 1060 has no Resizable BAR) and no WC write on the CPU at all.
+     Rule: **a verdict on a placement is a verdict in ONE regime; read the column the
+     other regime would read before writing "do not re-buy".**
 
 364. **A SESSION-INTERNAL A/B IS ONLY SESSION-INTERNAL IF YOU COMPARE IT AGAINST ITS OWN
      CONTROL ARM.** Part 55 built a chained two-arm soak harness precisely so that both arms
@@ -6066,3 +6081,34 @@ From phase C part 18 (the frame rate — and none of it was work):
      here the file went to text mode, which is also what a player's Notepad wants. A
      Linux-only gate would have passed this forever (524's shape: the gate must run on
      the platform whose library defaults differ).
+
+530. **AN INSTRUMENT CAN GO BLIND WHEN THE PATH IT READS IS REPLACED, AND AN EMPTY TABLE
+     LOOKS LIKE A CLEAN ONE.** The pass extent census (part 79) read the draw's scissor
+     out of `R->bound.scissor`; part 89's parallel recorder captures draws without ever
+     writing `R->bound`, so from part 89 to part 106 the census read 0x0 on every draw and
+     printed no rows at all — and nobody noticed, because "no rows" and "no census asked
+     for" print the same nothing. Found only when part 106 needed the rows. Rule: when a
+     new path replaces the one an instrument reads, grep for every instrument that reads
+     it (a fast path invalidates old checks — gotcha 384's shape at the instrument level),
+     and make an instrument that found nothing SAY that it found nothing.
+
+531. **A RATIO BETWEEN TWO MACHINES IS A CONSISTENCY CHECK, NOT A COST CHECK.** Part 103
+     found the RX 6600 2.4x slower than the RTX 3070 on the same frame, matched that to
+     the cards' published throughput ratio, and wrote "the frame is the title's own
+     shading at the hardware's price". Both cards were fetching every vertex over PCIe;
+     both paid it in proportion to their bandwidth; the ratio was perfect and the cost
+     was double what it should have been. The cost check is against what the WORK should
+     cost — here, what a 240 GFLOPS console did with the same frame at 720p/30, or what
+     the card's vertex throughput predicts for 2.4 M invocations (under a millisecond,
+     against 5 measured). Rule: before writing "at the hardware's price", price the work
+     on the hardware from first principles, not from another box.
+
+532. **DECOMPOSE A GPU SHARE WITH ARMS THAT REMOVE ONE KIND OF WORK EACH, AND EXPECT THE
+     DRIVER TO REMOVE MORE THAN YOU ASKED.** "pass: >=256 draws, 6.4 ms" had stood as a
+     single number for twenty-eight parts. Three arms split it in one evening: a 1x1
+     scissor (no fragments), a first-primitive-only draw (no fetch, no shading), a
+     do-nothing pixel shader — and the last one measured CHEAPER than the no-fragment arm,
+     which is not a contradiction but the pipeline link stripping every vertex output the
+     dead fragment stage no longer consumes. Read a null-shader arm as "and whatever the
+     compiler could delete once that stage was dead", never as the stage's own cost.
+
