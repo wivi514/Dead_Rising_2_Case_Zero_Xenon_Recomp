@@ -5680,6 +5680,14 @@ bool GpuStatsOn()
 }
 // CZ_VK_SCISSOR_1PX (part 106), read once at renderer init; see DoDraw for the arm.
 bool g_scissor1px = false;
+// CZ_VK_TRI1=1 (part 106): every draw issues at most its FIRST PRIMITIVE (3 indices).
+// Every bind, every push constant, every pipeline switch and every pass stays; the
+// vertex and index FETCH traffic and the vertex shading collapse to ~nothing. What the
+// device frame reads under it is the per-draw front-end cost of ~9,000 draws — the
+// third of the three arms that decompose the title's passes (with NULL_PS and
+// SCISSOR_1PX). Never a mode; the picture is garbage by design.
+bool g_tri1 = false;
+inline uint32_t DrawCountArm(uint32_t n) { return (g_tri1 && n > 3) ? 3u : n; }
 
 bool GpuPassesOn()
 {
@@ -6047,7 +6055,8 @@ VkMemoryPropertyFlags ReadbackMemoryProps()
 // `gotDeviceLocal`, whether the preference was actually honoured — never inferred from
 // the request, because the whole point is that it can fail.
 uint32_t FindMemoryTypePreferDevice(uint32_t typeBits, VkMemoryPropertyFlags props,
-                                    VkDeviceSize size, bool* gotDeviceLocal)
+                                    VkDeviceSize size, bool* gotDeviceLocal,
+                                    bool storeOnlyArm)
 {
     *gotDeviceLocal = false;
     // AN ARM, NOT THE DEFAULT, and deliberately so. The placement is a one-line
@@ -6060,7 +6069,18 @@ uint32_t FindMemoryTypePreferDevice(uint32_t typeBits, VkMemoryPropertyFlags pro
     // swapchain took the same route in part 54 and became the default on a measurement,
     // not on an argument.
     static const bool vram = EnvOn("CZ_VK_VRAM_STREAMS");
-    if (vram)
+    // CZ_VK_VRAM_STORE=1 (part 106): the SPLIT. Part 73's arm put the per-frame arena AND
+    // the cross-frame store in video memory and lost 14% of WALL time in a CPU-bound
+    // regime, because the arena carries ~8 KB of shader constants per draw — written
+    // once, read once — and write-combined PCIe writes of those cost the CPU more than
+    // the GPU saved (gotcha 363). The STORE is the opposite shape: written 0.2 MB a
+    // frame (only streams whose content changed), read ~100 MB a frame by the vertex
+    // fetch across every tile and cascade pass. Part 106's census put the crowd's device
+    // frame at ~2 ns per vertex invocation with NO fragments, ten times the vertex
+    // throughput — the GPU is fetching its geometry over PCIe. This arm moves ONLY the
+    // store; the arena stays where the CPU writes it cheaply.
+    static const bool vramStore = EnvOn("CZ_VK_VRAM_STORE");
+    if (vram || (vramStore && storeOnlyArm))
     {
         const uint32_t t =
             FindMemoryType(typeBits, props | VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
@@ -6099,7 +6119,8 @@ bool CreateBuffer(Buffer& b, VkDeviceSize size, VkBufferUsageFlags usage,
     vkGetBufferMemoryRequirements(R->device, b.buffer, &req);
     bool inVram = false;
     const uint32_t type =
-        vramName ? FindMemoryTypePreferDevice(req.memoryTypeBits, props, req.size, &inVram)
+        vramName ? FindMemoryTypePreferDevice(req.memoryTypeBits, props, req.size, &inVram,
+                                              strcmp(vramName, "cross-frame stream store") == 0)
                  : FindMemoryType(req.memoryTypeBits, props);
     if (type == UINT32_MAX)
     {
@@ -6115,7 +6136,8 @@ bool CreateBuffer(Buffer& b, VkDeviceSize size, VkBufferUsageFlags usage,
                 inVram ? "VIDEO MEMORY" : "system RAM", type, heap,
                 (unsigned long long)(R->memProps.memoryHeaps[heap].size >> 20),
                 inVram ? "" : " — CZ_VK_VRAM_STREAMS=1 puts geometry in VRAM where a "
-                              "CPU-writable device-local heap is big enough");
+                              "CPU-writable device-local heap is big enough "
+                              "(CZ_VK_VRAM_STORE=1: the cross-frame store only)");
     }
 
     VkMemoryAllocateFlagsInfo flags{ VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_FLAGS_INFO };
@@ -25121,15 +25143,15 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
             cap.ib = R->arena.buffer;
             cap.io = at;
             cap.it = VK_INDEX_TYPE_UINT32;
-            cap.drawCount = expandedCount;
+            cap.drawCount = DrawCountArm(expandedCount);
             cap.baseVertex = rectSynth ? 0 : indxOffset;
         }
         else
         {
             BindIndexBufferCached(R->arena.buffer, at, VK_INDEX_TYPE_UINT32);
             if (!NoDriverRecord())
-                vkCmdDrawIndexed(R->cmd, expandedCount, 1, 0, rectSynth ? 0 : indxOffset,
-                                 0);
+                vkCmdDrawIndexed(R->cmd, DrawCountArm(expandedCount), 1, 0,
+                                 rectSynth ? 0 : indxOffset, 0);
             else
                 ++g_noDriverRecordSkipped;
         }
@@ -25202,14 +25224,14 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
             cap.ib = loc.handle();
             cap.io = loc.at;
             cap.it = itype;
-            cap.drawCount = draw.indexCount;
+            cap.drawCount = DrawCountArm(draw.indexCount);
             cap.baseVertex = indxOffset;
         }
         else
         {
             BindIndexBufferCached(loc.handle(), loc.at, itype);
             if (!NoDriverRecord())
-                vkCmdDrawIndexed(R->cmd, draw.indexCount, 1, 0, indxOffset, 0);
+                vkCmdDrawIndexed(R->cmd, DrawCountArm(draw.indexCount), 1, 0, indxOffset, 0);
             else
                 ++g_noDriverRecordSkipped;
         }
@@ -25224,11 +25246,11 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
         if (capturing)
         {
             cap.ib = VK_NULL_HANDLE;
-            cap.drawCount = draw.indexCount;
+            cap.drawCount = DrawCountArm(draw.indexCount);
             cap.baseVertex = indxOffset;
         }
         else if (!NoDriverRecord())
-            vkCmdDraw(R->cmd, draw.indexCount, 1, uint32_t(indxOffset), 0);
+            vkCmdDraw(R->cmd, DrawCountArm(draw.indexCount), 1, uint32_t(indxOffset), 0);
         else
             ++g_noDriverRecordSkipped;
         COUNT("draw: auto-index");
@@ -27220,6 +27242,10 @@ bool InitCommon()
                         "part-88 serial recorder, same binary)\n");
     g_bindRunCensus = EnvOn("CZ_VK_BIND_RUN_CENSUS");
     g_scissor1px = EnvOn("CZ_VK_SCISSOR_1PX");
+    g_tri1 = EnvOn("CZ_VK_TRI1");
+    if (g_tri1)
+        fprintf(stderr, "[vk] CZ_VK_TRI1=1 — every draw issues at most its first primitive "
+                        "this run (a GPU measurement arm; the picture is garbage by design)\n");
     if (g_scissor1px)
         fprintf(stderr, "[vk] CZ_VK_SCISSOR_1PX=1 — every draw's scissor is 1x1 this run "
                         "(a GPU measurement arm; the picture is garbage by design)\n");
