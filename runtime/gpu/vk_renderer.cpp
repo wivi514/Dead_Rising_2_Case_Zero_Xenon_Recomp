@@ -29,6 +29,7 @@
 #include <filesystem>
 #include <fstream>
 #include <map>
+#include <memory>
 #include <mutex>
 #include <set>
 #include <string>
@@ -919,41 +920,51 @@ void GoldenLoad()
     if (!g_noGoldenPack)
     {
         const std::filesystem::path pp = GoldenPackPath();
-        std::ifstream f(pp, std::ios::binary | std::ios::ate);
+        // One fread into an uninitialised buffer, then the entries are copied out into
+        // their own vectors. MEASURED, not assumed (part 104, dev box, 345 MB / 29,933
+        // entries): the read is ~390 ms and the fill ~270 ms, and swapping an ifstream
+        // into a zero-filled vector for this form changed neither — the read is bound by
+        // first-touch page faults on the fresh 345 MB, not by the stream. A store this
+        // size is the dev box's oddity (every small texture ever seen, 3070 sessions);
+        // czamd's is ~70 MB. If a boot ever needs the last 400 ms back, the next step is
+        // an mmap the map's entries point INTO (no copy, no heap), not a faster copy.
+        const uintmax_t fsize = std::filesystem::exists(pp, ec) ? std::filesystem::file_size(pp, ec) : 0;
+#ifdef _WIN32
+        FILE* f = _wfopen(pp.c_str(), L"rb");
+#else
+        FILE* f = fopen(pp.c_str(), "rb");
+#endif
         if (f)
         {
-            const std::streamoff size = f.tellg();
-            std::vector<uint8_t> buf(size > 0 ? size_t(size) : 0);
-            f.seekg(0);
-            if (!buf.empty())
-                f.read(reinterpret_cast<char*>(buf.data()), std::streamsize(buf.size()));
-            f.close();
-            auto rd32 = [&](size_t o) { uint32_t v; memcpy(&v, buf.data() + o, 4); return v; };
-            auto rd64 = [&](size_t o) { uint64_t v; memcpy(&v, buf.data() + o, 8); return v; };
+            std::unique_ptr<uint8_t[]> buf(fsize ? new uint8_t[size_t(fsize)] : nullptr);
+            const size_t size = fsize ? fread(buf.get(), 1, size_t(fsize), f) : 0;
+            fclose(f);
+            auto rd32 = [&](size_t o) { uint32_t v; memcpy(&v, buf.get() + o, 4); return v; };
+            auto rd64 = [&](size_t o) { uint64_t v; memcpy(&v, buf.get() + o, 8); return v; };
             size_t off = 0;
-            if (buf.size() >= 8 && rd32(0) == kGoldenPackMagic && rd32(4) == kGoldenPackVersion)
+            if (size >= 8 && rd32(0) == kGoldenPackMagic && rd32(4) == kGoldenPackVersion)
             {
                 off = 8;
-                while (off + 12 <= buf.size())
+                g_goldenTex.reserve(g_goldenTex.size() + size / 8192); // ~a rehash or two, not thirty
+                while (off + 12 <= size)
                 {
                     const uint64_t sig = rd64(off);
                     const uint32_t len = rd32(off + 8);
-                    if (len == 0 || len > kGoldenTexCap || off + 12 + len > buf.size())
+                    if (len == 0 || len > kGoldenTexCap || off + 12 + len > size)
                         break; // torn (or foreign) tail — stop here, cut below
                     auto& slot = g_goldenTex[sig];
                     if (slot.empty())
-                        slot.assign(buf.begin() + std::ptrdiff_t(off + 12),
-                                    buf.begin() + std::ptrdiff_t(off + 12 + len));
+                        slot.assign(buf.get() + off + 12, buf.get() + off + 12 + len);
                     ++packEntries;
                     off += 12 + len;
                 }
-                if (off != buf.size())
+                if (off != size)
                 {
-                    torn = buf.size() - off;
+                    torn = size - off;
                     std::filesystem::resize_file(pp, off, ec);
                 }
             }
-            else if (!buf.empty())
+            else if (size)
             {
                 // Not ours. Set it aside rather than overwrite it — a file with that name
                 // that we did not write is a question, and a cache is not worth destroying
