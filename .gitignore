@@ -52,3 +52,5 @@ build-release/
 build-relmatch/
 build-release-oldbase/
 build-relmatch-oldbase/
+# the container build's configure logs (tools/release_build_oldbase.sh)
+runtime/build-*-oldbase.configure.log
