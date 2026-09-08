@@ -665,6 +665,12 @@ std::filesystem::path GoldenDir()
     else if (const char* la = getenv("LOCALAPPDATA"); la && *la)
         base = std::filesystem::path(la) / "cz-recomp";
 #else
+    // XDG_CACHE_HOME first, like the pipeline cache beside it — until part 102 this
+    // read HOME/.cache directly, so a "fresh machine" run that parked XDG_CACHE_HOME
+    // still preloaded 29,000 golden files from the real cache and persisted nothing:
+    // the Linux control arm for the czamd stutter was silently warm.
+    else if (const char* x = getenv("XDG_CACHE_HOME"); x && *x)
+        base = std::filesystem::path(x) / "cz-recomp";
     else if (const char* h = getenv("HOME"); h && *h)
         base = std::filesystem::path(h) / ".cache" / "cz-recomp";
 #endif

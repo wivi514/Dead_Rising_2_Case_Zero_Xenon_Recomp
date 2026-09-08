@@ -5902,3 +5902,21 @@ From phase C part 18 (the frame rate — and none of it was work):
      four). A first-run experience has three stores — shader cache, pipeline
      keys, driver cache — and a "fresh machine" run that parks only the two you
      own is a session-two measurement wearing session-one clothes.
+
+516. **A SYNCHRONOUS FILE WRITE ON A PER-ASSET PATH IS FREE ON THE MACHINE YOU
+     DEVELOP ON AND A STUTTER ON THE ONE YOU SHIP TO — AND A "FRESH MACHINE" ARM THAT
+     PARKS ONE STORE BY ITS ENV VAR MAY LEAVE A SIBLING STORE WARM.** The golden
+     texture store persisted every new small texture with a create+write+rename on the
+     frame thread, inside the decode scope, unnamed by the decode split. On the Linux
+     dev box that is tens of microseconds and it never surfaced in eighteen parts; on
+     czamd's Windows it is ~2 ms a file (NTFS plus the real-time scanner over
+     %LOCALAPPDATA%), so 25 streamed detail maps cost a 50 ms frame — the "stutter
+     while running on the main road" the operator felt on session one and never on
+     the 3070. Two things hid it: the decode split's RESIDUAL (79.9%, 2,759 ms — a
+     residual that large IS the finding, read it before the named columns), and the
+     Linux control arm being warm without anyone knowing — the golden dir read
+     HOME/.cache directly while the pipeline cache honoured XDG_CACHE_HOME, so the
+     "all stores parked" Linux sessions preloaded 29,000 golden files and persisted
+     nothing. Rules: never do file I/O on the frame thread for a cache (queue it); name
+     every sub-scope of a phase you print a split for; and when parking stores, list
+     every directory the process opened (strace/ProcMon), not every env var you know.

@@ -20721,3 +20721,38 @@ streaming plus our texture-upload burst (part 77's subject) and is not czamd-spe
 The czamd visible run was launched through the `cz_play` task with a temporary
 `cz_play.bat`; the release-shape bat was restored afterwards (`cz_play_release.bat` is
 the copy). Logs: `part102-fresh/logs/crowd_{3070,czamd,visible}.err.log`.
+
+**THE CZAMD "STUTTER WHILE RUNNING ON THE MAIN ROAD" IS FOUND AND FIXED (2026-09-08,
+same night): the golden texture store's file write, synchronous on the frame thread.**
+The operator's third session (release shape, all stores parked, frame trace armed) put it
+beyond the pipeline warm: the warm finished by window 5 with p99 14 ms, and the bad frames
+came later, in gameplay at 2,000-8,400 draws — 24 of 33 slow frames dominated by `record`,
+and inside it `texDecUs`: 25-90 ms of "decode" for 11-35 textures of 9-600 KB, i.e.
+**~2 ms PER TEXTURE regardless of size**. The exit dump's decode split named none of it:
+`RESIDUAL 2759.4 ms (79.9%)` against the Linux box's 0.0%. The unnamed code inside the
+scope was the golden store (part 94): every new small texture persisted as
+`<sig>.bin` via create+write+rename ON THE FRAME THREAD. czamd wrote 4,984 files that
+session. On Windows that is ~2 ms a file (NTFS + real-time scanning over
+`%LOCALAPPDATA%`); on Linux tens of microseconds, so it never surfaced in eighteen parts.
+And the Linux "all stores parked" control was silently WARM: `GoldenDir()` read
+`HOME/.cache` directly while the pipeline cache honoured `XDG_CACHE_HOME`, so the Linux
+sessions preloaded 29,416 golden files and persisted nothing (fixed: XDG first).
+
+Fix (200f5b9): one writer thread with a bounded queue, drained at exit; the decode split
+now names `golden`; `CZ_VK_GOLDEN_SYNC=1` is the same-binary control. **Same-binary A/B
+on czamd, crowd route, EMPTY golden store per arm (`CZ_GOLDEN_DIR`), per-frame trace:**
+
+| czamd, crowd route | sync (control) | background writer |
+|---|---|---|
+| decode per texture, all uploads | 1.12 ms | 0.10 ms |
+| decode per texture, frames with >=5 small textures (<200 KB) | 1.33 ms median, 1.48 p90 | 0.03 median, 0.06 p90 |
+| frames >40 ms after boot | 17 | 4 |
+| crowd (>8,000 draws) wall p99 | 42.9 ms | 24.7 ms |
+| golden files written | 2,074 | 2,119 |
+
+Linux, same pair: 0.14 -> 0.06 ms per texture (the write was never the problem here).
+**So the czamd session-one stutter had TWO causes in sequence — the cold-driver-cache
+pipeline warm (first ~60 s, oversubscription) and then the golden writes (every new texture
+for the rest of the session) — and a warm install had neither, which is why the crowd-route
+steady-state runs read 0.0%.** A new Windows player paid the second one on every texture of
+their first session; it is gone in the next build. Gotcha 516.

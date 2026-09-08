@@ -3351,6 +3351,18 @@ CZ_VK_NO_PREWARM_CHAIN=1  the bisection arm INSIDE part 98's feature: async on-m
                   the crowd route against 224 demand-only), which is what makes UNVISITED
                   areas and session two arrive pre-built (session two: 1,083 of 1,083 at
                   boot in 101 ms, zero skips).
+CZ_VK_GOLDEN_SYNC=1  **the control arm for part 102's background golden-texture writer.**
+                  The golden store (part 94) persists every new small texture as a file;
+                  until part 102 it wrote the file SYNCHRONOUSLY inside the texture decode
+                  scope, unnamed by the decode split — RESIDUAL 79.9%, 2,759 ms on czamd
+                  against 0.0% on the Linux box. On Windows a create+write+rename into
+                  %LOCALAPPDATA% costs ~2 ms (NTFS + real-time scanning), so a frame that
+                  streamed 25 detail maps stalled 50 ms: the czamd session-one "stutter
+                  while running on the main road". With it unset the write goes to one
+                  writer thread, drained at exit; the split now names the class as
+                  `golden`. A/B on czamd's crowd route with an EMPTY golden store per arm
+                  (CZ_GOLDEN_DIR=<fresh>) is the measurement; note CZ_GOLDEN_DIR appends
+                  `/golden` to whatever it is given.
 CZ_NO_VS_RECIPES=1  **the control arm for part 102's vertex-shader recipes.** The first-run
                   prebuild runs pixel-only (parts 84-101's behaviour) and every vertex shader
                   waits for the draw that first binds it — first-sight translation plus a

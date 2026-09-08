@@ -253,3 +253,9 @@ only):** czamd 50 fps / p99 25 ms / 0.0% frames over 2x median at 8,600 draws, h
 AND windowed; the 3070 78 fps / 0.0%. No steady-state stutter exists on czamd. Owed item
 (1) is CLOSED; (2) stands as a first-run-only polish item; (3) the black-square arms
 remain the live czamd question.
+
+**2026-09-08, later: the czamd main-road stutter was the golden store's synchronous
+file write (2 ms a texture on Windows, RESIDUAL 79.9% of decode). Fixed by a background
+writer (200f5b9), A/B'd same-binary on czamd: 1.12 -> 0.10 ms a texture, crowd p99 42.9
+-> 24.7 ms. §6es carries the table. The first-run pipeline warm remains the only
+session-one cost left, and only on a cold driver cache.**
