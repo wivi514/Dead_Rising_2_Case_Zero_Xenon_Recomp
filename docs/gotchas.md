@@ -6139,3 +6139,28 @@ From phase C part 18 (the frame rate — and none of it was work):
      was not. Rule: attribute a machine-shape delta only after the thread table of BOTH
      arms is read — a delta between core counts scales with whatever is busy, not with
      what you assumed was busy.
+
+536. **A duration authored in FRAMES is a duration in the console's frame rate, and a
+    recompiler running faster shortens every one of them.** Case Zero's rumble
+    effects are integer tick counts decremented once per frame by the title's own
+    tick (sub_82805A58); "3" is 100 ms at the console's 30 fps and 27 ms at the
+    operator's 110 fps, so grabs, shotgun blasts and pistol shots all collapsed to
+    the same click — the operator's report was "it vibrates but it's always the
+    same". The fix is a hook that lets that tick run at 30 Hz of real time
+    (`cpu/rumble_guest.cpp`, `CZ_RUMBLE_TICK_HZ=0` the control); the same shape is
+    worth a look at for anything the title counts in frames (part 61's FOV saga had
+    the camera lerp in the same family). Ask of every "N frames" in a title: N of
+    WHICH frames? (part 108)
+
+537. **A trace that prints "on change" is unbounded, and one operator session wrote
+    248 GB before it was found.** The first rumble probe printed when (value, caller)
+    changed per motor; the tick sets every connected pad's motors in one pass, so
+    pad 0's 1.0 followed by pad 1's 0.0 was a change every call — and something in
+    that session filled the file at ~1 GB/s (the probe's own lines numbered 356; what
+    else spammed was never identified because the file had to go before the disk
+    did). Two rules: a trace's cost must be bounded by construction — a histogram
+    printed on a timer plus change lines under a per-second budget with the overflow
+    COUNTED — and a session whose log is on the operator's home partition runs under
+    a size watchdog (`~/DR2CZ-troubleshooting/part108/watched_play.sh`: kill at 2 GB,
+    keep the head and tail). The 20/s budget then caught the probe's own defect: the
+    per-motor key. (part 108)

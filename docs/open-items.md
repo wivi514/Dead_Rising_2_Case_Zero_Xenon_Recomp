@@ -3547,7 +3547,10 @@ FIXED are listed at the end so nobody re-buys them. In the order they should be 
    once, a held level refreshed every 250 ms). `CZ_NO_RUMBLE=1` is the control,
    `CZ_RUMBLE_TEST=1` the positive control (a pulse with no guest involved), and
    `CZ_RUMBLE_TRACE=1` the witness. Operator-verified the same day on an Xbox Series X pad
-   (*"it works"*; 94 level changes in the log, every issue rc 0). Windows leg owed. ~~Wired and wireless Xbox One pads, no
+   (*"it works"*; 94 level changes in the log, every issue rc 0) — then *"always the
+   same"*: effect durations are counts of 30 fps frames and the title ticks them per
+   frame, so the tick now runs at 30 Hz of real time (`CZ_RUMBLE_TICK_HZ`, gotcha 536);
+   operator: *"Pretty good now"*. Windows leg owed. ~~Wired and wireless Xbox One pads, no
    rumble. `XamInputSetState_x` (`kernel/imports.cpp`) accepts the motor values, logs them
    under `KLOG` and discards them ("there is no motor"); the caps already advertise both
    motors as 0xFF, so the title DOES drive them. The fix is one seam: hand the two motor

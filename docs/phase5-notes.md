@@ -21623,3 +21623,40 @@ leaderboard from the main menu; the fixed-interval press sequence and a live pad
 two input sources into one merged pad 0, and the sequence is only ever a gate
 configuration headless (gotcha 78). The run was stopped; the operator's session
 replaced it.
+
+**The second report, the same evening: *"it vibrates but it's always the same when you
+get grabbed by zombies or when you are shooting."*** The host trace already had the
+answer's shape: 41 episodes, EVERY one full strength for exactly three requests
+(then sometimes 40% for three to five), and the title sends once per frame. A probe
+on the pad's SetMotor (`cpu/rumble_guest.cpp`, `CZ_RUMBLE_TRACE`) put every level in
+one caller, `sub_82805A58` — the title's rumble manager tick, read in full in that
+file's header: a 100-entry effect table, definitions carrying a LEVEL per motor and a
+DURATION IN INTEGER TICKS, the tick taking the max, setting, sending, then
+decrementing every entry by one. **One tick per frame, and the title presents every
+two vblanks: the durations are counts of 30 fps frames.** A second operator session
+(guns and grabs) found four effects — full x3 (83 of 87 episodes), full x15 (2),
+0.4 x5 and 0.2 x5 — which at the console's 30 Hz are 100, 500 and 167 ms and at the
+operator's 110 fps were 27, 136 and 45 ms. A motor barely spins up in 27 ms; every
+effect had collapsed to the same click.
+
+**Fix: the tick runs at 30 Hz of real time.** The hook on `sub_82805A58` accumulates
+the wall clock between calls and runs the original once per 1/30 s — never more than
+once per call (a long frame is one tick on the console too), never banking more than
+one tick. Since the send is inside the tick, `XamInputSetState` now arrives at 30/s
+(5,465 requests in a 180 s session, 30.4/s) with the shapes unchanged (19 x full x3,
+1 x 0.4 x5), i.e. 100 ms per hit on the pad. `CZ_RUMBLE_TICK_HZ=N` sets the rate,
+`=0` is the control arm (per frame, the runtime as reported). At `CZ_FPS_CAP=60` this
+gives the 30 fps authoring rather than the console's own halved effects at 60, a
+choice recorded here. The operator, third session: *"Pretty good now."* Gotcha 536.
+
+**And the 248 GB log.** The first probe printed on change of (value, caller) per
+motor, and the operator's first probe session wrote 248 GB in minutes before `ls`
+found it (173 GB free after the delete). The probe's own lines numbered 356 — the
+tick sets every connected pad in one pass, so pad 0's 1.0 then pad 1's 0.0 read as a
+change every tick, but that is hundreds of lines a second, not a gigabyte; what
+filled the file was never identified because it had to go before the disk did. The
+probe is now a 10 s histogram plus a 20-lines-a-second budget with the overflow
+counted, keyed per pad object, and operator sessions run under
+`~/DR2CZ-troubleshooting/part108/watched_play.sh` (kill at 2 GB, keep head and tail).
+Gotcha 537. The three session logs are `~/DR2CZ-troubleshooting/play/rumble_test.log`,
+`rumble_probe2.log` and `rumble_fix.log`.

@@ -296,6 +296,7 @@ add_executable(cz_runtime
     cpu/boot_skip.cpp                # part 99: the skip-intro-logos launcher toggle
     cpu/thread_budget.cpp
     cpu/fence_wait.cpp               # part 107: the Draw Thread fence wait, parked on a futex
+    cpu/rumble_guest.cpp             # part 108: the rumble tick at 30 Hz (CZ_RUMBLE_TICK_HZ) + the probe (CZ_RUMBLE_TRACE)
     kernel/klog.cpp
     kernel/memory.cpp
     kernel/heap.cpp

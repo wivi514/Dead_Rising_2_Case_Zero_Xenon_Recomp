@@ -3994,7 +3994,20 @@ CZ_NO_RUMBLE=1     the OFF switch for controller vibration (part 108). The kerne
                    log rather than felt as silence
 CZ_RUMBLE_TRACE=1  every request from the title (`[rumble] request #N L=.. R=..`, printed
                    BEFORE the controller check so a box with no pad can still witness that
-                   the title asks) and every issue to the device with its rc
+                   the title asks) and every issue to the device with its rc — AND the
+                   guest half (`cpu/rumble_guest.cpp`): a 10 s histogram of who calls the
+                   pad's SetMotor (caller, motor, value class) plus change lines keyed per
+                   pad object under a 20-a-second budget with the overflow counted. The
+                   budget is not optional: the first version printed on change and one
+                   session wrote 248 GB (gotcha 537)
+CZ_RUMBLE_TICK_HZ=N  the title's rumble manager tick (sub_82805A58: max the effects, set,
+                   send, count every effect down ONE) runs at N Hz of real time instead of
+                   once per frame. DEFAULT 30: effect durations are integer counts of the
+                   console's 30 fps frames, so per frame at 110 fps every hit was 27 ms
+                   and every effect felt the same (gotcha 536). `=0` is
+                   the control arm (per frame). The line `[rumble] the title's rumble tick
+                   ... runs at 30 Hz` says it engaged; with it the `[rumble] request` rate
+                   is ~30/s
 CZ_RUMBLE_TEST=1   the POSITIVE CONTROL: one pulse, both motors at 32768 for 500 ms, at
                    window creation and before any guest input exists. No movement here
                    means the fault is below the runtime (the pad, SDL's backend, the kernel
