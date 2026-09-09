@@ -159,6 +159,11 @@ document what the EDRAM stand-in does with it).
   (2.8% of a core at the crowd; libavcodec 0.31% of cycles); the per-packet
   `Could not update timestamps` log line fixed by giving packets a timestamp; the
   audio threads named. §6ey addendum 6.
+* **NEW, not taken, three more operator reports with F9 captures** — `open-items.md`
+  0ac (Chuck's camera-fade copy stretched at some camera spots), 0ad (the door
+  transition at the wrong ratio at 21:9 — test at 1920x1080 first), 0ae (a light's
+  glow displaced to the opposite side of the screen — the same tile family as 0ab;
+  take the two together). Evidence in `~/DR2CZ-troubleshooting/part108/bugs/`.
 * **NEW, not taken: near actors black from the screen's centre rightward** — the
   operator's long-standing report with an F9; the seam is the tile boundary.
   `open-items.md` item 0ab has the evidence and the three instruments in order. where SDL's XInput/WGI backend does the rumble

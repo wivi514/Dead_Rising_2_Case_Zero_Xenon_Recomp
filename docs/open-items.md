@@ -3559,6 +3559,66 @@ same scene, where the seam should sit at x=640 if it is the tile. Ask the oracle
 does Xenia's B2 gameplay trace show a near zombie lit across the centre? (It does in
 every capture-E screenshot, so this is ours.) Not taken in part 108.
 
+## Items 0ac-0ae — three operator reports with captures (2026-09-09, evening; NOT taken)
+
+The operator's instruction: *"Need to add three other bugs to the things to fix."* Five
+F9 captures at 3440x1440 in a god-mode session, filed with each frame's 315 resolve
+snapshots, draw census and pose under `~/DR2CZ-troubleshooting/part108/bugs/`
+(`capture_<frame>.png` is the viewable copy). The pose files carry combined
+view-projection constants, so a camera's aspect cannot be read off them (checked:
+`bvc0/bvc1` give 0.26-2.04 across the five, i.e. rotation, not aspect).
+
+### 0ac — Chuck STRETCHED when the camera sits in certain spots (`capture_009604`)
+
+*"When you place the camera in some spot sometimes it does weird stretch to Chuck."*
+The capture: camera close behind Chuck at the safehouse save door (the SAVE prompt is
+up); his jacket is drawn twice — the normal mesh and a translucent copy smeared to the
+right, the sleeves and back stretched into streaks that end in nothing. The title
+fades Chuck translucent when the camera is close, so the second copy is that fade
+pass; the streaks say some of its vertices go to a wrong place — a skinned mesh whose
+bone constants for the fade draw are stale or belong to another draw (the cross-frame
+stream store or the constant gather are the two things of ours that could hand a
+draw another draw's data; both have controls: `CZ_VK_NO_STORE_MIRROR=1`,
+`CZ_VK_NO_PARALLEL_GUARD=1`, and the gather arm from part 74). Ask the oracle first:
+does Xenia draw the fade copy stretched at the same spot? Instruments: an F8 burst at
+the spot (does it flicker frame to frame — a race — or hold still — a wrong constant);
+`CZ_VK_DRAW_ID` at the pose to name the translucent draw; the saved census
+(`capture_f9604.census`) already lists that frame's draws — find the two Chuck
+draws and compare their constant files.
+
+### 0ad — a door transition at the WRONG RATIO (`capture_012535`)
+
+*"Sometimes when opening a door it got weird ratio."* The capture is the door-opening
+transition (no HUD, letterboxed): the doorway, the room beyond and Chuck all look
+wider than they should at 21:9 — the same shape as part 60's aspect work before it
+was applied everywhere, i.e. a CAMERA CLASS the aspect/FOV override does not reach.
+The transition is a scripted camera (part 27: cinematics are in-engine scripted
+scenes), so it plausibly builds its own projection from a 16:9 constant rather than
+from the config global the gameplay camera reads (`cpu/camera_fov.cpp` hooks
+sub_8246BF48 and sub_82375518 — the door camera may be a third producer). Test that
+settles it in one run: the same door at 1920x1080 (`CZ_VK_RES=1920x1080`) — if the
+ratio is right there and wrong at 3440x1440, it is the override's coverage. Then
+`CZ_ARG_PROBE` on the projection producers during the transition to find the third.
+Related: the 16:10 narrow mode (§6ey), which touched the same frustum code.
+
+### 0ae — a LIGHT'S GLOW APPEARS ON THE OPPOSITE SIDE OF THE SCREEN (`capture_028086`, `_028693`, `_030293`)
+
+*"When looking at lighting, if it's on one side of the screen that the light is,
+you'll see the light on the other side of the screen opposite of it."* Three
+captures at the momma's diner neon sign from the diner's roof: letters lit cyan and
+dark in a pattern that moves with the camera — in `028693` the "mm" of "momma's" is
+dark while "ma's" glows; in `030293` "diner"'s left half is dark. The glow (the bloom
+chain: bright-pass, downsamples, the composite) lands displaced across the screen's
+centre. **This is the same family as item 0ab** (near actors black from the screen's
+centre rightward): a screen-space pass done per TILE with the other tile's window
+offset would put the left half's glow on the right and vice versa. The two items
+should be taken TOGETHER, and 0ab's instrument order applies: (1) the saved snapshot
+sets — the bloom chain's snapshots for these three frames, compared left-half vs
+right-half against the final image; (2) a 720p pose at the sign, where the seam
+should sit at x=640; (3) the pass extent census for the bloom passes' scissors and
+window offsets. The oracle: capture E and the R2 traces show the neon lit where it
+is; this is ours.
+
 ## Item 0aa — public player reports QUEUED for a later part (operator, 2026-09-09; Reddit)
 
 The operator handed over four screenshots of the v1.0.0/v1.0.1 threads with the
