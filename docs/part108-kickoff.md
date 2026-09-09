@@ -48,7 +48,36 @@ narrative; gotchas 533-535.
    the stand-in is plan §2b's table: `DoDraw` 26%, the walk ≈23%, `UploadStream` +
    `UploadTexture` ≈14%, no symbol above a quarter.
 
+## §0c The operator's low-end sessions (2026-09-09, after the part closed)
+
+GPU core locked at 210 MHz (the 1050 Ti compute stand-in), CPU at the 3.2 GHz cap,
+`taskset -c 0-3,8-11`, 2x MSAA, the operator playing through crowds
+(`~/DR2CZ-troubleshooting/play/p107_lowend*.{log,trace}`; `CZ_VK_GPU_PASSES=1`):
+
+| session | crowd `[fps]` | wall / GPU / fence at 8,000-10,000 draws | note |
+|---|---|---|---|
+| 3440x1440 | **30-33 fps** | 30.0 / 29.8 / 14.1 ms | memory clock sat at 405 MHz (P8 idle, ~26 GB/s — a quarter of a 1050 Ti's); flat 30-33 ms from 2,400 draws up: pure GPU |
+| 1920x1080 | **53-54 fps** | 19.1 / 18.9 / 3.3 ms | memory 5,001 MHz; still GPU-bound with ~3 ms of CPU slack |
+| 1600x900 (live switch) | **62-64 fps** | 16.4 / 15.8 / 0.7 ms | GPU-bound with under 1 ms of slack |
+
+The operator's words: 1440p *"33 fps which is not acceptable performance for a xbox 360
+title"*; 1080p *"51 to 55 fps which is much closer to what I want"*; 900p *"60 fps up to
+65"*. **Every one of these is the GPU at a tenth of its clock, not the four cores**: wall
+equals GPU in every band and the CPU sits in the fence. At 1080p the whole-run GPU split
+puts the **MSAA resolve copies first (3.03 ms, 27.6%)**, then the scene passes (2.83),
+the one-draw post passes (1.76), the shadow cascade (1.25): for a 1050 Ti-class card the
+picture decisions (2x MSAA, the post chain at full resolution) are the levers, as
+perf-plan-part106 §4.2 said. A 1080p `CZ_VK_MSAA=0` session was launched next.
+
+**A defect found by the second launch: `CZ_VK_RES=1280x800` — the Steam Deck's native
+panel — is REFUSED** (`[vk] ... not a resolution this renderer can produce (even width,
+height 720..2880, at least 16:9) — IGNORED, rendering at 1280x720`). A Deck therefore
+renders 720p and presents it on an 800-line panel. Part 108 item: accept 16:10 (and
+document what the EDRAM stand-in does with it).
+
 ## §1 Part 108 — autonomous, in order
+
+00. **16:10 resolutions** (the Deck's 1280x800; §0c) — refused today.
 
 0. **Re-measure the 4-vs-8-core gap WITHOUT the scan** (two runs each, capped): what
    remains is the real contention number for §0.4's item, and it decides whether the
