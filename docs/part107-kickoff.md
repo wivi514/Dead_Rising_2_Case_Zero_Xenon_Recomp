@@ -47,6 +47,14 @@ retraction of 363.
   3.2 GHz; the part-106 baselines were at stock (4654 MHz). **THE LAST ACTION OF PART
   107 IS TO REMIND THE OPERATOR TO RESTORE IT: `sudo cpupower frequency-set -u 4654MHz`**
   — they asked for that reminder explicitly. Put it in the closing message.
+- **Two stand-in campaigns were left running on 2026-09-09 ~01:30 and their outputs are
+  on disk whether or not the session that started them lived to read them:**
+  `~/DR2CZ-troubleshooting/part106-1080/cpu4.out` (four cores, `c4_default` / `c4_w2` /
+  `c4_w3` / `c8_control`; the clock cap landed DURING it, so only runs from `c4_w2` on
+  are at 3.2 GHz) and `cpu4cap.out` (`c4cap_w2a/b` = the old 2-worker floor,
+  `c4cap_w3a/b` = the new 3-worker floor, `c8cap_control`; all at the cap). Read them
+  with `tools/part80_trace_band.py` on the `.trace` files beside them and fill
+  `perf-plan-part107.md` §1.1 before anything else in part 107.
 - **The thread budget's floor now gives a 4-physical-core machine THREE workers** (was
   two; operator instruction; `runtime/cpu/thread_budget.cpp`). `CZ_WORKERS=N` overrides.
   Item 1 of the plan measures whether the third worker on an SMT sibling is a gain on
