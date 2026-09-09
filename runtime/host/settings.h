@@ -75,9 +75,10 @@ int           Settings_Aspect();        // LEGACY: 1 when the internal res is wi
 // 1280x720 can express). The renderer scales RATIONALLY: Y by H/720, X by W/1280,
 // both TRUNCATING (gotcha 373's overrun guarantee holds for any fixed rational).
 // Valid: any height from 720 to 2880 (the rational converters do not care whether
-// H/720 is "nice" — 900 works as well as 1080), width even, at least 16:9 for the
-// height (narrower would need a sub-1 X factor and a fov CROP, which this port
-// refuses rather than ships), and at most 6880 wide. Legacy render_scale/aspect keys still load and are
+// H/720 is "nice" — 900 works as well as 1080), width even, at least 16:10 for the
+// height (part 108: 16:10 renders as NARROW MODE — the world vert-plus inside a
+// widened game frustum, the UI letterboxed at full width — the mirror of 21:9's wide
+// mode; 4:3 and 5:4 stay refused), and at most 6880 wide. Legacy render_scale/aspect keys still load and are
 // converted, so an existing cz_settings.txt keeps its meaning.
 bool Settings_ValidInternalRes(uint32_t w, uint32_t h);
 void Settings_InternalRes(uint32_t& w, uint32_t& h);

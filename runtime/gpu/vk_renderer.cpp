@@ -1799,7 +1799,7 @@ void InternalRes(uint32_t& w, uint32_t& h)
         return;
     uint32_t bw = 0, bh = 0;
     // CZ_VK_RES=WxH — any resolution the store validates (even width, H 720..2880,
-    // at least 16:9). The old integer-multiple forms still parse, so every recipe
+    // at least 16:10 since part 108). The old integer-multiple forms still parse, so every recipe
     // in the docs is unchanged.
     if (const char* r = Env("CZ_VK_RES"))
     {
@@ -1819,7 +1819,7 @@ void InternalRes(uint32_t& w, uint32_t& h)
         }
         else
             fprintf(stderr, "[vk] CZ_VK_RES=%s is not a resolution this renderer can "
-                            "produce (even width, height 720..2880, at least 16:9) — "
+                            "produce (even width, height 720..2880, at least 16:10) — "
                             "IGNORED, rendering at 1280x720.\n", r);
     }
     if (!bw)
@@ -1922,8 +1922,20 @@ inline bool WideMode()
     InternalRes(w, h);
     return uint64_t(w) * 9 > uint64_t(h) * 16;
 }
+// NARROWER than 16:9 (part 108: the Steam Deck's 1280x800 and the 16:10 desktop
+// modes). Exact comparison for the same reason: 16:9 stays on the untouched path.
+inline bool NarrowMode()
+{
+    uint32_t w, h;
+    InternalRes(w, h);
+    return uint64_t(w) * 9 < uint64_t(h) * 16;
+}
+// 0 = 16:9, 1 = wide, 2 = narrow — the patch memo's key byte and every gate below.
+inline uint8_t AspectPatchMode() { return WideMode() ? 1 : NarrowMode() ? 2 : 0; }
+inline bool AspectPatchActive() { return AspectPatchMode() != 0; }
 // The horizontal fov factor the wide frame carries relative to 16:9 at the same
-// height: k = (W/1280) / (H/720) = 9W/16H. 1.0 at 16:9 by construction.
+// height: k = (W/1280) / (H/720) = 9W/16H. 1.0 at 16:9 by construction; BELOW 1 in
+// narrow mode, where every use below reads it as the vertical factor's reciprocal.
 inline float WideFovFactor()
 {
     uint32_t w, h;
@@ -2028,25 +2040,45 @@ inline int SceneXformForm(const uint32_t* c, float& bEff)
 // crucially one whose visible region the game's frustum always covers, so the
 // pre-existing cutscene flank gap closes too. Row1 scales WHOLE (translation
 // component included — row1 = B * v1-with-translation).
+//
+// NARROW MODE (part 108, 16:10 — the Steam Deck's own panel) IS THE SAME DESIGN WITH
+// THE AXES SWAPPED, and k < 1 there. RAW form: MULTIPLY B (the y scale) by k — the
+// 16:9 frame occupies the central 9/10 of the height at full width, so the UI is
+// letterboxed rather than cropped at the flanks, and a frontend scene reveals a band
+// at top and bottom the way wide mode reveals the flanks. COMPOSITE form: DIVIDE ROW0
+// BY k (narrow the horizontal back) — the game-side substitution widens the roaming
+// camera by 1/k in tan space, so the horizontal returns to the 16:9 fov and the
+// vertical keeps the extra 1/k: a vert-plus picture whose visible region the game's
+// widened frustum covers exactly. Cameras that are NOT widened (cutscenes) come out as
+// a constant-VERTICAL crop, again inside their own 16:9 frustum. Proportions are
+// aspect-correct either way: on a W x H surface with a 16:9 projection the picture is
+// stretched vertically by 1/k, and scaling x by 1/k or y by k both undo it.
 inline int PatchWideProjection(uint32_t* c)
 {
     float bEff;
     const int form = SceneXformForm(c, bEff);
     if (form == 0)
         return 0;
+    const float k = WideFovFactor();
+    const bool narrow = k < 1.0f;
     if (form == 1)
     {
+        // Raw: wide divides A (x scale, c[0]); narrow multiplies B (y scale, c[5]).
+        const int at = narrow ? 5 : 0;
         float a;
-        memcpy(&a, c, 4);
-        a /= WideFovFactor();
-        memcpy(c, &a, 4);
+        memcpy(&a, c + at, 4);
+        a = narrow ? a * k : a / k;
+        memcpy(c + at, &a, 4);
         return 1;
     }
+    // Composite: wide multiplies row1 by k; narrow divides row0 by k. Whole rows,
+    // translation included.
+    const int row = narrow ? 0 : 4;
     float m[4];
-    memcpy(m, c + 4, sizeof m);
+    memcpy(m, c + row, sizeof m);
     for (int i = 0; i < 4; i++)
-        m[i] *= WideFovFactor();
-    memcpy(c + 4, m, sizeof m);
+        m[i] = narrow ? m[i] / k : m[i] * k;
+    memcpy(c + row, m, sizeof m);
     return 2;
 }
 
@@ -17215,7 +17247,7 @@ void VerticalWasteCensus(const uint32_t* vsWindow, const ShaderMeta& vs,
     uint32_t scratch[16];
     memcpy(scratch, vsWindow, sizeof scratch);
     PatchFovProjection(scratch, FovHalfRadThisFrame());
-    if (WideMode())
+    if (AspectPatchActive())
         PatchWideProjection(scratch);
     float m[16];
     memcpy(m, scratch, sizeof m);
@@ -22496,7 +22528,7 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
             int fovForm = 0, wideForm = 0;
             bool memoServed = false;
             const float fovNow = FovHalfRadThisFrame();
-            const uint8_t wideNow = WideMode() ? 1 : 0;
+            const uint8_t wideNow = AspectPatchMode();   // 0 / 1 wide / 2 narrow
             if (!patchInPlace && !NoPatchMemo())
             {
                 for (int way = 0; way < 4; ++way)
@@ -22582,8 +22614,20 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
             }
             switch (wideForm)
             {
-                case 1: COUNT("draw: raw projection widened to 21:9"); break;
-                case 2: COUNT("draw: COMPOSITE viewproj widened to 21:9"); break;
+                // Two labels per form since part 108: the counter names which mode
+                // fired, so a 16:10 run cannot report itself as "widened to 21:9".
+                case 1:
+                    if (NarrowMode())
+                        COUNT("draw: raw projection letterboxed to 16:10 (narrow)");
+                    else
+                        COUNT("draw: raw projection widened to 21:9");
+                    break;
+                case 2:
+                    if (NarrowMode())
+                        COUNT("draw: COMPOSITE viewproj vert-plus to 16:10 (narrow)");
+                    else
+                        COUNT("draw: COMPOSITE viewproj widened to 21:9");
+                    break;
             }
             if (!patchInPlace)
             {
@@ -22607,7 +22651,7 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
                     uint32_t want[16];
                     memcpy(want, dst, sizeof want);   // the arena's own c0..c3
                     PatchFovProjection(want, FovHalfRadThisFrame());
-                    if (WideMode())
+                    if (AspectPatchActive())
                         PatchWideProjection(want);
                     if (g_patchSrcVerifyPoison)
                         want[0] ^= 0x40000000u;
@@ -22661,7 +22705,7 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
             // same order, or the verifier would report every patched projection as a
             // memo defect.
             PatchFovProjection(scratch.data(), FovHalfRadThisFrame());
-            if (WideMode())
+            if (AspectPatchActive())
                 PatchWideProjection(scratch.data());
             if (g_constMemoVerifyPoison)
             {
@@ -23816,7 +23860,7 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
                 const float ucpFovHalf = FovHalfRadThisFrame();
                 float ucpBEff = 0.0f;
                 const int ucpForm =
-                    (WideMode() || ucpFovHalf != 0.0f)
+                    (AspectPatchActive() || ucpFovHalf != 0.0f)
                         ? SceneXformForm(
                               &regs[xenos::kAluConstantBase + memoVsBase * 4],
                               ucpBEff)
@@ -23845,6 +23889,18 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
                         else
                             p[1] /= WideFovFactor();
                         COUNT("draw: user clip plane compensated for the wide "
+                              "projection");
+                    }
+                    else if (NarrowMode())
+                    {
+                        // The axes swapped (part 108): raw form scales oPos.y by k
+                        // -> plane.y by 1/k; composite scales oPos.x by 1/k ->
+                        // plane.x by k.
+                        if (ucpForm == 1)
+                            p[1] /= WideFovFactor();
+                        else
+                            p[0] *= WideFovFactor();
+                        COUNT("draw: user clip plane compensated for the narrow "
                               "projection");
                     }
                 }
@@ -30599,9 +30655,16 @@ void VkRenderer_RequestSwapchainRebuild()
     g_swapRebuildRequest.store(true, std::memory_order_release);
 }
 
+// The factor the GAME's roaming camera must be widened by, in tan space, so that its
+// own 16:9 culling frustum covers the rendered view: k in wide mode (the horizontal
+// grows by k), 1/k in narrow mode (the vertical grows by 1/k; part 108), 1 at 16:9.
 float VkRenderer_WideFovFactor()
 {
-    return WideMode() ? WideFovFactor() : 1.0f;
+    if (WideMode())
+        return WideFovFactor();
+    if (NarrowMode())
+        return 1.0f / WideFovFactor();
+    return 1.0f;
 }
 
 void VkRenderer_SavePipelineCache()

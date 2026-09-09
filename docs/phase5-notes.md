@@ -21462,3 +21462,75 @@ counters on the same runs: 5.3-5.9 parks a frame, 0.0 MISSED.
 heaviest band 16.0 (≈62), from 16.4 / 17.9 at the start of the part — the median half
 of "60 minimum on a 3100-class CPU" is met on the stand-in, and the p99 (19.4) is the
 next number.** Every figure is this box under a mask and a cap (plan §4).
+
+## §6ey — Part 108 (opened the same day): 16:10 resolutions — NARROW MODE, wide mode with the axes swapped (2026-09-09)
+
+**The operator's instruction:** *"Update the game so it supports 16:10 resolution."* The
+trigger was §6ex's low-end sessions: `CZ_VK_RES=1280x800` — the Steam Deck's own panel —
+was refused by the resolution rule ("at least 16:9") and a Deck rendered 720p onto an
+800-line screen.
+
+### §1. Why "at least 16:9" existed, and what it was protecting
+
+Part 60's rational scaling maps guest X extents by W/1280 and Y by H/720, and the
+settings header said a narrower-than-16:9 surface "would need a sub-1 X factor and a fov
+CROP, which this port refuses rather than ships". The X factor is not the problem —
+1280x800 has X factor 1.0 and Y factor 10/9, and every extent conversion is already
+rational and truncating. The problem is the PICTURE: a 16:9 projection rasterised onto a
+16:10 surface is stretched vertically by 1/k (k = 9W/16H = 0.9), and undoing that means
+either narrowing the horizontal fov (a crop) or widening the vertical one — and the
+second exposes rows the game's own 16:9 culling frustum does not cover, which is exactly
+the flank pop-in wide mode fought in part 62 (§6cu).
+
+### §2. The design: every wide-mode mechanism, mirrored
+
+Wide mode (§6cp, §6cu) is three things, and each has an exact mirror for k < 1:
+
+| mechanism | wide (k > 1) | narrow (k < 1), part 108 |
+|---|---|---|
+| the game's roaming camera (`cpu/camera_fov.cpp`) | widened by k in tan space, so its 16:9 frustum covers the wider view | widened by **1/k**, so it covers the taller view (`VkRenderer_WideFovFactor` returns 1/k) |
+| the COMPOSITE form (the world's P*V) | row 1 (y) x k: the vertical returns to the 16:9 fov, the horizontal keeps the k | **row 0 (x) / k**: the horizontal returns to the 16:9 fov, the vertical keeps the 1/k — vert-plus, inside the widened frustum |
+| the RAW form (UI, frontend scenes) | x scale / k: the flanks reveal, the UI self-centres at 16/21 width | **y scale x k**: a band reveals at top and bottom, the UI letterboxes into the central 9/10 at FULL width — nothing at the edges is cropped |
+| user clip planes | raw plane.x x k; composite plane.y / k | raw **plane.y / k**; composite **plane.x x k** |
+| cameras the hook does not widen (cutscenes, minigames) | constant-horizontal crop, inside their own frustum | constant-VERTICAL crop, inside their own frustum |
+
+Aspect is correct either way (scaling x by 1/k or y by k both undo the surface's
+stretch); what the choice decides is which fov the surface shows and whether the game's
+frustum covers it, and the table keeps both true. The tile scissors stay exact (X factor
+is W/1280 for any even W), the EDRAM stand-in and the snapshots scale by the same rational
+rule, and cube faces are already a guest-space blit that stretches as readily as it
+squeezes. The 16:9 path is untouched by construction: `NarrowMode()` is an exact
+`9W < 16H`, the patch memo's key byte is 0 / 1 (wide) / 2 (narrow), and the validity
+floor moved from `9W >= 16H` to `10W >= 16H` — 4:3 and 5:4 stay refused (they would
+put the UI in a 75-80% band).
+
+Files: `gpu/vk_renderer.cpp` (`NarrowMode`, `AspectPatchMode`, `PatchWideProjection`'s
+narrow branches, the clip-plane mirror, the accessor), `host/settings.{h,cpp}` (the
+floor), `host/window.cpp` (the mode-list filter comment and the launcher ladder: 1280x800,
+1920x1200, 2560x1600 added), `cpu/camera_fov.cpp` (a comment; the hook is unchanged).
+
+### §3. The gates (headless; the operator's eye is owed)
+
+`~/DR2CZ-troubleshooting/part108/narrow_gates.sh`, one sequence:
+
+* **Validation at 1280x800** (a boot to the menus under `CZ_VK_VALIDATION=1`): 8
+  messages, all `VUID-VkGraphicsPipelineCreateInfo-topology-08773` — and the same 8
+  appear in every one of part 106's validation logs at 16:9, so they predate narrow
+  mode and are not its defect (they are the standing pipeline-topology note).
+* **The picture, by the central band** (the held-camera outdoor route, `STILL=1`,
+  `CZ_VK_FRAME_DUMP` at 1280x720 and 1280x800, ~300 dumps each, 5,278 / 5,466 peak
+  draws): rows 40..759 of the last 800-line frame against the last 720-line frame
+  correlate at **0.902**, where two CONSECUTIVE held-camera 720 frames — the null —
+  correlate at 0.898; the wrong answer (the 800 frame resampled to 720, i.e. a
+  stretch) reads 0.659. The revealed bands are world, not bars: top-band mean luma
+  107.5 (sky), bottom 53.3 (ground), centre 106.9.
+* **Engagement**: the 800 run's counter table shows 59.2 M composite and 574 k raw
+  patches; the 720 run shows none of either (the 16:9 path is untouched). The counter
+  labels are per mode since the same afternoon ("letterboxed to 16:10 (narrow)" /
+  "vert-plus to 16:10 (narrow)"), so a 16:10 run can no longer report itself as
+  "widened to 21:9".
+
+Owed: the operator's eye on a 16:10 picture (a Deck, or the box at 1920x1200 — the
+launcher ladder offers it), specifically the HUD's letterbox band and any top/bottom
+pop-in in cutscenes, which are the two things this design predicts and no headless
+number sees.

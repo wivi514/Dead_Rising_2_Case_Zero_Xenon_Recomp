@@ -1719,7 +1719,14 @@ CZ_VK_RES=WxH      **the internal resolution**, and since part 71 it PRINTS `[vk
                    scissors, and this title renders in two 640-wide halves where half a
                    pixel of scissor error is a seam down the middle that no counter would
                    report. An unsupported value is refused loudly and the run continues at
-                   1280x720 (gotcha 5). `CZ_VK_RES_SCALE=N` is the same thing as a
+                   1280x720 (gotcha 5). **The rule since part 60 is rational (even width,
+                   height 720..2880), and since part 108 the aspect floor is 16:10, not
+                   16:9**: a 16:10 size (the Steam Deck's 1280x800, 1920x1200, 2560x1600)
+                   renders in NARROW MODE — wide mode with the axes swapped (the game's
+                   roaming camera widened by 1/k so its frustum covers a vert-plus world,
+                   the composite projection's row 0 divided by k, the raw/UI form's y
+                   scale multiplied by k so the UI letterboxes at full width, the clip
+                   planes mirrored; `phase5-notes.md` §6ey). `CZ_VK_RES_SCALE=N` is the same thing as a
                    multiplier; 1 is the control arm and is provably the old code, because
                    every substitution the change makes is an identity at scale 1.
                    The guest's geometry, viewports, scissors and resolve extents are ITS
@@ -2455,7 +2462,9 @@ CZ_VK_WIDE=1|0     **the env arm for wide mode** (part 60 night item 3), winning
                    perspective the patch recognizes (measured on the attract screen:
                    copyright center 32.8% -> 36.9% predicted, 37% observed).
                    Counters: "raw projection widened to 21:9" / "COMPOSITE
-                   viewproj widened to 21:9" (per-form since part 62), "user clip
+                   viewproj widened to 21:9" (per-form since part 62; in NARROW mode
+                   the same two sites count "letterboxed to 16:10 (narrow)" /
+                   "vert-plus to 16:10 (narrow)", part 108), "user clip
                    plane compensated for the wide projection". Known trades, stated
                    up front: content the title's CPU culling rejected for its 16:9
                    frustum can pop at the extreme flanks, and the title's own

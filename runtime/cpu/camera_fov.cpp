@@ -105,6 +105,9 @@ PPC_FUNC(sub_8246BF48)
         // then covers the 21:9 view's horizontal exactly — and the renderer's
         // composite wide patch narrows the projection back vertically, so the
         // picture is unchanged while the culling covers all of it.
+        // In NARROW mode (16:10, part 108) the same accessor returns 1/k > 1: the
+        // frustum grows by the vertical factor and the renderer's composite patch
+        // narrows the horizontal back — the same mechanism, axes swapped.
         const float wideK = VkRenderer_WideFovFactor();
         std::lock_guard<std::mutex> lock(mu);
         auto it = baseBits.find(ctx.r3.u32);

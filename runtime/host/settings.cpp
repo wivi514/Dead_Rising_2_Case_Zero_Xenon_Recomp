@@ -351,11 +351,13 @@ void Settings_SetLanguage(int id)
 }
 
 // See settings.h for the rule. The caps: 2880 tall / 6880 wide is 4x the title's
-// frame in each direction, the same ceiling the integer path had.
+// frame in each direction, the same ceiling the integer path had. The floor on the
+// aspect is 16:10 since part 108 (the Steam Deck's 1280x800; narrow mode in
+// gpu/vk_renderer.cpp) — 4:3 and 5:4 would put the UI in a 75-80% band and stay refused.
 bool Settings_ValidInternalRes(uint32_t w, uint32_t h)
 {
     return h >= 720 && h <= 2880 && (w & 1) == 0 && w >= 1280 && w <= 6880 &&
-           uint64_t(w) * 9 >= uint64_t(h) * 16;
+           uint64_t(w) * 10 >= uint64_t(h) * 16;
 }
 
 void Settings_InternalRes(uint32_t& w, uint32_t& h)

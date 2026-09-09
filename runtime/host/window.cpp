@@ -275,7 +275,8 @@ void PublishDisplaySize()
     // The mode list, refreshed whenever the desktop size changed (first publish
     // included). SDL reports one entry per (size, refresh, format); the menu wants
     // distinct sizes, so dedupe. Modes the renderer cannot express (odd widths,
-    // sub-720 heights, narrower than 16:9 — the 4:3 and 5:4 legacy modes) are
+    // sub-720 heights, narrower than 16:10 — the 4:3 and 5:4 legacy modes; 16:10
+    // itself is narrow mode since part 108) are
     // filtered here so the panel never offers a row it cannot honor.
     if (ow != uint32_t(mode.w) || oh != uint32_t(mode.h))
     {
@@ -1525,11 +1526,13 @@ void Host_ProgressEnd()
 // the same StfsExtract the automatic first run uses.
 namespace
 {
-// The resolutions the launcher cycles through: the common 16:9 ladder, filtered by
-// the same validity rule the settings system enforces. The display's own size is
-// appended when it is not already present, so "native" is always reachable.
+// The resolutions the launcher cycles through: the common 16:9 ladder plus the
+// 16:10 sizes (part 108: the Steam Deck's 1280x800 and the desktop 16:10 modes),
+// filtered by the same validity rule the settings system enforces. The display's own
+// size is appended when it is not already present, so "native" is always reachable.
 const uint32_t kLauncherRes[][2] = {
-    { 1280, 720 }, { 1600, 900 }, { 1920, 1080 }, { 2560, 1440 }, { 3840, 2160 },
+    { 1280, 720 },  { 1280, 800 },  { 1600, 900 },  { 1920, 1080 }, { 1920, 1200 },
+    { 2560, 1440 }, { 2560, 1600 }, { 3840, 2160 },
 };
 
 void LauncherText(SDL_Renderer* r, int tx, int ty, const std::string& str, int scale,
