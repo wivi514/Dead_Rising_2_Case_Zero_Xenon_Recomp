@@ -202,6 +202,57 @@ Order is by expected milliseconds ON A 4-CORE BOX, which is not this box's order
    pipeline warm (async since part 98). A locked 60 is a p99 claim; item 0's trace must
    carry `texUploads` and the band table's texture-upload row is the gate.
 
+## §2b. What the items measured (2026-09-09, the record; §5 of `phase5-notes.md` §6ex is the narrative)
+
+### Item 0 — the decomposition under the stand-in (`tools/part107_standin_probe.sh`, `~/DR2CZ-troubleshooting/part107/probe_{spin,park}.*`)
+
+Whole-process `perf record -F 999` for 30 s inside the crowd soak, 4 cores + siblings
+at 3.2 GHz, no phase profiler. **The thread table first, because it is where the part's
+largest finding was** (per-thread % of one core over a 15 s window; `part50_thread_cpu.py`):
+
+| thread | spin arm | park arm | what it is (symbols, `part53_symbols.py`) |
+|---|---|---|---|
+| **`DeviceWorker` — OUR native-KB/M glyph scan** | **99.4%** | **99.4%** | 70% `memcmp`, 17% `memchr`: a memory sweep that runs for ~150 s from the first input poll. **Not in any plan; see item 8 below.** |
+| the pump | 87.9% | 91.2% | `DoDraw` 26%, `WriteRegisterRun` 8.4, `ExecutePacket` 8.1, `UploadStream` 7.8, `UploadTexture` 6.4, `memset` 3.7, `ExecuteLinear` 3.3, `CopyConstWindow` 3.0, `memmove` 2.8, `PersistFind` 2.4, `memcmp` 2.1, `GuardFold` 1.6, `DecodeTextureFetch` 1.6, `TexFind` 1.6, the pipeline hashtable 1.3, `[unknown]` 9.7 |
+| the guest main thread | 74.5% | 72.8% | hundreds of `sub_*` at ≤3.6% each — the title simulating |
+| the guest Draw Thread | 68.1% | **53.1%** | spin arm: `sub_8283C6C8` 11.7 + `sub_82845160` 6.5 + `__restgprlr_29` 3.1 = the wait, ~21% of the thread; the rest is the D3D driver building the stream (`sub_827D5B18` 11.5, …). Park arm: the wait is 1.9%. |
+| 3 guard-pool workers | 19.7% each | 22.3% each | the parallel record |
+| process | 4.64 cores | 4.60 cores | of 4 physical + 4 siblings |
+
+Read against §0.3: the pump's split is a longer tail than the ledger's five terms — the
+walk (`WriteRegisterRun` + `ExecutePacket` + `ExecuteLinear` + `CopyConstWindow` ≈ 23%)
+and `DoDraw`'s own body (26%) are the two largest, `UploadStream`/`UploadTexture` ≈ 14%
+between them, and no single symbol is above a quarter. Item 3's sub-item (a) turns out
+to EXIST already (`WriteRegisterRun`'s bulk path, `g_regRunBulk`/`g_regRunSlow`); the
+walk's remaining cost is the per-packet dispatch, not the per-dword store.
+
+### Item 2 — the Draw Thread's wait, parked: BUILT, ENGAGED, A NULL ON FRAME TIME
+
+`cpu/fence_wait.cpp`, on by default, `CZ_FENCE_PARK=0` the control; the premise
+retraction (fence word, not read pointer) is in item 2's text above. Engagement at the
+crowd: 6.5 parks a frame, 2.5-2.7 woken by the executor's store, 3.9-4.0 timeouts with
+the fence still ahead (the wait is several ms, the bound is one), **0.0 MISSED**, 0
+contended, 0 passthrough. Three runs an arm alternated under the stand-in, two an arm
+on all 16 cpus, same binary:
+
+| | 8,000-9,000 | 9,000-10,000 | frame-weighted | window medians / p99 at ≥8,000 |
+|---|---|---|---|---|
+| stand-in, spin → park | 16.43 → 16.53 (+0.6%) | 17.65 → 19.18 (+8.7%, n=268 vs 8,041: composition) | +1.2% | 16.06-17.24 → 16.29-16.60; p99 22.4-24.5 → 20.5-22.6 |
+| 16 cpus, spin → park | 13.53 → 13.84 (+2.3%) | 14.88 → 14.36 (−3.4%) | +0.7% | 13.30-14.12 → 13.80-13.84 |
+
+Both inside the null (±1% weighted, ±4% a band; the stand-in's own null pairs read
+−0.4% and −1.8%). **Verdict: a null on the median on both boxes**, the p99 and worst
+better on the stand-in (worst 33-43 ms → 24-66 ms is one outlier; the three-run p99s
+are lower in every pair). Why the prediction failed: the spin was 84% of the thread at
+1,900 draws (part 51); at the crowd the Draw Thread is 68% busy and only ~21% of that is
+the wait, so the park returns ~0.15 of a core, and the machine's real contention was the
+item-8 scan on a full core the whole time. **Kept ON**: it costs nothing measurable, it
+removes a busy-wait that a laptop or a Deck pays in heat, and its counters are the
+standing gate. Gates owed at the end of the part: A5 order diff, `truncated=0`,
+`CZ_VK_SYNC_VALIDATION=1`.
+
+### Item 1 — CLOSED as a null (§1.2).
+
 ## §3. Protocol and gates
 
 - Every A/B: three runs an arm, alternated, under the SAME stand-in mask and clock;

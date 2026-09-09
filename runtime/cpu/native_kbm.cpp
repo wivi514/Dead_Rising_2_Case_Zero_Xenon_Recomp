@@ -102,6 +102,7 @@
 #include "../host/settings.h"
 #include "kbm_default_map.h"
 #include "native_kbm.h"
+#include "thread_budget.h"
 #include "ppc_recomp_shared.h"
 
 extern "C" PPC_FUNC(__imp__sub_828053C8);
@@ -114,11 +115,23 @@ namespace
 
 // memmem is a GNU extension the Windows CRT lacks, and the scan below is the one
 // caller in the runtime. Same code on both platforms on purpose (an #ifdef'd
-// glibc memmem would make the two legs scan differently): skip to the needle's
-// first byte with memchr — for texel data the first byte is selective — then one
-// memcmp. Called on device changes and rescans, never per frame.
-const uint8_t* FindBytes(const uint8_t* hay, size_t hayLen,
-                         const uint8_t* needle, size_t needleLen)
+// glibc memmem would make the two legs scan differently). Called on device changes
+// and rescans, never per frame.
+//
+// PART 107 RETRACTION, IN PLACE. The first version skipped to the needle's first
+// byte with memchr — "for texel data the first byte is selective" — then ran one
+// memcmp per hit. The first byte is NOT selective: a `perf record` of the crowd route
+// under the 4-core stand-in found this worker the BUSIEST THREAD IN THE PROCESS,
+// 99.4% of a core, 70% memcmp + 17% memchr, and the log placed the sweep's end 150 s
+// after the first input poll — window 17 of 20 on a 196 s run, window 23 of 38 on
+// part 106's baselines. The crowd frame dropped ~0.9 ms (17.4-17.9 -> 16.6-16.9 ms)
+// the moment it ended. So every crowd number since part 92 was taken with a memory
+// sweep running on a core beside the pump, and the 4-core stand-in's "contention"
+// carried it too. The legacy finder stays behind CZ_KBM_SCAN_LEGACY=1 as the
+// same-binary control arm; the default is Horspool, which skips up to needleLen
+// bytes per probe on a mismatch and never runs a full memcmp on a stray first byte.
+const uint8_t* FindBytesLegacy(const uint8_t* hay, size_t hayLen,
+                               const uint8_t* needle, size_t needleLen)
 {
     if (needleLen == 0 || hayLen < needleLen)
         return nullptr;
@@ -132,6 +145,41 @@ const uint8_t* FindBytes(const uint8_t* hay, size_t hayLen,
         if (std::memcmp(p, needle, needleLen) == 0)
             return p;
         ++p;
+    }
+    return nullptr;
+}
+
+bool ScanLegacy()
+{
+    static const bool legacy = getenv("CZ_KBM_SCAN_LEGACY") != nullptr;
+    return legacy;
+}
+
+// Boyer-Moore-Horspool. The bad-character table is built per call (256 entries,
+// nothing against a haystack of hundreds of megabytes) and the comparison runs from
+// the needle's LAST byte, so a window whose last byte is absent from the needle
+// advances by the whole needle length.
+const uint8_t* FindBytes(const uint8_t* hay, size_t hayLen,
+                         const uint8_t* needle, size_t needleLen)
+{
+    if (ScanLegacy())
+        return FindBytesLegacy(hay, hayLen, needle, needleLen);
+    if (needleLen == 0 || hayLen < needleLen)
+        return nullptr;
+    size_t skip[256];
+    for (size_t& v : skip)
+        v = needleLen;
+    for (size_t i = 0; i + 1 < needleLen; ++i)
+        skip[needle[i]] = needleLen - 1 - i;
+    const uint8_t last = needle[needleLen - 1];
+    const uint8_t* p = hay;
+    const uint8_t* end = hay + hayLen - needleLen;   // last valid window start
+    while (p <= end)
+    {
+        const uint8_t c = p[needleLen - 1];
+        if (c == last && std::memcmp(p, needle, needleLen - 1) == 0)
+            return p;
+        p += skip[c];
     }
     return nullptr;
 }
@@ -1152,27 +1200,138 @@ void ScanForStrBank(uint8_t* base)
                         "prompt wording stays as booted this round\n");
 }
 
+// The discriminating slice: the first 64-aligned offset where the two art sets
+// differ. Returns SIZE_MAX when the sets are identical (nothing to swap).
+size_t DiscriminatingOffset(const SwapGlyph& g)
+{
+    size_t po = 0;
+    while (po + 64 <= g.kbTex.size() &&
+           memcmp(g.kbTex.data() + po, g.padTex.data() + po, 64) == 0)
+        po += 64;
+    return po + 64 > g.kbTex.size() ? SIZE_MAX : po;
+}
+
+// Confirm a candidate slice hit at `hit` (the slice sits `po` bytes into the
+// texture) by a FULL compare against either art set, and record it once.
+bool ConfirmGlyphAt(uint8_t* base, SwapGlyph& g, size_t po, const uint8_t* hit)
+{
+    if (size_t(hit - base) < po)
+        return false;
+    const uint8_t* texBase = hit - po;
+    if (memcmp(texBase, g.kbTex.data(), g.kbTex.size()) != 0 &&
+        memcmp(texBase, g.padTex.data(), g.padTex.size()) != 0)
+        return false;
+    const uint32_t addr = uint32_t(texBase - base);
+    for (uint32_t a2 : g.addrs)
+        if (a2 == addr)
+            return false;
+    g.addrs.push_back(addr);
+    return true;
+}
+
+// ONE pass over a range for EVERY unlocated glyph at once, testing only 64-byte-
+// ALIGNED windows (part 107). The decoded glyph textures sit PAGE-ALIGNED in the
+// physical arena (measured, part 92 round 4 — see the comment above kScanRanges),
+// and each discriminating slice is a 64-aligned offset into its texture, so every
+// real hit is 64-aligned. Each window costs one 8-byte load and one table probe:
+// the physical arena is 8 M windows, tens of milliseconds, where the per-probe
+// sweeps below cost 52 x 512 MB (150 s with the legacy finder, 67 s with Horspool
+// — texel data defeats its skip table). The per-probe sweep stays as the FALLBACK
+// for any glyph this pass does not find, so an unaligned copy costs seconds, not
+// the feature; the log says which pass found what.
+size_t ScanAligned64(uint8_t* base, const Range& r, std::vector<size_t>& glyphIdx,
+                     const std::vector<size_t>& po)
+{
+    struct Probe { uint64_t key; const uint8_t* bytes; size_t glyph; };
+    std::vector<Probe> probes;
+    for (size_t gi : glyphIdx)
+    {
+        const SwapGlyph& g = g_swapGlyphs[gi];
+        for (const uint8_t* b : { g.kbTex.data() + po[gi], g.padTex.data() + po[gi] })
+        {
+            uint64_t k;
+            memcpy(&k, b, 8);
+            probes.push_back({ k, b, gi });
+        }
+    }
+    // 256 buckets on a multiplicative hash of the first eight bytes; chains are tiny.
+    std::vector<uint16_t> head(256, 0xFFFF), next(probes.size(), 0xFFFF);
+    auto bucket = [](uint64_t k) { return unsigned((k * 0x9E3779B97F4A7C15ull) >> 56); };
+    for (size_t i = 0; i < probes.size(); ++i)
+    {
+        const unsigned b = bucket(probes[i].key);
+        next[i] = head[b];
+        head[b] = uint16_t(i);
+    }
+    size_t found = 0;
+    const uint8_t* p = base + r.lo;
+    const uint8_t* end = base + r.hi - 64;
+    for (; p <= end; p += 64)
+    {
+        uint64_t k;
+        memcpy(&k, p, 8);
+        for (uint16_t i = head[bucket(k)]; i != 0xFFFF; i = next[i])
+        {
+            if (probes[i].key != k || memcmp(p, probes[i].bytes, 64) != 0)
+                continue;
+            SwapGlyph& g = g_swapGlyphs[probes[i].glyph];
+            if (ConfirmGlyphAt(base, g, po[probes[i].glyph], p))
+                ++found;
+        }
+    }
+    return found;
+}
+
 void ScanForGlyphs(uint8_t* base, bool physOnly)
 {
     size_t found = 0;
-    for (SwapGlyph& g : g_swapGlyphs)
+    std::vector<size_t> po(g_swapGlyphs.size(), SIZE_MAX);
+    for (size_t gi = 0; gi < g_swapGlyphs.size(); ++gi)
+        po[gi] = DiscriminatingOffset(g_swapGlyphs[gi]);
+
+    // Pass 1 (default): the aligned multi-probe sweep over the physical arena, which
+    // is where every copy has ever been found. CZ_KBM_SCAN_LEGACY=1 skips it, so the
+    // control arm is the whole original algorithm and not just its finder.
+    if (!ScanLegacy())
     {
-        if (!g.addrs.empty())
+        std::vector<size_t> want;
+        for (size_t gi = 0; gi < g_swapGlyphs.size(); ++gi)
+            if (g_swapGlyphs[gi].addrs.empty() && po[gi] != SIZE_MAX)
+                want.push_back(gi);
+        if (!want.empty())
+        {
+            const auto t0 = std::chrono::steady_clock::now();
+            size_t hits = 0;
+            for (const Range& r : kScanRanges)
+                if (r.lo == 0xA0000000u)
+                    hits = ScanAligned64(base, r, want, po);
+            size_t located = 0;
+            for (size_t gi : want)
+                located += !g_swapGlyphs[gi].addrs.empty();
+            fprintf(stderr, "[kbm] device-follow scan: aligned pass located %zu of %zu "
+                            "glyphs (%zu copies) in %.1f ms\n",
+                    located, want.size(), hits,
+                    std::chrono::duration<double, std::milli>(
+                        std::chrono::steady_clock::now() - t0).count());
+            found += hits;
+        }
+    }
+
+    // Pass 2: the per-probe sweep, for whatever pass 1 did not find (everything, on
+    // the legacy arm).
+    for (size_t gi = 0; gi < g_swapGlyphs.size(); ++gi)
+    {
+        SwapGlyph& g = g_swapGlyphs[gi];
+        if (!g.addrs.empty() || po[gi] == SIZE_MAX)
             continue;
-        // the discriminating slice: first 64-aligned offset where the sets differ
-        size_t po = 0;
-        while (po + 64 <= g.kbTex.size() &&
-               memcmp(g.kbTex.data() + po, g.padTex.data() + po, 64) == 0)
-            po += 64;
-        if (po + 64 > g.kbTex.size())
-            continue;                      // sets identical?! nothing to swap
+        const size_t slice = po[gi];
         for (const Range& r : kScanRanges)
         {
             if (physOnly && r.lo != 0xA0000000u)
                 continue;      // rescans sweep only where the copies really live
             const uint8_t* lo = base + r.lo;
             const size_t len = r.hi - r.lo;
-            for (const uint8_t* probe : { g.kbTex.data() + po, g.padTex.data() + po })
+            for (const uint8_t* probe : { g.kbTex.data() + slice, g.padTex.data() + slice })
             {
                 const uint8_t* p = lo;
                 size_t left = len;
@@ -1181,23 +1340,8 @@ void ScanForGlyphs(uint8_t* base, bool physOnly)
                     const uint8_t* hit = FindBytes(p, left, probe, 64);
                     if (!hit)
                         break;
-                    if (size_t(hit - base) >= po)
-                    {
-                        const uint8_t* texBase = hit - po;
-                        if (memcmp(texBase, g.kbTex.data(), g.kbTex.size()) == 0 ||
-                            memcmp(texBase, g.padTex.data(), g.padTex.size()) == 0)
-                        {
-                            const uint32_t addr = uint32_t(texBase - base);
-                            bool known = false;
-                            for (uint32_t a2 : g.addrs)
-                                known |= a2 == addr;
-                            if (!known)
-                            {
-                                g.addrs.push_back(addr);
-                                ++found;
-                            }
-                        }
-                    }
+                    if (ConfirmGlyphAt(base, g, slice, hit))
+                        ++found;
                     const size_t adv = size_t(hit - p) + 64;
                     p += adv;
                     left -= adv;
@@ -1216,6 +1360,9 @@ void ScanForGlyphs(uint8_t* base, bool physOnly)
 
 void DeviceWorker(uint8_t* base)
 {
+    // Below the pump and the workers: this thread's work is a memory sweep and a
+    // handful of memcpys, none of it on the frame path (part 107).
+    ThreadBudget_SetLowPriority(true);
     int applied = -1;                 // force the first apply
     for (;;)
     {
@@ -1293,11 +1440,20 @@ void DeviceWorker(uint8_t* base)
             (lastScan == std::chrono::steady_clock::time_point{} ||
              now - lastScan > std::chrono::seconds(20)))
         {
+            // Timed and printed: the sweep's length is its price, and part 107 found
+            // the first version's at 150 s (see FindBytes). A scan is announced at
+            // its START too, so a log can place it against the [fps] windows.
+            fprintf(stderr, "[kbm] device-follow scan: START (%s finder, %s)\n",
+                    ScanLegacy() ? "legacy memchr+memcmp" : "Horspool",
+                    scannedOnce ? "physical arena only" : "every range");
+            const auto t0 = std::chrono::steady_clock::now();
             ScanForGlyphs(base, scannedOnce);   // full sweep once, then physical-only
             if (g_bankAddrs.empty())
                 ScanForStrBank(base);           // the bank is heap-resident: all ranges
             scannedOnce = true;
             lastScan = std::chrono::steady_clock::now();
+            fprintf(stderr, "[kbm] device-follow scan: END, %.3f s\n",
+                    std::chrono::duration<double>(lastScan - t0).count());
             swapAll(wrote, strWrote, stale);    // newly-found copies get the art now
         }
         applied = want;
