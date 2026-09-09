@@ -100,10 +100,18 @@ Order is by expected milliseconds ON A 4-CORE BOX, which is not this box's order
    §5.2, measured with the guard pool at 4). §1.1 answers half of this for free.
 2. **The guest's spinning Draw Thread** (part 51: the title's own thread spins reading
    the ring read pointer while the pump walks; on 8 cores it is a free core, on 4 it is
-   a quarter of the machine). Find the primitive it spins through (`gdis.py` on the
-   ring-wait loop; it is a guest loop reading a register-mapped pointer, so the runtime's
-   MMIO read is the hook), and park the thread on a futex/condition that the pump's
-   read-pointer publication wakes — the pump already publishes mid-walk since part 86.
+   a quarter of the machine). The loop is already read (`phase5-notes.md` §6ch §1,
+   phase1 finding 38): `sub_82845160` re-checks `R` (the ring read pointer, a guest-memory
+   word only our pump writes, `g_rptrWriteback`) against its target and calls
+   `sub_8283C6C8` between checks — a body of `mr rX,rX` SMT-yield hints in a `bdnz` loop
+   plus a timebase read, which yielded a hardware thread on the 360 and is a pure
+   busy-loop here. There is no kernel import in it, so the hook is the recompiler's: a
+   strong `PPC_FUNC(sub_8283C6C8)` that keeps the body's contract (return after a bounded
+   time, touch nothing) but parks the thread on a futex over the read-pointer word, which
+   the pump wakes after every publication (mid-walk since part 86, and at the walk's
+   end). Latency is the risk — the frame chain is pump -> R -> Draw Thread -> next submit
+   — so the park must be wake-on-write, not a timed sleep, and the timebase-timeout path
+   stays as written.
    Prediction: zero effect on this box (the control that must be boring), a whole core
    returned on the 4-core stand-in. Gate: the A5 kernel-order diff and the ring
    `truncated=0` gate, because a wait that wakes late is a desync.
