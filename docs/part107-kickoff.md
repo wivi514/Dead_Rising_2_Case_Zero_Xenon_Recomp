@@ -36,6 +36,22 @@ retraction of 363.
 5. **The pass extent census was blind from part 89 to part 106** (gotcha 530) and is
    fixed; the `pass: shadow cascade` class exists now.
 
+## §0b Added 2026-09-09, before part 107 starts — THE CPU PLAN, THE CLOCK CAP, THE WORKER FLOOR
+
+- **`docs/perf-plan-part107.md` IS THE PLAN FOR PART 107**: 60 fps minimum on a Ryzen 3
+  3100-class CPU (the operator's instruction). Its §1 is the stand-in (`taskset -c
+  0-3,8-11` + a 3.2 GHz cap), §2 the items in 4-core order, §3 the gates. Item 0 is a
+  fresh decomposition under the stand-in; nothing is priced before it.
+- **THE OPERATOR HAS CAPPED THIS BOX'S CPU AT 3200 MHz** (`sudo cpupower frequency-set -u
+  3200MHz`) for the stand-in. Every number taken on the box until further notice is at
+  3.2 GHz; the part-106 baselines were at stock (4654 MHz). **THE LAST ACTION OF PART
+  107 IS TO REMIND THE OPERATOR TO RESTORE IT: `sudo cpupower frequency-set -u 4654MHz`**
+  — they asked for that reminder explicitly. Put it in the closing message.
+- **The thread budget's floor now gives a 4-physical-core machine THREE workers** (was
+  two; operator instruction; `runtime/cpu/thread_budget.cpp`). `CZ_WORKERS=N` overrides.
+  Item 1 of the plan measures whether the third worker on an SMT sibling is a gain on
+  the stand-in.
+
 ## §1 Part 107 — autonomous, in order
 
 0. **The mirror's remaining gates.** (a) An operator session at the crowd is OWED before

@@ -197,7 +197,10 @@ mask; trust the microcode's own swizzles.
     half of it was vertex fetch over PCIe, and SHIPPED the store MIRROR on by default
     (crowd GPU 8.84 → 4.0 ms at 1080p; `CZ_VK_NO_STORE_MIRROR=1` the control and the
     FIRST picture bisection now); its §1 item 0 is the mirror's operator eye test and
-    czamd column, item 1 the CPU half of the target.** ~~It is
+    czamd column, item 1 the CPU half of the target — AND AS OF 2026-09-09 THAT HALF
+    HAS ITS OWN PLAN, `docs/perf-plan-part107.md` (60 fps minimum on a Ryzen 3
+    3100-class CPU; kickoff §0b). THE OPERATOR'S CPU IS CAPPED AT 3200 MHz FOR ITS
+    STAND-IN; REMIND THEM TO RESTORE 4654 MHz WHEN PART 107 CLOSES (kickoff §0b).** ~~It is
     `part106-kickoff.md` — the Steam Deck plan has been RUN on the dev box (log file,
     `--diag`, the feature table, gamescope measured); its §1 item 0 is the Windows
     compile and §1b item 0 the operator's rebuild-or-v1.0.3 decision~~ — part 106 ran
