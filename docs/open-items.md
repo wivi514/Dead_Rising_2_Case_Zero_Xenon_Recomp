@@ -3516,3 +3516,19 @@ Full record: `phase5-notes.md` §6co. R6 is FULFILLED — no outstanding capture
 
 Still open from the part-56/57/58 chain: the decal flicker (waiting on a sighting;
 F8 burst + CZ_VK_NO_PARALLEL_GUARD=1 A/B ready) and the doubled-slab watch (00q).
+
+## Item 0z — a killed zombie's body drawn as a BLACK, FACETED mesh (operator, 2026-09-09; NOT the mirror)
+
+Reported during part 106's mirror eye test: after a dismemberment kill (katana) or a kill
+by Bob, the corpse on the ground renders its torso as a black, faceted blob while the
+arm, hand and shoes are lit normally, for as long as it lies there
+(`~/DR2CZ-troubleshooting/play/p106_mirror_on/burst03_*`, frames 46909-46921; the F9 at
+47442 is a normal corpse for contrast). **Reproduced with `CZ_VK_NO_STORE_MIRROR=1`
+(`p106_mirror_off2`), so it predates the mirror** and is its own item. Shape: per-triangle
+shading differences on a black surface, i.e. wrong or flat normals, or a material/
+texture the corpse switches to on death that we render black — not a placement or
+stale-stream defect (the mesh is where it should be and moves with the ragdoll). Not
+every corpse: burst 2's body by the wall is normal. First instrument: the draw-ID pass
+(`CZ_VK_DRAW_ID`, F9) on a black corpse to name the draw, then its shader pair and
+textures against a capture of the same material in Xenia (gotcha: ask the oracle first —
+does Xenia draw the corpse black too?).
