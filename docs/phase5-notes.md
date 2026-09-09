@@ -21679,3 +21679,30 @@ each tick fed. Gate, the operator's session (`~/DR2CZ-troubleshooting/play/wheel
 60 SDL wheel events, every one a single step (so SDL is not doubling notches on this
 mouse), 60 presses fed, 60 releases carried, 60 of 60 releases on the tick after the
 press, 0 dropped as not-live. The operator: *"Yeah you fixed it."* Gotcha 538.
+
+### §6ey addendum 5 — the grab QTE's final key "refused" (2026-09-09, the third public report taken)
+
+Item 3 of 0aa. The operator's instruction: *"let's do the qte refusal but enable
+godmode and no death sequence"* (`SAFE=1 FLAGS="CHUCK GOD MODE,DISABLE DEATH SEQUENCE"`
+— the safe preset's third flag, zombies ignoring humans, would have prevented the grab).
+Session one: the prompt showed Q, three Q presses of 130-180 ms each reached the
+title's keyboard controller as source 17 (`CZ_KBM_WHEEL_TRACE` widened to vk 0x51),
+the pad packets carried no button in those frames, nothing happened. The grab's
+correct-button phase (`HudCorrectButtonGrapple` in the image) reads
+`COMMAND_PLAYER_MINIGAME_{A,B,X,Y}` (padmap: BUTTON_1..4 PRESSED), and our keyboard
+map is DR2 PC's, which binds those to S/D/A/W — WASD as the four face buttons — while
+our in-game chips draw the Y button as **Q** (A = SPACE, B = E, X = left mouse). The
+prompt was a lie: it showed the cap, the command was on W. `cpu/kbm_default_map.h`
+now binds MINIGAME_A/B/Y to SPACE/E/Q (X keeps KEY_A beside the mouse, which reaches
+it through the pad's X). Session two: the QTE rolled LMB, E and SPACE prompts, *"they
+all worked"*; Q was not rolled and stands on the same mechanism. Gotcha 539. A
+`kbmap.txt` override at the root replaces the whole default, so a player with one
+keeps DR2 PC's WASD.
+
+**And the F9 from that session is a NEW report** (`~/DR2CZ-troubleshooting/part108/
+tile-shadow/capture_023219.{ppm,png,pose}`, frame 23219 at 3440x1440): *"zombie close
+to screen is shadowed black and only from middle of screen"* — Chuck lit on the left
+half of the screen and black from the exact horizontal centre rightward, the zombie
+at the right edge black. This title renders left/right tiles (window scissors 0..640
+and 640..1280, offset −640 at 720p) and the seam is the tile boundary; only near
+actors are affected. Filed as `open-items.md` item 0ab, not taken in this part.

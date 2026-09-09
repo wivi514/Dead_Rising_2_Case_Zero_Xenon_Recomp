@@ -3533,6 +3533,32 @@ every corpse: burst 2's body by the wall is normal. First instrument: the draw-I
 textures against a capture of the same material in Xenia (gotcha: ask the oracle first —
 does Xenia draw the corpse black too?).
 
+## Item 0ab — NEAR actors black from the screen's horizontal CENTRE rightward (operator, 2026-09-09; long-standing)
+
+*"Another bug that has happened for a long time where zombie close to screen is
+shadowed black and only from middle of screen."* Evidence: the operator's F9 at frame
+23219, 3440x1440, during a grab (`~/DR2CZ-troubleshooting/part108/tile-shadow/
+capture_023219.{ppm,png,pose}` plus that frame's every resolve snapshot and its
+draw census): Chuck's jacket is lit on the left half of the screen and BLACK from the
+exact horizontal centre rightward — one mesh, one seam, at x = width/2 — and the
+zombie filling the right edge is black entire, while the crowd behind at mid-distance
+is lit on both halves. **The seam is the tile boundary**: this title renders in
+left/right halves (window scissors `0..640` / `640..1280`, window offset −640 at 720p;
+CLAUDE.md's constitution note), and something the near-field lighting reads is right
+for the first tile and wrong for the second — a screen-space lookup (shadow mask,
+light accumulation, a per-tile resolve) sampled with the first tile's window offset,
+or a per-tile constant we publish once. Only NEAR actors are affected, which points at
+the nearest shadow cascade or a near-only screen-space pass rather than the sun.
+First instruments, in order: (1) the snapshot set already captured — which resolve
+snapshot of frame 23219 carries a left/right asymmetry at the centre (a per-snapshot
+left-vs-right mean over the 8 near-field snapshots is a one-line script);
+(2) `CZ_VK_DRAW_ID` on the same pose to name the jacket's draw and its shader pair,
+then the pass extent census for that pass's scissors; (3) `CZ_PM4_NO_PREDICATION=1`
+is destructive and NOT the arm (phase5-notes §6v) — the arm is a 720p pose of the
+same scene, where the seam should sit at x=640 if it is the tile. Ask the oracle:
+does Xenia's B2 gameplay trace show a near zombie lit across the centre? (It does in
+every capture-E screenshot, so this is ours.) Not taken in part 108.
+
 ## Item 0aa — public player reports QUEUED for a later part (operator, 2026-09-09; Reddit)
 
 The operator handed over four screenshots of the v1.0.0/v1.0.1 threads with the
@@ -3569,7 +3595,11 @@ FIXED are listed at the end so nobody re-buys them. In the order they should be 
    the mousemap's KEY_1/KEY_3 ALTERNATION mean every other tap is the wrong key for the
    direction? Measure with `CZ_INPUT_TRACE=1` (edges and times) against the HUD item
    change; DR2 PC is the living reference for how many notches move one slot.
-3. **QTE final input refused on keyboard.** One player: mashing A/D worked, the closing
+3. ~~**QTE final input refused on keyboard.**~~ **DONE, part 108 the same evening
+   (`phase5-notes.md` §6ey addendum 5, gotcha 539)**: the grab's correct-button QTE
+   reads MINIGAME_A/B/X/Y and our map (DR2 PC's) had them on S/D/A/W while our chips
+   draw the buttons as SPACE/E/LMB/Q; the map now follows the art. Operator: LMB, E
+   and SPACE prompts *"all worked"*. ~~One player: mashing A/D worked, the closing
    "press Q" input was not accepted. Our map binds the in-game Y actions to KEY_Q
    (`release-github-plan.md` §6 addendum). Repro needs an operator at a QTE (the Katey
    Zombrex grab or the bike-frame delivery); check whether the final input is a Y press

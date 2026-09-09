@@ -738,14 +738,14 @@ void PostConversionFeed(PPCContext& ctx, uint8_t* base, uint32_t obj)
             else if (pressedThisBatch[ks.vk])
             {
                 carry.push_back(ks);               // its press was this tick: release next tick
-                if (wheelTrace && (ks.vk == 0x31 || ks.vk == 0x33))
+                if (wheelTrace && (ks.vk == 0x31 || ks.vk == 0x33 || ks.vk == 0x51))
                     fprintf(stderr, "[wheel] tick %llu: vk=%02X release CARRIED to the next tick\n",
                             (unsigned long long)tickNo, ks.vk);
                 continue;
             }
         }
         const uint16_t src = ks.vk < 256 ? g_vkToSrc[ks.vk] : 0;
-        if (wheelTrace && (ks.vk == 0x31 || ks.vk == 0x33))
+        if (wheelTrace && (ks.vk == 0x31 || ks.vk == 0x33 || ks.vk == 0x51))
             fprintf(stderr, "[wheel] tick %llu: vk=%02X %s -> source %u%s\n",
                     (unsigned long long)tickNo, ks.vk, down ? "DOWN" : "up", src,
                     live ? "" : " (not live: dropped)");

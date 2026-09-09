@@ -6176,3 +6176,12 @@ From phase C part 18 (the frame rate — and none of it was work):
     synthetic tap — `CZ_KBM_TEST_KEYS` included, which "proved the chain" — must
     STRADDLE the consumer's sampling period, and a chain proof that never checked the
     tick placement proved the queue, not the press. (part 108)
+
+539. **A prompt's key cap and the key bound to the command are two tables, and a player
+    presses the cap.** Our in-game button art draws the Y button as Q; our keyboard map
+    is DR2 PC's, whose minigame face buttons are WASD (MINIGAME_Y = KEY_W). The grab
+    QTE's correct-button phase showed Q, Q was bound to nothing in that context, and
+    the report read "the final Q input is refused on keyboard" — the mash before it
+    (stick X) was fine. The art is per BUTTON; a command bound to a different key than
+    its button's cap is a lie the player cannot see through. Bind by the cap, or draw
+    the cap from the binding — never maintain both by hand. (part 108)

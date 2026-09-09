@@ -150,7 +150,14 @@ document what the EDRAM stand-in does with it).
   to the next tick (`CZ_KBM_NO_TAP_SPLIT=1` control, `CZ_KBM_WHEEL_TRACE=1` witness).
   §6ey addendum 4, gotcha 538; 60 of 60 notches, *"Yeah you fixed it."*
   **OWED: the Windows leg** (SDL's wheel event granularity on Windows — the trace's
-  `steps=` per notch is the number to read), where SDL's XInput/WGI backend does the rumble
+  `steps=` per notch is the number to read),
+* **The grab QTE's "refused" final key** (0aa item 3): our map is DR2 PC's, whose
+  minigame face buttons are WASD; our chips draw Y as Q, so the prompt lied. The map
+  follows the art now (`cpu/kbm_default_map.h`); LMB/E/SPACE prompts *"all worked"*.
+  §6ey addendum 5, gotcha 539.
+* **NEW, not taken: near actors black from the screen's centre rightward** — the
+  operator's long-standing report with an F9; the seam is the tile boundary.
+  `open-items.md` item 0ab has the evidence and the three instruments in order. where SDL's XInput/WGI backend does the rumble
   (`windows-test-list` item 9). `docs/release-notes-v1.0.2.md` carries it; the notes
   do NOT yet carry parts 107-108's other items (the CPU work, 16:10, MSAA, the window
   follow) — write those bullets when the rebuild is packaged.

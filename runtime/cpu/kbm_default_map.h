@@ -44,10 +44,16 @@ static const char kKbmDefaultMap[] =
     "COMMAND_FRONTEND_GENACTION3( KEY_M, PRESSED, NONE, NONE, NONE)\n"
     "COMMAND_PLAYER_MINIGAME_OK( KEY_SPACE, PRESSED, NONE, NONE, NONE)\n"
     "COMMAND_PLAYER_MINIGAME_EXIT( KEY_E, PRESSED, NONE, NONE, NONE)\n"
-    "COMMAND_PLAYER_MINIGAME_A( KEY_S, PRESSED, NONE, NONE, NONE)\n"
-    "COMMAND_PLAYER_MINIGAME_B( KEY_D, PRESSED, NONE, NONE, NONE)\n"
+    // The minigame face buttons follow OUR in-game button art, not DR2 PC's WASD
+    // (part 108, the public "final Q refused" report): the grapple's correct-button
+    // QTE shows the Y glyph, which our chips draw as Q (SPACE for A, E for B, the
+    // left mouse button for X), and DR2 PC's KEY_W for MINIGAME_Y made the prompt a
+    // lie — the player pressed what it showed and nothing happened. X keeps DR2's
+    // KEY_A as a keyboard route beside the mouse, which reaches it through the pad.
+    "COMMAND_PLAYER_MINIGAME_A( KEY_SPACE, PRESSED, NONE, NONE, NONE)\n"
+    "COMMAND_PLAYER_MINIGAME_B( KEY_E, PRESSED, NONE, NONE, NONE)\n"
     "COMMAND_PLAYER_MINIGAME_X( KEY_A, PRESSED, NONE, NONE, NONE)\n"
-    "COMMAND_PLAYER_MINIGAME_Y( KEY_W, PRESSED, NONE, NONE, NONE)\n"
+    "COMMAND_PLAYER_MINIGAME_Y( KEY_Q, PRESSED, NONE, NONE, NONE)\n"
     "COMMAND_AI_VIEW_MAP( KEY_TAB, PRESSED, NONE, NONE, NONE)\n"
     "COMMAND_SKIP_SCRIPT( KEY_ENTER, PRESSED, NONE, NONE, NONE)\n"
     "COMMAND_SKIP_CINEMATIC( KEY_ESCAPE, PRESSED, KEY_SPACE, PRESSED, OR)\n"
