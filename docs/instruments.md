@@ -4000,6 +4000,16 @@ CZ_RUMBLE_TRACE=1  every request from the title (`[rumble] request #N L=.. R=..`
                    pad object under a 20-a-second budget with the overflow counted. The
                    budget is not optional: the first version printed on change and one
                    session wrote 248 GB (gotcha 537)
+CZ_KBM_NO_TAP_SPLIT=1  the control arm for the same-tick tap split (part 108, the "wheel
+                   takes two notches" report): the native KB/M feed carries a release
+                   whose press was in the same batch to the NEXT controller tick, because
+                   the feed writes levels the title samples once per tick and a press+
+                   release inside one tick is no press (gotcha 538). =1 feeds the batch as
+                   queued, the runtime as reported
+CZ_KBM_WHEEL_TRACE=1  each SDL wheel event (steps, the vk it taps) and what each tick fed
+                   for KEY_1/KEY_3: `DOWN -> source N`, `release CARRIED`, `up -> source N`,
+                   with `(not live: dropped)` when the keyboard controller was not the
+                   live device. Bounded by the wheel's own rate
 CZ_RUMBLE_TICK_HZ=N  the title's rumble manager tick (sub_82805A58: max the effects, set,
                    send, count every effect down ONE) runs at N Hz of real time instead of
                    once per frame. DEFAULT 30: effect durations are integer counts of the

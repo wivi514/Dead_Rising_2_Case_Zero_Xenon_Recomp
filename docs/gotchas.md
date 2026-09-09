@@ -6164,3 +6164,15 @@ From phase C part 18 (the frame rate — and none of it was work):
     a size watchdog (`~/DR2CZ-troubleshooting/part108/watched_play.sh`: kill at 2 GB,
     keep the head and tail). The 20/s budget then caught the probe's own defect: the
     per-motor key. (part 108)
+
+538. **A press and a release delivered to a LEVEL-sampled consumer in the same tick is
+    no press at all.** The native KB/M feed drains its whole keystroke queue every
+    controller tick and writes source LEVELS the title reads once per tick; a mouse
+    wheel notch queued press+release together, so the level went 1 then 0 inside one
+    tick and the title saw nothing — unless the two straddled a tick boundary, which
+    is the "takes two notches per item" a player reported (a race reads as a ratio).
+    The feed now carries a release whose press was in the same batch to the next tick
+    (60 of 60 notches in the operator's session, one SDL event each). The shape: any
+    synthetic tap — `CZ_KBM_TEST_KEYS` included, which "proved the chain" — must
+    STRADDLE the consumer's sampling period, and a chain proof that never checked the
+    tick placement proved the queue, not the press. (part 108)

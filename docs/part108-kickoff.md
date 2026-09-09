@@ -144,7 +144,13 @@ document what the EDRAM stand-in does with it).
   Series X pad, 94 level changes, every issue rc 0) — and then RE-TIMED: the title's
   effects are counts of 30 fps frames ticked per frame, so `cpu/rumble_guest.cpp` runs
   the title's rumble tick at 30 Hz of real time (`CZ_RUMBLE_TICK_HZ`, `=0` the
-  control); operator: *"Pretty good now"*. **OWED: the Windows leg,** where SDL's XInput/WGI backend does the rumble
+  control); operator: *"Pretty good now"*. **OWED: the Windows leg,**
+* **The mouse wheel's two-notches-per-item** (0aa item 2): press+release in one
+  controller tick is no press for a level-sampling title; the feed carries the release
+  to the next tick (`CZ_KBM_NO_TAP_SPLIT=1` control, `CZ_KBM_WHEEL_TRACE=1` witness).
+  §6ey addendum 4, gotcha 538; 60 of 60 notches, *"Yeah you fixed it."*
+  **OWED: the Windows leg** (SDL's wheel event granularity on Windows — the trace's
+  `steps=` per notch is the number to read), where SDL's XInput/WGI backend does the rumble
   (`windows-test-list` item 9). `docs/release-notes-v1.0.2.md` carries it; the notes
   do NOT yet carry parts 107-108's other items (the CPU work, 16:10, MSAA, the window
   follow) — write those bullets when the rebuild is packaged.

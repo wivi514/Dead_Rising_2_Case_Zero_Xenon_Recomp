@@ -699,17 +699,56 @@ void PostConversionFeed(PPCContext& ctx, uint8_t* base, uint32_t obj)
 
     // Key sources from the event queue — the same SetSource calls the title's
     // own (dormant) keystroke handler makes, including the modifier pairs.
+    // A TAP MUST STRADDLE TWO TICKS (part 108, the public "mouse wheel takes two
+    // notches per item" report). This feed drains the whole queue every tick and
+    // writes LEVELS, so a press and its release queued between two ticks — which is
+    // what a wheel notch is (NativeKbm_MouseWheel pushes both at once), and what
+    // CZ_KBM_TEST_KEYS pushes — set the source to 1 and back to 0 inside one tick,
+    // and the title, which reads the level once per tick, never sees the press.
+    // Whether a notch registered was then a race with the tick boundary. So: a
+    // release for a key pressed EARLIER IN THE SAME BATCH is carried to the next
+    // tick. A human tap (50 ms+) never fits in a 9 ms tick, so keyboard keys are
+    // unaffected in practice. `CZ_KBM_NO_TAP_SPLIT=1` is the control arm;
+    // `CZ_KBM_WHEEL_TRACE=1` prints the wheel events and what each tick fed.
+    static const bool noSplit = getenv("CZ_KBM_NO_TAP_SPLIT") != nullptr;
+    static const bool wheelTrace = getenv("CZ_KBM_WHEEL_TRACE") != nullptr;
+    static std::deque<Keystroke> carry;            // releases held for the next tick
+    static uint64_t tickNo = 0;
+    ++tickNo;
     std::deque<Keystroke> events;
     {
         std::lock_guard<std::mutex> lock(g_queueMutex);
         events.swap(g_srcQueue);
     }
+    if (!carry.empty())
+    {
+        events.insert(events.begin(), carry.begin(), carry.end());
+        carry.clear();
+    }
+    bool pressedThisBatch[256] = {};
     for (const Keystroke& ks : events)
     {
         if (ks.flags & 0x0004)
             continue;                              // repeat: level unchanged
         const bool down = (ks.flags & 0x0001) != 0;
+        if (!noSplit && ks.vk < 256)
+        {
+            if (down)
+                pressedThisBatch[ks.vk] = true;
+            else if (pressedThisBatch[ks.vk])
+            {
+                carry.push_back(ks);               // its press was this tick: release next tick
+                if (wheelTrace && (ks.vk == 0x31 || ks.vk == 0x33))
+                    fprintf(stderr, "[wheel] tick %llu: vk=%02X release CARRIED to the next tick\n",
+                            (unsigned long long)tickNo, ks.vk);
+                continue;
+            }
+        }
         const uint16_t src = ks.vk < 256 ? g_vkToSrc[ks.vk] : 0;
+        if (wheelTrace && (ks.vk == 0x31 || ks.vk == 0x33))
+            fprintf(stderr, "[wheel] tick %llu: vk=%02X %s -> source %u%s\n",
+                    (unsigned long long)tickNo, ks.vk, down ? "DOWN" : "up", src,
+                    live ? "" : " (not live: dropped)");
         if (src && live)
             SetSource(ctx, base, obj, src, down ? 1.0f : 0.0f, 0.0f);
         SetSource(ctx, base, obj, kSrcLShift, (ks.flags & 0x8) ? 1.0f : 0.0f, 0.0f);
@@ -1681,8 +1720,15 @@ void NativeKbm_MouseButtons(uint32_t mask)
 void NativeKbm_MouseWheel(int steps)
 {
     // DR2 PC's mousemap pairs every wheel binding with KEY_1/KEY_3 alternates;
-    // the map binds those keys, so a wheel step is a key tap.
+    // the map binds those keys, so a wheel step is a key tap. The tap's press and
+    // release are queued together; the per-tick feed carries the release to the
+    // tick after the press (see the feed) — before that, both landed in one tick
+    // and the title saw no press at all on about every other notch.
     const uint16_t vk = steps > 0 ? 0x33 : 0x31;   // '3' up / '1' down
+    static const bool wheelTrace = getenv("CZ_KBM_WHEEL_TRACE") != nullptr;
+    if (wheelTrace)
+        fprintf(stderr, "[wheel] SDL wheel steps=%d -> %d tap(s) of vk=%02X\n", steps,
+                std::abs(steps), vk);
     for (int i = std::abs(steps); i > 0; --i)
     {
         NativeKbm_PushKey(vk, 0, true, false, 0);

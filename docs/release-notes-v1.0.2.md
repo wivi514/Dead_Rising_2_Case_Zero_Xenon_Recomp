@@ -45,6 +45,8 @@ shader cache are reused.
   gave them whatever your frame rate. Any pad SDL drives with
   rumble support; the game's own vibration option still applies. Set `CZ_NO_RUMBLE=1`
   to switch it off.
+- **Mouse wheel: one notch, one item.** Scrolling through the inventory needed two
+  notches per step for some players; every notch counts now.
 - **Faster start-up after many sessions.** The runtime remembers small streamed textures
   it has seen (this is what keeps a certain gravel floor from rendering black), one file
   each — and that directory was being re-read file by file at every launch, one second

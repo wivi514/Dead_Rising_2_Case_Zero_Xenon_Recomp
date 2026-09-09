@@ -3558,8 +3558,12 @@ FIXED are listed at the end so nobody re-buys them. In the order they should be 
    controller handle is `g_controller` in `host/window.cpp`), 0..65535 from the guest's
    0..65535 words, with a duration that outlasts one guest poll. Verify with the
    `[kcall]` motor line against a felt pulse.~~ The operator promised it publicly.
-2. **Mouse wheel takes TWO notches to change the inventory item.** `NativeKbm_MouseWheel`
-   pushes a KEY_3 / KEY_1 press+release per SDL notch. First question: does the title's
+2. ~~**Mouse wheel takes TWO notches to change the inventory item.**~~ **DONE, part 108
+   the same evening (`phase5-notes.md` §6ey addendum 4, gotcha 538)**: the press and
+   release landed in ONE controller tick and the level-sampling title saw no press;
+   the feed now carries the release to the next tick (`CZ_KBM_NO_TAP_SPLIT=1` the
+   control). 60 of 60 notches in the operator's session; *"Yeah you fixed it."*
+   ~~`NativeKbm_MouseWheel` pushes a KEY_3 / KEY_1 press+release per SDL notch.~~ First question: does the title's
    keyboard controller see both edges in one poll and coalesce them (a tap whose press and
    release land in the same `XamInputGetKeystrokeEx` tick may count as no key), or does
    the mousemap's KEY_1/KEY_3 ALTERNATION mean every other tap is the wrong key for the

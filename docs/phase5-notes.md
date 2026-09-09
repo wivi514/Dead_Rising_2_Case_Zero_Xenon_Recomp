@@ -21660,3 +21660,22 @@ counted, keyed per pad object, and operator sessions run under
 `~/DR2CZ-troubleshooting/part108/watched_play.sh` (kill at 2 GB, keep head and tail).
 Gotcha 537. The three session logs are `~/DR2CZ-troubleshooting/play/rumble_test.log`,
 `rumble_probe2.log` and `rumble_fix.log`.
+
+### §6ey addendum 4 — the mouse wheel took two notches per item (2026-09-09, the second public report taken)
+
+Item 2 of `open-items.md` 0aa, the operator's next instruction the same evening. Read
+before launching: `NativeKbm_MouseWheel` pushes a KEY_3/KEY_1 press AND release into
+the keystroke queue at once, and the per-tick source feed (`native_kbm.cpp`, the
+`events.swap(g_srcQueue)` loop) drains the whole queue every controller tick and
+writes LEVELS — so the source went 1 then 0 inside one tick and the title, which
+reads the level once per tick, saw no press unless the two happened to straddle a
+tick boundary. A race reads as "every other notch".
+
+**Fix**: a release whose press was earlier in the same batch is carried to the next
+tick (`CZ_KBM_NO_TAP_SPLIT=1` the control arm). A human tap never fits in a 9 ms
+tick, so keyboard keys are unaffected in practice; `CZ_KBM_TEST_KEYS`'s synthetic
+taps now straddle too. `CZ_KBM_WHEEL_TRACE=1` prints each SDL wheel event and what
+each tick fed. Gate, the operator's session (`~/DR2CZ-troubleshooting/play/wheel_fix.log`):
+60 SDL wheel events, every one a single step (so SDL is not doubling notches on this
+mouse), 60 presses fed, 60 releases carried, 60 of 60 releases on the tick after the
+press, 0 dropped as not-live. The operator: *"Yeah you fixed it."* Gotcha 538.
