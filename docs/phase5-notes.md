@@ -21706,3 +21706,35 @@ half of the screen and black from the exact horizontal centre rightward, the zom
 at the right edge black. This title renders left/right tiles (window scissors 0..640
 and 640..1280, offset −640 at 720p) and the seam is the tile boundary; only near
 actors are affected. Filed as `open-items.md` item 0ab, not taken in this part.
+
+### §6ey addendum 6 — the "audio decoder stutter" report, priced (2026-09-09, 0aa item 6)
+
+The operator's instruction: *"just look at previous logs and check if it's too much or
+something is wrong with how we decode — I never got stutter from this; might have just
+been shader stutter and they thought it was this."* A player had reported regular
+stutter cured by `CZ_NO_XMA_DECODE=1`, with libavcodec's `Could not update timestamps
+for skipped samples` filling their log.
+
+**The decoder's price.** The XMA decode thread (`kernel/audio.cpp` `XmaDecodeThread`:
+sleep 1 ms, scan the 320 contexts under the mutex, decode what has valid input and
+free output) measured **2.8% of one core** over 60 s at a 7,756-draw crowd
+(`~/DR2CZ-troubleshooting/part108/xma_cpu/`, per-thread CPU from `/proc` by thread
+name, the DebugJump route headless), against the pump's 99.1% and the first worker's
+32.3%. In the part-107 whole-process `perf` profile, `libavcodec.so` is **0.31% of the
+process's cycles**. Nothing in six of today's operator sessions (80-250 s each) shows a
+decode refusal or an output underrun; the `>2x median` stutter share sat at 1.0-1.4%
+per session with the decoder on, the ordinary figure. **The decoder is not a stutter
+source at any core count this port targets**; the player's cure was most plausibly
+the first-session shader stutter (gotcha 508, fixed in v1.0.1) coinciding with a
+setting change, and an `[xma]` line every 30-40 ms in the log made the decoder the
+suspect.
+
+**The log line was real and is gone.** libavcodec logs that warning from its
+skip-samples path for every packet whose timestamp is unset; we never set one
+(4,089 lines in a 160 s session). `audio/xma_decoder.cpp` now gives the codec context
+a packet timebase of 1/sampleRate and each packet a pts of the samples decoded so far
+— metadata the decoder reads and nothing here consumes; the decoded samples are
+unchanged by construction (the skip-samples trim is applied either way; only the
+timestamp bookkeeping differs). 0 lines in the same route. The two audio threads are
+now NAMED (`cz-xma-decode`, `cz-audio-pump`), so every future per-thread table says
+what they cost.

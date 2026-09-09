@@ -3614,7 +3614,11 @@ FIXED are listed at the end so nobody re-buys them. In the order they should be 
    from a v1.0.2 build first — that file exists now for exactly this.
 5. **Chainsaw dismemberment "not working properly"** — KNOWN, engine-side, also in Case
    West; the operator is on it and has said so publicly. Related: item 0z (black corpse).
-6. **"Constant, regular stuttering" cured by `CZ_NO_XMA_DECODE=1`**, with
+6. ~~**"Constant, regular stuttering" cured by `CZ_NO_XMA_DECODE=1`**~~ **PRICED AND
+   CLOSED, part 108 (`phase5-notes.md` §6ey addendum 6)**: the decode thread is 2.8%
+   of one core at a 7,756-draw crowd and libavcodec 0.31% of the process's cycles;
+   no refusal or underrun in six sessions. Not a stutter source; the warning spam was
+   real (25-30 lines/s, unset packet timestamps) and is fixed. Was: with
    `[xma2 @ ...] Could not update timestamps for skipped samples` repeating in the
    console. v1.0.1's pre-warm chain fixed the SHADER stutter class; this report names
    the AUDIO decoder. Two things to check: (a) whether the ffmpeg message is on the pump

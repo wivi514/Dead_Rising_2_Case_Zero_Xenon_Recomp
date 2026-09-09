@@ -155,6 +155,10 @@ document what the EDRAM stand-in does with it).
   minigame face buttons are WASD; our chips draw Y as Q, so the prompt lied. The map
   follows the art now (`cpu/kbm_default_map.h`); LMB/E/SPACE prompts *"all worked"*.
   §6ey addendum 5, gotcha 539.
+* **The "audio decoder stutter" report** (0aa item 6): priced, not a stutter source
+  (2.8% of a core at the crowd; libavcodec 0.31% of cycles); the per-packet
+  `Could not update timestamps` log line fixed by giving packets a timestamp; the
+  audio threads named. §6ey addendum 6.
 * **NEW, not taken: near actors black from the screen's centre rightward** — the
   operator's long-standing report with an F9; the seam is the tile boundary.
   `open-items.md` item 0ab has the evidence and the three instruments in order. where SDL's XInput/WGI backend does the rumble

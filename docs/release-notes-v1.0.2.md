@@ -47,6 +47,9 @@ shader cache are reused.
   to switch it off.
 - **Mouse wheel: one notch, one item.** Scrolling through the inventory needed two
   notches per step for some players; every notch counts now.
+- **A quieter log.** The audio decoder no longer writes a warning line thirty times a
+  second; those lines were harmless (the decoder costs about 3% of one core) but they
+  made it look like the culprit for stutter that came from elsewhere.
 - **Faster start-up after many sessions.** The runtime remembers small streamed textures
   it has seen (this is what keeps a certain gravel floor from rendering black), one file
   each — and that directory was being re-read file by file at every launch, one second

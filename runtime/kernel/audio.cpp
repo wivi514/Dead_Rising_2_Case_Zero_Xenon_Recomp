@@ -54,6 +54,9 @@
 #include <cstring>
 #include <mutex>
 #include <thread>
+#if !defined(_WIN32) && !defined(__APPLE__)
+#include <pthread.h>
+#endif
 #include <vector>
 
 #include <xbox.h>
@@ -881,6 +884,11 @@ done:
 
 void XmaDecodeThread()
 {
+    // Named so a per-thread CPU table (tools/part107_standin_probe.sh, top -H) can
+    // say what this thread costs — the part-107 probe listed 48 unnamed tids.
+#if !defined(_WIN32) && !defined(__APPLE__)
+    pthread_setname_np(pthread_self(), "cz-xma-decode");
+#endif
     uint64_t tick = 0;
     bool declined[kXmaContextCount] = {};
     while (g_xmaDecodeRunning.load())
@@ -984,6 +992,9 @@ void XmaDecodeThread()
 // thread F80000E8 waits on 3.
 void RenderDriverPump()
 {
+#if !defined(_WIN32) && !defined(__APPLE__)
+    pthread_setname_np(pthread_self(), "cz-audio-pump");
+#endif
     // CPU 4. Arbitrary and labelled as such: nothing in either capture says which
     // hardware thread the 360 routes the audio driver to, and unlike the graphics
     // ISR (CPU 2, which the console documents) there is no number to match. It is

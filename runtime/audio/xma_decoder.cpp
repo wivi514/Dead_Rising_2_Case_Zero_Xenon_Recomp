@@ -69,6 +69,7 @@ struct XmaDecoder
     AVPacket* pkt = nullptr;
     AVFrame* frame = nullptr;
     int channels = 2;
+    int64_t samplesOut = 0;   // packet pts, in samples (see Xma_Create)
 };
 
 bool Xma_CodecAvailable()
@@ -102,6 +103,12 @@ XmaDecoder* Xma_Create(int channels, int sampleRate)
     }
     d->pkt = av_packet_alloc();
     d->frame = av_frame_alloc();
+    // Packets carry a timestamp in samples (part 108). Without one, libavcodec's
+    // skip-samples path logs "Could not update timestamps for skipped samples" for
+    // EVERY packet — 25-30 lines a second in a play session (4,089 in 160 s), a
+    // public report's "spam" that a player read as the cause of their stutter. The
+    // timestamp is not consumed by anything here; it exists so the decoder has one.
+    d->ctx->pkt_timebase = AVRational{ 1, sampleRate };
     return d;
 }
 
@@ -120,11 +127,16 @@ int Xma_DecodePacket(XmaDecoder* d, const uint8_t* packet, size_t size,
     if (!d || !d->ctx) return -1;
     d->pkt->data = const_cast<uint8_t*>(packet);
     d->pkt->size = (int)size;
+    d->pkt->pts = d->samplesOut;          // see Xma_Create: a timestamp, in samples
+    d->pkt->dts = d->samplesOut;
     const size_t before = out.size();
     if (avcodec_send_packet(d->ctx, d->pkt) < 0)
         return -1;
     while (avcodec_receive_frame(d->ctx, d->frame) == 0)
+    {
+        d->samplesOut += d->frame->nb_samples;
         AppendFrame(d->frame, d->ctx->ch_layout.nb_channels, out);
+    }
     return (int)(out.size() - before);
 }
 
