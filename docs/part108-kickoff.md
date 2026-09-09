@@ -99,7 +99,7 @@ document what the EDRAM stand-in does with it).
     cz_settings.txt, an MSAA row in the panel (row 5, starred until relaunch, footer
     "MSAA APPLIES AT THE NEXT LAUNCH") and in the launcher; `CZ_VK_MSAA` wins over it.
     Headless gate: file 0 → single-sample, file 0 + env 2 → 2x, file 4 → 4x, file 7 →
-    refused to 2x, each announced with its source. The panel's look is the operator's.
+    refused to 2x, each announced with its source. Operator-verified the same evening: "it is there perfect".
 
 0. **Re-measure the 4-vs-8-core gap WITHOUT the scan** (two runs each, capped): what
    remains is the real contention number for §0.4's item, and it decides whether the
