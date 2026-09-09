@@ -192,6 +192,15 @@ mask; trust the microcode's own swizzles.
     read `phase5-notes.md` §6ba before following anything in it.
   - **THE LIVE HAND-OFF IS ALWAYS THE HIGHEST-NUMBERED `partNN-kickoff.md`**, and it
     supersedes every earlier kickoff on "where the port is". **IT IS
+    `part108-kickoff.md` — part 107 ran the CPU plan on the calibrated 4-core stand-in:
+    the Draw Thread's FENCE wait (not the read pointer — retracted, gotcha 533) parks on
+    a futex (`CZ_FENCE_PARK=0` the control; a frame-time null, kept ON), the third
+    worker is a null, and OUR native-KB/M glyph scan was found burning a full core for
+    137-150 s of EVERY run since part 92 (gotcha 534) — fixed (`CZ_KBM_SCAN_LEGACY=1`
+    the control): −5.7% frame-weighted on the stand-in, −1.5/−1.8 ms at the crowd,
+    every crowd window under 16.7 ms, −1.41 ms at the crowd on 16 cpus. `docs/perf-plan-part107.md` §2b and
+    `phase5-notes.md` §6ex are the record. THE OPERATOR'S CPU CAP (3200 MHz) MAY STILL
+    BE SET — kickoff §0 item 0.** ~~It was
     `part107-kickoff.md` — PERFORMANCE IS LIVE AGAIN with a TARGET (60 fps locked at
     1080p on a GTX 1060); part 106 decomposed the GPU frame for the first time, found
     half of it was vertex fetch over PCIe, and SHIPPED the store MIRROR on by default
@@ -200,7 +209,7 @@ mask; trust the microcode's own swizzles.
     czamd column, item 1 the CPU half of the target — AND AS OF 2026-09-09 THAT HALF
     HAS ITS OWN PLAN, `docs/perf-plan-part107.md` (60 fps minimum on a Ryzen 3
     3100-class CPU; kickoff §0b). THE OPERATOR'S CPU IS CAPPED AT 3200 MHz FOR ITS
-    STAND-IN; REMIND THEM TO RESTORE 4654 MHz WHEN PART 107 CLOSES (kickoff §0b).** ~~It is
+    STAND-IN; REMIND THEM TO RESTORE 4654 MHz WHEN PART 107 CLOSES (kickoff §0b).~~ ~~It is
     `part106-kickoff.md` — the Steam Deck plan has been RUN on the dev box (log file,
     `--diag`, the feature table, gamescope measured); its §1 item 0 is the Windows
     compile and §1b item 0 the operator's rebuild-or-v1.0.3 decision~~ — part 106 ran
@@ -1089,7 +1098,39 @@ ground is and that PERFORMANCE IS PARKED. (This
 line has now named the wrong plan TWICE — the two-live-pointers defect the block-rotation note at the bottom of this file
 describes, and the reason that note asks for the rule and not just the name; gotcha 13.)
 
-Where the port is, as of 2026-09-08 (**PART 106 — PERFORMANCE IS LIVE AGAIN WITH A
+Where the port is, as of 2026-09-09 (**PART 107 — THE CPU HALF OF THE 60 FPS TARGET ON A
+CALIBRATED 4-CORE STAND-IN, AND THE BUSIEST THREAD IN THE PROCESS WAS OURS.** The
+operator's instruction: *"Prepare the plan so we can run at minimum 60 fps on a cpu
+equivalent of ryzen 3100."* `docs/perf-plan-part107.md` is the plan and the record
+(§1.1-§1.2 the stand-in, §2b the items), `phase5-notes.md` §6ex the narrative, gotchas
+533-535, **`docs/part108-kickoff.md` THE LIVE HAND-OFF.** The stand-in is `taskset -c
+0-3,8-11` at a 3.2 GHz cap — **the cap may still be set on the operator's box; check
+`scaling_max_freq` first.** Its crowd read 16.6-17.4 ms (57-60 fps) before the part;
+four cores against eight at the same clock +32%. Item 1 (a third worker on 4c/8t):
+a null. Item 2 (the Draw Thread's wait, parked): built ON, `cpu/fence_wait.cpp`,
+`CZ_FENCE_PARK=0` the control — the polled word is the FENCE counter, not the read
+pointer (retracted in place, one traced run), the park engages (6.5/frame, 0 MISSED)
+and frame time is a NULL on both boxes; gates A5 exit 0, `truncated=0`, sync validation
+0 hazards / poison 30. **The finding: `tools/part107_standin_probe.sh`'s whole-process
+profile put the native-KB/M glyph scan (`DeviceWorker`, part 92) at 99.4% of a core for
+137-150 s from the first input poll — in EVERY crowd run from part 92 to part 106**, the
+crowd frame ~0.9 ms lighter the moment it ended. Fixed (aligned multi-probe pass: 26 of
+26 glyphs in 96 ms; rarest-byte memchr; physical arena first; low priority; START/END
+lines): **−5.7% frame-weighted, monotone, −1.49/−1.83 ms at the crowd on the stand-in
+(16.4 → 15.0 ms, 17.9 → 16.0), crowd windows under 16.7 ms 67% → 100%, p99 20.6 → 19.4;
+−1.41 ms at the crowd on 16 cpus (interim build).**
+`CZ_KBM_SCAN_LEGACY=1` is the control. Owed: the 4-vs-8 gap re-measured without the
+scan, the p99, the Windows compile (czwin unreachable), the artifact rebuild):
+
+* **A wait's mechanism is named by the values it polls** (gotcha 533): part 51's "ring
+  read-pointer spin" was the fence wait; the classify-every-episode counter caught it.
+* **A helper thread from a feature part is invisible to every phase profile after it**
+  (gotcha 534); the +32% core-count delta was measured with it running on both sides
+  (gotcha 535) and is owed a re-measurement.
+* Item 3(a) of the plan (bulk register runs) already existed; the walk's cost is the
+  per-packet dispatch.
+
+Where the port was, as of 2026-09-08 (**PART 106 — PERFORMANCE IS LIVE AGAIN WITH A
 TARGET, AND THE GPU FRAME IS HALVED.** The operator's instruction closing the Deck work:
 *"search for way to improve performance on linux that could also work on all platform
 this game should be atleast playable 60fps locked at 1080p on gtx 1060."* Three new
@@ -1109,8 +1150,8 @@ retracted in part — its arena half stands; gotchas 530-532; the pass extent ce
 been blind since part 89 and is fixed. On the project's own scaling a GTX 1060 goes from
 ~34 to ~14-15 ms at the crowd — the GPU half of the target on paper; **the CPU half
 (10.6 ms of pump time here at the crowd) is part 107's item 1.** `docs/perf-plan-part106.md`
-is the plan and record, `phase5-notes.md` §6ew the narrative, **`docs/part107-kickoff.md`
-IS THE LIVE HAND-OFF.** Owed: the operator's eye at the crowd with the mirror (a wrong
+is the plan and record, `phase5-notes.md` §6ew the narrative, `docs/part107-kickoff.md`
+WAS the live hand-off (superseded by `part108-kickoff.md`). Owed: the operator's eye at the crowd with the mirror (a wrong
 generation stamp is a one-frame stale mesh no headless number sees), czamd's GPU column,
 a real 1060, and the artifact rebuild that now carries both the log file and the mirror):
 
@@ -1123,38 +1164,8 @@ a real 1060, and the artifact rebuild that now carries both the log file and the
   every 1080p projection from before this part is a fetch-bound reading.** Re-derive
   from §6ew before quoting one.
 
-Where the port was, as of 2026-09-08 (**PART 105 — THE STEAM DECK PLAN EXECUTED ON THE
-DEV BOX: every build now writes `cz_runtime.log` beside its data root (a descriptor-level
-stderr tee, `host/log_file.cpp`, drained on every exit path incl. the crash reporter —
-byte-identical to the console over a 15,147-line boot and through a SIGSEGV) and has
-`cz_runtime --diag` (OS/glibc/Wine version, session vars, thread budget, root, settings,
-SDL drivers + displays, every Vulkan device with DRIVER NAME AND VERSION and the
-requirements-table verdict); the renderer's required features are ONE TABLE
-(`kFeatureReqs`) and a missing one ends bring-up NAMED with the driver, not `VkResult -7`;
-gamescope is detected and MEASURED — it strips `WAYLAND_DISPLAY`/`SDL_VIDEODRIVER` from
-the child, so the x11 path is the only one and it presents at ~165 fps here (plan H5
-closed); H4 priced (disc shader build 12.5 s on a 4c/8t mask at desktop clocks). Gotchas
-525-528, `steam-deck-plan.md` §6 the item record, `phase5-notes.md` §6ev, a player guide
-`docs/steam-deck-testing.md` + issue templates, README rows. **`docs/part106-kickoff.md`
-IS THE LIVE HAND-OFF.** The Windows half was gated the same evening on czwin (file ==
-console by hash for `--diag` and a renderer boot, after a text-mode fix — gotcha 529;
-Wine 11 names itself in `--diag`). Owed: an AMD `--diag` on czamd (unreachable), the
-ARTIFACT REBUILD (v1.0.2's `dist/` is at 482b47f and carries none of this — a Deck
-tester needs a build WITH the log; operator decision: rebuild v1.0.2 or call it v1.0.3),
-the operator's live-USB RADV test (H3, the one that matters), the first Deck report**):
-
-* **`shaderInt64` stayed REQUIRED by census — Int64 in 450 of 450 translated shaders —
-  after a scanner with the wrong enum constant read 0 of 450** (gotcha 528: print the
-  distribution, not the bit). `fillModeNonSolid` and `depthClamp` became optional (no
-  consumer). The MSAA sample-count walk now tries the other count instead of only halving.
-* **The `SIBLING MISS` lines under Wine were NOT a Wine difference** — they print on the
-  Linux boot too; part 104 grepped the wrong log. Retracted in the plan's §6.
-* **The tee's identity gate FAILED on its first run** (console 5,828 bytes short: `End()`
-  closed the saved stderr under the copier thread) — which is the evidence it can fail
-  (gotcha 527). Packaging scripts strip `cz_runtime.log*`/`cz_diag.txt*` from the stage.
-
 **Older per-part status blocks (parts 28-54, the superseded mid-part-44 closure and the
-superseded MID-PART-46 block) moved to `docs/port-history.md`, NOW INCLUDING PARTS 60-91's, 97's, 98's, 99's, 100's, 101's, 103's AND 104's** — part 106 moved part 104's out in the same commit that added its own block, part 105 moved part 103's out in the same commit that added its own block, part 104 moved part 101's out in the same commit that added its own block, part 103 moved part 100's out in the same commit that added its own block, part 101 moved parts 98's and 99's out in the same commit that added its own block, part 99 moved part 97's out in the same commit that added its own block, part 98 moved part 91's out in the same commit that added its own block, part 91 moved part 89's out in the same commit that added its own block, part 90 moved part 88's out in the same commit that added its own block, part 89 moved part 87's out in the same commit that added its own block, part 88 moved part 86's out in the same commit that added its own block, part 87 moved part 85's out in the same commit that added its own block, part 86 moved part 84's out in the same commit that added its own block, part 85 moved part 83's out in the same commit that added its own block, part 84 moved part 82's out in the same commit that added its own block, part 83 moved part 81's out in the same commit that added its own block, part 82 moved part 80's out in the same commit that added its own block, part 78 moved part 76's out in the same commit that added its own block, part 76 moved part 74's out in the same commit that added its own block, part 74 moved part 72's out in the same commit that added its own block, part 73 moved part 71's out in the same commit that added its own block, part 72 moved part 70's out in the same commit that added its own block, part 71 moved part 69's out in the same commit that added its own block, part 70 moved part 68's out in the same commit that added its own block, part 69 moved part 67's out in the same commit that added its own block, part 68 moved part 66's out in the same commit that added its own block, part 67 moved part 65's out the same way, part 65 moved part 63's out the same way, part 64 moved parts 61/62's out the same way, part 63 moved part 60's out the same way, part 61 moved part 59's out the same way, part 59 moved part 57's out the same way, part 57 moved part 55's out the same way, part 55 moved part 53's
+superseded MID-PART-46 block) moved to `docs/port-history.md`, NOW INCLUDING PARTS 60-91's, 97's, 98's, 99's, 100's, 101's, 103's, 104's AND 105's** — part 107 moved part 105's out in the same commit that added its own block, part 106 moved part 104's out in the same commit that added its own block, part 105 moved part 103's out in the same commit that added its own block, part 104 moved part 101's out in the same commit that added its own block, part 103 moved part 100's out in the same commit that added its own block, part 101 moved parts 98's and 99's out in the same commit that added its own block, part 99 moved part 97's out in the same commit that added its own block, part 98 moved part 91's out in the same commit that added its own block, part 91 moved part 89's out in the same commit that added its own block, part 90 moved part 88's out in the same commit that added its own block, part 89 moved part 87's out in the same commit that added its own block, part 88 moved part 86's out in the same commit that added its own block, part 87 moved part 85's out in the same commit that added its own block, part 86 moved part 84's out in the same commit that added its own block, part 85 moved part 83's out in the same commit that added its own block, part 84 moved part 82's out in the same commit that added its own block, part 83 moved part 81's out in the same commit that added its own block, part 82 moved part 80's out in the same commit that added its own block, part 78 moved part 76's out in the same commit that added its own block, part 76 moved part 74's out in the same commit that added its own block, part 74 moved part 72's out in the same commit that added its own block, part 73 moved part 71's out in the same commit that added its own block, part 72 moved part 70's out in the same commit that added its own block, part 71 moved part 69's out in the same commit that added its own block, part 70 moved part 68's out in the same commit that added its own block, part 69 moved part 67's out in the same commit that added its own block, part 68 moved part 66's out in the same commit that added its own block, part 67 moved part 65's out the same way, part 65 moved part 63's out the same way, part 64 moved parts 61/62's out the same way, part 63 moved part 60's out the same way, part 61 moved part 59's out the same way, part 59 moved part 57's out the same way, part 57 moved part 55's out the same way, part 55 moved part 53's
 out in the same commit that added its own, which is what the rule below asks for. — CLAUDE.md keeps only the
 live part and one part back, per the 2026-08-08 split's rule, and **part 53 moved part
 51's out in the same commit that added its own**, which is what the rule below asks for.

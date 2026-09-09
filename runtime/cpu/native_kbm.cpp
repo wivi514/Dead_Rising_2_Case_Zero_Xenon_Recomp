@@ -128,8 +128,9 @@ namespace
 // the moment it ended. So every crowd number since part 92 was taken with a memory
 // sweep running on a core beside the pump, and the 4-core stand-in's "contention"
 // carried it too. The legacy finder stays behind CZ_KBM_SCAN_LEGACY=1 as the
-// same-binary control arm; the default is Horspool, which skips up to needleLen
-// bytes per probe on a mismatch and never runs a full memcmp on a stray first byte.
+// same-binary control arm; the default anchors memchr on the needle's RAREST byte
+// (below), and the glyphs are found by a 64-aligned multi-probe pass before any
+// per-probe sweep runs at all (ScanAligned64).
 const uint8_t* FindBytesLegacy(const uint8_t* hay, size_t hayLen,
                                const uint8_t* needle, size_t needleLen)
 {
@@ -155,10 +156,15 @@ bool ScanLegacy()
     return legacy;
 }
 
-// Boyer-Moore-Horspool. The bad-character table is built per call (256 entries,
-// nothing against a haystack of hundreds of megabytes) and the comparison runs from
-// the needle's LAST byte, so a window whose last byte is absent from the needle
-// advances by the whole needle length.
+// The default finder: memchr on the needle's RAREST byte, then one memcmp per hit.
+// The legacy version anchored on the FIRST byte, which for texel and header data is
+// usually 0x00 or 0xFF and hits every few bytes; Horspool was tried in between and
+// measured 0.2-0.4 GB/s on the same data (texel bytes defeat its skip table). The
+// anchor is chosen by counting the needle's own bytes — the byte value that occurs
+// once in the needle and is neither 0x00 nor 0xFF is very unlikely to be dense in the
+// haystack — and memchr runs at memory speed, so a 512 MB range costs tens of
+// milliseconds against 137 s for the first version. The heuristic can only cost
+// speed, never a hit: every candidate is still confirmed by a full memcmp.
 const uint8_t* FindBytes(const uint8_t* hay, size_t hayLen,
                          const uint8_t* needle, size_t needleLen)
 {
@@ -166,20 +172,34 @@ const uint8_t* FindBytes(const uint8_t* hay, size_t hayLen,
         return FindBytesLegacy(hay, hayLen, needle, needleLen);
     if (needleLen == 0 || hayLen < needleLen)
         return nullptr;
-    size_t skip[256];
-    for (size_t& v : skip)
-        v = needleLen;
-    for (size_t i = 0; i + 1 < needleLen; ++i)
-        skip[needle[i]] = needleLen - 1 - i;
-    const uint8_t last = needle[needleLen - 1];
-    const uint8_t* p = hay;
-    const uint8_t* end = hay + hayLen - needleLen;   // last valid window start
-    while (p <= end)
+    unsigned hist[256] = { 0 };
+    for (size_t i = 0; i < needleLen; ++i)
+        ++hist[needle[i]];
+    size_t anchor = 0;
+    unsigned best = ~0u;
+    for (size_t i = 0; i < needleLen; ++i)
     {
-        const uint8_t c = p[needleLen - 1];
-        if (c == last && std::memcmp(p, needle, needleLen - 1) == 0)
-            return p;
-        p += skip[c];
+        const uint8_t c = needle[i];
+        // 0x00 and 0xFF are the two values dense in almost any binary haystack; give
+        // them a penalty so they win only when the needle has nothing else.
+        const unsigned score = hist[c] + ((c == 0x00 || c == 0xFF) ? 64u : 0u);
+        if (score < best)
+        {
+            best = score;
+            anchor = i;
+        }
+    }
+    const uint8_t a = needle[anchor];
+    const uint8_t* p = hay + anchor;
+    const uint8_t* end = hay + hayLen - needleLen + anchor + 1;   // one past the last anchor
+    while (p < end)
+    {
+        p = static_cast<const uint8_t*>(std::memchr(p, a, size_t(end - p)));
+        if (!p)
+            return nullptr;
+        if (std::memcmp(p - anchor, needle, needleLen) == 0)
+            return p - anchor;
+        ++p;
     }
     return nullptr;
 }
@@ -1174,8 +1194,15 @@ void ScanForStrBank(uint8_t* base)
     if (g_swapStrings.empty())
         return;
     g_bankAddrs.clear();
+    const auto t0 = std::chrono::steady_clock::now();
+    // The physical arena first, and the two virtual ranges only if it held nothing:
+    // the title's heap lives in the physical arena here (the bank has been found at
+    // A336A500 in every run since part 92), and part 107 measured the three-range
+    // sweep at 11 s of a core with nothing in the last two ranges.
     for (const Range& r : kScanRanges)
     {
+        if (r.lo != 0xA0000000u && !g_bankAddrs.empty())
+            break;
         const uint8_t* p = base + r.lo;
         size_t left = r.hi - r.lo;
         while (left >= g_bankHdr.size())
@@ -1195,6 +1222,10 @@ void ScanForStrBank(uint8_t* base)
             p = hit + 1;
         }
     }
+    fprintf(stderr, "[kbm] device-follow scan: string-bank pass %zu found in %.1f ms\n",
+            g_bankAddrs.size(),
+            std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0)
+                .count());
     if (g_bankAddrs.empty())
         fprintf(stderr, "[kbm] device-follow scan: string bank NOT found — "
                         "prompt wording stays as booted this round\n");
@@ -1444,7 +1475,8 @@ void DeviceWorker(uint8_t* base)
             // the first version's at 150 s (see FindBytes). A scan is announced at
             // its START too, so a log can place it against the [fps] windows.
             fprintf(stderr, "[kbm] device-follow scan: START (%s finder, %s)\n",
-                    ScanLegacy() ? "legacy memchr+memcmp" : "Horspool",
+                    ScanLegacy() ? "legacy first-byte memchr+memcmp"
+                                 : "aligned pass + rarest-byte memchr",
                     scannedOnce ? "physical arena only" : "every range");
             const auto t0 = std::chrono::steady_clock::now();
             ScanForGlyphs(base, scannedOnce);   // full sweep once, then physical-only

@@ -1,6 +1,11 @@
 # Part 107 kickoff — the hand-off from part 106 (2026-09-08)
 
-**THE LIVE HAND-OFF.** It supersedes `part106-kickoff.md` on "where the port is"; that
+**EXECUTED — `part108-kickoff.md` is the live hand-off as of 2026-09-09.** Its §0b was run
+(the stand-in calibrated, the worker floor measured as a null, the CPU plan's items 0-2
+executed) and its §1 item 1 is `perf-plan-part107.md` §2b. Kept as the record of where
+part 107 started.
+
+**~~THE LIVE HAND-OFF.~~** It supersedes `part106-kickoff.md` on "where the port is"; that
 file's §1 item 0 (the Windows compile) was done in part 105 and its §1b item 0 (rebuild
 v1.0.2 or call it v1.0.3) is now joined by a much larger reason to rebuild.
 

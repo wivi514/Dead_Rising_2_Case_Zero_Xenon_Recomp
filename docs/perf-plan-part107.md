@@ -202,6 +202,16 @@ Order is by expected milliseconds ON A 4-CORE BOX, which is not this box's order
    pipeline warm (async since part 98). A locked 60 is a p99 claim; item 0's trace must
    carry `texUploads` and the band table's texture-upload row is the gate.
 
+8. **(ADDED BY ITEM 0's PROFILE, 2026-09-09) The native-KB/M glyph scan** —
+   `cpu/native_kbm.cpp`'s `DeviceWorker`, 99.4% of a core for 137-150 s from the first
+   input poll in every run since part 92 (§2b's thread table; `phase5-notes.md` §6ex
+   §2, §4). Not a plan item because no plan had ever read the thread table. Fixed and
+   measured in this part: `CZ_KBM_SCAN_LEGACY=1` the control; the scan 0.122 s end to end
+   from 137-150 s; −5.7% frame-weighted on the stand-in, monotone, −1.49/−1.83 ms at
+   the crowd (16.44 → 14.95, 17.86 → 16.03), p99 20.6 → 19.4, every crowd window under
+   16.7 ms; −1.41 ms at the crowd on 16 cpus (interim build). The largest item of the
+   part, and it was in nobody's table (§6ex closing addendum).
+
 ## §2b. What the items measured (2026-09-09, the record; §5 of `phase5-notes.md` §6ex is the narrative)
 
 ### Item 0 — the decomposition under the stand-in (`tools/part107_standin_probe.sh`, `~/DR2CZ-troubleshooting/part107/probe_{spin,park}.*`)

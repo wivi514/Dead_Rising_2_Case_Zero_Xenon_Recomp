@@ -6112,3 +6112,30 @@ From phase C part 18 (the frame rate — and none of it was work):
      dead fragment stage no longer consumes. Read a null-shader arm as "and whatever the
      compiler could delete once that stage was dead", never as the stage's own cost.
 
+533. **A WAIT'S MECHANISM IS NAMED BY THE VALUES IT POLLS, NOT BY THE SHAPE OF ITS LOOP.**
+     Part 51 read the Draw Thread's spin as "the ring read-pointer wait" from the loop's
+     shape and a plausible word, two parts repeated it, and part 107 built a futex park
+     on it — every park timed out. One bounded trace of the polled ADDRESS and its VALUES
+     (BC739A00, climbing by ones while the cursor sat at 0x460E) named the fence word in
+     one run. Rule: before parking, waking or optimising any guest spin, print what it
+     polls for a few episodes, and give the mechanism a counter that classifies EVERY
+     episode by how it ended (ready / spin / woken / timed-out / MISSED) — that counter
+     is the engagement gate and it is what refuted the first draft.
+
+534. **A HELPER THREAD ADDED IN A FEATURE PART IS INVISIBLE TO EVERY PHASE PROFILE AFTER
+     IT, AND A WHOLE-PROCESS PROFILE FINDS IT IN ONE RUN.** The native-KB/M glyph scan
+     (part 92) was the busiest thread in the process — 99.4% of a core for 137-150 s from
+     the first input poll — in every crowd measurement from part 92 to part 106, because
+     every one of those read the pump's phases and none read the THREAD table. Its cause
+     was one line ("the first byte is selective": memchr on the needle's first byte, a
+     memcmp at every hit). Rule: after any part that adds a thread, run the whole-process
+     probe once and read the thread table first; give every sweep a START and an END line
+     so a log places it against the frame windows without a profile.
+
+535. **A "CONTENTION" NUMBER TAKEN WITH AN UNKNOWN THREAD RUNNING IS THAT THREAD'S NUMBER
+     UNTIL PROVEN OTHERWISE.** Part 107 measured four cores against eight at +32% and
+     wrote it down as SMT contention (plan §1.2) before the profile showed a full core of
+     memory sweep on both sides of the comparison. The number is real; its attribution
+     was not. Rule: attribute a machine-shape delta only after the thread table of BOTH
+     arms is read — a delta between core counts scales with whatever is busy, not with
+     what you assumed was busy.

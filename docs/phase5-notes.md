@@ -21356,3 +21356,109 @@ on paper and the CPU half (10.6 ms of pump time here at the crowd; 1.3-1.6x that
 1060 owner's CPU) is the next board. Owed: the operator's eye at the crowd (a wrong
 generation stamp is a one-frame stale mesh no headless number sees), czamd's GPU column
 (the nearest GPU-bound box), and a real 1060.
+
+## §6ex — Part 107: the CPU half on a 4-core stand-in — the Draw Thread's wait parked (a null), and OUR OWN glyph scan found burning a core in every run since part 92 (2026-09-09)
+
+**The operator's instruction:** *"Prepare the plan so we can run at minimum 60 fps on a
+cpu equivalent of ryzen 3100."* `docs/perf-plan-part107.md` is the plan and carries the
+record (§1.1, §1.2, §2b); this is the narrative. The stand-in is `taskset -c 0-3,8-11`
+(four physical cores and their SMT siblings) at a 3.2 GHz cap the operator set with
+`cpupower` — **it is still set as this is written; restoring 4654 MHz is the last line of
+the part.** Every number below is this Ryzen 7 5700 under that mask and cap, at 1080p,
+mirror on, on the operator's crowd route (`tools/part80_crowdroute.sh`).
+
+### §1. The stand-in calibrated (plan §1.1-§1.2)
+
+Two campaigns left running at the end of part 106 were read first. Four capped cores
+hold the crowd at **16.6-17.4 ms (57-60 fps)** against the capped 8-core control's 12.6:
+**four cores against eight at the same clock is +32%**, 4.0-4.1 ms, with the GPU column
+and the fence unchanged. The cap alone is +31% on four cores (12.56 → 16.4-16.8 for a
+0.69x clock, ~90% clock-proportional). The null under the mask is ±1% frame-weighted
+and ±4% in any one 1,000-draw band (two same-arm pairs), wider than the route's ±2.9%
+on eight cores. **Item 1 — the third worker on 4c/8t — is a null** (+0.8%, +0.10 ms at
+the crowd, p99 0.4-1.4 ms better); the floor stays at three.
+
+### §2. Item 0 — the whole-process profile under the stand-in, and what it was really measuring
+
+`tools/part107_standin_probe.sh` pins the crowd route, waits for ≥8,000 draws, and takes
+a per-thread CPU table plus a flat `perf record -F 999` of the WHOLE process (part 51's
+instrument, part 51's rule: symbols before phases). The pump splits as plan §2b's table;
+no symbol is above a quarter of it and the walk's per-dword store is already bulk
+(`WriteRegisterRun`), so plan item 3(a) existed before the plan did.
+
+**The thread table, not the pump's symbols, carried the part.** The busiest thread in
+the process at 99.4% of a core was `DeviceWorker` — `runtime/cpu/native_kbm.cpp`'s
+device-follow glyph scan, 70% `memcmp` + 17% `memchr`. Its `FindBytes` anchored `memchr`
+on the needle's FIRST byte ("for texel data the first byte is selective") and ran a
+full `memcmp` at every hit; for 26 glyphs × 2 art sets over three arenas that is a
+137-150 s sweep, and it starts at the FIRST INPUT POLL. On the 196 s crowd route it ends
+at `[fps]` window 15-17 of 19-20; in part 106's baseline logs at window 23 of 38.
+**Every crowd number from part 92 to part 106 was taken with a memory sweep on a full
+core beside the pump for most of its soak** — and the operator's own sessions pay it
+for the first two and a half minutes of every play. The crowd frame drops ~0.9 ms the
+moment it ends, in the same log.
+
+### §3. Item 2 — the Draw Thread's wait, parked: the premise was wrong, the build is right, the frame is a null
+
+Plan item 2 said the Draw Thread spins on the ring read pointer and the pump's
+publication should wake it. Built that way, every park timed out. `CZ_FENCE_PARK_TRACE`
+printed the word: **BC739A00, climbing by ones** (FAC3, FAC9, FACF…) while the ring
+cursor sat at 0x460E. The word is the FENCE-COMPLETION counter — `kDeviceWritebackPtr`
+(dev+0x2A90), pm4.cpp's own `g_fenceWord` — and the read-pointer writeback is +0x3C in
+the same block. Only the executor's `StoreGpuRaw` advances it, so the wake lives there
+and needs no predicate: a store on the parked word wakes the waiter, which re-runs the
+guest's own `(W - target) >= (W - R)`. `cpu/fence_wait.cpp`; `CZ_FENCE_PARK=0` the
+control. Engagement at the crowd: 6.5 parks a frame, 2.5-2.7 woken by a store, ~4
+timeouts with the fence still ahead (the wait is several ms, the bound one), **0
+MISSED** — the counter that classifies every episode is the gate, and it is what
+refuted the first draft (parks 5.6, timeouts 5.6, wakes 0).
+
+Three runs an arm alternated under the stand-in and two an arm on all 16 cpus: **a null
+on the median** (+1.2% and +0.7% frame-weighted, inside the ±1% floor; p99 lower on the
+stand-in in every pair). The park removed the wait from the Draw Thread (68% → 53% of a
+core; the wait was ~21% of that thread at the crowd, not part 51's 84% at 1,900 draws)
+— ~0.15 of a core returned, on a machine where §2's scan was burning a whole one. Kept
+ON: it costs nothing measurable, its counters are a standing gate, and a busy-wait on a
+Deck or a laptop is heat.
+
+### §4. The scan, fixed in three steps (plan item 8)
+
+1. **Horspool finder** (`CZ_KBM_SCAN_LEGACY=1` the same-binary control): 137 s → 67 s;
+   crowd band **−5.7% / −0.93 ms on the stand-in** (two legacy vs three Horspool runs,
+   every band above 5,000 draws negative) and **−0.88 ms on 16 cpus** — with the scan
+   still running through window 8 of 19, so a floor on the item, not its size. The
+   legacy arm reproduces the morning's runs to −0.1%.
+2. **A 64-aligned multi-probe pass** over the physical arena for every unlocated glyph
+   at once (the textures sit page-aligned there — part 92 round 4's measurement, now
+   load-bearing), the per-probe sweep kept as the fallback: **26 of 26 glyphs in 96 ms.**
+   The string-bank sweep then dominated at 11 s (one needle, three ranges).
+3. **The rarest-byte anchor** for the finder and the physical arena first for the bank
+   (found at A336A500 in every run since part 92): measured in the closing addendum.
+   The worker also runs at low priority now, and every scan prints START and END with
+   its length, so the next log places it against the frame windows without a profile.
+
+### §5. What the part says about the target
+
+Under the calibrated stand-in the crowd sat at 16.6-17.4 ms before the part; the scan
+alone is worth ~0.9-1.0 ms of that at the crowd once it is gone, which puts the
+8,000-9,000 band at ~15.5 ms (≈64 fps) and 9,000-10,000 at ~16.4 — the median target met
+on the stand-in, with the p99 still at 19-21 ms and the pinned share the statistic to
+read next (plan §4). The 4-vs-8-core gap (+32%) was measured WITH the scan on both
+sides; re-measure it without before calling the remainder "contention".
+
+### §6ex closing addendum — the final finder measured (2026-09-09 03:50)
+
+Two more stand-in runs on the rarest-byte finder with the physical arena first for the
+bank: the whole scan is **0.122 s / 0.122 s** end to end (the aligned glyph pass 93-94 ms, the
+string-bank pass in 27.9 ms), from 137-150 s. Against the legacy arm's two runs, pooled:
+**−5.7% frame-weighted, monotone across all nine bands; −1.49 ms at 8,000-9,000 (16.44 →
+14.95) and −1.83 at 9,000-10,000 (17.86 → 16.03)**; `[fps]` windows at ≥8,000 draws:
+mean of medians 16.41 → 15.33 ms, mean p99 20.59 → 19.41, windows under 16.7 ms 67% →
+100%. The interim aligned build (11 s scan, still covering one soak window) reads −2.3%
+against this, which is the last of the sweep leaving the soak. The fence park's
+counters on the same runs: 5.3-5.9 parks a frame, 0.0 MISSED.
+
+**So under the calibrated stand-in the operator's crowd band is 15.0 ms (≈67 fps) and the
+heaviest band 16.0 (≈62), from 16.4 / 17.9 at the start of the part — the median half
+of "60 minimum on a 3100-class CPU" is met on the stand-in, and the p99 (19.4) is the
+next number.** Every figure is this box under a mask and a cap (plan §4).

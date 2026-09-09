@@ -3918,6 +3918,31 @@ CZ_FENCE_PARK_SPIN_US=N  the paused-spin phase before the park, in microseconds 
 CZ_FENCE_PARK_TRACE=N  print the first N episodes on both sides with the values the
                    predicate saw (tid, W, target, R). Bounded by construction; it is the
                    instrument that refuted the first draft in one run
+CZ_KBM_SCAN_LEGACY=1  **the control arm for part 107's glyph-scan fix — and the arm that
+                   EVERY run from part 92 to part 106 was implicitly on.** The native-KB/M
+                   device-follow scan (`cpu/native_kbm.cpp`, `DeviceWorker`) locates the
+                   prompt-art glyphs and the string bank in guest memory at the first
+                   input poll; the original finder anchored memchr on the needle's FIRST
+                   byte with a memcmp at every hit, and for 26 glyphs x 2 art sets over
+                   three arenas that was a 137-150 s sweep on a full core beside the pump —
+                   the busiest thread in the process in the part-107 probe, ending at
+                   `[fps]` window 15-17 of 20 on the crowd route (23 of 38 in part 106's
+                   baselines), the crowd frame ~0.9 ms lighter the moment it ended. ON by
+                   default: a 64-aligned multi-probe pass over the physical arena for all
+                   glyphs at once (26 of 26 in 96 ms; the textures sit page-aligned there,
+                   part 92 round 4), the per-probe sweep as fallback with memchr anchored on
+                   the needle's RAREST byte, the bank sought in the physical arena first,
+                   and the worker at low priority. Every scan prints
+                   `[kbm] device-follow scan: START ...` and `END, N s` — place END against
+                   the `[fps]` windows before quoting any crowd number from a log, and read
+                   `aligned pass located N of M` as the engagement gate (a fallback that
+                   finds a glyph the aligned pass missed is seconds, not the feature).
+                   `=1` restores the whole original algorithm for a same-binary A/B:
+                   the final finder (0.122 s end to end) against the legacy arm reads −5.7%
+                   frame-weighted, monotone, −1.49/−1.83 ms at the crowd on the stand-in,
+                   every crowd window under 16.7 ms (from 67%); the interim Horspool
+                   finder (67 s) read −0.93 there and −0.88 on 16 cpus with the scan still
+                   running through window 8
 tools/part107_standin_probe.sh <tag> [ENV=VAL ...]   item 0's instrument: the crowd route
                    pinned to the stand-in mask (CPUS=0-3,8-11 default; the clock cap is
                    read from sysfs and printed, never assumed), then at >= 8,000 draws a

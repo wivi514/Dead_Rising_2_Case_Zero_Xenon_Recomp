@@ -6848,3 +6848,35 @@ was the live hand-off — its §1 item 0 was `docs/steam-deck-plan.md`, which pa
 * **Owed:** the golden pack's czamd number (its store is ~70 MB; the "under ~50 ms" gate was
   written for that count), the crowd-route A/B on the old-base binary, and the publication
   itself (operator: tag, attach `dist/`'s three artifacts, paste the notes).
+
+## Part 105 status block (moved out of CLAUDE.md by part 107, per the one-back rule)
+
+Where the port was, as of 2026-09-08 (**PART 105 — THE STEAM DECK PLAN EXECUTED ON THE
+DEV BOX: every build now writes `cz_runtime.log` beside its data root (a descriptor-level
+stderr tee, `host/log_file.cpp`, drained on every exit path incl. the crash reporter —
+byte-identical to the console over a 15,147-line boot and through a SIGSEGV) and has
+`cz_runtime --diag` (OS/glibc/Wine version, session vars, thread budget, root, settings,
+SDL drivers + displays, every Vulkan device with DRIVER NAME AND VERSION and the
+requirements-table verdict); the renderer's required features are ONE TABLE
+(`kFeatureReqs`) and a missing one ends bring-up NAMED with the driver, not `VkResult -7`;
+gamescope is detected and MEASURED — it strips `WAYLAND_DISPLAY`/`SDL_VIDEODRIVER` from
+the child, so the x11 path is the only one and it presents at ~165 fps here (plan H5
+closed); H4 priced (disc shader build 12.5 s on a 4c/8t mask at desktop clocks). Gotchas
+525-528, `steam-deck-plan.md` §6 the item record, `phase5-notes.md` §6ev, a player guide
+`docs/steam-deck-testing.md` + issue templates, README rows. **`docs/part106-kickoff.md`
+IS THE LIVE HAND-OFF.** The Windows half was gated the same evening on czwin (file ==
+console by hash for `--diag` and a renderer boot, after a text-mode fix — gotcha 529;
+Wine 11 names itself in `--diag`). Owed: an AMD `--diag` on czamd (unreachable), the
+ARTIFACT REBUILD (v1.0.2's `dist/` is at 482b47f and carries none of this — a Deck
+tester needs a build WITH the log; operator decision: rebuild v1.0.2 or call it v1.0.3),
+the operator's live-USB RADV test (H3, the one that matters), the first Deck report**):
+
+* **`shaderInt64` stayed REQUIRED by census — Int64 in 450 of 450 translated shaders —
+  after a scanner with the wrong enum constant read 0 of 450** (gotcha 528: print the
+  distribution, not the bit). `fillModeNonSolid` and `depthClamp` became optional (no
+  consumer). The MSAA sample-count walk now tries the other count instead of only halving.
+* **The `SIBLING MISS` lines under Wine were NOT a Wine difference** — they print on the
+  Linux boot too; part 104 grepped the wrong log. Retracted in the plan's §6.
+* **The tee's identity gate FAILED on its first run** (console 5,828 bytes short: `End()`
+  closed the saved stderr under the copier thread) — which is the evidence it can fail
+  (gotcha 527). Packaging scripts strip `cz_runtime.log*`/`cz_diag.txt*` from the stage.
