@@ -3605,7 +3605,12 @@ FIXED are listed at the end so nobody re-buys them. In the order they should be 
    Zombrex grab or the bike-frame delivery); check whether the final input is a Y press
    the prompt shows as Q while the map expects another key at that moment, or a
    press-during-mash that the keystroke queue dropped. A KB/M-only report.
-4. **"Audio during the last few cutscenes is turned off"** (one finished playthrough,
+4. **"Audio during the last few cutscenes is turned off"** — **PARKED, awaiting a
+   player's log (operator decision, 2026-09-09: *"we will not be able to reproduce;
+   we'll just say to players that if they get that, to send their logs"*).** One
+   player, no specs; the v1.0.2 notes ask for `cz_runtime.log` from anyone who hits
+   it; read `CZ_XMA_DECODE_LOG`'s REFUSED counter and the `[audio]` lines first when
+   one arrives. Was: **"Audio during the last few cutscenes is turned off"** (one finished playthrough,
    no specs given; the operator never saw it). Not the prologue sync-point silence above
    (that one is downstream of a stall and the scene there does not advance). A
    late-game cinematic that PLAYS silently is either the XMA context running dry (the

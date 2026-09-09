@@ -107,6 +107,10 @@ downloads.
 - A subtle **shading flicker on Chuck's hair** in motion; real hardware does not show
   it and it is being tracked.
 - The occasional spot may shade slightly differently than the console.
+- One player reported the **sound cutting out during the last few cutscenes** of the
+  game. We have not been able to reproduce it. If it happens to you, please open an
+  issue and attach `cz_runtime.log` from the game's folder (the file from that
+  session) — it records what the audio decoder was doing, and that is what we need.
 - **No macOS build yet** — awaits test hardware, nothing structural.
 
 ### Legal
