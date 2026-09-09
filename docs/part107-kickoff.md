@@ -54,8 +54,12 @@ retraction of 363.
 
 ## §1 Part 107 — autonomous, in order
 
-0. **The mirror's remaining gates.** (a) An operator session at the crowd is OWED before
-   it ships in a release — a wrong generation stamp is a one-frame stale or torn mesh
+0. **The mirror's remaining gates.** (a) ~~An operator session at the crowd is OWED before
+   it ships in a release~~ — **DONE 2026-09-09**: the operator played mirror ON, then OFF
+   twice, at 3440x1440 and 1080p: "everything look pretty much identical"; the one
+   defect they saw (a killed zombie's body drawn black and faceted) reproduced with the
+   mirror OFF and is open item 0z, not the mirror's. Their play at a 210 MHz GPU clock
+   held 58-62 fps through crowds (`perf-plan-part106.md` §4.2). Originally: an operator session — a wrong generation stamp is a one-frame stale or torn mesh
    that no headless number can see (gotcha 254's shape); ask them to soak the heaviest
    crowd and watch for any mesh that flickers or lags a frame, and hand them
    `CZ_VK_NO_STORE_MIRROR=1` as the A/B. (b) czamd's GPU column with the mirror

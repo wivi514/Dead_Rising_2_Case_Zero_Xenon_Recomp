@@ -64,7 +64,7 @@ warm 4, translate 1, golden 1, audio 1, XMA 1) that are idle except when they ar
 On 4 cores + SMT that is the pump, two guest threads, two workers and the outsiders on
 eight hardware threads sharing four cores' execution units. The spin is the item this
 box cannot see: a core that is busy-waiting is free here and is a quarter of the machine
-there. **Item 4 is a 4-core item that a measurement on 8 cores can never find.**
+there. **Item 2 is a 4-core item that a measurement on 8 cores can never find.**
 
 ## §1. The stand-in, and its calibration
 
