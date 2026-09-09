@@ -30591,6 +30591,10 @@ void ApplyPendingRenderScale()
                         "%ux%u); snapshots and the cube map rebuild lazily over the "
                         "next frames\n",
                 nw, nh, RSX(R->targetWidth), RS(R->edramHeight));
+        // A windowed window follows the applied resolution (part 108). Handed to the
+        // window thread, which owns every SDL call; it declines (and says so) when the
+        // window is fullscreen, maximised or pinned by a measurement variable.
+        Host_WindowFollowInternalRes(nw, nh);
     }
 }
 

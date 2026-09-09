@@ -1373,6 +1373,11 @@ CZ_VK_LIVE_RES_TEST=<frame>:<w>x<h>  inject the settings panel's APPLY-resolutio
                    unsubmitted references to the images the rescale destroys. A
                    DIAGNOSTIC ARM. Refused (like the panel's own request) when
                    CZ_VK_RES/CZ_VK_RES_SCALE pin the resolution
+                   As of part 108 a WINDOWED window FOLLOWS the applied resolution
+                   (`[host] window follow (...)` then a rebuilt swapchain), which
+                   makes this arm the gate for that too; CZ_WINDOW_SIZE and
+                   CZ_WINDOW_MAXIMIZED pin the window and the follow declines with a
+                   line saying so (phase5-notes §6ey addendum 2)
 CZ_VK_COPY_CENSUS=1  the resolve-copy produced-vs-sampled census (part 90 item 2): how
                    many of the ~50 resolve copies a frame are DEAD — the same
                    (snapshot, rect) copied again with no consumer in between. Consumers

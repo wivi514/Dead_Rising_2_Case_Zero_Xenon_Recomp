@@ -60,6 +60,15 @@ void Host_RequestDebugMenu() { g_debugMenuPressed.store(true, std::memory_order_
 void Host_RequestSnapDump() { g_snapDumpPressed.store(true, std::memory_order_release); }
 void Host_RequestBurstDump() { g_burstDumpPressed.store(true, std::memory_order_release); }
 
+// The window's pending follow-size, one word so a torn W/H pair cannot exist between
+// the pump (producer) and the window thread (consumer). 0 = nothing pending.
+std::atomic<uint64_t> g_pendingWindowRes{ 0 };
+void Host_WindowFollowInternalRes(uint32_t w, uint32_t h)
+{
+    if (w && h)
+        g_pendingWindowRes.store((uint64_t(w) << 32) | h, std::memory_order_release);
+}
+
 // F7 — MARK THE FRAME TRACE. The operator plays, feels a stutter, and presses this; the
 // renderer stamps the current frame number into the trace and the log.
 //
@@ -311,6 +320,76 @@ void PublishDisplaySize()
     }
 }
 
+// Size a WINDOWED window to the internal resolution. WINDOW THREAD ONLY, like
+// ApplyDisplayModeNow below and for the same reason. Three cases decline, each with a
+// line saying why, because a resize that silently did not happen looks like the
+// setting did not apply:
+//   * CZ_WINDOW_SIZE / CZ_WINDOW_MAXIMIZED — a measurement pinned the window (the same
+//     rule Host_WindowInit applies to the persisted display mode);
+//   * borderless or exclusive fullscreen — the display sizes the window, and the
+//     internal resolution is scaled into it (that is the whole point of the setting);
+//   * a MAXIMIZED window — the player asked the window manager for that shape, and
+//     un-maximising it under them is a different instruction from the one given.
+// The size is clamped to the display's USABLE bounds (the desktop minus panels and
+// docks, per SDL) keeping the aspect, because a 3440x1440 internal resolution on a
+// 3440x1440 desktop must not produce a window whose title bar is off the screen.
+// `why` names the caller in the log line.
+void ApplyWindowFollowRes(uint32_t w, uint32_t h, const char* why)
+{
+    if (!g_window || !w || !h)
+        return;
+    if (getenv("CZ_WINDOW_SIZE") || getenv("CZ_WINDOW_MAXIMIZED"))
+    {
+        fprintf(stderr, "[host] window follow %ux%u (%s): NOT applied — CZ_WINDOW_SIZE/"
+                        "CZ_WINDOW_MAXIMIZED pin the window for this run\n", w, h, why);
+        return;
+    }
+    const Uint32 flags = SDL_GetWindowFlags(g_window);
+    if (flags & (SDL_WINDOW_FULLSCREEN | SDL_WINDOW_FULLSCREEN_DESKTOP))
+    {
+        fprintf(stderr, "[host] window follow %ux%u (%s): not applied — the window is "
+                        "fullscreen and the display sizes it\n", w, h, why);
+        return;
+    }
+    if (flags & SDL_WINDOW_MAXIMIZED)
+    {
+        fprintf(stderr, "[host] window follow %ux%u (%s): not applied — the window is "
+                        "maximised; un-maximise it to have it follow the resolution\n",
+                w, h, why);
+        return;
+    }
+    int tw = int(w), th = int(h);
+    const int display = SDL_GetWindowDisplayIndex(g_window);
+    SDL_Rect usable{};
+    if (SDL_GetDisplayUsableBounds(display < 0 ? 0 : display, &usable) == 0 &&
+        usable.w > 0 && usable.h > 0)
+    {
+        // Leave room for the window manager's own decorations — SDL's usable bounds
+        // exclude panels, not the title bar. 48 px is a guess that errs safe; being a
+        // few pixels smaller than the display is invisible, being larger is not.
+        const int maxW = usable.w, maxH = std::max(64, usable.h - 48);
+        if (tw > maxW || th > maxH)
+        {
+            const double s = std::min(double(maxW) / tw, double(maxH) / th);
+            tw = std::max(64, int(tw * s) & ~1);
+            th = std::max(64, int(th * s) & ~1);
+            fprintf(stderr, "[host] window follow %ux%u (%s): larger than display %d's "
+                            "usable %dx%d — sized to %dx%d instead (same aspect)\n",
+                    w, h, why, display < 0 ? 0 : display, usable.w, usable.h, tw, th);
+        }
+    }
+    int cw = 0, ch = 0;
+    SDL_GetWindowSize(g_window, &cw, &ch);
+    if (cw == tw && ch == th)
+        return;
+    SDL_SetWindowSize(g_window, tw, th);
+    SDL_SetWindowPosition(g_window, SDL_WINDOWPOS_CENTERED_DISPLAY(display < 0 ? 0 : display),
+                          SDL_WINDOWPOS_CENTERED_DISPLAY(display < 0 ? 0 : display));
+    fprintf(stderr, "[host] window follow (%s): %dx%d -> %dx%d, re-centred — the "
+                    "swapchain must follow\n", why, cw, ch, tw, th);
+    PublishDrawableSize();
+}
+
 // Apply a display mode to the live window. WINDOW THREAD ONLY (the SDL rule this
 // whole file exists to keep): Host_WindowInit calls it once after creation for the
 // persisted mode, and the loop calls it when the PC options screen changes the
@@ -324,8 +403,15 @@ void ApplyDisplayModeNow(CzDisplayMode m)
     switch (m)
     {
         case CzDisplayMode::Windowed:
+        {
             SDL_SetWindowFullscreen(g_window, 0);
+            // SDL restores the pre-fullscreen size, which is whatever the window was
+            // before — not necessarily the resolution applied while fullscreen.
+            uint32_t rw = 0, rh = 0;
+            Settings_InternalRes(rw, rh);
+            ApplyWindowFollowRes(rw, rh, "display mode -> windowed");
             break;
+        }
         case CzDisplayMode::Borderless:
             SDL_SetWindowFullscreen(g_window, SDL_WINDOW_FULLSCREEN_DESKTOP);
             break;
@@ -1959,6 +2045,37 @@ bool Host_WindowInit()
     // and one at 100%, so a logical size means two different pixel counts depending on
     // where the window lands.
     int startW = kDefaultWidth, startH = kDefaultHeight;
+    // A WINDOWED window opens at the persisted internal resolution (part 108) — the
+    // same rule the live apply follows — clamped to display 0's usable bounds with the
+    // aspect kept, so a resolution larger than the desktop opens as the largest window
+    // that fits rather than one whose title bar is off the screen. CZ_WINDOW_SIZE and
+    // CZ_WINDOW_MAXIMIZED win below, exactly as they do over the display mode.
+    if (!getenv("CZ_WINDOW_SIZE") && !getenv("CZ_WINDOW_MAXIMIZED") &&
+        Settings_DisplayMode() == CzDisplayMode::Windowed)
+    {
+        uint32_t rw = 0, rh = 0;
+        Settings_InternalRes(rw, rh);
+        if (rw && rh)
+        {
+            int tw = int(rw), th = int(rh);
+            SDL_Rect usable{};
+            if (SDL_GetDisplayUsableBounds(0, &usable) == 0 && usable.w > 0 && usable.h > 0)
+            {
+                const int maxW = usable.w, maxH = std::max(64, usable.h - 48);
+                if (tw > maxW || th > maxH)
+                {
+                    const double s = std::min(double(maxW) / tw, double(maxH) / th);
+                    tw = std::max(64, int(tw * s) & ~1);
+                    th = std::max(64, int(th * s) & ~1);
+                }
+            }
+            startW = tw;
+            startH = th;
+            fprintf(stderr, "[host] windowed: opening at %dx%d for internal resolution "
+                            "%ux%u%s\n", startW, startH, rw, rh,
+                    (startW != int(rw) || startH != int(rh)) ? " (clamped to the display's usable bounds)" : "");
+        }
+    }
     if (const char* ws = getenv("CZ_WINDOW_SIZE"))
     {
         int w = 0, h = 0;
@@ -2123,8 +2240,8 @@ bool Host_WindowInit()
     PublishDrawableSize();
     PublishDisplaySize();
 
-    fprintf(stderr, "[host] window %dx%d up on SDL video driver '%s'.\n", kDefaultWidth,
-            kDefaultHeight, SDL_GetCurrentVideoDriver());
+    fprintf(stderr, "[host] window %dx%d up on SDL video driver '%s'.\n", startW,
+            startH, SDL_GetCurrentVideoDriver());
     // The startup message states which of the two present modes this run is in,
     // because a stale claim here is worse than none: this line said "THE WINDOW IS
     // EXPECTED TO BE BLANK: there is no renderer until phase 5" for two sessions after
@@ -2492,6 +2609,11 @@ void Host_WindowRun()
         // a guest thread; the SDL calls have to happen HERE, on the window thread.
         if (const int pending = Settings_ConsumePendingDisplayMode(); pending >= 0)
             ApplyDisplayModeNow(CzDisplayMode(pending));
+
+        // The renderer applied a new internal resolution (the panel's X press, or the
+        // CZ_VK_LIVE_RES_TEST arm) — a windowed window follows it (part 108).
+        if (const uint64_t wh = g_pendingWindowRes.exchange(0, std::memory_order_acq_rel))
+            ApplyWindowFollowRes(uint32_t(wh >> 32), uint32_t(wh), "resolution applied");
 
         // CZ_WINDOW_RESIZE_AT=SECS:WxH — THE POSITIVE CONTROL FOR THE SWAPCHAIN REBUILD.
         //

@@ -21550,3 +21550,35 @@ footer says "MSAA APPLIES AT THE NEXT LAUNCH". Gated headlessly on precedence an
 validation (file 0 → 1x; file 0 with env 2 → 2x; file 4 → 4x; file 7 → refused to 2x).
 Why it matters: part 107's 210 MHz sessions put a 1050 Ti-class card at 53 fps with 2x
 and 59-65 without, at 1080p.
+
+### §6ey addendum 2 — the window follows the resolution (2026-09-09, the next instruction)
+
+*"Make it so that when we are in windowed mode when changing resolution it also resize
+the window."* Until now the window opened at 1280x720 whatever the internal resolution
+said and stayed at whatever the player last dragged it to, so a 1080p setting in a 720p
+window was presented downscaled by the swapchain blit and the setting looked like it did
+nothing. Now (`host/window.{h,cpp}`, `gpu/vk_renderer.cpp`):
+
+* **Startup**: a WINDOWED window opens at the persisted internal resolution, clamped to
+  display 0's usable bounds with the aspect kept (SDL's usable bounds exclude panels
+  but not the title bar, so 48 px is reserved for decorations). 3440x1440 on the
+  operator's 3440x1440 desktop opened at 3324x1392.
+* **Live apply**: the renderer's `ApplyPendingRenderScale` (the panel's X press or
+  `CZ_VK_LIVE_RES_TEST`) hands the new size to `Host_WindowFollowInternalRes`, one
+  atomic word; the window thread consumes it beside the display-mode consume and calls
+  `ApplyWindowFollowRes`, which resizes, re-centres and publishes the drawable so the
+  existing swapchain-rebuild path fires — no second resize path (gotcha 30's shape:
+  the positive control `CZ_WINDOW_RESIZE_AT` already exercises exactly that path).
+* **Leaving fullscreen**: SDL restores the pre-fullscreen size, which is not the
+  resolution applied while fullscreen, so `ApplyDisplayModeNow(Windowed)` follows too.
+* **Declines, each with a log line**: `CZ_WINDOW_SIZE`/`CZ_WINDOW_MAXIMIZED` pin the
+  window (the rule the display mode already obeyed); a fullscreen or borderless window
+  is sized by the display; a MAXIMISED window stays maximised — the player asked the
+  window manager for that shape.
+
+Gate: a windowed run with `CZ_VK_LIVE_RES_TEST=900:1600x900`
+(`~/DR2CZ-troubleshooting/part108/winfollow.log`): `window follow (resolution applied):
+3324x1368 -> 1600x900`, then `window drawable 1600x900` and a rebuilt `swapchain
+1600x900` on the next three lines. The operator then drove the panel through 2560x1440,
+3440x1440 (clamped to 3324x1392, the log names the clamp), 1920x1200 and 2048x1152 in
+the same run, every apply followed by the window, and said *"it works"*.

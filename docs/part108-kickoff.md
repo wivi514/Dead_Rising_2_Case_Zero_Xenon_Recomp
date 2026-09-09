@@ -124,6 +124,18 @@ document what the EDRAM stand-in does with it).
    the park and the scan fix in.
 2. A GTX 1060 / Ryzen 3 3100 owner's `--diag` and crowd run, if one can be found.
 
+## §1c Part 108 — done after the kickoff was written (2026-09-09)
+
+* **16:10 narrow mode** and **MSAA as a setting** — `phase5-notes.md` §6ey and its
+  first addendum; both operator-verified.
+* **The window follows the resolution** (operator instruction, *"when we are in
+  windowed mode when changing resolution it also resize the window"*): a windowed
+  window opens at the persisted internal resolution (clamped to the desktop's usable
+  bounds, aspect kept) and resizes on every live apply and on leaving fullscreen;
+  pinned, fullscreen and maximised windows decline with a log line. §6ey addendum 2;
+  operator-verified in the gate run itself (*"it works"*). The Windows compile of
+  `host/window.cpp` is owed along with the rest of §1's item.
+
 ## §2 Instruments and arms this part added
 
 `CZ_FENCE_PARK`, `CZ_FENCE_PARK_SPIN_US`, `CZ_FENCE_PARK_TRACE`, `CZ_KBM_SCAN_LEGACY`,

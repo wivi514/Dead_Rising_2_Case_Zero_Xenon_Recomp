@@ -183,6 +183,17 @@ void Host_RequestDebugJump();
 void Host_RequestDebugEnter();
 void Host_RequestDebugMenu();
 
+// THE WINDOW FOLLOWS THE INTERNAL RESOLUTION (part 108, operator instruction: "when we
+// are in windowed mode when changing resolution it also resize the window"). The
+// renderer calls this from its live-apply seam, on the pump thread, once the new
+// internal resolution is in effect; the window thread consumes it at its next loop
+// turn and resizes a WINDOWED window to WxH (clamped, aspect kept, to the display's
+// usable bounds, then re-centred). Borderless/fullscreen windows are sized by the
+// display and ignore it; CZ_WINDOW_SIZE / CZ_WINDOW_MAXIMIZED pin the window for a
+// measurement and win over it. Outside the CZ_HAVE_SDL split for the same reason as the
+// Request* functions above: the caller has no window to ask.
+void Host_WindowFollowInternalRes(uint32_t w, uint32_t h);
+
 // F9 — dump every resolve snapshot of the NEXT frame, on demand, into
 // `CZ_VK_SNAP_DUMP`'s directory. The renderer consumes the edge at present time.
 //
