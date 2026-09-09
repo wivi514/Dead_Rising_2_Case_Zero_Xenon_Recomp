@@ -126,6 +126,13 @@ document what the EDRAM stand-in does with it).
 
 ## §1c Part 108 — done after the kickoff was written (2026-09-09)
 
+**THE PLAN FOR THE FOUR PICTURE ITEMS (0ab, 0ac, 0ad, 0ae) IS `docs/picture-plan-part109.md`**
+— order 0ad (mechanism known: the wide patch unpaired with the fov substitution on a
+camera class it never substitutes for), then 0ab+0ae together (the tile seam), then
+0ac (no mechanism yet; the oracle first). Its §5 is what the operator owes it, in
+order. The Windows leg of v1.0.2 (`windows-test-list-for-v102`) is still ahead of it
+unless the operator says otherwise.
+
 * **16:10 narrow mode** and **MSAA as a setting** — `phase5-notes.md` §6ey and its
   first addendum; both operator-verified.
 * **The window follows the resolution** (operator instruction, *"when we are in

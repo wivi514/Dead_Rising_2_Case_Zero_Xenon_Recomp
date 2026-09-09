@@ -200,7 +200,10 @@ mask; trust the microcode's own swizzles.
     the control): −5.7% frame-weighted on the stand-in, −1.5/−1.8 ms at the crowd,
     every crowd window under 16.7 ms, −1.41 ms at the crowd on 16 cpus. `docs/perf-plan-part107.md` §2b and
     `phase5-notes.md` §6ex are the record. THE OPERATOR'S CPU CAP (3200 MHz) MAY STILL
-    BE SET — kickoff §0 item 0.** ~~It was
+    BE SET — kickoff §0 item 0. AS OF THE EVENING OF 2026-09-09 its §1c carries the
+    rest of part 108 (rumble, the wheel, the QTE key, the decoder priced) and points
+    at `docs/picture-plan-part109.md`, THE PLAN for the four operator picture items
+    0ab-0ae; the Windows leg of v1.0.2 is still ahead of it.** ~~It was
     `part107-kickoff.md` — PERFORMANCE IS LIVE AGAIN with a TARGET (60 fps locked at
     1080p on a GTX 1060); part 106 decomposed the GPU frame for the first time, found
     half of it was vertex fetch over PCIe, and SHIPPED the store MIRROR on by default
