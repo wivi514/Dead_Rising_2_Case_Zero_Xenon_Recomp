@@ -339,3 +339,27 @@ project can reach, and the mirror's GPU column there is the number to quote next
 3070's; (3) the CPU half, re-baselined on this box at 1080p (the 10.6 ms above) and
 worked from the parked board; (4) a real GTX 1060 measurement, by the operator or a
 player, before "locked" is claimed anywhere.
+
+### 4.1 The downclocked stand-in (operator, 2026-09-09 00:50)
+
+The operator locked the RTX 3070 at **705 MHz core** (`nvidia-smi -lgc 700,700`; the
+memory lock did not hold — 5,001 MHz under load against the stock 7,001, pstate P3) and
+the crowd route ran twice an arm at 1080p:
+
+| band | OFF GPU | ON GPU | OFF wall | ON wall |
+|---|---|---|---|---|
+| 2,000-3,000 | 7.14 | **5.72** | 7.19 | 5.81 (−19%) |
+| 5,000-6,000 | 8.14 | 6.02 | 8.49 | 8.43 |
+| 8,000-9,000 | **10.95** | **6.89** | 11.51 | 10.87 (−5.5%) |
+
+Two readings. (1) At a third of the core clock the mirror's saving is **−4.1 ms at the
+crowd (−37%)**, and the crowd went from GPU-bound (wall ≈ GPU, 11.5) back to CPU-bound
+(fence 0.00, GPU 6.9 under a 10.9 wall) — a GPU at a third of this one's clock keeps up
+with this CPU once the fetch is gone. (2) **The stand-in under-states a 1060, and says
+why:** the fetch-bound half of the OFF frame barely moved with the clock (8.84 → 10.95
+for a 3x clock cut, because PCIe bandwidth did not change) while the mirror's frame
+scaled with the core (4.0 → 6.9). A GTX 1060 sits on PCIe 3.0 x16 — half this box's
+PCIe 4.0 link — so its fetch cost would be ~9 ms where this box paid 4.5, and the
+mirror's saving there is larger than any number this box can show. A downclock models
+the ALU/raster share of a slower card; it cannot model its bus, and this frame's problem
+was the bus. Every 1060 number in this plan remains a scaling, not a measurement.
