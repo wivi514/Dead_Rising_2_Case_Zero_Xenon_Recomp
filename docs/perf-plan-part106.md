@@ -363,3 +363,24 @@ PCIe 4.0 link — so its fetch cost would be ~9 ms where this box paid 4.5, and 
 mirror's saving there is larger than any number this box can show. A downclock models
 the ALU/raster share of a slower card; it cannot model its bus, and this frame's problem
 was the bus. Every 1060 number in this plan remains a scaling, not a measurement.
+
+### 4.2 The operator's play at 210 MHz (the GTX 1050 Ti compute stand-in, 2026-09-09)
+
+Core locked at **210 MHz** (~2.5 TFLOPS, a 1050 Ti's arithmetic); the memory lock did NOT
+hold (7,001 MHz under load — stock bandwidth), so this is the compute side of a 1050 Ti
+with a 3070's memory and bus. 1920x1080, 2x MSAA, mirror ON, the operator playing
+through crowds: **58-62 fps the whole session** — `[fps]` windows: 62.7 at 2,000-3,000
+draws, 59.9 at 7,000-8,000, 58.6 (worst 58.1) at 8,000-9,000. GPU split over the run,
+11.9 ms/frame: scene passes 3.30, **MSAA resolve copies 3.13**, post chain 2.05, shadow
+cascade 1.33. At a tenth of the clock the resolve and the post chain are a third of the
+device's frame — the next GPU items for a card of that class are the picture decisions
+(2x MSAA, the post chain's full-resolution passes), not the geometry any more.
+
+**What this does and does not say about the Steam Deck.** The Deck's GPU (~1.6 TFLOPS
+RDNA2 at 1280x800, 88 GB/s shared) is in this stand-in's class and renders 40% fewer
+pixels, so the GPU side is plausible there. Its CPU is not this box's: four Zen 2 cores
+at 2.4-3.5 GHz against eight Zen 3, and the thread budget hands a 4-core box ZERO
+workers (`clamp(cores − 2 − 3, 0, 6)`), which turns parallel record and the guard pool
+off — the serial recorder's crowd is 12.9 ms here, and would be well past 16.7 on the
+Deck. The Deck verdict is a CPU question (part 107 §1 item 1) and a measurement on the
+device (part 106's kickoff, the RADV live-USB test), not a scaling.
