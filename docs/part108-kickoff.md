@@ -67,7 +67,19 @@ equals GPU in every band and the CPU sits in the fence. At 1080p the whole-run G
 puts the **MSAA resolve copies first (3.03 ms, 27.6%)**, then the scene passes (2.83),
 the one-draw post passes (1.76), the shadow cascade (1.25): for a 1050 Ti-class card the
 picture decisions (2x MSAA, the post chain at full resolution) are the levers, as
-perf-plan-part106 §4.2 said. A 1080p `CZ_VK_MSAA=0` session was launched next.
+perf-plan-part106 §4.2 said. **The 1080p `CZ_VK_MSAA=0` session then read 59-65 fps
+through the crowds** (window medians 16.9 → 15.4 ms; trace at ≥6,000 draws: wall 15.8 /
+GPU 15.4 / fence 2.3 ms — still GPU-bound, at the target). For a 1050 Ti-class card the
+honest recommendation is therefore **1080p without MSAA**, and the settings panel should
+be able to say so (MSAA is an env arm today, not a setting — a part 108 item).
+
+**SUBJECT CHANGE, 2026-09-09, the operator closing the session:** *"Good enough for now
+we'll do other performance improvement later but for v1.0.2 it's huge improvement."*
+**PERFORMANCE IS PARKED AGAIN; THE LIVE WORK IS THE v1.0.2 REBUILD** (part106-kickoff §1b
+item 0, now carrying part 105's log file and `--diag`, part 106's store mirror, and part
+107's fence park and glyph-scan fix — every one with a control arm named in
+`docs/instruments.md`). The resume list, in order, is §1 below; the stand-in recipe and
+its calibration are perf-plan-part107 §1, and nothing in it needs re-deriving.
 
 **A defect found by the second launch: `CZ_VK_RES=1280x800` — the Steam Deck's native
 panel — is REFUSED** (`[vk] ... not a resolution this renderer can produce (even width,
@@ -78,6 +90,8 @@ document what the EDRAM stand-in does with it).
 ## §1 Part 108 — autonomous, in order
 
 00. **16:10 resolutions** (the Deck's 1280x800; §0c) — refused today.
+0a. **MSAA as a SETTING** (§0c): the 1050 Ti-class answer is 1080p without MSAA, and a
+    player cannot choose that from the panel.
 
 0. **Re-measure the 4-vs-8-core gap WITHOUT the scan** (two runs each, capped): what
    remains is the real contention number for §0.4's item, and it decides whether the
