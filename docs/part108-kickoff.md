@@ -91,8 +91,9 @@ document what the EDRAM stand-in does with it).
 
 00. ~~**16:10 resolutions** (the Deck's 1280x800; §0c) — refused today.~~ **DONE
     2026-09-09 (narrow mode, `phase5-notes.md` §6ey): the aspect floor is 16:10, the
-    launcher ladder carries 1280x800 / 1920x1200 / 2560x1600, and the operator's eye
-    on a 16:10 picture is owed.**
+    launcher ladder carries 1280x800 / 1920x1200 / 2560x1600; OPERATOR-VERIFIED the same
+    evening — the panel offered 1280x800 / 1440x900 / 1680x1050 / 1920x1200 on the 3440x1440
+    display and the selection applied live: "Perfect".**
 0a. **MSAA as a SETTING** (§0c): the 1050 Ti-class answer is 1080p without MSAA, and a
     player cannot choose that from the panel.
 

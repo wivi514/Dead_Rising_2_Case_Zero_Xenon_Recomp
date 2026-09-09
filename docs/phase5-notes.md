@@ -21530,7 +21530,8 @@ floor), `host/window.cpp` (the mode-list filter comment and the launcher ladder:
   "vert-plus to 16:10 (narrow)"), so a 16:10 run can no longer report itself as
   "widened to 21:9".
 
-Owed: the operator's eye on a 16:10 picture (a Deck, or the box at 1920x1200 — the
-launcher ladder offers it), specifically the HUD's letterbox band and any top/bottom
+**Operator-verified the same evening**: the panel offered the four 16:10 modes of the
+3440x1440 display and the selection applied live — "Perfect". Still worth an eye on a
+real Deck: specifically the HUD's letterbox band and any top/bottom
 pop-in in cutscenes, which are the two things this design predicts and no headless
 number sees.
