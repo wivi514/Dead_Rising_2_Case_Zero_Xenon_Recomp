@@ -3600,6 +3600,17 @@ settles it in one run: the same door at 1920x1080 (`CZ_VK_RES=1920x1080`) — if
 ratio is right there and wrong at 3440x1440, it is the override's coverage. Then
 `CZ_ARG_PROBE` on the projection producers during the transition to find the third.
 Related: the 16:10 narrow mode (§6ey), which touched the same frustum code.
+**Two more facts from the operator (same evening)**: (a) *"after the door change the
+aspect ratio, if the player moves, the aspect ratio goes back to normal"* — so it is
+not the transition camera alone: the wrong ratio PERSISTS into gameplay after the
+door until the first movement input, which says the override is re-applied by
+something the movement path triggers (a camera-mode change, or the per-frame producer
+only running while the camera is "active") and is skipped for the frames in between;
+(b) *"pretty sure it only happens with a 21:9 aspect ratio"* — consistent with a
+producer that leaves the title's own 16:9 in place: at 16:9 the un-overridden value is
+the right value and there is nothing to see. That makes the 1920x1080 control the
+expected null and 21:9 the only arm; the F8 burst should START on the door and run
+through the first movement, so the frame where the ratio snaps back is in the record.
 
 ### 0ae — a LIGHT'S GLOW APPEARS ON THE OPPOSITE SIDE OF THE SCREEN (`capture_028086`, `_028693`, `_030293`)
 
