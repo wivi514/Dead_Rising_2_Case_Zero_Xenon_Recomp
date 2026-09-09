@@ -3532,3 +3532,55 @@ every corpse: burst 2's body by the wall is normal. First instrument: the draw-I
 (`CZ_VK_DRAW_ID`, F9) on a black corpse to name the draw, then its shader pair and
 textures against a capture of the same material in Xenia (gotcha: ask the oracle first —
 does Xenia draw the corpse black too?).
+
+## Item 0aa — public player reports QUEUED for a later part (operator, 2026-09-09; Reddit)
+
+The operator handed over four screenshots of the v1.0.0/v1.0.1 threads with the
+instruction *"just take what we didn't fix yet so we work on it in future
+conversation"*. Cross-checked against the release notes and the code; the ones ALREADY
+FIXED are listed at the end so nobody re-buys them. In the order they should be taken:
+
+1. **Controller vibration is not implemented.** Wired and wireless Xbox One pads, no
+   rumble. `XamInputSetState_x` (`kernel/imports.cpp`) accepts the motor values, logs them
+   under `KLOG` and discards them ("there is no motor"); the caps already advertise both
+   motors as 0xFF, so the title DOES drive them. The fix is one seam: hand the two motor
+   values to the window thread and call `SDL_GameControllerRumble` (SDL 2.0.9+; the
+   controller handle is `g_controller` in `host/window.cpp`), 0..65535 from the guest's
+   0..65535 words, with a duration that outlasts one guest poll. Verify with the
+   `[kcall]` motor line against a felt pulse. The operator promised it publicly.
+2. **Mouse wheel takes TWO notches to change the inventory item.** `NativeKbm_MouseWheel`
+   pushes a KEY_3 / KEY_1 press+release per SDL notch. First question: does the title's
+   keyboard controller see both edges in one poll and coalesce them (a tap whose press and
+   release land in the same `XamInputGetKeystrokeEx` tick may count as no key), or does
+   the mousemap's KEY_1/KEY_3 ALTERNATION mean every other tap is the wrong key for the
+   direction? Measure with `CZ_INPUT_TRACE=1` (edges and times) against the HUD item
+   change; DR2 PC is the living reference for how many notches move one slot.
+3. **QTE final input refused on keyboard.** One player: mashing A/D worked, the closing
+   "press Q" input was not accepted. Our map binds the in-game Y actions to KEY_Q
+   (`release-github-plan.md` §6 addendum). Repro needs an operator at a QTE (the Katey
+   Zombrex grab or the bike-frame delivery); check whether the final input is a Y press
+   the prompt shows as Q while the map expects another key at that moment, or a
+   press-during-mash that the keystroke queue dropped. A KB/M-only report.
+4. **"Audio during the last few cutscenes is turned off"** (one finished playthrough,
+   no specs given; the operator never saw it). Not the prologue sync-point silence above
+   (that one is downstream of a stall and the scene there does not advance). A
+   late-game cinematic that PLAYS silently is either the XMA context running dry (the
+   `CZ_XMA_DECODE_LOG=1` REFUSED counter, or a loop the hardware-loop import from Case
+   West mishandles) or the mixer dropping a voice. Ask the reporter for `cz_runtime.log`
+   from a v1.0.2 build first — that file exists now for exactly this.
+5. **Chainsaw dismemberment "not working properly"** — KNOWN, engine-side, also in Case
+   West; the operator is on it and has said so publicly. Related: item 0z (black corpse).
+6. **"Constant, regular stuttering" cured by `CZ_NO_XMA_DECODE=1`**, with
+   `[xma2 @ ...] Could not update timestamps for skipped samples` repeating in the
+   console. v1.0.1's pre-warm chain fixed the SHADER stutter class; this report names
+   the AUDIO decoder. Two things to check: (a) whether the ffmpeg message is on the pump
+   or audio thread's critical path (it is libavcodec's own `av_log`, printed 19 times
+   in today's 50 s boot, so at minimum silence it with `av_log_set_level`), and (b)
+   whether a decode call ever blocks the guest's 5.333 ms audio frame — the
+   `CZ_AUDIO_TRACE` peak and the `[xma]` pump rate against 187.5/s. The operator told the
+   reporter "further improvement to the stutter issue" is coming; treat this as that.
+
+**Already fixed, do not re-buy:** the window not resizing with the resolution in windowed
+mode (this part, `phase5-notes.md` §6ey addendum 2); the "no renderer / set CZ_VKDRAW=1"
+title bar (v1.0.2); Exit Game → Yes doing nothing (v1.0.1); firearms firing by themselves
+while aiming with the mouse (v1.0.1); first-session shader stuttering (v1.0.1).
