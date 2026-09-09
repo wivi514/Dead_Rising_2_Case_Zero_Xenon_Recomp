@@ -17,6 +17,7 @@
 // Deliberately not the renderer's or the window's internals — this file's isolation
 // (see the guest-memory note below: it must stay reusable by an offline replay
 // harness) survives exactly as long as that stays true.
+#include "../cpu/fence_wait.h"   // part 107: wake the parked Draw Thread on a fence store
 #include "../cpu/timebase.h"
 #include "../host/window.h"
 #include "vk_renderer.h"
@@ -1059,6 +1060,10 @@ bool StoreGpuRaw(uint8_t* base, uint32_t physAddr, uint32_t value)
         return false;
     }
     GuestStore32(base, va, value);
+    // Part 107: the Draw Thread's fence wait PARKS on the fence-completion word instead
+    // of spinning on it, and this is the one place every GPU-side store lands — so this
+    // is where it is woken. One relaxed load when nobody is parked (cpu/fence_wait.h).
+    FenceWait_Stored(base, va);
     return true;
 }
 

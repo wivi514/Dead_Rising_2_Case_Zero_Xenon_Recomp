@@ -76,13 +76,68 @@ the core count. The per-thread speed needs the clock: **`sudo cpupower frequency
 throughput to within the IPC guess. Both halves are needed; the first can run without
 root and is what part 107 measured first.
 
-### 1.1 Four cores, full clock (2026-09-09, crowd route, 1080p, mirror ON)
+### 1.1 Four cores — the first campaign (2026-09-09 01:22-01:35, crowd route, 1080p, mirror ON, one run each)
 
-(filled in below from the four pinned runs)
+`~/DR2CZ-troubleshooting/part106-1080/cpu4.{sh,out}` and the `c4_*.trace` / `c8_control.trace`
+beside them; `tools/part80_trace_band.py`, 1,000-draw bands, medians of texture-free
+frames. **The clock cap landed DURING this campaign** (after `c4_default`, before `c4_w2`),
+so the four runs are two calibrations at once — read the clock column, not the row order:
 
-### 1.2 Four cores, 3.2 GHz cap — OWED (root)
+| run | cores | clock | workers | 2,000-3,000 | 8,000-9,000 | 9,000-10,000 | p99 / worst at ≥8,000 draws |
+|---|---|---|---|---|---|---|---|
+| `c8_control` | 8 | **3.2 GHz cap** | 3 | 4.97 ms | **13.22** | 13.95 | 16.4 / 20.4 ms |
+| `c4_default` | 4 | stock (4.65) | 2 (the old floor) | 4.46 | **12.56** | — | 16.4 / 18.4 |
+| `c4_w2` | 4 | 3.2 cap | 2 | 5.79 | **16.41** | 17.59 | 22.6 / 25.2 |
+| `c4_w3` | 4 | 3.2 cap | 3 (the new floor) | 5.87 | **16.77** | 17.96 | 21.5 / 23.6 |
 
-The row that makes the 15-18 ms estimate above a measurement.
+What it says, each a single run and to be read with §1.2's null:
+
+* **Four cores at stock beat eight cores at the cap** (12.56 vs 13.22 at the crowd): the
+  crowd is clock-bound before it is core-bound. The cap alone costs the 8-core box
+  +25-28% against part 106's 10.3-10.6 ms baselines.
+* **The cap on four cores is +31% (12.56 → 16.4-16.8)** for a 0.69x clock — ~90% of
+  clock-proportional, i.e. the pump's critical path is almost pure CPU, not memory or
+  the GPU.
+* **Four cores against eight, both capped, is +24-27% (13.22 → 16.4-16.8 ms)** — that is
+  §0.4's contention item, measured for the first time: 3.2-3.5 ms of the crowd frame
+  on the stand-in is threads sharing cores. The GPU column and the fence are unchanged
+  (fence 0.00 everywhere), so it is all pump-side.
+* **The stand-in's crowd is 16.4-18.0 ms = 55-61 fps** — §0.2's 15-18 ms estimate was
+  right, and the target is missed by 0-8% in the 8,000-9,000 band and 5-8% at
+  9,000-10,000, with a p99 of 21.5-22.6 ms.
+* The third worker reads +1.7% frame-weighted (`w2` vs `w3`, monotone across nine
+  bands) — one run each, so §1.2's pairs decide it.
+
+### 1.2 Four cores, 3.2 GHz cap — the calibrated stand-in (2026-09-09 01:35-01:52, `cpu4cap.{sh,out}`)
+
+Two runs an arm, alternated, at the cap (`scaling_max_freq` 3200000 read back at the
+start); the 8-core control at the cap after them. Same reader as §1.1.
+
+| arm | 2,000-3,000 | 7,000-8,000 | 8,000-9,000 | 9,000-10,000 | p99 / worst at ≥8,000 (window means) |
+|---|---|---|---|---|---|
+| `c8cap_control` (8 cores, 3 workers) | 4.92 | 11.82 | **12.60** | — | 16.1 / 19.3 |
+| `c4cap_w2` pooled (2 workers) | 5.87 | 14.44 | **16.62** | 17.30 | 22.1-22.5 / 24.5-25.5 |
+| `c4cap_w3` pooled (3 workers, the new floor) | 5.97 | 14.68 | **16.72** | 17.36 | 21.1-21.7 / 23.4-23.7 |
+
+**The null under the mask, measured before the arm was read** (gotcha 229): `w2a` vs `w2b`
+−0.1% frame-weighted with single bands at −3.9%…+4.9%; `w3a` vs `w3b` +1.1% with bands
+at −1.8%…+4.6%. **The floor under the stand-in is ±1% frame-weighted and ±4% in any one
+1,000-draw band**, wider than the ±2.9% the route has on 8 cores. A per-band delta
+inside ±4% is not a result here.
+
+What it says:
+
+* **THE STAND-IN'S CROWD IS 16.6-17.4 ms = 57-60 fps.** The 8,000-9,000 band misses
+  16.7 ms by 0-0.5%, the 9,000-10,000 band by 4%; the p99 is 21-22.5 ms. §0.2's 15-18
+  ms estimate stands as a measurement now, at its upper end.
+* **Four cores against eight at the same clock is +32% (12.60 → 16.6-16.7)** — 4.0-4.1 ms
+  of the crowd frame is contention (§0.4), with the GPU column and fence unchanged.
+  That is the largest single item on the stand-in and it is not in §0.3's table,
+  because §0.3's table was taken where it does not exist.
+* **Item 1 is CLOSED: the third worker is a null on 4c/8t.** `w3` vs `w2` reads +0.8%
+  frame-weighted (+0.10 ms at 8,000-9,000, +0.06 at 9,000-10,000), inside the null; its
+  p99 reads 0.4-1.4 ms BETTER. No loss, no gain the median can see; the floor stays at
+  three (the operator's instruction) and the record is this row.
 
 ## §2. The items, in order
 
@@ -99,17 +154,27 @@ Order is by expected milliseconds ON A 4-CORE BOX, which is not this box's order
    sibling may be a net gain where on this box it was +4.5% SLOWER (perf-state-parked
    §5.2, measured with the guard pool at 4). §1.1 answers half of this for free.
 2. **The guest's spinning Draw Thread** (part 51: the title's own thread spins reading
-   the ring read pointer while the pump walks; on 8 cores it is a free core, on 4 it is
+   ~~the ring read pointer~~ **the FENCE-COMPLETION word — RETRACTED IN PLACE, 2026-09-09:**
+   the first build of this item woke the park on the read-pointer publication and every
+   park timed out; `CZ_FENCE_PARK_TRACE` showed the polled word at BC739A00 climbing by
+   ones (FAC3, FAC9, FACF…) while the ring cursor sat at 0x460E. The word is
+   `kDeviceWritebackPtr`'s target, the fence pm4.cpp already calls `g_fenceWord`; the
+   read-pointer writeback is +0x3C in the same block, and only the executor's
+   `StoreGpuRaw` advances the fence. The wake now lives there. The predicate below is
+   unchanged; "R" is the completed fence and "target" the one the driver waits for —
+   the Draw Thread throttling itself against the GPU, exactly finding 38's reading —
+   while the pump walks; on 8 cores it is a free core, on 4 it is
    a quarter of the machine). The loop is already read (`phase5-notes.md` §6ch §1,
-   phase1 finding 38): `sub_82845160` re-checks `R` (the ring read pointer, a guest-memory
-   word only our pump writes, `g_rptrWriteback`) against its target and calls
+   phase1 finding 38): `sub_82845160` re-checks `R` (~~the ring read pointer~~ the fence
+   word, a guest-memory word only our executor writes) against its target and calls
    `sub_8283C6C8` between checks — a body of `mr rX,rX` SMT-yield hints in a `bdnz` loop
    plus a timebase read, which yielded a hardware thread on the 360 and is a pure
    busy-loop here. There is no kernel import in it, so the hook is the recompiler's: a
    strong `PPC_FUNC(sub_8283C6C8)` that keeps the body's contract (return after a bounded
    time, touch nothing) but parks the thread on a futex over the read-pointer word, which
-   the pump wakes after every publication (mid-walk since part 86, and at the walk's
-   end). Latency is the risk — the frame chain is pump -> R -> Draw Thread -> next submit
+   ~~the pump wakes after every publication (mid-walk since part 86, and at the walk's
+   end)~~ the executor wakes after any store landing on it (`cpu/fence_wait.cpp`;
+   `CZ_FENCE_PARK=0` the control). Latency is the risk — the frame chain is pump -> R -> Draw Thread -> next submit
    — so the park must be wake-on-write, not a timed sleep, and the timebase-timeout path
    stays as written.
    Prediction: zero effect on this box (the control that must be boring), a whole core

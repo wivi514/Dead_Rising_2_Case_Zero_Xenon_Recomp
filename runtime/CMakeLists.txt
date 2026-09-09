@@ -295,6 +295,7 @@ add_executable(cz_runtime
     cpu/shadow_distance.cpp          # part 93: the shadow-distance slider (cascade scale)
     cpu/boot_skip.cpp                # part 99: the skip-intro-logos launcher toggle
     cpu/thread_budget.cpp
+    cpu/fence_wait.cpp               # part 107: the Draw Thread fence wait, parked on a futex
     kernel/klog.cpp
     kernel/memory.cpp
     kernel/heap.cpp
@@ -488,7 +489,10 @@ if(WIN32)
     # onecore  — VirtualAlloc2 / MapViewOfFile3 / UnmapViewOfFileEx (kernel/memory.cpp).
     #            In kernelbase.dll and NOT exported by kernel32.lib.
     # dbghelp  — SymInitialize / SymFromAddr, dladdr's replacement in the crash reporter.
-    target_link_libraries(cz_runtime PRIVATE onecore dbghelp)
+    # synchronization — WaitOnAddress / WakeByAddressSingle (cpu/fence_wait.cpp, the
+    #            Draw Thread's parked fence wait). Also reachable through onecore, but
+    #            named here so a future link-line edit cannot drop it silently.
+    target_link_libraries(cz_runtime PRIVATE onecore dbghelp synchronization)
 
     # The compiler-rt builtins. The recompiled image does 128-bit arithmetic (the guest's
     # multiply-high and divide lower to __int128), and clang-cl does NOT link its own

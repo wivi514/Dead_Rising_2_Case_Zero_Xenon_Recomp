@@ -1,4 +1,5 @@
 #include "vk_renderer.h"
+#include "../cpu/fence_wait.h"
 
 #include "pm4.h"
 #include "pump_stats.h"
@@ -27862,6 +27863,34 @@ void DoSwapImpl(uint8_t* base, uint32_t frontBuffer, uint32_t width, uint32_t he
                         double(p99Us) / 1000.0, double(worstUs) / 1000.0,
                         n > 1 ? 100.0 * double(overTwice) / double(n - 1) : 0.0,
                         (unsigned long long)frames, elapsed, dMed, dMin, dMax);
+                // Part 107 item 2: the Draw Thread's fence wait, per window, beside
+                // the frame rate it is meant to move — so a plain crowd run (no phase
+                // profiler) still says whether the park ENGAGED and how each episode
+                // ended. A run whose parks all end in timeouts has a wake predicate that
+                // never fires; a run with no parks at all has a wait that never waits.
+                {
+                    static FenceWaitStats lastRw;
+                    const FenceWaitStats rw = FenceWait_Stats();
+                    const double inv = 1.0 / double(frames);
+                    fprintf(stderr,
+                            "[fencewait] per frame: body %.1f | ready %.1f | spin-resolved "
+                            "%.1f | parks %.1f (woken %.1f timeouts %.1f MISSED %.1f eagain %.1f) | "
+                            "contended %.1f passthrough %.1f | stores seen %.1f wakes %.1f%s\n",
+                            double(rw.bodyCalls - lastRw.bodyCalls) * inv,
+                            double(rw.readyAtEntry - lastRw.readyAtEntry) * inv,
+                            double(rw.spinResolved - lastRw.spinResolved) * inv,
+                            double(rw.parks - lastRw.parks) * inv,
+                            double(rw.parkWoken - lastRw.parkWoken) * inv,
+                            double(rw.parkTimeouts - lastRw.parkTimeouts) * inv,
+                            double(rw.parkMissed - lastRw.parkMissed) * inv,
+                            double(rw.parkEagain - lastRw.parkEagain) * inv,
+                            double(rw.contended - lastRw.contended) * inv,
+                            double(rw.passthrough - lastRw.passthrough) * inv,
+                            double(rw.storeChecks - lastRw.storeChecks) * inv,
+                            double(rw.wakeCalls - lastRw.wakeCalls) * inv,
+                            FenceWait_Enabled() ? "" : " [CZ_FENCE_PARK=0: spinning]");
+                    lastRw = rw;
+                }
                 windowStart = now;
                 frames = 0;
                 frameUs.clear();
@@ -29644,6 +29673,37 @@ void DoSwapImpl(uint8_t* base, uint32_t frontBuffer, uint32_t width, uint32_t he
                     frames ? double(dMidwalk) / double(frames) : 0.0,
                     (unsigned long long)dHeldFast,
                     frames ? double(dHeldFast) / double(frames) : 0.0);
+
+            // Part 107 item 2: the Draw Thread's fence wait, parked. Every episode
+            // is classified, so "the park never engaged" (all readyAtEntry / spin) and
+            // "the wake predicate never fires" (parks == timeouts) are both visible
+            // here rather than inferred from a frame time (gotcha 151). The first draft
+            // watched the read pointer instead of the fence word and this line is
+            // what said so: parks 5.6/frame, timeouts 5.6/frame, wakes 0.
+            {
+                static FenceWaitStats lastRw;
+                const FenceWaitStats rw = FenceWait_Stats();
+                const double inv = frames ? 1.0 / double(frames) : 0.0;
+                fprintf(stderr,
+                        "[vkprof]   fence wait (part 107): body calls %.1f/frame | "
+                        "ready at entry %.1f | spin-resolved %.1f | parks %.1f (woken %.1f, "
+                        "timeouts %.1f, MISSED %.1f, eagain %.1f) | contended %.1f passthrough %.1f | "
+                        "executor stores seen while parked %.1f, wakes %.1f/frame%s\n",
+                        double(rw.bodyCalls - lastRw.bodyCalls) * inv,
+                        double(rw.readyAtEntry - lastRw.readyAtEntry) * inv,
+                        double(rw.spinResolved - lastRw.spinResolved) * inv,
+                        double(rw.parks - lastRw.parks) * inv,
+                        double(rw.parkWoken - lastRw.parkWoken) * inv,
+                        double(rw.parkTimeouts - lastRw.parkTimeouts) * inv,
+                        double(rw.parkMissed - lastRw.parkMissed) * inv,
+                        double(rw.parkEagain - lastRw.parkEagain) * inv,
+                        double(rw.contended - lastRw.contended) * inv,
+                        double(rw.passthrough - lastRw.passthrough) * inv,
+                        double(rw.storeChecks - lastRw.storeChecks) * inv,
+                        double(rw.wakeCalls - lastRw.wakeCalls) * inv,
+                        FenceWait_Enabled() ? "" : "  [CZ_FENCE_PARK=0: spinning]");
+                lastRw = rw;
+            }
 
             // ...and the one thing `outside` has never been able to say: how much of it
             // is the pump WORKING and how much is the pump NOT RUNNING AT ALL.

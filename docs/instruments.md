@@ -3878,3 +3878,51 @@ Reading the arms together (crowd, 1080p 2x MSAA, this box; `docs/perf-plan-part1
 §2 has the full table): base − SCISSOR_1PX = the fragment side; SCISSOR_1PX − TRI1 =
 the vertex fetch + shading; TRI1 = the per-draw front-end cost; and `CZ_VK_GPU_STATS`
 turns each of those into a per-vertex, per-fragment or per-draw price.
+
+## Part 107 — the CPU half of the 60 fps target (a Ryzen 3 3100-class stand-in)
+
+```
+CZ_FENCE_PARK=0    **the control arm for part 107 item 2.** The title's Draw Thread throttles
+                   itself against the GPU by spinning until the FENCE-COMPLETION word (the
+                   first dword of the D3D device's writeback block, dev+0x2A90 —
+                   `kDeviceWritebackPtr`, pm4.cpp's `g_fenceWord`) reaches a target
+                   sequence number: sub_82845160 looping on sub_8283C6C8, whose 32
+                   `db16cyc` SMT-yield hints are no-ops here — 84% of the busiest thread in
+                   the process (part 51 §6ch §1; finding 38 traced the same wait). Only our
+                   PM4 executor stores that word (`StoreGpuRaw`, when it executes the fence
+                   packet). ON by default since part 107 the wait PARKS: `cpu/fence_wait.cpp`
+                   hooks both functions, spins with `pause` for CZ_FENCE_PARK_SPIN_US
+                   (default 50), then sleeps on a futex over that word with a 1 ms bound,
+                   and the executor wakes it after any store that lands on it; the guest
+                   then re-evaluates its own predicate `(W - target) >= (W - R)`. `=0`
+                   restores the spin — the pre-part-107 process, bit-identical otherwise.
+                   Both arms print `[fencewait] ...` at the first wait, and every `[fps]`
+                   window is followed by a `[fencewait] per frame:` line classifying each
+                   episode (ready at entry / spin-resolved / parked, and how each park
+                   ended: woken by a store, timed out with the fence still ahead — a long
+                   wait, re-parked after the body runs — MISSED = timed out although the
+                   fence had passed, or found the word already changed). ENGAGEMENT GATE
+                   (gotcha 151): parks > 0, woken > 0 and MISSED ~ 0. At the crowd on the
+                   stand-in: ~6 parks a frame, ~2 woken, ~4 timeouts (the wait is several
+                   ms and the bound is one), 0 missed. RETRACTION IN PLACE: the first draft
+                   called this the RING READ-POINTER wait and woke on the read-pointer
+                   publication — every park timed out, and CZ_FENCE_PARK_TRACE showed the
+                   polled word climbing by ones at BC739A00 while the cursor sat at 0x460E.
+                   Why it exists at all: on 8 cores a spinning thread is free, on the 4c/8t
+                   target it is a quarter of the machine sitting on a SIBLING of the pump
+                   or a worker (perf-plan-part107 §0.4)
+CZ_FENCE_PARK_SPIN_US=N  the paused-spin phase before the park, in microseconds (default
+                   50; 0 parks immediately). The trade: a longer spin resolves more
+                   episodes without a syscall and burns a sibling's execution units for
+                   longer; a shorter one parks more
+CZ_FENCE_PARK_TRACE=N  print the first N episodes on both sides with the values the
+                   predicate saw (tid, W, target, R). Bounded by construction; it is the
+                   instrument that refuted the first draft in one run
+tools/part107_standin_probe.sh <tag> [ENV=VAL ...]   item 0's instrument: the crowd route
+                   pinned to the stand-in mask (CPUS=0-3,8-11 default; the clock cap is
+                   read from sysfs and printed, never assumed), then at >= 8,000 draws a
+                   per-thread CPU table, a flat `perf record -F 999` for PERF_SECS (30) and
+                   the per-thread context-switch counts. `tools/part53_symbols.py
+                   <tag>.perf.data` reads the profile per thread; NO phase profiler in the
+                   run, by design (gotcha 454)
+```
