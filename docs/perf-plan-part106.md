@@ -379,8 +379,11 @@ device's frame — the next GPU items for a card of that class are the picture d
 **What this does and does not say about the Steam Deck.** The Deck's GPU (~1.6 TFLOPS
 RDNA2 at 1280x800, 88 GB/s shared) is in this stand-in's class and renders 40% fewer
 pixels, so the GPU side is plausible there. Its CPU is not this box's: four Zen 2 cores
-at 2.4-3.5 GHz against eight Zen 3, and the thread budget hands a 4-core box ZERO
-workers (`clamp(cores − 2 − 3, 0, 6)`), which turns parallel record and the guard pool
-off — the serial recorder's crowd is 12.9 ms here, and would be well past 16.7 on the
-Deck. The Deck verdict is a CPU question (part 107 §1 item 1) and a measurement on the
+at 2.4-3.5 GHz against eight Zen 3, and the thread budget hands a 4-core box TWO
+workers (the part-100 floor: >=4 physical cores -> at least 2, >=6 -> at least 3; the
+reserve-and-commit arithmetic alone would give zero — the "zero workers on 4 cores"
+this section first said was that older rule, retracted here) against this box's three.
+The crowd is 10.6 ms of pump time here with three workers and 12.9 on the serial
+recorder; a 4-core Zen 2 at 2.4-3.5 GHz sits between those per-thread and well past
+16.7 ms in absolute terms. The Deck verdict is a CPU question (part 107 §1 item 1) and a measurement on the
 device (part 106's kickoff, the RADV live-USB test), not a scaling.
