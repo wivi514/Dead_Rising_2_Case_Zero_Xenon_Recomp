@@ -47,6 +47,11 @@ uint32_t      Settings_RenderScale();   // LEGACY view of the internal res: roun
                                         // guest-screen arm; new code reads Settings_InternalRes
 bool          Settings_VSync();
 int           Settings_ShadowTier();    // 0=low 1=medium 2=high
+int           Settings_Msaa();          // EDRAM sample count (part 108): 0 = off,
+                                        // 2 (the part-93 default), 4. NEXT LAUNCH
+                                        // only — the persistent EDRAM is one image
+                                        // and every pipeline states its count.
+                                        // CZ_VK_MSAA (the dev arm) wins over this.
 int           Settings_FpsCap();        // 0=OFF (the 500 ceiling that never binds),
                                         // else 30/60/90/120/240/480
 int           Settings_Fov();           // FIELD OF VIEW (part 61): degrees of
@@ -98,6 +103,7 @@ void Settings_SetDisplayMode(CzDisplayMode m);
 void Settings_SetRenderScale(uint32_t s);
 void Settings_SetVSync(bool on);
 void Settings_SetShadowTier(int tier);
+void Settings_SetMsaa(int n);            // 0/2/4 only; anything else is ignored
 void Settings_SetFpsCap(int fps);
 void Settings_SetFov(int deg);
 

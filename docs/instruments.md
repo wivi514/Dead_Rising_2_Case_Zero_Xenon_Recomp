@@ -3729,7 +3729,16 @@ CZ_VK_DEPTH_FLOAT=1  create the EDRAM depth buffer as D32_SFLOAT_S8_UINT instead
                    (the cards genuinely cross in depth; the console hides it with MSAA).
                    Off by default = same-binary control. Everything reads R->depth.format.
 CZ_VK_MSAA=N       TRUE MULTISAMPLED EDRAM (part 93, docs/msaa-plan.md). **DEFAULT 2x
-                   as of part 93** (operator decision) — unset = 2x, `CZ_VK_MSAA=0`
+                   as of part 93** (operator decision). **A SETTING since part 108:**
+                   the in-game panel's MSAA row (OFF/2X/4X) and the launcher's persist
+                   `msaa=` in cz_settings.txt, which an unset CZ_VK_MSAA reads; the env
+                   arm still wins outright, so a recipe is never overridden by the menu.
+                   NEXT LAUNCH ONLY (the persistent EDRAM is one image and every draw
+                   pipeline states its count): the row shows a star while the setting
+                   differs from `VkRenderer_MsaaSamples()` and the footer says so; the
+                   log names the source (`msaa in cz_settings.txt` vs `CZ_VK_MSAA`). An
+                   invalid file value is refused loudly to 2x. — unset = the setting
+                   (2x by default), `CZ_VK_MSAA=0`
                    (or `=1`) is the single-sample control arm (the pre-part-93 renderer
                    bit for bit; bisect any picture/perf complaint with it FIRST). N in
                    {2,4} explicit; an invalid value warns and falls back to the 2x

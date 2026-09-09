@@ -800,6 +800,33 @@ void PcOptions_Pump(PPCContext& ctx, uint8_t* base, uint32_t buttons)
                 }
                 case 4:
                 {
+                    // MSAA (part 108): OFF / 2X / 4X, an ordered ladder clamped at
+                    // the ends (gotcha 377). NEXT LAUNCH ONLY: the persistent EDRAM
+                    // is one image created with its sample count and every draw
+                    // pipeline states it (part 93), so a live change would mean
+                    // rebuilding both — the footer says so, and the row shows a
+                    // star while the setting differs from what this run renders
+                    // with. For a 1050 Ti-class card 1080p without MSAA is the
+                    // difference between 53 and 60 fps (part 107's sessions).
+                    static const int kMsaa[] = { 0, 2, 4 };
+                    int at = 1;
+                    for (int i = 0; i < 3; ++i)
+                        if (kMsaa[i] == Settings_Msaa())
+                            at = i;
+                    at += dir;
+                    if (at < 0)
+                        at = 0;
+                    if (at > 2)
+                        at = 2;
+                    Settings_SetMsaa(kMsaa[at]);
+                    fprintf(stderr, "[pcopt] msaa %s — applies at next launch (this "
+                                    "run renders at %dx)\n",
+                            kMsaa[at] ? (kMsaa[at] == 2 ? "2x" : "4x") : "off",
+                            VkRenderer_MsaaSamples());
+                    break;
+                }
+                case 5:
+                {
                     // The frame cap ladder. OFF is first so the default reads as
                     // "nothing capped", matching the part-54 500-ceiling default.
                     static const int kCaps[] = { 0, 30, 60, 90, 120, 240, 480 };
@@ -820,7 +847,7 @@ void PcOptions_Pump(PPCContext& ctx, uint8_t* base, uint32_t buttons)
                     Vd_SetFpsCapLive(cap);   // applies within one pump tick
                     break;
                 }
-                case 5:
+                case 6:
                 {
                     // FIELD OF VIEW (part 61): degrees of adjustment, -10..+30,
                     // one degree per press, clamped at the ends (ordered ladder —
@@ -837,7 +864,7 @@ void PcOptions_Pump(PPCContext& ctx, uint8_t* base, uint32_t buttons)
                 }
                 // (the MOUSE CAMERA toggle that sat between FOV and SENS is
                 // retired — the mouse camera is always on, operator instruction)
-                case 6:
+                case 7:
                 {
                     // 1..10, clamped like every ordered ladder here (gotcha 377).
                     int sv = Settings_MouseSens() + dir;
@@ -854,7 +881,7 @@ void PcOptions_Pump(PPCContext& ctx, uint8_t* base, uint32_t buttons)
         int sel = Settings_OverlaySelection();
         if (pressed & (kUp | kDown))
         {
-            sel = (sel + ((pressed & kDown) ? 1 : 6)) % 7;
+            sel = (sel + ((pressed & kDown) ? 1 : 7)) % 8;   // eight rows since part 108 (MSAA)
             Settings_SetOverlaySelection(sel);
         }
         else if (pressed & (kLeft | kRight))

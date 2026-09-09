@@ -21535,3 +21535,18 @@ floor), `host/window.cpp` (the mode-list filter comment and the launcher ladder:
 real Deck: specifically the HUD's letterbox band and any top/bottom
 pop-in in cutscenes, which are the two things this design predicts and no headless
 number sees.
+
+### §6ey addendum — MSAA as a setting (2026-09-09, the operator's next instruction)
+
+*"Add the MSAA setting to the panel too."* `msaa=` (0/2/4, default 2) joins
+cz_settings.txt (`host/settings.{h,cpp}`); the renderer's part-93 decision reads it when
+`CZ_VK_MSAA` is unset and names its source in the announce line; the in-game panel gets
+an MSAA row between SHADOW and FRAME CAP (`cpu/pc_options.cpp`, eight rows now, the
+overlay 460 px tall in `host/window.cpp`) and the launcher an MSAA row between SHADOWS
+and FPS CAP. It is a NEXT-LAUNCH setting: the persistent EDRAM is one image created with
+its sample count and every draw pipeline states it, so a live change would rebuild both
+— the row shows a star while the setting differs from `VkRenderer_MsaaSamples()` and the
+footer says "MSAA APPLIES AT THE NEXT LAUNCH". Gated headlessly on precedence and
+validation (file 0 → 1x; file 0 with env 2 → 2x; file 4 → 4x; file 7 → refused to 2x).
+Why it matters: part 107's 210 MHz sessions put a 1050 Ti-class card at 53 fps with 2x
+and 59-65 without, at 1080p.

@@ -7584,20 +7584,27 @@ bool CreateDevice()
     // taken against — so any picture or perf complaint bisects with it FIRST. An
     // invalid value warns and falls back to the 2x default rather than to 1x, so a
     // typo never silently disables AA.
+    // THE SETTING (part 108): the panel's MSAA row and the launcher's persist
+    // `msaa=` in cz_settings.txt (default 2, the part-93 decision), and that is what
+    // an unset CZ_VK_MSAA reads. The env arm still wins outright, so a measurement
+    // recipe cannot be silently overridden by whatever the menu last wrote — the
+    // same precedence every other setting has. Next launch only, for the reason the
+    // comment above gives; the panel says so.
     {
         const char* msaaEnv = Env("CZ_VK_MSAA");
-        long msaaReq = msaaEnv ? strtol(msaaEnv, nullptr, 10) : 2;
+        const int msaaSetting = Settings_Msaa();
+        long msaaReq = msaaEnv ? strtol(msaaEnv, nullptr, 10) : msaaSetting;
         if (msaaEnv && msaaReq != 0 && msaaReq != 1 && msaaReq != 2 && msaaReq != 4)
         {
             fprintf(stderr, "[vk] CZ_VK_MSAA=%s is not 0/1/2/4 — IGNORED, using the "
-                            "2x default (CZ_VK_MSAA=0 is the single-sample control)\n",
-                    msaaEnv);
-            msaaReq = 2;
+                            "setting (%dx; CZ_VK_MSAA=0 is the single-sample control)\n",
+                    msaaEnv, msaaSetting ? msaaSetting : 1);
+            msaaReq = msaaSetting;
         }
         if (msaaReq == 0 || msaaReq == 1)
-            fprintf(stderr, "[vk] CZ_VK_MSAA=%ld — EDRAM is SINGLE-SAMPLE by request "
+            fprintf(stderr, "[vk] %s — EDRAM is SINGLE-SAMPLE by request "
                             "(the pre-part-93 control arm; the default is 2x)\n",
-                    msaaReq);
+                    msaaEnv ? "CZ_VK_MSAA=0" : "msaa=0 in cz_settings.txt");
         if (msaaReq == 2 || msaaReq == 4)
         {
             const VkSampleCountFlags supported =
@@ -7651,10 +7658,11 @@ bool CreateDevice()
                                     "%ux instead\n", msaaReq,
                             unsigned(props.limits.framebufferColorSampleCounts),
                             unsigned(props.limits.framebufferDepthSampleCounts), n);
-                fprintf(stderr, "[vk] CZ_VK_MSAA — EDRAM is MULTISAMPLED at %ux "
+                fprintf(stderr, "[vk] %s — EDRAM is MULTISAMPLED at %ux "
                                 "(resolves at RB_COPY; SAMPLE_ZERO depth resolve)%s. "
                                 "CZ_VK_MSAA=0 is the single-sample control arm.\n",
-                        n, msaaEnv ? "" : " [2x default]");
+                        msaaEnv ? "CZ_VK_MSAA" : "msaa in cz_settings.txt", n,
+                        msaaEnv ? "" : msaaSetting == 2 ? " [the 2x default]" : "");
                 if (R->rtEnabled)
                 {
                     // The RT factor pass samples R->depth through an ordinary 2D view,
@@ -30658,6 +30666,14 @@ void VkRenderer_RequestSwapchainRebuild()
 // The factor the GAME's roaming camera must be widened by, in tan space, so that its
 // own 16:9 culling frustum covers the rendered view: k in wide mode (the horizontal
 // grows by k), 1/k in narrow mode (the vertical grows by 1/k; part 108), 1 at 16:9.
+// The EDRAM sample count THIS run is using (1, 2 or 4), for the panel's "applies at
+// next launch" star: the setting can differ from it until a relaunch. 0 before the
+// renderer exists.
+int VkRenderer_MsaaSamples()
+{
+    return R ? int(R->msaaSamples) : 0;
+}
+
 float VkRenderer_WideFovFactor()
 {
     if (WideMode())

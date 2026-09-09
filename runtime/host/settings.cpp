@@ -19,6 +19,10 @@ struct State
     uint32_t renderScale = 1;           // legacy mirror, kept in sync for old readers
     bool vsync = false;         // false = MAILBOX (the part-54 default), true = FIFO
     int shadowTier = 2;         // the title rendered at full shadow resolution until now
+    int msaa = 2;               // EDRAM sample count: 0 = off (single-sample), 2, 4.
+                                // The part-93 default is 2x. Applies at the NEXT
+                                // LAUNCH (the persistent EDRAM is one image and every
+                                // pipeline states its count); CZ_VK_MSAA wins (part 108).
     int fpsCap = 0;             // 0 = OFF, i.e. the part-54 500-ceiling that never binds
     int fov = 0;                // degrees of fov adjustment, -10..+30; 0 = OG (part 61)
     int aspect = 0;             // 0 = 16:9 (the title's own), 1 = 21:9 (part 60 wide mode)
@@ -74,6 +78,7 @@ void SaveLocked()
             "render_scale=%u\n"     // legacy mirror: round(res_h/720), for old builds
             "vsync=%d\n"
             "shadow_tier=%d\n"     // 0 low, 1 medium, 2 high
+            "msaa=%d\n"            // 0 off, 2, 4 — next launch; CZ_VK_MSAA wins
             "fps_cap=%d\n"         // 0 = off, else 30/60/90/120/240/480
             "fov=%d\n"             // field-of-view adjustment in degrees, -10..+30, 0 = OG
             "aspect=%d\n"          // 0 = 16:9, 1 = 21:9 (applies at next launch)
@@ -82,9 +87,9 @@ void SaveLocked()
             "language=%d\n"       // Xbox ID: 1=en 2=ja 4=fr 5=es 6=it 7=ko
             "skip_intro_logos=%d\n", // 1 = jump straight to the title screen
             int(g_state.displayMode), g_state.resW, g_state.resH, g_state.renderScale,
-            g_state.vsync ? 1 : 0, g_state.shadowTier, g_state.fpsCap, g_state.fov,
-            g_state.aspect, g_state.rtShadows, g_state.mouseSens, g_state.language,
-            g_state.skipIntroLogos ? 1 : 0);
+            g_state.vsync ? 1 : 0, g_state.shadowTier, g_state.msaa, g_state.fpsCap,
+            g_state.fov, g_state.aspect, g_state.rtShadows, g_state.mouseSens,
+            g_state.language, g_state.skipIntroLogos ? 1 : 0);
     fclose(f);
 }
 
@@ -138,6 +143,18 @@ void Settings_Load(const std::string& path)
             g_state.vsync = v != 0;
         else if (!strcmp(key, "shadow_tier") && v >= 0 && v <= 2)
             g_state.shadowTier = int(v);
+        else if (!strcmp(key, "msaa"))
+        {
+            // 0/1 both mean single-sample (the renderer's own spelling of the
+            // control arm accepts either); anything else is refused loudly to the
+            // 2x default, never silently to 1x — the same rule CZ_VK_MSAA has.
+            if (v == 0 || v == 1)
+                g_state.msaa = 0;
+            else if (v == 2 || v == 4)
+                g_state.msaa = int(v);
+            else
+                fprintf(stderr, "[settings] msaa=%ld is not 0/2/4 — using 2x\n", v);
+        }
         else if (!strcmp(key, "rt_shadows") && v >= 0 && v <= 1)
             g_state.rtShadows = int(v);
         // mouse_cam: retired key (the mouse camera is always on now); an old
@@ -204,9 +221,10 @@ void Settings_Load(const std::string& path)
     if (g_state.renderScale > 4) g_state.renderScale = 4;
     g_state.aspect = uint64_t(g_state.resW) * 9 > uint64_t(g_state.resH) * 16 ? 1 : 0;
     fprintf(stderr, "[settings] %s: display_mode=%d res=%ux%u vsync=%d "
-                    "shadow_tier=%d fps_cap=%d fov=%d\n", path.c_str(),
+                    "shadow_tier=%d msaa=%d fps_cap=%d fov=%d\n", path.c_str(),
             int(g_state.displayMode), g_state.resW, g_state.resH,
-            g_state.vsync ? 1 : 0, g_state.shadowTier, g_state.fpsCap, g_state.fov);
+            g_state.vsync ? 1 : 0, g_state.shadowTier, g_state.msaa, g_state.fpsCap,
+            g_state.fov);
 }
 
 void Settings_Save()
@@ -409,6 +427,21 @@ void Settings_SetVSync(bool on)
 {
     std::lock_guard<std::mutex> lock(g_mutex);
     g_state.vsync = on;
+    SaveLocked();
+}
+
+int Settings_Msaa()
+{
+    std::lock_guard<std::mutex> lock(g_mutex);
+    return g_state.msaa;
+}
+
+void Settings_SetMsaa(int n)
+{
+    if (n != 0 && n != 2 && n != 4)
+        return;
+    std::lock_guard<std::mutex> lock(g_mutex);
+    g_state.msaa = n;
     SaveLocked();
 }
 

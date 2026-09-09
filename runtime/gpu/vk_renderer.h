@@ -114,6 +114,9 @@ int VkRenderer_RtUnavailableReason();
 // own 16:9 CULLING frustum covers the 21:9 view, and the renderer narrows the
 // projection back vertically. Depends only on settings/env, safe before init.
 float VkRenderer_WideFovFactor();
+// The EDRAM sample count this run is rendering with (1/2/4; 0 before init) — part
+// 108's panel row compares the persisted setting against it.
+int VkRenderer_MsaaSamples();
 
 // ===================================================================================
 // Phase C (the D3D pivot): the SAME renderer driven from the API line

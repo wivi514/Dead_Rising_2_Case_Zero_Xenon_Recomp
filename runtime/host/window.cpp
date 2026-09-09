@@ -559,10 +559,11 @@ const char* Glyph(char c)
 template <typename Rect>
 void EmitSettingsOverlay(int w, int h, Rect&& rect)
 {
-    const int panelW = 640, panelH = 420;   // 420: seven rows — the MOUSE CAMERA
-                                            // toggle is retired (always on); MOUSE
-                                            // SENS stays (part 64 had merged the
-                                            // RT tiers INTO the shadow row)
+    const int panelW = 640, panelH = 460;   // 460: eight rows — MSAA joined in part
+                                            // 108; the MOUSE CAMERA toggle is retired
+                                            // (always on); MOUSE SENS stays (part 64
+                                            // had merged the RT tiers INTO the shadow
+                                            // row)
     const int panelX = (w - panelW) / 2, panelY = (h - panelH) / 2 - 30;
     if (panelW <= 0 || panelH <= 0)
         return;
@@ -649,17 +650,27 @@ void EmitSettingsOverlay(int w, int h, Rect&& rect)
     // the mouse is host-made (window.cpp's ReadKeyboard) and these are its knobs.
     char sensName[4];
     snprintf(sensName, sizeof sensName, "%d", Settings_MouseSens());
-    const char* rows[7][2] = {
+    // MSAA (part 108): the persisted setting, starred while it differs from the
+    // sample count THIS run renders with — it applies at the next launch, and the
+    // star is what keeps "shown" and "running" apart, as the resolution row's does.
+    const int msaaSet = Settings_Msaa();
+    const int msaaRun = VkRenderer_MsaaSamples();
+    const bool msaaPending = msaaRun && (msaaSet ? msaaSet : 1) != msaaRun;
+    char msaaName[8];
+    snprintf(msaaName, sizeof msaaName, "%s%s",
+             msaaSet == 0 ? "OFF" : msaaSet == 2 ? "2X" : "4X", msaaPending ? " *" : "");
+    const char* rows[8][2] = {
         { "RESOLUTION", resName },
         { "DISPLAY MODE", kModeNames[int(Settings_DisplayMode()) % 3] },
         { "VSYNC", kOnOff[Settings_VSync() ? 1 : 0] },
         { "SHADOW", kShadowRow[shadowRow % 6] },
+        { "MSAA", msaaName },
         { "FRAME CAP", capName },
         { "FIELD OF VIEW", fovName },
         { "MOUSE SENS", sensName },
     };
     const int sel = Settings_OverlaySelection();
-    for (int i = 0; i < 7; ++i)
+    for (int i = 0; i < 8; ++i)
     {
         const int y = panelY + 86 + i * 40;
         if (i == sel)
@@ -684,6 +695,8 @@ void EmitSettingsOverlay(int w, int h, Rect&& rect)
     text(panelX + 20, panelY + panelH - 30,
          resPending
              ? "PRESS X TO APPLY THE NEW RESOLUTION"
+         : msaaPending
+             ? "MSAA APPLIES AT THE NEXT LAUNCH"
          : rtWhy == 3
              ? "RESOLUTION: X APPLIES LIVE - RT SHADOWS ARE OFF IN THIS BUILD"
          : rtWhy == 1
@@ -1630,6 +1643,8 @@ bool Host_RunLauncher()
         char fovBuf[16];
         snprintf(fovBuf, sizeof fovBuf, "+%d", Settings_Fov());
         static const char* kShadowNames[] = { "LOW", "MEDIUM", "HIGH" };
+        static const char* kMsaaNames[] = { "OFF", "2X", "4X" };
+        const int msaaIdx = Settings_Msaa() == 0 ? 0 : Settings_Msaa() == 2 ? 1 : 2;
         static const char* kDispNames[] = { "WINDOW", "BORDERLESS", "FULLSCREEN" };
         // The six Xbox language IDs whose banks the disc carries, in the order
         // MEASURED in part 99 (CZ_LANGUAGE=N + CZ_FILE_TRACE: each ID opens
@@ -1650,6 +1665,7 @@ bool Host_RunLauncher()
             { "RESOLUTION", resBuf },
             { "VSYNC", Settings_VSync() ? "ON" : "OFF" },
             { "SHADOWS", kShadowNames[Settings_ShadowTier() % 3] },
+            { "MSAA", kMsaaNames[msaaIdx] },
             { "FPS CAP", Settings_FpsCap() ? fpsBuf : "OFF" },
             { "FOV", Settings_Fov() ? fovBuf : "DEFAULT" },
             { "SUBTITLES", kLangNames[langIdx] },
@@ -1792,6 +1808,14 @@ bool Host_RunLauncher()
                     break;
                 case 5:
                 {
+                    // MSAA (part 108): OFF/2X/4X, the launcher being the natural
+                    // home of a next-launch setting.
+                    static const int kMsaa[] = { 0, 2, 4 };
+                    Settings_SetMsaa(kMsaa[(msaaIdx + dir + 3) % 3]);
+                    break;
+                }
+                case 6:
+                {
                     static const int caps[] = { 0, 30, 60, 120 };
                     int cur = 0;
                     for (int i = 0; i < 4; ++i)
@@ -1800,13 +1824,13 @@ bool Host_RunLauncher()
                     Settings_SetFpsCap(caps[(cur + dir + 4) % 4]);
                     break;
                 }
-                case 6:
+                case 7:
                     Settings_SetFov(std::clamp(Settings_Fov() + dir * 5, 0, 20));
                     break;
-                case 7:
+                case 8:
                     Settings_SetLanguage(kLangIds[(langIdx + dir + 6) % 6]);
                     break;
-                case 8:
+                case 9:
                     Settings_SetSkipIntroLogos(!Settings_SkipIntroLogos());
                     break;
                 }

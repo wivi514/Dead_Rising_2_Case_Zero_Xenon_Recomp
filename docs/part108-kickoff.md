@@ -94,8 +94,12 @@ document what the EDRAM stand-in does with it).
     launcher ladder carries 1280x800 / 1920x1200 / 2560x1600; OPERATOR-VERIFIED the same
     evening — the panel offered 1280x800 / 1440x900 / 1680x1050 / 1920x1200 on the 3440x1440
     display and the selection applied live: "Perfect".**
-0a. **MSAA as a SETTING** (§0c): the 1050 Ti-class answer is 1080p without MSAA, and a
-    player cannot choose that from the panel.
+0a. ~~**MSAA as a SETTING** (§0c): the 1050 Ti-class answer is 1080p without MSAA, and a
+    player cannot choose that from the panel.~~ **DONE 2026-09-09**: `msaa=0|2|4` in
+    cz_settings.txt, an MSAA row in the panel (row 5, starred until relaunch, footer
+    "MSAA APPLIES AT THE NEXT LAUNCH") and in the launcher; `CZ_VK_MSAA` wins over it.
+    Headless gate: file 0 → single-sample, file 0 + env 2 → 2x, file 4 → 4x, file 7 →
+    refused to 2x, each announced with its source. The panel's look is the operator's.
 
 0. **Re-measure the 4-vs-8-core gap WITHOUT the scan** (two runs each, capped): what
    remains is the real contention number for §0.4's item, and it decides whether the
