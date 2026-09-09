@@ -69,6 +69,25 @@ void Host_WindowFollowInternalRes(uint32_t w, uint32_t h)
         g_pendingWindowRes.store((uint64_t(w) << 32) | h, std::memory_order_release);
 }
 
+// The pad's wanted motor state, one word: bit 32 = "a request has been made" (so a
+// title asking for 0/0 after 0/0 is distinguishable from silence), bits 16..31 the
+// left (low-frequency) motor, bits 0..15 the right (high-frequency) one. Newest wins:
+// the title writes the CURRENT state, not a queue of effects, so a pair overwritten
+// before the window thread saw it was already stale on the console too. Pad 1 has no
+// physical controller (it is the keyboard), so its requests are counted and dropped.
+std::atomic<uint64_t> g_padRumble{ 0 };
+std::atomic<uint32_t> g_padRumbleOtherPad{ 0 };
+void Host_PadRumble(uint32_t userIndex, uint16_t leftMotor, uint16_t rightMotor)
+{
+    if (userIndex != 0)
+    {
+        g_padRumbleOtherPad.fetch_add(1, std::memory_order_relaxed);
+        return;
+    }
+    g_padRumble.store((uint64_t(1) << 32) | (uint64_t(leftMotor) << 16) | rightMotor,
+                      std::memory_order_release);
+}
+
 // F7 — MARK THE FRAME TRACE. The operator plays, feels a stutter, and presses this; the
 // renderer stamps the current frame number into the trace and the log.
 //
@@ -968,6 +987,102 @@ void CloseController(SDL_JoystickID which)
     SDL_GameControllerClose(g_controller);
     g_controller = nullptr;
     g_controllerId = -1;
+}
+
+// DRIVE THE MOTORS (part 108). Window thread only — SDL_GameControllerRumble writes
+// the device through the joystick layer, which is not thread-safe against the
+// polling in this loop.
+//
+// The state machine is deliberately small: `last` is the pair the device was last
+// told, and `lastIssue` when. A CHANGE is issued immediately. A held non-zero pair is
+// re-issued every 250 ms because SDL's rumble is a timed effect and XInput's is a
+// level — the title sets 40%/0% and expects it to stay until it says otherwise
+// (sub_825D7AC8 is a plain "set the current state" wrapper). A 700 ms duration on
+// each issue is long enough that a missed refresh (a loop turn stalled on a
+// swapchain rebuild, say) does not read as a dropped effect, and short enough that
+// a title that stops calling us — a crash, a pause — leaves a pad that goes quiet on
+// its own rather than one buzzing until unplugged.
+//
+// The driver's answer is checked on EVERY issue, not just the first: a pad that
+// supports rumble on one backend (hidraw) and not another (the kernel xpad driver
+// with ff disabled) reports it at the call, and a `-1` that prints once per
+// distinct answer is how the log says which case a player's "no vibration" is.
+// "yes"/"NO" for the log lines below; the query is SDL 2.0.18+, and a build against
+// an older SDL says so rather than guessing.
+const char* HasRumbleStr(SDL_GameController* c)
+{
+#if SDL_VERSION_ATLEAST(2, 0, 18)
+    return SDL_GameControllerHasRumble(c) ? "yes" : "NO";
+#else
+    (void)c;
+    return "unknown (SDL < 2.0.18)";
+#endif
+}
+
+uint16_t g_rumbleLastL = 0, g_rumbleLastR = 0;
+bool     g_rumbleEverIssued = false;
+int      g_rumbleLastRc = 0;
+std::chrono::steady_clock::time_point g_rumbleLastIssue{};
+uint64_t g_rumbleIssues = 0, g_rumbleRequests = 0;
+bool     g_rumbleOff = false, g_rumbleTrace = false;
+
+void IssueRumble(uint16_t l, uint16_t r, const char* why)
+{
+    if (!g_controller)
+        return;
+    const int rc = SDL_GameControllerRumble(g_controller, l, r, 700);
+    ++g_rumbleIssues;
+    if (!g_rumbleEverIssued || rc != g_rumbleLastRc)
+    {
+        // Once per distinct driver answer, so a pad that starts refusing mid-run is
+        // reported, and a pad that never worked is reported exactly once.
+        fprintf(stderr, "[host] rumble: %s -> SDL_GameControllerRumble(%u, %u) = %d%s%s "
+                        "(has-rumble: %s)\n", why, l, r, rc, rc ? ": " : "",
+                rc ? SDL_GetError() : "",
+                HasRumbleStr(g_controller));
+    }
+    g_rumbleEverIssued = true;
+    g_rumbleLastRc = rc;
+    g_rumbleLastL = l;
+    g_rumbleLastR = r;
+    g_rumbleLastIssue = std::chrono::steady_clock::now();
+    if (g_rumbleTrace)
+        fprintf(stderr, "[rumble] %s L=%u R=%u rc=%d\n", why, l, r, rc);
+}
+
+void PumpRumble()
+{
+    if (g_rumbleOff)
+        return;
+    const uint64_t word = g_padRumble.exchange(0, std::memory_order_acq_rel);
+    if (word)
+    {
+        ++g_rumbleRequests;
+        const uint16_t l = uint16_t(word >> 16), r = uint16_t(word);
+        // The request is traced BEFORE the controller check, so a run with no pad
+        // attached can still witness that the title drives the motors — the
+        // question a headless or pad-less box can answer, and the one that
+        // separates "the title never asks" from "the pad never moves". Traced on
+        // CHANGE only: the title sets its state every frame (20,000 identical 0/0
+        // requests in a 3-minute run), and a trace that prints each is unreadable.
+        static uint16_t tracedL = 0xFFFF, tracedR = 0xFFFF;
+        if (g_rumbleTrace && (l != tracedL || r != tracedR))
+        {
+            tracedL = l; tracedR = r;
+            fprintf(stderr, "[rumble] request #%llu L=%u R=%u%s\n",
+                    (unsigned long long)g_rumbleRequests, l, r,
+                    g_controller ? "" : " (no controller attached)");
+        }
+        if (!g_rumbleEverIssued || l != g_rumbleLastL || r != g_rumbleLastR)
+            IssueRumble(l, r, "change");
+    }
+    // A held level outlives SDL's timed effect only if we keep telling the device.
+    if (g_rumbleEverIssued && (g_rumbleLastL || g_rumbleLastR))
+    {
+        const auto since = std::chrono::steady_clock::now() - g_rumbleLastIssue;
+        if (since >= std::chrono::milliseconds(250))
+            IssueRumble(g_rumbleLastL, g_rumbleLastR, "refresh");
+    }
 }
 
 // A keyboard axis is a pair of keys, and the value it produces is FULL SCALE.
@@ -2261,6 +2376,31 @@ bool Host_WindowInit()
         OpenController(i);
     if (!g_controller)
         fprintf(stderr, "[host] no game controller attached; keyboard only.\n");
+
+    // Rumble (part 108): the off switch, the trace, and the positive control.
+    g_rumbleOff = getenv("CZ_NO_RUMBLE") != nullptr;
+    g_rumbleTrace = getenv("CZ_RUMBLE_TRACE") != nullptr;
+    if (g_rumbleOff)
+        fprintf(stderr, "[host] rumble: OFF (CZ_NO_RUMBLE) — the title's motor requests "
+                        "are consumed and discarded, as before part 108.\n");
+    else if (getenv("CZ_RUMBLE_TEST"))
+    {
+        // One pulse, both motors at half, before any guest input exists. If the pad
+        // does not move here the fault is below us (the pad, SDL's backend, the
+        // kernel driver's force-feedback), and no title-side question is worth
+        // asking; if it does, and the game is silent, the request never left the
+        // guest — check the title's own DISABLE VIBRATION option first.
+        if (g_controller)
+        {
+            const int rc = SDL_GameControllerRumble(g_controller, 32768, 32768, 500);
+            fprintf(stderr, "[host] rumble: CZ_RUMBLE_TEST pulse (32768/32768, 500 ms) "
+                            "-> %d%s%s (has-rumble: %s)\n", rc, rc ? ": " : "",
+                    rc ? SDL_GetError() : "",
+                    HasRumbleStr(g_controller));
+        }
+        else
+            fprintf(stderr, "[host] rumble: CZ_RUMBLE_TEST — no controller to pulse.\n");
+    }
     return true;
 }
 
@@ -2614,6 +2754,9 @@ void Host_WindowRun()
         // CZ_VK_LIVE_RES_TEST arm) — a windowed window follows it (part 108).
         if (const uint64_t wh = g_pendingWindowRes.exchange(0, std::memory_order_acq_rel))
             ApplyWindowFollowRes(uint32_t(wh >> 32), uint32_t(wh), "resolution applied");
+
+        // The title's rumble state, from XamInputSetState (part 108).
+        PumpRumble();
 
         // CZ_WINDOW_RESIZE_AT=SECS:WxH — THE POSITIVE CONTROL FOR THE SWAPCHAIN REBUILD.
         //

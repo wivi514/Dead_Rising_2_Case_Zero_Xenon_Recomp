@@ -3974,3 +3974,31 @@ tools/part107_standin_probe.sh <tag> [ENV=VAL ...]   item 0's instrument: the cr
                    <tag>.perf.data` reads the profile per thread; NO phase profiler in the
                    run, by design (gotcha 454)
 ```
+
+## Part 108 — controller vibration (the first public player report)
+
+```
+CZ_NO_RUMBLE=1     the OFF switch for controller vibration (part 108). The kernel's
+                   XamInputSetState hands the title's two motor words (XInput's 0..65535;
+                   left = low-frequency, right = high-frequency) to host/window.cpp through
+                   one atomic; the window thread drives SDL_GameControllerRumble with them
+                   at its next loop turn — a CHANGE at once, a held non-zero pair re-issued
+                   every 250 ms with a 700 ms duration, because XInput's rumble is a LEVEL
+                   and SDL's is a timed effect (the title sets a state and expects it to
+                   stay; a title that stops calling us leaves a pad that goes quiet in
+                   0.7 s rather than one buzzing until unplugged). Pad 0 only — pad 1 is
+                   the keyboard. =1 consumes and discards, the runtime as it was from
+                   phase 3 to part 108. Each distinct driver answer prints once
+                   (`[host] rumble: change -> SDL_GameControllerRumble(L, R) = rc
+                   (has-rumble: yes|NO)`), so a pad whose backend refuses is named in the
+                   log rather than felt as silence
+CZ_RUMBLE_TRACE=1  every request from the title (`[rumble] request #N L=.. R=..`, printed
+                   BEFORE the controller check so a box with no pad can still witness that
+                   the title asks) and every issue to the device with its rc
+CZ_RUMBLE_TEST=1   the POSITIVE CONTROL: one pulse, both motors at 32768 for 500 ms, at
+                   window creation and before any guest input exists. No movement here
+                   means the fault is below the runtime (the pad, SDL's backend, the kernel
+                   driver's force feedback) and no title-side question is worth asking;
+                   movement here with a silent game means the request never left the
+                   guest — the title's own DISABLE VIBRATION option (F4 debug menu) first
+```

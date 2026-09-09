@@ -21582,3 +21582,44 @@ Gate: a windowed run with `CZ_VK_LIVE_RES_TEST=900:1600x900`
 1600x900` on the next three lines. The operator then drove the panel through 2560x1440,
 3440x1440 (clamped to 3324x1392, the log names the clamp), 1920x1200 and 2048x1152 in
 the same run, every apply followed by the window, and said *"it works"*.
+
+### §6ey addendum 3 — controller vibration (2026-09-09, the first public report taken)
+
+*"Implement controller vibration."* Item 1 of `open-items.md` 0aa, written the same
+afternoon from the Reddit reports. From phase 3 to now `XamInputSetState` accepted the
+title's two motor words and discarded them, with the caps advertising both motors —
+so the title was driving motors that did not exist, and every pad player had a silent
+game. Now (`kernel/imports.cpp`, `host/window.{h,cpp}`):
+
+* **The seam** is one atomic word: the import (any guest thread) stores
+  `(1<<32) | left<<16 | right` through `Host_PadRumble`; the window thread consumes
+  it beside the display-mode and window-follow consumes and calls
+  `SDL_GameControllerRumble`. Newest wins — the title writes its CURRENT state (
+  `sub_825D7AC8` is a plain wrapper, and on our reported gamepad subtype it takes the
+  un-swapped path; see the caps comment), so a pair overwritten before the window
+  thread looked was stale on the console too.
+* **Level versus effect.** XInput's rumble is a LEVEL that persists until changed;
+  SDL's is a timed effect. A change is issued at once; a held non-zero pair is
+  re-issued every 250 ms with a 700 ms duration. A title that stops calling us leaves
+  a pad that goes quiet in 0.7 s rather than one that buzzes until unplugged.
+* **The title asks every frame.** 20,248 requests in a 3-minute unattended run, all
+  0/0; the trace prints on change only, or it is unreadable.
+* **Arms**: `CZ_NO_RUMBLE=1` the control (consume and discard, as before);
+  `CZ_RUMBLE_TEST=1` the positive control — one pulse at window creation, no guest
+  involved, which is what separates "this pad cannot rumble under SDL" from "the
+  title never asked"; `CZ_RUMBLE_TRACE=1` the witness. Each distinct driver answer
+  prints once, with `has-rumble`, so a refusing backend is named in the log.
+
+**Gate, the operator's own session** (`~/DR2CZ-troubleshooting/play/rumble_test.log`,
+Xbox Series X controller, `has-rumble: yes`, test pulse rc 0): in ~3 minutes of play
+the title requested **94 distinct level changes** — 41 at full strength (65535/65535),
+11 at 40% (26214/26214), 42 returns to 0/0 — and every issue returned 0 (one distinct
+driver answer in the whole log). The operator: *"it works"*. Windows is owed
+(`part108-kickoff.md` §1c; SDL's XInput/WGI backend does the rumble there).
+
+One thing the unattended gate run taught: a WINDOWED scripted run on the operator's
+desktop with their pad attached is not a headless run. The operator watched it open the
+leaderboard from the main menu; the fixed-interval press sequence and a live pad are
+two input sources into one merged pad 0, and the sequence is only ever a gate
+configuration headless (gotcha 78). The run was stopped; the operator's session
+replaced it.

@@ -40,6 +40,10 @@ shader cache are reused.
 
 ### Both platforms
 
+- **Controller vibration.** The game's rumble now reaches your pad — hits, weapons,
+  everything the Xbox 360 version shook the controller for. Any pad SDL drives with
+  rumble support; the game's own vibration option still applies. Set `CZ_NO_RUMBLE=1`
+  to switch it off.
 - **Faster start-up after many sessions.** The runtime remembers small streamed textures
   it has seen (this is what keeps a certain gravel floor from rendering black), one file
   each — and that directory was being re-read file by file at every launch, one second

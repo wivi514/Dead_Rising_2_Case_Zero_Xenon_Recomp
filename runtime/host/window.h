@@ -194,6 +194,22 @@ void Host_RequestDebugMenu();
 // Request* functions above: the caller has no window to ask.
 void Host_WindowFollowInternalRes(uint32_t w, uint32_t h);
 
+// CONTROLLER VIBRATION (part 108, from the first public player reports: "no
+// vibration"). The kernel's XamInputSetState hands the title's two motor speeds here,
+// XInput's units (0..65535; left = the low-frequency motor, right = the high-frequency
+// one), from whatever guest thread ran the title's rumble path. The window thread
+// consumes the newest pair at its next loop turn and drives the SDL controller's
+// motors; XInput has no duration, so a held non-zero pair is re-issued every 250 ms
+// with a 700 ms duration, which is what keeps a long effect alive across the gap
+// between two title updates without a burst of device writes. Only pad 0 has a
+// physical controller behind it. `CZ_NO_RUMBLE=1` is the off switch (the runtime as
+// it was before this part), `CZ_RUMBLE_TRACE=1` prints every pair and the driver's
+// answer, and `CZ_RUMBLE_TEST=1` pulses the motors once at window creation
+// regardless of the guest — the positive control that separates "this pad cannot
+// rumble under SDL" from "the title never asked". Outside the CZ_HAVE_SDL split for
+// the same reason as the Request* functions above.
+void Host_PadRumble(uint32_t userIndex, uint16_t leftMotor, uint16_t rightMotor);
+
 // F9 — dump every resolve snapshot of the NEXT frame, on demand, into
 // `CZ_VK_SNAP_DUMP`'s directory. The renderer consumes the edge at present time.
 //

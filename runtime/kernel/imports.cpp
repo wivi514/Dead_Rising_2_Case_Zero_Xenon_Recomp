@@ -4758,10 +4758,15 @@ void DebugTunables_PumpAutoChuck(PPCContext& ctx, uint8_t* base);
 void DebugTunables_PumpDebugMenu(PPCContext& ctx, uint8_t* base);
 void PcOptions_Pump(PPCContext& ctx, uint8_t* base, uint32_t buttons);
 
-// Rumble. Accepted and discarded: there is no motor, and reporting failure would
-// send sub_825D7AC8's callers down an error path over an effect that does not
-// matter. The values are logged so the eventual input layer has a witness that the
-// title does drive them.
+// Rumble. REAL as of part 108 (the first public player reports named it): the two
+// motor speeds go to host/window.cpp, whose window thread drives the SDL controller
+// (Host_PadRumble's comment has the mechanism and the arms). The call is the title's
+// "set the current state" — sub_825D7AC8 is a plain wrapper, and on our reported
+// gamepad subtype it takes the ordinary un-swapped path (see
+// XamInputGetCapabilities above) — so the newest pair wins and nothing is queued.
+// Success is returned whatever the host does with it: a pad without motors is still a
+// connected pad, and an error here sends the caller down a path for a device that
+// vanished.
 static uint32_t XamInputSetState_x(uint32_t userIndex, uint32_t unk,
                                    GuestInputVibration* vibration)
 {
@@ -4769,8 +4774,11 @@ static uint32_t XamInputSetState_x(uint32_t userIndex, uint32_t unk,
     if (userIndex >= kLocalPadCount)
         return ERROR_DEVICE_NOT_CONNECTED;
     if (vibration)
-        KLOG("XamInputSetState(user=%u, motors %u/%u)\n", userIndex,
-             vibration->leftMotor.get(), vibration->rightMotor.get());
+    {
+        const uint16_t l = vibration->leftMotor.get(), r = vibration->rightMotor.get();
+        KLOG("XamInputSetState(user=%u, motors %u/%u)\n", userIndex, l, r);
+        Host_PadRumble(userIndex, l, r);
+    }
     return 0;
 }
 

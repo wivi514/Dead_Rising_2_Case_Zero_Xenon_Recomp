@@ -61,9 +61,9 @@ game folder at any time without losing progress.
   keys for the d-pad. Every on-screen prompt shows real key icons, and the exact map
   is printed in the terminal at startup. Rebindable via a `kbmap.txt` file next
   to the executable.
-- **Any controller SDL recognizes** (Xbox layout) works, and the prompts switch
-  between keyboard and controller art automatically depending on which one you
-  touched last.
+- **Any controller SDL recognizes** (Xbox layout) works, with vibration, and the
+  prompts switch between keyboard and controller art automatically depending on
+  which one you touched last.
 
 ## Features
 

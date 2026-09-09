@@ -3540,14 +3540,21 @@ instruction *"just take what we didn't fix yet so we work on it in future
 conversation"*. Cross-checked against the release notes and the code; the ones ALREADY
 FIXED are listed at the end so nobody re-buys them. In the order they should be taken:
 
-1. **Controller vibration is not implemented.** Wired and wireless Xbox One pads, no
+1. ~~**Controller vibration is not implemented.**~~ **DONE, part 108 (2026-09-09,
+   the same day this list was written; `phase5-notes.md` §6ey addendum 3).** The seam
+   is exactly the one described: `XamInputSetState_x` hands the two motor words to
+   `Host_PadRumble`, the window thread drives `SDL_GameControllerRumble` (a change at
+   once, a held level refreshed every 250 ms). `CZ_NO_RUMBLE=1` is the control,
+   `CZ_RUMBLE_TEST=1` the positive control (a pulse with no guest involved), and
+   `CZ_RUMBLE_TRACE=1` the witness. Operator-verified the same day on an Xbox Series X pad
+   (*"it works"*; 94 level changes in the log, every issue rc 0). Windows leg owed. ~~Wired and wireless Xbox One pads, no
    rumble. `XamInputSetState_x` (`kernel/imports.cpp`) accepts the motor values, logs them
    under `KLOG` and discards them ("there is no motor"); the caps already advertise both
    motors as 0xFF, so the title DOES drive them. The fix is one seam: hand the two motor
    values to the window thread and call `SDL_GameControllerRumble` (SDL 2.0.9+; the
    controller handle is `g_controller` in `host/window.cpp`), 0..65535 from the guest's
    0..65535 words, with a duration that outlasts one guest poll. Verify with the
-   `[kcall]` motor line against a felt pulse. The operator promised it publicly.
+   `[kcall]` motor line against a felt pulse.~~ The operator promised it publicly.
 2. **Mouse wheel takes TWO notches to change the inventory item.** `NativeKbm_MouseWheel`
    pushes a KEY_3 / KEY_1 press+release per SDL notch. First question: does the title's
    keyboard controller see both edges in one poll and coalesce them (a tap whose press and

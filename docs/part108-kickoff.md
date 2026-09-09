@@ -135,6 +135,16 @@ document what the EDRAM stand-in does with it).
   pinned, fullscreen and maximised windows decline with a log line. §6ey addendum 2;
   operator-verified in the gate run itself (*"it works"*). The Windows compile of
   `host/window.cpp` is owed along with the rest of §1's item.
+* **Controller vibration** (the first of the public player reports the operator queued
+  as `open-items.md` 0aa; instruction: *"Implement controller vibration"*):
+  `XamInputSetState` now reaches the pad — `Host_PadRumble` → the window thread →
+  `SDL_GameControllerRumble`, a change at once and a held level refreshed every
+  250 ms. `CZ_NO_RUMBLE=1` control, `CZ_RUMBLE_TEST=1` positive control,
+  `CZ_RUMBLE_TRACE=1` witness. §6ey addendum 3. Operator-verified (*"it works"*, Xbox
+  Series X pad, 94 level changes, every issue rc 0). **OWED: the Windows leg,** where SDL's XInput/WGI backend does the rumble
+  (`windows-test-list` item 9). `docs/release-notes-v1.0.2.md` carries it; the notes
+  do NOT yet carry parts 107-108's other items (the CPU work, 16:10, MSAA, the window
+  follow) — write those bullets when the rebuild is packaged.
 
 ## §2 Instruments and arms this part added
 
