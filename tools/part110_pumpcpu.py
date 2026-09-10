@@ -80,8 +80,8 @@ def report(name, rows):
         out[k] = (wall, cpu, len(v))
         print(f"  {k:>7} {len(v):>3} {wall:9.2f} {cpu:9.2f} {duty:5.0f}% "
               f"{wall - cpu:7.2f}")
-    allw = statistics.median(x[0] for x in rows)
-    allc = statistics.median(x[1] for x in rows)
+    allw = statistics.median(x[1] for x in rows)
+    allc = statistics.median(x[2] for x in rows)
     print(f"  {'ALL':>7} {len(rows):>3} {allw:9.2f} {allc:9.2f}")
     return out
 

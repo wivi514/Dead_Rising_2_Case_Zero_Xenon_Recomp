@@ -384,3 +384,65 @@ the check that it is measuring the right thing: at 9,100-9,140 draws, wall 11.2 
 one instrument into another; one window of one run now says it directly.
 
 
+### 6.4 — §3.1 RUN: the serial floor is 2.49 ms, the pre-registered kill does NOT fire, and the arm found a second floor the plan did not know about
+
+**Protocol:** six runs, alternated `base1 nodd1 base2 nodd2 base3 nodd3`,
+`tools/part80_crowdroute.sh` at the operator's own 3440x1440, `SOAK=120`, profiler OFF,
+one binary throughout. All six passed the route gate at 34 crowd windows each; 102
+windows an arm at >= 8,000 draws. Read with `tools/part110_pumpcpu.py` in matched draw
+bands, because the arms landed at different densities (A median 9,124 draws, B 9,266) and
+a run median on this route is partly a statement about how many draws that run happened
+to get (gotcha 544).
+
+| band | n(A) | wall A | **pump cpu A** | n(B) | wall B | **pump cpu B** | pump duty B |
+|---|---|---|---|---|---|---|---|
+| 8,750 | 24 | 10.72 | **10.64** | 2 | 8.52 | **2.33** | 27% |
+| 9,000 | 46 | 11.07 | **10.93** | 39 | 8.80 | **2.49** | 28% |
+| 9,250 | 23 | 11.21 | **11.14** | 56 | 8.96 | **2.48** | 28% |
+| 9,500 | 5 | 11.36 | **11.20** | 1 | 9.24 | **2.54** | 27% |
+
+Monotone in all six matched bands, median **−8.37 ms of pump CPU**, −77%.
+
+**THE ARM IS CROSS-CHECKED AND IT AGREES WITH AN INSTRUMENT THAT KNOWS NOTHING ABOUT IT.**
+`F = 2.49 ms` is the walk plus the resolve/present path. Part 109 measured the walk
+independently, by `perf` SYMBOL — `WriteRegisterRun` + `ExecutePacket` + `ExecuteLinear` =
+22.4% of the pump = **2.36 ms** — and this arm removes no walk code at all. 2.36 + the
+resolve and present ≈ 2.49. Two instruments with no shared machinery landing on the same
+number is what makes the floor a measurement rather than an arm's opinion of itself.
+
+**The plan's arithmetic, filled in at the 9,000-9,250 band:**
+
+* `F` = **2.49 ms** — the serial floor.
+* `M` = 10.93 − 2.49 = **8.44 ms** — the per-draw work that could in principle move.
+* Ideal with the 3 budgeted workers, `F + M/3` = **5.33 ms**.
+
+**THE PRE-REGISTERED KILL (`F + M/3 > 8.0 ms`) DOES NOT FIRE, and it does not fire by a
+wide margin.** The thesis §3 was built on — ~2.3 ms serial, ~8 ms movable — is confirmed
+almost exactly.
+
+### 6.5 — AND THE ARM ANSWERED A QUESTION NOBODY ASKED: THE WALL HAS A SECOND FLOOR AT ~8.8 ms
+
+**The finding is in the columns the plan did not ask for.** With the whole per-draw
+renderer removed — 8.44 ms of pump CPU gone, the pump idle 72% of the time, the GPU
+holding no work at all — **the wall frame only falls from 11.07 ms to 8.80 ms.**
+
+    pump cpu   11.07 -> 2.49 ms   (-8.44, -77%)
+    wall       11.07 -> 8.80 ms   (-2.27, -20%)
+
+Removing eight and a half milliseconds of critical-path CPU bought two and a quarter
+milliseconds of frame. **Something that is not the pump and is not the GPU takes 8.8 ms a
+frame**, and it is already overlapping ~6 ms of the pump's work today.
+
+**What that does to the target, and this is the number the operator asked for:**
+
+    wall ~ max(pump, the other floor, GPU)
+      today            max(10.93, 8.80, 5.93) = 10.93  ->  11.07 ms measured, 90 fps
+      perfect item B   max( 5.33, 8.80, 5.93) =  8.80  ->  ~8.8 ms, ~113 fps
+
+**So item B is worth about 2.3 ms and roughly 90 -> 113 fps, and it cannot reach 120 fps,
+because a floor it does not touch binds first at 8.8 ms.** That is not a reason to close
+it — 2.3 ms is larger than every item part 109 measured put together — but the plan's
+§3.1 arithmetic assumed the wall tracks the pump ("the wall is ~0.3-0.7 ms above the
+pump"), and **that relation holds only while the pump is the critical path.** It is
+retracted here in place: it is true today and it stops being true the moment item B works.
+
