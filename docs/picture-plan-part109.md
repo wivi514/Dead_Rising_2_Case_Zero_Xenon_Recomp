@@ -92,6 +92,14 @@ projection elsewhere — then §1.2b is the only fix and §1.2a is void.
 
 ## §2 Items 0ab + 0ae — the tile seam
 
+**0ae LEFT THIS SECTION THE SAME EVENING.** The operator clarified the report (the
+dark neon letters are the game's flicker; the defect is content past one edge showing
+at the opposite edge, on the title screen too), which is a sampler WRAP, and the
+fetch constants' clamp modes — deferred since part 41 — are honoured as of the last
+build of part 108 (§6ey addendum 7, gotcha 540; `CZ_VK_NO_FETCH_CLAMP=1`). Title
+screen verified by the operator; the neon sign is owed. §2 below now covers 0ab alone;
+its step 1 (the snapshot halves, `tools/snap_halves.py`, written) still applies.
+
 ### 2.0 What is known
 
 * The title renders the scene in two 640-wide tiles at 720p (window scissors

@@ -3614,6 +3614,16 @@ through the first movement, so the frame where the ratio snaps back is in the re
 
 ### 0ae — a LIGHT'S GLOW APPEARS ON THE OPPOSITE SIDE OF THE SCREEN (`capture_028086`, `_028693`, `_030293`)
 
+**FIX IN, OPERATOR-CHECKED AT THE TITLE SCREEN (2026-09-09 late): the samplers now
+honour the fetch constants' clamp modes — the wrap was REPEAT addressing on a CLAMP
+fetch, deferred since part 41 (`phase5-notes.md` §6ey addendum 7, gotcha 540;
+`CZ_VK_NO_FETCH_CLAMP=1` the control).** The operator's clarification: the dark neon
+letters are the game's own flicker and NOT the defect; the defect is content past one
+screen edge appearing at the opposite edge (a light's glow; title-screen zombies in
+the far corner). Title screen verified (*"no longer appears"*); the neon sign still to
+be checked. NOT the tile family after all — 0ab stands on its own. The text below is
+the pre-clarification analysis, kept for the record.
+
 *"When looking at lighting, if it's on one side of the screen that the light is,
 you'll see the light on the other side of the screen opposite of it."* Three
 captures at the momma's diner neon sign from the diner's roof: letters lit cyan and

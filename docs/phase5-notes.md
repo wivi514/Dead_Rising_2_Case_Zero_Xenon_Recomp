@@ -21661,6 +21661,35 @@ counted, keyed per pad object, and operator sessions run under
 Gotcha 537. The three session logs are `~/DR2CZ-troubleshooting/play/rumble_test.log`,
 `rumble_probe2.log` and `rumble_fix.log`.
 
+### §6ey addendum 7 — the samplers honour the fetch constants' CLAMP modes (2026-09-09, item 0ae)
+
+The operator's clarification of 0ae, after the neon-letter analysis had gone the
+wrong way (the dark letters are the game's own flicker): *"the light is on one side
+of the screen and you can see it go to the other side of the screen; also happens
+with zombies in the main title that appear on one side — you can see them on the
+other side, in the corner."* That is a WRAP: content past one edge of a full-screen
+texture appearing at the opposite edge. `SamplerIndexForFetch` (part 41) keyed the
+per-fetch sampler on the filter and aniso fields only and set every address mode to
+REPEAT, with a note deferring the clamp fields to "a separate experiment (the cyan
+edge fringes, part41-kickoff item 5)" that was never run (gotcha 540). The fetch
+constant's dword0 carries clamp_x/y/z (3 bits each at 10/13/16; `DecodeTextureFetch`
+had decoded them since part 41 and nothing read them). The sampler key now carries
+clamp_x and clamp_y (15 bits; the table grew from 512 to 32,768 slots), mapped 0 wrap,
+1 mirror, 2 clamp-to-edge, 3 mirror-once (served as clamp-to-edge, identical inside
+[0,1]; counted), 4-7 the border modes (clamp-to-border, transparent black; the 360's
+border colour field is not decoded; counted). `CZ_VK_NO_FETCH_CLAMP=1` is the
+same-binary control arm. First session: 7 samplers, 4 of them clamp/clamp, 3
+wrap/wrap — the two populations the title has always asked for. **The operator, at
+the title screen: the zombie that used to appear in the opposite corner no longer
+does; *"pretty hopeful"*, the neon sign still to be checked.** The three F9s and the
+draw-ID snapshots are in `~/DR2CZ-troubleshooting/part108/plan109/clamp/`.
+
+Also this session, for 0ad: `CZ_VK_FOV_MISS=8` printed six unrecognized windows,
+every one with a ZERO view-row norm (affines and orthos, not cameras), and the census
+saw only the raw 45° and the composite 41.64° projections — but the dump caps at
+eight distinct windows and no door was walked in this session, so the door camera's
+projection is still unseen. Next: `CZ_VK_FOV_MISS=32` with a door.
+
 ### §6ey addendum 4 — the mouse wheel took two notches per item (2026-09-09, the second public report taken)
 
 Item 2 of `open-items.md` 0aa, the operator's next instruction the same evening. Read

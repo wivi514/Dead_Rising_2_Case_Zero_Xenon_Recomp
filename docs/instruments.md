@@ -4004,6 +4004,15 @@ CZ_RUMBLE_TRACE=1  every request from the title (`[rumble] request #N L=.. R=..`
                    `cz-audio-pump` (Linux), so `top -H`, `/proc/<pid>/task/*/comm` and the
                    part-107 per-thread table can say what they cost (2.8% of a core at the
                    crowd for the decoder; phase5-notes §6ey addendum 6)
+CZ_VK_NO_FETCH_CLAMP=1  the control arm for the fetch constants' ADDRESS MODES (part 108,
+                   item 0ae): every sampler REPEAT, the part-41..107 renderer, where a
+                   screen-space blur sampling past a full-screen texture's edge read the
+                   far edge — a light's glow at the opposite side, title-screen zombies
+                   in the far corner. Default honours dword0's clamp_x/clamp_y (wrap /
+                   mirror / clamp-to-edge / mirror-once→edge / border modes→border); each
+                   distinct sampler prints `[vk] sampler #N ... clamp x=.. y=..` once,
+                   and the served-as substitutions are COUNTED (phase5-notes §6ey
+                   addendum 7, gotcha 540)
 CZ_KBM_NO_TAP_SPLIT=1  the control arm for the same-tick tap split (part 108, the "wheel
                    takes two notches" report): the native KB/M feed carries a release
                    whose press was in the same batch to the NEXT controller tick, because

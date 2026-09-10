@@ -19,6 +19,7 @@
 // LOGGING IS UNCONDITIONAL because registration happens at object construction
 // (boot / zone load), not per frame — a handful of lines per run, gotcha 7 safe.
 
+#include <chrono>
 #include <cstdio>
 #include <map>
 #include <mutex>
@@ -90,6 +91,32 @@ PPC_FUNC(sub_8246BF48)
                             "OFF; the game culls to its own 16:9 frustum\n");
         return o;
     }();
+    // The site's TIMELINE (part 108, item 0ad): once a second, how many times the
+    // roaming camera's fov read fired, and the value handed back. A door transition
+    // that renders at the wrong ratio "until the player moves" is either a camera
+    // class that never reads here (the count stays up: the roaming camera still
+    // reads while the other renders) or the roaming camera itself not reading (the
+    // count drops to 0 — its fov field left at whatever the transition reset it to,
+    // un-widened, until the next read re-enforces it). The two need different fixes.
+    if (trace && uint32_t(ctx.lr) == 0x8246E31C)
+    {
+        static std::chrono::steady_clock::time_point secStart = std::chrono::steady_clock::now();
+        static unsigned fired = 0;
+        ++fired;
+        const auto now = std::chrono::steady_clock::now();
+        if (now - secStart >= std::chrono::seconds(1))
+        {
+            uint32_t bits;
+            memcpy(&bits, base + ctx.r3.u32 + 0x14, 4);
+            bits = __builtin_bswap32(bits);
+            float v;
+            memcpy(&v, &bits, 4);
+            fprintf(stderr, "[fovparam] site 8246E31C fired %u times in the last second; "
+                            "field now %.2f\n", fired, v);
+            fired = 0;
+            secStart = now;
+        }
+    }
     if (!off && uint32_t(ctx.lr) == 0x8246E31C)
     {
         static std::mutex mu;

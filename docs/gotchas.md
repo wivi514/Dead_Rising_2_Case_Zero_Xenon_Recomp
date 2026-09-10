@@ -6185,3 +6185,16 @@ From phase C part 18 (the frame rate — and none of it was work):
     (stick X) was fine. The art is per BUTTON; a command bound to a different key than
     its button's cap is a lie the player cannot see through. Bind by the cap, or draw
     the cap from the binding — never maintain both by hand. (part 108)
+
+540. **An experiment deferred "on purpose" is a defect with a date on it.** Part 41
+    honoured the fetch constants' filter fields and left the address modes at REPEAT
+    "as a separate experiment (the cyan edge fringes) with its own prediction" — and
+    the experiment was never run. Sixty-seven parts later the operator reported a
+    light's glow appearing at the OPPOSITE edge of the screen and title-screen
+    zombies showing in the far corner: every screen-space blur that sampled past the
+    edge of a full-screen texture wrapped to the far edge, exactly what a REPEAT
+    sampler does with a CLAMP fetch. The deferral note named the symptom class
+    (edge fringes) and still nobody connected the two reports. When a change is split
+    to keep two predictions separable, put the second half on the board with its
+    symptom named, and re-read the board when a symptom of that shape is reported.
+    (part 108)

@@ -5294,7 +5294,9 @@ struct Renderer
     // VkRenderer_Init on purpose: a table whose "empty" value is not zero and whose
     // filling lives somewhere else is a bug waiting for the day someone adds a second
     // construction site. This one cannot be constructed uninitialised.
-    static constexpr uint32_t kSamplerSpecs = 512;
+    // 9 filter bits (part 41) + 3 clamp-x + 3 clamp-y bits (part 108): the fetch
+    // constant's address modes are part of the spec now. 32,768 slots of int32.
+    static constexpr uint32_t kSamplerSpecs = 1u << 15;
     std::vector<int32_t> samplerBySpec =
         std::vector<int32_t>(kSamplerSpecs, -1);
     uint32_t samplerCount = 1;
@@ -15630,9 +15632,20 @@ void BindIndexBufferCached(VkBuffer buffer, VkDeviceSize offset, VkIndexType typ
 // non-zero aniso field). So the fetch constant's own fields are honoured, one
 // VkSampler per distinct spec, created on first sight and cached for the process.
 //
-// Address modes stay REPEAT in this change ON PURPOSE: the clamp fields are a
-// separate experiment (the cyan edge fringes, part41-kickoff item 5) with its own
-// prediction, and bundling them here would make the two inseparable.
+// Address modes stayed REPEAT from part 41 to part 108 ON PURPOSE — "the clamp
+// fields are a separate experiment (the cyan edge fringes, part41-kickoff item 5)"
+// — and that experiment was never run. THE OPERATOR'S 2026-09-09 REPORT IS ITS
+// SYMPTOM (open-items 0ae): a light's glow at one edge of the screen appears at the
+// OPPOSITE edge, and on the title screen a zombie leaving one side shows in the
+// corner of the other. A screen-space blur that samples past the edge of a
+// full-screen texture with REPEAT reads the far edge — with the CLAMP the fetch
+// constant asked for, it reads the edge texel. So dword0's clamp_x/clamp_y (3 bits
+// each, bits 10..12 and 13..15) are honoured as of part 108, as part of the sampler
+// key: 0 wrap, 1 mirror, 2 clamp-to-last-texel, 3 mirror-once-last-texel (served as
+// clamp-to-edge: identical inside [0,1]), 4/5 clamp/mirror-once to HALF border and
+// 6/7 to border (all four served as clamp-to-border, transparent black — the 360's
+// border colour field is not decoded; counted). `CZ_VK_NO_FETCH_CLAMP=1` is the
+// same-binary control arm (every sampler REPEAT, the part-41..107 renderer).
 //
 // CZ_VK_NO_FETCH_SAMPLERS=1 is the whole-feature arm (every fetch reads sampler 0,
 // the part-40 renderer, same binary). CZ_VK_ANISO=N caps the degree; =0 keeps the
@@ -15644,7 +15657,11 @@ static uint32_t SamplerIndexForFetch(const uint32_t* regs, uint32_t constIdx)
     if (off)
         return 0;
     const uint32_t d3 = regs[xenos::kFetchConstantBase + constIdx * 6 + 3];
-    const uint32_t key = (d3 >> 19) & 0x1FF;          // mag:2 min:2 mip:2 aniso:3
+    const uint32_t d0 = regs[xenos::kFetchConstantBase + constIdx * 6 + 0];
+    static const bool noClamp = EnvOn("CZ_VK_NO_FETCH_CLAMP");
+    const uint32_t clampX = noClamp ? 0 : (d0 >> 10) & 7;
+    const uint32_t clampY = noClamp ? 0 : (d0 >> 13) & 7;
+    const uint32_t key = ((d3 >> 19) & 0x1FF) | (clampX << 9) | (clampY << 12);
     if (R->samplerBySpec[key] >= 0)
         return uint32_t(R->samplerBySpec[key]);
     if (R->samplerCount >= g_maxDescriptors)
@@ -15668,9 +15685,24 @@ static uint32_t SamplerIndexForFetch(const uint32_t* regs, uint32_t constIdx)
     si.minFilter = mn == 0 ? VK_FILTER_NEAREST : VK_FILTER_LINEAR;
     si.mipmapMode = mip == 0 ? VK_SAMPLER_MIPMAP_MODE_NEAREST
                              : VK_SAMPLER_MIPMAP_MODE_LINEAR;
-    si.addressModeU = VK_SAMPLER_ADDRESS_MODE_REPEAT;
-    si.addressModeV = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+    auto addressMode = [](uint32_t clamp) {
+        switch (clamp)
+        {
+            case 0: return VK_SAMPLER_ADDRESS_MODE_REPEAT;
+            case 1: return VK_SAMPLER_ADDRESS_MODE_MIRRORED_REPEAT;
+            case 2: return VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+            case 3: Count("sampler: mirror-once served as clamp-to-edge");
+                    return VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+            case 4: case 5:
+                    Count("sampler: half-border clamp served as clamp-to-border");
+                    return VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER;
+            default: return VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER;
+        }
+    };
+    si.addressModeU = addressMode(clampX);
+    si.addressModeV = addressMode(clampY);
     si.addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+    si.borderColor = VK_BORDER_COLOR_FLOAT_TRANSPARENT_BLACK;
     si.maxLod = VK_LOD_CLAMP_NONE;
     static const int cap = Env("CZ_VK_ANISO") ? atoi(Env("CZ_VK_ANISO")) : 16;
     if (an >= 2 && an <= 5 && cap > 0 && R->anisoLimit > 0.0f)
@@ -15699,10 +15731,14 @@ static uint32_t SamplerIndexForFetch(const uint32_t* regs, uint32_t constIdx)
     R->samplerBySpec[key] = int32_t(idx);
     // One line per DISTINCT spec for the process — a handful, and each is the
     // engagement evidence the census can be checked against.
+    static const char* const kClampName[8] = { "wrap", "mirror", "clamp", "mirror1",
+                                               "halfborder", "mirror1-halfborder",
+                                               "border", "mirror1-border" };
     fprintf(stderr, "[vk] sampler #%u: mag=%u min=%u mip=%u anisoField=%u -> "
-                    "maxAniso %.0f\n",
+                    "maxAniso %.0f  clamp x=%s y=%s%s\n",
             idx, mag, mn, mip, an,
-            si.anisotropyEnable ? si.maxAnisotropy : 0.0f);
+            si.anisotropyEnable ? si.maxAnisotropy : 0.0f, kClampName[clampX],
+            kClampName[clampY], noClamp ? " (CZ_VK_NO_FETCH_CLAMP: forced wrap)" : "");
     return idx;
 }
 
