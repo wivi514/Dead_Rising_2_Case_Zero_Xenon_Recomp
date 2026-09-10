@@ -446,3 +446,47 @@ it — 2.3 ms is larger than every item part 109 measured put together — but t
 pump"), and **that relation holds only while the pump is the critical path.** It is
 retracted here in place: it is true today and it stops being true the moment item B works.
 
+### 6.6 — AND THE 8.8 ms FLOOR IS NOT OURS: the pump tick is a dead null
+
+The gap between the busiest guest thread (6.75 ms/frame) and the arm's wall (8.80 ms) is
+2.05 ms, and no thread is saturated — so the floor is a dependency chain. The obvious
+suspect on OUR side of that chain is the pump's tick period: the ring walk stops at every
+unsatisfied `WAIT_REG_MEM` and resumes on the next tick, so every hand-off costs up to
+one tick of pure latency and `CZ_PM4_TICK_US` is 100 by default.
+
+Five more runs, alternated, all under `CZ_VK_NO_DODRAW=1` so the renderer cannot mask it:
+
+| tick | wall @ 9,000 draws | pump cpu | n |
+|---|---|---|---|
+| **100 µs** (default) | **8.94 ms** | 2.50 | 42+113 windows |
+| **25 µs** | **8.93 ms** | 2.55 | 43 windows |
+| **10 µs** | 9.14 @ 9,500 (default reads 9.24 there) | 2.67 | 27 windows |
+
+**A dead null at a quarter of the period and at a tenth of it.** The floor is not our
+hand-off latency. It is the recompiled title's own code and the title's own internal
+thread hand-offs, which is outside the renderer, outside item B, and outside this plan.
+
+### 6.7 — §3's CLOSE: what the operator asked for, answered
+
+**Can we use the four idle cores? Yes, and it is worth ~2.3 ms — but it stops at ~113 fps,
+not 120, and the thing that stops it is the game, not us.**
+
+| | pump cpu | wall | fps |
+|---|---|---|---|
+| today | 10.93 ms | 11.07 ms | 90 |
+| item B, implemented perfectly | 5.33 ms | **~8.8 ms** | **~113** |
+| the target | — | 8.33 ms | 120 |
+
+* The plan's pre-registered kill does **not** fire (`F + M/3` = 5.33 against a bar of 8.0).
+  §3's thesis — ~2.3 ms serial walk, ~8.4 ms movable per-draw work, four idle cores — is
+  confirmed almost exactly, and item B is technically GO.
+* **But 120 fps CPU-side is not reachable at this crowd on this machine**, because with
+  the entire per-draw renderer deleted and the GPU idle the frame is still 8.8 ms. That is
+  the title's own simulation across two threads (76.7% and 61.7% of a core), and cutting
+  our hand-off latency by 10x does not touch it.
+* So the decision is narrower than the plan expected and it is the operator's: **a
+  substantial threading build for +23 fps (90 -> ~113), stopping short of the goal.**
+  §3.2's mutation census would refine what fraction of the 2.3 ms actually survives
+  sharding; it cannot change the 8.8 ms ceiling, because that ceiling is `max(...)`'s other
+  term.
+
