@@ -283,6 +283,40 @@ carry as known issues (the main-menu zombie flicker, the in-game flickering blac
 were not specifically looked for, and "everything is perfect" is a whole-session
 impression rather than a check of either. Ask before editing that paragraph of the notes.
 
+### §1d addendum 2 — the LAPTOP ran v1.0.2 from nothing but the package (2026-09-09, late)
+
+Operator: *"now launch it on the laptop"*, verdict *"Pretty much perfect"*. czwin
+(Alienware, RTX 3070 Ti Laptop, i7-12700H) ran the STAGED ARTIFACT — `dist\CaseZeroRecomp`
+at a9e7d95, the exact content of the shipped zip — with **only the 825 MB package
+present**: no extracted game, no shader cache, no pipeline cache, no golden store. So
+unlike the czamd run this one exercised the **in-process STFS extract** as well.
+
+| step | result |
+|---|---|
+| in-process extract | `256 files, 859,007,897 bytes` -> `assets\game`, progress bar to 100% |
+| disc shader build | **1,367 translated, 0 failed**, 1,265 pixel + 102 vertex, 0 already present |
+| `no translated shader` | **0** for the whole run |
+| device chosen | **RTX 3070 Ti Laptop** (the box also has Intel Iris Xe — the discrete GPU won) |
+| present | MAILBOX at 1707x960 (the window's drawable; `display_mode=1` windowed at a 2560x1440 setting) |
+| golden store | rebuilt from empty: 1,545 signatures remembered, 0 all-zero uploads |
+
+Frame rate (`CZ_FPS_LOG=10`, launcher config, no profiler): menus 460 fps median; the
+light era **143-152 fps median, p99 8.1-13.4 ms, 0.0-1.0% of frames above twice the
+median**. The route never reached a crowd, so there is NO crowd number from this box
+tonight — do not read one into it.
+
+**Both first-run paths are therefore covered on Windows**: czamd rebuilt shaders over an
+existing game tree, czwin did extract + shaders + overlays from the package alone. Log at
+`~/DR2CZ-troubleshooting/part108/czwin-v102/`.
+
+**The A/B that would have priced the mirror on AMD was CANCELLED by the operator**
+(*"No need to check cancel that we got more important things to do"*) after two of its
+four runs. The 50 fps -> 70 fps crowd comparison in the addendum above therefore stands
+as TWO DIFFERENT MEASUREMENTS (part 103's headless crowd-route replay with the per-frame
+trace; tonight's windowed play session with only the fps counter) and NOT as a matched
+arm — quote it with that caveat or re-run `~/.../czamd_ab.ps1`, which is written and
+staged.
+
 ## §2 Instruments and arms this part added
 
 `CZ_FENCE_PARK`, `CZ_FENCE_PARK_SPIN_US`, `CZ_FENCE_PARK_TRACE`, `CZ_KBM_SCAN_LEGACY`,
