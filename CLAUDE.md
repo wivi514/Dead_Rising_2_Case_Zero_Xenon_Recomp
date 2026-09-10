@@ -207,10 +207,26 @@ mask; trust the microcode's own swizzles.
     byte-identical from the outside, repo description/topics/homepage set, `gh` now
     installed and authenticated here). **AND PERFORMANCE IS LIVE AGAIN WITH A TARGET:
     `docs/perf-plan-part109.md` — 120 fps CPU-side on the operator's Ryzen 7 5700, i.e.
-    the CPU frame under 8.33 ms. Its §4.1 baseline says the crowd is 10.9-11.2 ms AND
-    CPU-BOUND AT THEIR NATIVE 3440x1440 (1080p reads the same across 2.4x the pixels),
-    and its §4.2 is where the next session starts.** The Windows EYE tests
-    (windows-test-list items 2-10) are still owed in a cz_play session.** ~~It was
+    the CPU frame under 8.33 ms. PART 109 HAS RUN IT END TO END AND ITS §5 IS THE CLOSE:
+    THE TARGET WAS NOT REACHED AND THE FRAME DID NOT MOVE — 10.8-11.2 ms — AND THE
+    DECOMPOSITION SAYS WHY.** Read §5 first. Four things carry forward: (a) **the phase
+    profiler and `perf` DISAGREE and `perf` wins** — `streams` reads 0.3% while the SYMBOL
+    `UploadStream` is 9.4% of the pump (gotcha 343 again, retracted in place in §4.3);
+    (b) **the pump is 97.7% of a core and 25% of all this process's CPU while the machine
+    runs 3.9 of 8 cores — the parallel-record work that exists already moved the CHEAP
+    half**, the workers spend 84% of their time in `GuardFold` and ~1% recording, and
+    `DoDraw`'s 2.25 ms is 388 source lines with no hotspot; (c) **three of the five
+    largest blocks are memory-latency bound, not compute** — vectorising the hottest LINE
+    on the pump (a scalar byte swap, 0.76 ms, 69.9% of its symbol) was built, gated,
+    proven engaged at 90.6% and measured **+0.14 ms**, gotcha 545; (d) **the p99 is not a
+    hitch class** — same draws, same GPU time, no upload, no compile, just 35% longer
+    (gotcha 546). **THE ONE OPEN DECISION IS THE OPERATOR'S:** two items are verified
+    correct and worth **−0.33 ms** (`CZ_VK_TEXMEMO=1`) and **−0.21 ms**
+    (`CZ_VK_SCOPED_SHARED_ZERO=1`), both shipped OFF because each missed a 0.4 ms bar
+    pre-registered when the plan still expected 1.5 ms items — and item 0 then established
+    there are none. Whether to take the bundle is risk appetite, not measurement. The
+    Windows EYE tests (windows-test-list items 2-10) are still owed in a cz_play
+    session.** ~~It was
     `part107-kickoff.md` — PERFORMANCE IS LIVE AGAIN with a TARGET (60 fps locked at
     1080p on a GTX 1060); part 106 decomposed the GPU frame for the first time, found
     half of it was vertex fetch over PCIe, and SHIPPED the store MIRROR on by default

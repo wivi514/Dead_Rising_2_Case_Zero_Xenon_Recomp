@@ -372,3 +372,114 @@ this loop, `UploadStream`'s four dependent-load lines (§4.4), and the 20 MB/fra
 memory touches**, not doing the same touches faster. That is an argument for the stream
 DEDUP (fewer lookups) over any faster hash, and against any further "make this loop
 wider" item.
+
+### 4.6 Item 2 — REDIRECTED, then measured small (2026-09-10)
+
+`CZ_VK_STREAM_DEDUP_CENSUS=1`, written in part 87 to ask exactly this question and never
+run until tonight, on the crowd route: **4.92 stream lookups a draw, 47.1% of them
+REPEATING a key the same draw already looked up** (319,547,476 of 678,019,642), and **0
+draws exceeded the 16-key window**, so nothing is under-reported.
+
+47% sounds like an item and it is not, for the same reason §4.5's byte swap was not: **a
+repeat within one draw is the CHEAP kind of lookup.** The first touch misses and pays the
+cache; the repeat hits the same flat-cache slot while it is still in L1. §4.4's source-line
+split says where `UploadStream`'s time really is — the probe compare `keys[i] == k` (29%
+of the symbol), `PersistEntry::dynamic` (17%), `return *hit` (15%), the probe step (9%):
+**four dependent loads, each the first touch of a line.** A per-draw dedup removes the
+lookups that were already free.
+
+`PersistFind` at 4.15% of the pump = 0.44 ms is the one worth remembering: it is a thin
+wrapper on a flat-cache `Find` into the cross-frame store, which is tens of thousands of
+entries across a 1 GB buffer, called about 2,000 times a frame on the frame-first touches
+— roughly 200 ns each, which is a DRAM round trip. That is a prefetch question, not a
+hash question, and it is not something to start at 6am.
+
+### 4.7 Item 3's memset half — MEASURED, gated, OPT-IN at −0.21 ms
+
+`memset(shared, 0, 2192)` on every draw, ~20 MB a frame into write-combined arena memory,
+`__memset_avx2` at 4.18% of the pump = 0.44 ms. 1,536 of the 2,192 bytes are the
+dependent-vertex-fetch table and **only a slot the vertex shader declares can be read out
+of it**. Scoped to zero the head, the declared 16-byte entries, and the tail: **1,530 of
+1,536 table bytes go unwritten on the average draw, 69.8% of the block.**
+
+`CZ_VK_SHARED_ZERO_POISON=1` writes 0xFF over exactly the skipped bytes, so the premise
+is tested rather than argued — a shader reading one would get a colossal device address
+and size 0xFFFFFFFF, not a quiet zero. **Inside the picture null on all three era
+statistics** at both the prefix-shaped skip and the wider per-entry one.
+
+**−0.21 ms (−1.9%)**, three runs an arm, four of five bands negative, both arms proved
+engaged in all six runs. **Kill rule 0.4 ms → ships OFF** (`CZ_VK_SCOPED_SHARED_ZERO=1`).
+
+### 4.8 Item 5 — THE p99 IS NOT A HITCH CLASS (2026-09-10)
+
+One crowd run with `CZ_VK_FRAME_TRACE`, no profiler; 11,268 frames at >= 8,000 draws.
+Median 11.23 ms, p95 12.37, p99 14.10, worst 21.34.
+
+**What distinguishes a p99 frame from the median band — medians of each column:**
+
+| column | median band | p99 frames | delta |
+|---|---|---|---|
+| draws | 9,410 | 9,412 | +2 |
+| **walk (the CPU frame)** | **11.03 ms** | **14.93 ms** | **+3.90** |
+| fence | 0.00 | 0.00 | 0 |
+| sleep | 0.20 | 0.20 | 0 |
+| **GPU** | **5.93 ms** | **5.92 ms** | **−0.01** |
+| texture uploads | 0 | 0 | 0 |
+| pipelines built | 0 | 0 | 0 |
+
+**3 of 113 p99 frames uploaded a texture; 0 built a pipeline.** The slow frames render the
+SAME draw count in the SAME GPU time with no upload, no compile, no fence and no sleep:
+**the identical work simply takes 35% longer on the CPU.** There is no separate stutter
+class to fix at this load — the p99 is the upper tail of the pump's own work
+distribution, so **the only thing that moves it is making that work shorter.** A median at
+8.33 ms with this shape would put the p99 near 11 ms, i.e. ~90 fps worst-case, and the
+operator would feel 120 as a soft 120.
+
+Two facts worth carrying: **the GPU is 5.93 ms against an 11.23 ms wall** — 53%, so it is
+not the constraint and §4.1's CPU-bound reading is confirmed a third way — and the fence
+is 0.00 on every band, so no GPU-side saving converts to frame rate here (gotcha 476
+still stands). The caveat: this route's soak streams no new textures, so the
+texture-hitch class part 77 addressed is invisible to it by construction and this says
+nothing about it.
+
+## §5. WHERE PART 109 ENDS, AND WHAT IT DID AND DID NOT PROVE
+
+**The target was the CPU frame under 8.33 ms at ~9,300 draws. It is 10.8-11.2 ms and it
+did not move.** §3 pre-registered this outcome and its instruction: say so, and name what
+remains, rather than keep buying items.
+
+**What the night measured, in order:**
+
+| item | verdict | ms |
+|---|---|---|
+| 1 — `UploadTexture` memo | correct (0 disagreements / 718 M served), **under kill** | **−0.33** |
+| 0 — the decomposition | **done**, and it retracted a phase-profiler reading | — |
+| 4's core — the PM4 byte swap | built, gated, engaged, **REFUTED and reverted** | +0.14 |
+| 2 — the stream path | **redirected then measured small**; the repeats are the cheap lookups | — |
+| 3's memset half | correct (poison inside the null), **under kill** | **−0.21** |
+| 5 — the p99 | **not a hitch class**: same work, 35% longer | — |
+
+**THE STRUCTURAL FINDING, and it is the one that decides what a part 110 should do.** The
+pump thread is 97.7% of a core and 25% of all the CPU this process uses, while the
+machine runs at 3.9 of 8 physical cores. Parallel command recording already exists and
+already runs — three workers capture ~7,200 of ~8,650 draws a frame — but the profile
+says those workers spend **84% of their time in `GuardFold`** and about 1% in
+`ParRec_RecordInstance`. **The half that was moved off the pump was the cheap half.** The
+expensive half — `DoDraw`'s decode, constants, textures and streams, 2.25 ms + 1.41 + 1.00
++ 0.38 — is still serial because it touches the arena and the caches. Nothing smaller than
+that is going to find 2.5 ms.
+
+**And there is no large item left inside it.** `DoDraw` is 2.25 ms spread over 388 source
+lines with the hottest at 0.18 ms. Three of the five largest blocks are memory-latency
+bound rather than compute (§4.5's refutation, `UploadStream`'s four dependent loads,
+`PersistFind`'s DRAM round trip), so the lever on this path is **fewer memory touches**,
+not faster ones.
+
+**THE ONE DECISION FOR THE OPERATOR.** Two items are verified correct and are worth
+**−0.33 and −0.21 ms**, and both are OFF because each missed a 0.4 ms bar that was
+pre-registered when the plan still expected single items worth 1.5 ms. Item 0 then
+established there are no such items. Whether a bundle of sub-threshold items is worth
+taking is a judgement about risk appetite, not a measurement, so it is theirs:
+`CZ_VK_TEXMEMO=1` and `CZ_VK_SCOPED_SHARED_ZERO=1` turn them on today, flipping either
+default is one line, and both already have their gates run. Together they are ~0.5 ms of
+a 2.5 ms gap — worth having and not worth calling 120 fps.

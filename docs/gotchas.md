@@ -6276,3 +6276,15 @@ From phase C part 18 (the frame rate — and none of it was work):
     or fetch it earlier, and no width of instruction is that. The census stays
     (`CZ_PM4_REGRUN_CENSUS=1`) because it is the thing that would have made the item look
     even better, and the vector path is reverted. (part 109)
+
+546. **"The p99 is a hitch" is a hypothesis, and on this title it is false.** Part 109's
+    plan treated the crowd p99 (14.1 ms against an 11.2 ms median) as a separate class of
+    frame needing a separate fix — a texture upload, a pipeline compile, a fence stall.
+    `CZ_VK_FRAME_TRACE` over 11,268 crowd frames says otherwise: the p99 frames render the
+    SAME draw count (9,412 vs 9,410) in the SAME GPU time (5.92 vs 5.93 ms) with fence
+    0.00, sleep unchanged, **3 of 113 carrying any texture upload and 0 building a
+    pipeline**. The whole +3.90 ms is the CPU walk itself. The identical work simply takes
+    35% longer. So the tail is the upper end of one work distribution, not an event, and
+    nothing but shortening that work moves it — which also means a median target hit
+    without touching the shape leaves the worst case 35% behind it. Classify the tail
+    before designing for it; "what is IN the slow frames" is one traced run. (part 109)
