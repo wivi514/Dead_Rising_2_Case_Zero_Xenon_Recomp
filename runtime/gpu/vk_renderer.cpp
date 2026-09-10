@@ -557,6 +557,94 @@ void CalibrateProfNow()
             double(g_profNowNs10) / 10.0);
 }
 
+#if CZ_WHOLEFUNC
+// --- WHOLE-FUNCTION SAMPLED TIMERS (part 110, item A.2) ------------------------------
+//
+// THE DEFECT THEY ANSWER. A `ProfScope` measures a REGION OF CODE, and this renderer's
+// regions do not cover the functions they are named after. `streams` reads 0.3% of the
+// frame while the SYMBOL `UploadStream` is 9.4% of the pump thread and 13.1% with
+// `PersistFind` — a factor of thirty, and it has now misled three separate parts about
+// the same function (22 closed the stream cache on it, 55 re-opened it from a `perf`
+// symbol profile, 109 read it and wrote "almost certainly dead on price" four hours
+// before its own symbol profile said otherwise). Gotcha 343 was written about exactly
+// this and the table went on saying it.
+//
+// WHY NOT JUST SCOPE THE WHOLE FUNCTION. `UploadStream` runs ~46,000 times a crowd frame
+// and a `ProfScope` is two clock reads at ~21 ns, so a per-call scope is ~2 ms a frame —
+// larger than several of the phases it would be separating. An instrument that big does
+// not measure the function, it replaces it (gotchas 7, 223). So: time one call in
+// `kWfPeriod` and scale.
+//
+// THE PERIOD IS 17 AND THAT IS DELIBERATE. Part 89's resolve-split census samples every
+// 16th DRAW, which is fine for a per-draw mean but is a power of two sitting on top of a
+// renderer whose work batches in powers of two — a sampler aligned with the thing it
+// samples measures a phase of it rather than a mean of it. A prime period cannot align
+// with any power-of-two batching, and it is sampled on a per-CALL counter rather than a
+// per-draw one, because one draw's streams are not interchangeable with another's.
+//
+// THEY ARE INCLUSIVE OF CALLEES, unlike every `ProfScope` here, and that is the point:
+// the question is what a SUBSYSTEM costs, so `UploadStream`'s number includes
+// `PersistFind` and the guard, and `DoDraw`'s includes all of it. **That means they must
+// be compared with a `perf` symbol GROUP and never with one symbol's self time** —
+// `tools/phase_vs_perf.py` computes exactly those groups.
+//
+// **IT IS NOT FREE WHEN OFF, AND THAT IS A MEASUREMENT, NOT A CONCESSION.** This was
+// written expecting one predictable branch on an already-hot global — tested before the
+// counter is even incremented — and its own pre-registered identity gate refuted that:
+// three runs an arm, both binaries alternated in one session, matched draw bands,
+// **+0.65 / +0.67 / +0.43 / +0.29 / +0.42 ms of pump CPU** in every band with real
+// sample counts, against a bar of +-0.10 (part 110 §6.8). Roughly 6 ns per call across
+// ~78,000 calls a frame, which is twenty times what a predicted branch costs.
+//
+// The mechanism is the RAII object, not the branch: a non-trivial destructor on
+// `UploadTexture` — a wrapper whose body is a tail call — forces a real call and a stack
+// frame, and on `DoDraw` it puts one on every early return. **A probe changes codegen
+// even when its body never runs**, so "free when off" has to be MEASURED and cannot be
+// argued from the source.
+//
+// So the three call sites are behind `-DCZ_WHOLEFUNC=1` and a default build carries no
+// code at all. `CZ_VK_NO_WHOLEFUNC=1` is the runtime control INSIDE such a build; it
+// cannot refund the 0.5 ms, which is why the build announces itself and says to read its
+// shares rather than its milliseconds.
+//
+// SINGLE-THREADED BY CONSTRUCTION: all three functions run on the pump thread only (the
+// parallel-record workers replay captured commands and call none of them), so these are
+// plain adds and not atomics. If any of them is ever moved to a worker, this comment is
+// the thing that has to change first.
+struct WholeFunc
+{
+    uint64_t ns = 0;        // summed over the SAMPLED calls only
+    uint64_t sampled = 0;   // how many calls were timed
+    uint64_t calls = 0;     // how many calls happened while armed
+};
+WholeFunc g_wfStream, g_wfTexture, g_wfDraw;
+bool g_wholeFunc = false;
+constexpr uint64_t kWfPeriod = 17;
+
+struct WfScope
+{
+    WholeFunc* w = nullptr;
+    uint64_t t0 = 0;
+    explicit WfScope(WholeFunc* wf)
+    {
+        if (!g_wholeFunc)
+            return;
+        if (++wf->calls % kWfPeriod)
+            return;
+        w = wf;
+        t0 = NowNs();
+    }
+    ~WfScope()
+    {
+        if (!w)
+            return;
+        w->ns += NowNs() - t0;
+        ++w->sampled;
+    }
+};
+
+#endif // CZ_WHOLEFUNC
+
 // CZ_VK_TEX_CENSUS=1 — per texture ADDRESS, where its pixels came from.
 //
 // The aggregate counters above say how many fetches took each path; they cannot say
@@ -9795,6 +9883,9 @@ uint32_t UploadTextureUncached(uint8_t* base, const uint32_t* regs, uint32_t con
 uint32_t UploadTexture(uint8_t* base, const uint32_t* regs, uint32_t constIdx,
                        uint32_t shaderDim)
 {
+#if CZ_WHOLEFUNC
+    WfScope _wf(&g_wfTexture);   // part 110 A.2 — see CZ_WHOLEFUNC
+#endif
     // OPT-IN UNTIL IT IS VERIFIED AND MEASURED. The memo is built and its verifier arm
     // works, but no run has yet read 0 disagreements and no A/B has priced it, so HEAD
     // must behave exactly like the released v1.0.2 build. `CZ_VK_TEXMEMO=1` engages it;
@@ -14804,6 +14895,9 @@ void WaitAllFramesIdle()
 StreamLoc UploadStream(uint8_t* base, uint32_t va, uint64_t bytes, uint32_t endian,
                        int kind)
 {
+#if CZ_WHOLEFUNC
+    WfScope _wf(&g_wfStream);   // part 110 A.2 — see CZ_WHOLEFUNC
+#endif
     // The key must be an IDENTITY, not a hash. The first version was
     // `(uint64_t(va) << 24) ^ (bytes << 2) ^ endian`, and those fields OVERLAP: a
     // 32-bit address shifted 24 occupies bits 24..55 and a byte count shifted 2
@@ -22039,6 +22133,9 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
         ++g_noDoDrawSkipped;
         return;
     }
+#if CZ_WHOLEFUNC
+    WfScope _wf(&g_wfDraw);   // part 110 A.2 — see CZ_WHOLEFUNC
+#endif
     // DoDraw's OWN work, exclusive of the named phases nested inside it. Without a
     // scope here the profile's unaccounted column would mix this function's untimed
     // work (register decode, the pipeline-key build and lookup, the fetch-constant
@@ -27930,6 +28027,16 @@ bool InitCommon()
                 double(RSX(R->targetWidth)) * RS(R->targetHeight) * 4.0 / 1048576.0);
     if (g_profileOn)
         fprintf(stderr, "[vkprof] frame CPU profile ON\n");
+        // A.2's sampled whole-function timers ride with the profiler; the control arm
+        // turns them off inside a profiled run so their own bill can be measured.
+#if CZ_WHOLEFUNC
+        g_wholeFunc = !EnvOn("CZ_VK_NO_WHOLEFUNC");
+        fprintf(stderr,
+                "[vkprof] WHOLE-FUNCTION timers COMPILED IN (-DCZ_WHOLEFUNC=1). THIS "
+                "BUILD IS ~0.5 ms/frame SLOWER THAN A DEFAULT ONE AT THE CROWD, "
+                "measured (part 110 §6.8) — read its SHARES, never its milliseconds, "
+                "and never quote a frame time from it.\n");
+#endif
     return true;
 }
 
@@ -29848,6 +29955,53 @@ void DoSwapImpl(uint8_t* base, uint32_t frontBuffer, uint32_t width, uint32_t he
                     pct(submitTotal), pct(g_prof.submitCall), pct(g_prof.fenceWait),
                     pct(g_prof.readback), pct(g_prof.rt), 100.0 - pct(known));
 
+#if CZ_WHOLEFUNC
+            // A.2 — WHAT THOSE PHASES DO NOT SAY, printed immediately under the table
+            // so the gap is visible in the log rather than only in a `perf` capture
+            // somebody has to think to take. INCLUSIVE of callees and scaled by the
+            // sampling period; the estimator is (timed ns) x (calls / sampled), which is
+            // the period exactly when the call count is a multiple of it and within one
+            // call of it otherwise.
+            if (g_wholeFunc)
+            {
+                static WholeFunc lw[3];
+                WholeFunc* cur[3] = { &g_wfStream, &g_wfTexture, &g_wfDraw };
+                const char* nm[3] = { "UploadStream", "UploadTexture", "DoDraw" };
+                double est[3] = {}, calls[3] = {};
+                uint64_t sampled = 0;
+                for (int i = 0; i < 3; ++i)
+                {
+                    const uint64_t dn = cur[i]->ns - lw[i].ns;
+                    const uint64_t ds = cur[i]->sampled - lw[i].sampled;
+                    const uint64_t dc = cur[i]->calls - lw[i].calls;
+                    lw[i] = *cur[i];
+                    sampled += ds;
+                    est[i] = ds ? double(dn) * (double(dc) / double(ds)) : 0.0;
+                    calls[i] = frames ? double(dc) / double(frames) : 0.0;
+                }
+                // The bill, next to the numbers rather than in a footnote: two clock
+                // reads per sampled call, at the same calibrated cost the scopes pay.
+                const double billMs =
+                    double(sampled) * 2.0 * (double(g_profNowNs10) / 10.0) * 1e-6;
+                fprintf(stderr,
+                        "[vkprof] WHOLE-FUNCTION (1 call in %llu, INCLUSIVE of callees "
+                        "— compare with a `perf` symbol GROUP, never one symbol's self "
+                        "time): %s %.2f ms/frame (%.1f%%, %.0f calls/frame) | %s %.2f "
+                        "(%.1f%%, %.0f) | %s %.2f (%.1f%%, %.0f) — the table above says "
+                        "streams %.1f%% textures %.1f%% draw %.1f%%; this instrument's "
+                        "own bill %.2f ms over the window\n",
+                        (unsigned long long)kWfPeriod,
+                        nm[0], frames ? est[0] * 1e-6 / double(frames) : 0.0,
+                        pct(uint64_t(est[0])), calls[0],
+                        nm[1], frames ? est[1] * 1e-6 / double(frames) : 0.0,
+                        pct(uint64_t(est[1])), calls[1],
+                        nm[2], frames ? est[2] * 1e-6 / double(frames) : 0.0,
+                        pct(uint64_t(est[2])), calls[2],
+                        pct(g_prof.streams), pct(g_prof.textures), pct(drawTotal),
+                        billMs);
+            }
+
+#endif // CZ_WHOLEFUNC
             // THE INSTRUMENT'S OWN BILL, on its own line so it can never be read as
             // part of the game's frame. It is charged to the run that asked for it and
             // to nothing else, and it is ZERO in a run without CZ_VK_FRAME_STATS — but
