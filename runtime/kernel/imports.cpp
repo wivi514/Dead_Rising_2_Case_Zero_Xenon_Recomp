@@ -74,6 +74,7 @@
 #include "kobject.h"
 #include "memory.h"
 #include "xex_imports.h"
+#include "xlive_glue.h"  // fake_xbox_live: the account, and where achievements go
 
 // ---------------------------------------------------------------------------
 // Stub helpers
@@ -3437,9 +3438,13 @@ static uint32_t XamUserGetName_x(uint32_t userIndex, char* buffer, uint32_t buff
         buffer[0] = '\0';       // an absent user still gets a defined buffer
         return ERROR_NO_SUCH_USER;
     }
+    // The signed-in account's gamertag when there is one, and this runtime's
+    // own constant when there is not — so a player without an account sees
+    // exactly what they saw before.
+    const char* name = CzXlive_Gamertag(kLocalUserName);
     memset(buffer, 0, bufferLen);
-    const size_t n = strlen(kLocalUserName);
-    memcpy(buffer, kLocalUserName, n < bufferLen ? n : bufferLen - 1);
+    const size_t n = strlen(name);
+    memcpy(buffer, name, n < bufferLen ? n : bufferLen - 1);
     return 0;
 }
 
@@ -3481,7 +3486,11 @@ static uint32_t XamUserGetXUID_x(uint32_t userIndex, uint32_t type, be<uint64_t>
         *out = 0;
         return ERROR_NO_SUCH_USER;
     }
-    *out = kLocalOfflineXuid;
+    // The account's XUID when signed in. Safe to change: the only consumer that
+    // does anything but copy it is XamContentCreateInternal, which passes it to
+    // CreateEnumerator, which stores it in the guest-visible struct and logs it
+    // — ScanSaves never sees it, so which XUID this is cannot hide a save.
+    *out = CzXlive_Xuid(kLocalOfflineXuid);
     return 0;
 }
 
@@ -5080,15 +5089,31 @@ static uint32_t DispatchAppMessage(uint32_t app, uint32_t message, void* buffer,
                  count, arrayVa);
             return E_FAIL;
         }
-        std::lock_guard lock(g_achievementMutex);
-        for (uint32_t i = 0; i < count; i++)
+        std::vector<uint16_t> earned;
         {
-            const auto* a = reinterpret_cast<const GuestXUserAchievement*>(
-                g_memory.Translate(arrayVa + i * sizeof(GuestXUserAchievement)));
-            if (g_achievements.emplace(a->userIndex.get(), a->achievementId.get()).second)
-                KLOG("achievement unlocked: user %u id %u (%zu earned)\n",
-                     a->userIndex.get(), a->achievementId.get(), g_achievements.size());
+            std::lock_guard lock(g_achievementMutex);
+            for (uint32_t i = 0; i < count; i++)
+            {
+                const auto* a = reinterpret_cast<const GuestXUserAchievement*>(
+                    g_memory.Translate(arrayVa + i * sizeof(GuestXUserAchievement)));
+                const uint32_t id = a->achievementId.get();
+                if (g_achievements.emplace(a->userIndex.get(), id).second)
+                    KLOG("achievement unlocked: user %u id %u (%zu earned)\n",
+                         a->userIndex.get(), id, g_achievements.size());
+                // An achievement id is 16 bits on this platform (XACH stores it
+                // as one, and this title's are 63..74). A wider value is a
+                // corrupt message, not an achievement, so it is kept in the
+                // in-memory set above but not sent anywhere.
+                if (id <= 0xFFFFu)
+                    earned.push_back(uint16_t(id));
+            }
         }
+        // Outside the lock: this hands the ids to libxlive, which writes them to
+        // disk and queues the server write. It returns immediately and cannot
+        // fail, which is what lets this handler keep returning 0 — and
+        // returning 0 here is what stops the title tearing down the save it has
+        // already created.
+        CzXlive_RecordAchievements(earned);
         return 0;
     }
 

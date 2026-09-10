@@ -186,6 +186,7 @@ int Host_DisplayModeList(uint32_t*, int) { return 0; }
 #include "../gpu/vk_renderer.h"
 #include "host_paths.h"
 #include "log_file.h"
+#include "../kernel/xlive_glue.h"
 #include "png_icon.h"
 #include "settings.h"
 #include "../cpu/native_kbm.h"
@@ -1481,6 +1482,10 @@ void Shutdown(const char* why)
     ::VkRenderer_SavePipelineCache();
     fflush(nullptr);
     LogFile::Flush(2000); // the log file's tail, before an exit that skips every destructor
+    // And fake_xbox_live's queued writes, for the same reason and on the same
+    // road: an achievement earned in the last minute of a session is already on
+    // disk, but without this it does not reach the server until the next launch.
+    CzXlive_Shutdown(1500);
     // _Exit, not exit: guest threads are still running recompiled code against guest
     // memory, and running static destructors underneath them would turn an ordinary
     // quit into a crash report about a subsystem that was working.

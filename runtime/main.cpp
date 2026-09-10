@@ -59,6 +59,7 @@
 #include "kernel/memory.h"
 #include "kernel/vfs.h"
 #include "kernel/xex_imports.h"
+#include "kernel/xlive_glue.h"
 #include "ppc_recomp_shared.h"
 
 // kernel/file_imports.cpp. Declared here rather than in a header because the file
@@ -697,6 +698,13 @@ int main(int argc, char** argv)
     // xpointer) and must not race the title's own file activity. Off by default and
     // free when off; see kernel/file_imports.cpp for why it exists at all.
     FileImportsWriteSelfTest();
+
+    // fake_xbox_live, before any guest code runs, because the very first thing
+    // the title asks about the user is its name. XexTitleId() is valid from
+    // here — the image is loaded and its execution info published — and Start
+    // never blocks, so this costs the boot nothing whether or not the player
+    // has an account or a network.
+    CzXlive_Start(XexTitleId());
 
     // The window, before any guest code runs.
     //
