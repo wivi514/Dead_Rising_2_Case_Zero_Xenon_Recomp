@@ -1621,6 +1621,20 @@ bands it by draw count and prints the wall column beside it — on a normal arm 
 within a few tenths of a millisecond, which is the statement *this frame is one thread
 long*.
 
+**A.2's WHOLE-FUNCTION timers are a COMPILE-TIME instrument, `-DCZ_WHOLEFUNC=1`, and a
+default build carries no code at all** (gated exactly and for free: the default build's
+`.text` is byte-identical to the pre-A.2 binary). They time one call in **17** — prime, so
+the sampler cannot align with a renderer whose work batches in powers of two — around
+`UploadStream`, `UploadTexture` and `DoDraw` as WHOLE functions, on a per-CALL counter,
+and print under the phase table with the phases' own numbers beside them, so
+`streams 0.2%` and `UploadStream 14.8%` appear on one line. They are **INCLUSIVE of
+callees**, so compare them with a `perf` symbol GROUP and never with one symbol's self
+time. `CZ_VK_NO_WHOLEFUNC=1` is the runtime control inside such a build.
+**A BUILD CARRYING THEM IS ~0.5 ms/frame SLOWER AT THE CROWD** — measured, three runs an
+arm with both binaries alternated (part 110 §6.8) — so read its SHARES and never its
+milliseconds. That cost is paid with the timers OFF: an RAII probe changes codegen even
+when its body never runs, which is why the flag is at compile time and not at run time.
+
 `CZ_VK_PROFILE` also prints a **COVERAGE** line as of part 110: what share of the pump's
 CPU the named phases account for, what share is the PM4 walk (not a ProfScope at all —
 `walk` minus the phases), and what share is genuinely UNSCOPED. **Read its warning as

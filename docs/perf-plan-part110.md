@@ -490,3 +490,101 @@ not 120, and the thing that stops it is the game, not us.**
   sharding; it cannot change the 8.8 ms ceiling, because that ceiling is `max(...)`'s other
   term.
 
+### 6.8 — A.2: built, working, and REFUTED BY ITS OWN GATE — so it is a compile-time instrument
+
+The timers work and they put the whole defect on one line of an ordinary profiled run:
+
+    [vkprof] WHOLE-FUNCTION (1 call in 17, INCLUSIVE of callees): UploadStream 2.58
+    ms/frame (14.8%, 47226 calls/frame) | UploadTexture 2.59 (14.9%, 21446) | DoDraw
+    14.00 (80.5%, 9236) — the table above says streams 0.2% textures 8.9% draw 77.9%
+
+`streams` 0.2% beside `UploadStream` 14.8%, every window, with no `perf` capture needed.
+`DoDraw` 80.5% against the table's `draw` 77.9% is the estimator's own sanity check —
+DoDraw inclusive should be the draw total, and it is.
+
+**AND THE IDENTITY GATE FAILED.** The plan pre-registered it: a profiler-OFF crowd run
+must be unchanged within +-0.10 ms. Three runs an arm, **both binaries alternated in one
+session** (the first attempt compared against controls taken an hour earlier and was
+thrown out on this project's own rule — the control is the arm run NOW, gotcha 50/51/86):
+
+| band | n(pre) | n(wf) | pump cpu delta |
+|---|---|---|---|
+| 8,750 | 26 | 11 | **+0.65 ms** |
+| 9,000 | 8 | 19 | **+0.67** |
+| 9,250 | 30 | 48 | **+0.43** |
+| 9,500 | 3 | 16 | **+0.29** |
+| 9,750 | 5 | 3 | **+0.42** |
+
+Positive in every band with real sample counts. ~6 ns per call across ~78,000 calls a
+frame — **twenty times what the predicted branch costs**, and the prediction was argued
+from the source rather than measured.
+
+**The mechanism is the RAII object, not the branch.** A non-trivial destructor on
+`UploadTexture` — a wrapper whose body is a tail call — forces a real call and a stack
+frame; on `DoDraw` it lands on every early return. **A probe changes codegen even when
+its body never runs.** No runtime flag can refund that, which is why the resolution is a
+compile-time one.
+
+So machinery, call sites and print all sit behind `-DCZ_WHOLEFUNC=1`, and **the gate on
+that is free and exact rather than another six runs: the default build's `.text` is
+byte-identical to the pre-A.2 binary** (`ceccb33f...`; the A.2 build is `7324e575...`).
+A build that carries the timers announces itself and says to read its shares, never its
+milliseconds.
+
+0.5 ms is a fifth of everything item B could ever win. An instrument that expensive is
+worth having and is not worth shipping.
+
+## §7. WHERE PART 110 ENDS
+
+**Both of the operator's asks are answered, and one of them has an answer the plan did not
+anticipate.**
+
+### 7.1 — Item A, the profiler that lies: FIXED, but not the way the plan said
+
+| | verdict |
+|---|---|
+| A.1 coverage line | built — **and its premise retracted**: coverage is ~100%, the defect is misattribution |
+| A.2 sampled whole-function timers | built, works, **+0.5 ms** -> compile-time only (`-DCZ_WHOLEFUNC=1`) |
+| A.3 `tools/phase_vs_perf.py` | **built, positive control fires at 53.7x, and it found a second lie** |
+
+The standing check is A.3 and it is the one that would have prevented all three of the
+mistakes A.0 lists. Run it once a part, beside the other gates, on a profiled log plus a
+`perf` capture — **preferring a capture from a CLEAN run at matched draws**, because the
+profiler's own 4-6 ms lands in `DoDraw` and dilutes every symbol share in a same-run
+capture (the `pm4` row reads 0.93x against a clean capture and 0.56x against a profiled
+one; the `streams` row is 43-54x either way).
+
+**Archive the binary with every `perf` capture.** Three of part 109's four captures are
+unreadable today because `tools/part80_crowdroute.sh` re-links `cz_runtime_crowd` on
+every build and `perf` refuses a DSO whose build-id has moved on.
+
+### 7.2 — Item B, the four idle cores: GO by the plan's rule, CAPPED by something else
+
+* `F` = **2.49 ms**, `M` = **8.44 ms**, `F + M/3` = **5.33 ms** against a kill of 8.0.
+  **The kill does not fire.** §3's thesis is confirmed almost exactly.
+* **But the wall cannot go below ~8.8 ms**, because with the whole per-draw renderer
+  deleted and the GPU idle that is what the frame still costs — the title's own
+  recompiled code on two threads, neither saturated. Cutting our pump-tick latency 4x and
+  10x moves it by 0.01 ms, so it is not ours.
+* Therefore item B is worth **~2.3 ms, ~90 -> ~113 fps**, and **120 fps CPU-side is not
+  reachable at this crowd on this machine.**
+
+### 7.3 — THE DECISION, and it is the operator's
+
+**Build item B?** It is the largest item this project has left by a wide margin — 2.3 ms
+against part 109's entire night, which found 0.54 ms. It is also a substantial threading
+build (§3.3's design, §3.4's three stages, ThreadSanitizer or a per-structure race
+argument, and the thread budget has no spare slots) for a result that stops at ~113 fps.
+
+**If yes**, §3.2's mutation census runs first and is unchanged; it can only refine how
+much of the 2.3 ms survives sharding, never the 8.8 ms ceiling.
+
+**If no**, what remains on the board is part 109's two verified sub-threshold items —
+`CZ_VK_TEXMEMO=1` (**−0.33 ms**) and `CZ_VK_SCOPED_SHARED_ZERO=1` (**−0.21 ms**), both
+correct, both gated, both shipped OFF only because they missed a bar set when the plan
+still expected 1.5 ms items.
+
+**And a third thing is now on the board that was not before:** the 8.8 ms floor is the
+GUEST's own recompiled code, it has never been profiled as a subject, and it is now the
+largest single term in the frame. Nothing in this project has ever looked at it.
+
