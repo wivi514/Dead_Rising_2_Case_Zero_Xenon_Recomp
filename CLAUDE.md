@@ -1156,7 +1156,17 @@ Where the port is, as of 2026-09-10 (**PART 110 — THE PROFILER IS FIXED AND TH
 CORES HAVE A PRICE AND A CEILING.** The operator's instruction: *"You think you can make it
 so that we use more the third core last time you said it's pretty much only used like at 3%
 and if you can fix the profiler for the things he lie to us about?"* `docs/perf-plan-part110.md`
-§6-§7 is the plan AND the record, `docs/part111-kickoff.md` THE LIVE HAND-OFF, gotchas 547-550):
+§6-§7 is the plan AND the record, `docs/part111-kickoff.md` THE LIVE HAND-OFF, gotchas
+547-550. **AND THE OPERATOR HAS DECIDED, KNOWING THE CEILING: BUILD ITEM B.
+`docs/perf-plan-part111.md` IS THE BUILD PLAN** — its §1 INVERTS part 110's staging,
+because the constants CANNOT be deferred (their source is the register file the pump
+itself overwrites, and the const memo says the VS window changes on 98.3% of draws), so
+the order is B1 pre-zero the arena (hazard-free, 0.44 ms, and its kill refutes the whole
+design for one day's work), then B2 streams+textures (2.68 ms, our own caches, shardable),
+and B3 the constants is expected to be refuted by the census and never built. Its §0
+carries the budget that says WHEN TO STOP: **~2.1 ms of USEFUL headroom, not 5.6**, because
+`wall ~ max(pump, 8.8, GPU)` and the wall stops responding once the pump reaches the
+guest's floor):
 
 * **ITEM A — the profiler.** `tools/phase_vs_perf.py` is the standing cross-check and it
   is what should have existed three parts ago: it reads the phase table out of a profiled
