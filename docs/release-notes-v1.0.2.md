@@ -1,19 +1,24 @@
 # Release notes — v1.0.2
 
 **This is the text to paste into the GitHub Release body.** Binaries are commit
-`482b47f` (all three artifacts were built from that source; the docs commits after it
-change no code). It carries part 104's runtime changes (the golden texture store as one
-pack file, the AppImage data root, Wayland-first on Linux, the window title and icon) and
-the first Linux artifacts built on the old base.
+`a9e7d95` (all three artifacts built from that source on 2026-09-09; the last source
+change is `3bbf3e9`, and the docs commits after it change no code). It carries parts 104-108: the golden texture
+store as one pack file, the AppImage data root, Wayland-first on Linux, the window
+title and icon, the log file and `--diag`, the device-local geometry mirror, the
+keyboard/mouse start-up scan fix, 16:10 resolutions, MSAA as a setting, the window
+following the resolution, controller vibration, and the night's picture and input
+fixes — all on the first Linux artifacts built on the old base.
 
 **The release is frozen at the tag**: if any artifact is EVER rebuilt, refresh its hash
 below before attaching.
 
 ---
 
-A maintenance release for Linux — the glibc requirement drops, there is an AppImage, and
-a one-frame-per-second defect on Wayland desktops is fixed — plus one boot-time
-improvement on both platforms.
+A large update on both platforms: the GPU cost of crowds roughly halves, keyboard/mouse
+players no longer lose a CPU core for the first two and a half minutes of every session,
+controller vibration arrives, 16:10 screens (the Steam Deck's) are supported, MSAA is a
+setting, and a round of picture and input fixes. For Linux the glibc requirement drops,
+there is an AppImage, and a one-frame-per-second defect on Wayland desktops is fixed.
 
 **Upgrading from v1.0.1:** unpack over your existing folder, or anywhere — saves and
 settings live outside the game folder and are untouched. Your unpacked game data and
@@ -38,6 +43,44 @@ shader cache are reused.
 - The bundled XMA audio decoder now carries its hand-written x86 assembly (the earlier
   Linux builds shipped the plain-C fallback).
 
+### Both platforms: performance
+
+- **Crowds cost the GPU about half of what they did.** The game's geometry was being
+  fetched across the PCIe bus for every draw; it now lives in a mirror in video memory.
+  Measured at a full crowd at 1080p with 2x MSAA on an RTX 3070, the GPU's frame went
+  from 8.8 ms to 4.0 ms, and wall time fell 22-24% wherever the GPU was the limit. On a
+  GTX 1060-class card this is the difference between a crowd in the mid-30s and one
+  near 60. `CZ_VK_NO_STORE_MIRROR=1` turns it off, and is the first thing to try if
+  you ever see a one-frame stale mesh.
+- **Keyboard/mouse: a whole CPU core is back for the first minutes of play.** Since
+  the native keyboard/mouse support arrived, a background scan for the game's
+  prompt art ran at 100% of one core for the first 137-150 s of EVERY session. It now
+  finishes in under a tenth of a second. On a 4-core CPU this was worth 1.5-1.8 ms a
+  frame at the crowd; every crowd window measured under 16.7 ms afterwards.
+  `CZ_KBM_SCAN_LEGACY=1` is the old behaviour.
+- The game's draw thread no longer spins a core while it waits for the GPU; it sleeps
+  until the GPU signals. Frame time is unchanged by this; CPU use and heat are lower.
+  `CZ_FENCE_PARK=0` is the old behaviour.
+- **On a GTX 1050 Ti / Steam Deck-class GPU**, the honest recommendation is **1080p with
+  MSAA off** (see the new MSAA setting below): that combination ran the crowds at
+  59-65 fps in our low-end testing, where 2x MSAA held 53-54.
+
+### Both platforms: new settings
+
+- **16:10 resolutions.** 1280x800, 1920x1200, 2560x1600 and any 16:10 mode your display
+  offers are accepted, in the launcher and in the in-game options screen. The picture keeps its
+  proportions and gains a little vertical view; the HUD sits at full width in the
+  central 16:9 band. The Steam Deck's native 1280x800 no longer falls back to 720p.
+- **MSAA is a setting** (Off / 2x / 4x) in the options screen and the launcher. It
+  applies at the next launch — the row shows a star until then.
+- **In windowed mode the window follows the resolution.** It opens at the resolution
+  you chose (fitted to your desktop), and resizes when you apply a new one or leave
+  fullscreen. A maximised window stays maximised.
+- **A log file for bug reports.** Every run writes `cz_runtime.log` beside the
+  executable (the previous run is kept as `cz_runtime.log.1`), and
+  `cz_runtime --diag` writes `cz_diag.txt` with your GPU, driver, and the Vulkan
+  features the game found. Attach both to any issue.
+
 ### Both platforms
 
 - **Controller vibration.** The game's rumble now reaches your pad — hits, weapons,
@@ -57,7 +100,9 @@ shader cache are reused.
   notches per step for some players; every notch counts now.
 - **A quieter log.** The audio decoder no longer writes a warning line thirty times a
   second; those lines were harmless (the decoder costs about 3% of one core) but they
-  made it look like the culprit for stutter that came from elsewhere.
+  made it look like the culprit for stutter that came from elsewhere. The controller
+  vibration request no longer logs a line on every poll either (it was half of a
+  session's log); `CZ_RUMBLE_TRACE=1` prints the changes.
 - **Faster start-up after many sessions.** The runtime remembers small streamed textures
   it has seen (this is what keeps a certain gravel floor from rendering black), one file
   each — and that directory was being re-read file by file at every launch, one second
@@ -133,7 +178,7 @@ XenonRecomp and XenosRecomp.
 ### Checksums (SHA-256)
 
 ```
-3e704f8869d5d5bb61ad353960da75628a5030cc10fd62f8b4d033d29d60f226  CaseZeroRecomp-linux-x86_64.tar.zst
-73b054185b68125d142df5deffe954dc7226de00ecef8fd8045f1b055e05f1ac  CaseZeroRecomp-linux-x86_64.AppImage
-56b5cb890884de1373eeace4abefda62013de23b73934d68f838ce59bf2f74ed  CaseZeroRecomp-windows-x86_64.zip
+9bb26a10f2c578a6bcef24162e3c4393bbd081bdb858e48757a42352e8ff1af2  CaseZeroRecomp-linux-x86_64.tar.zst
+5dadd0dc102f54b8d45369909d65d60365e1b5a13315d7cab76568b8e9e55794  CaseZeroRecomp-linux-x86_64.AppImage
+c7a7ef09be6148c385409689694cdebbd12fac4ce42c3892068aec0161cbb5fc  CaseZeroRecomp-windows-x86_64.zip
 ```

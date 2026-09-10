@@ -203,7 +203,10 @@ mask; trust the microcode's own swizzles.
     BE SET — kickoff §0 item 0. AS OF THE EVENING OF 2026-09-09 its §1c carries the
     rest of part 108 (rumble, the wheel, the QTE key, the decoder priced) and points
     at `docs/picture-plan-part109.md`, THE PLAN for the four operator picture items
-    0ab-0ae; the Windows leg of v1.0.2 is still ahead of it.** ~~It was
+    0ab-0ae. AND AS OF LATE 2026-09-09 ITS §1d RECORDS v1.0.2 BUILT, GATED AND STAGED
+    at `a9e7d95` in `~/Release/Case Zero/1.0.2/`, tag `v1.0.2` pushed, NOT PUBLISHED
+    (the operator's upload); the Windows EYE tests (windows-test-list items 2-10) are
+    owed in their cz_play session.** ~~It was
     `part107-kickoff.md` — PERFORMANCE IS LIVE AGAIN with a TARGET (60 fps locked at
     1080p on a GTX 1060); part 106 decomposed the GPU frame for the first time, found
     half of it was vertex fetch over PCIe, and SHIPPED the store MIRROR on by default

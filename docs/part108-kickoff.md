@@ -191,6 +191,49 @@ unless the operator says otherwise.
   do NOT yet carry parts 107-108's other items (the CPU work, 16:10, MSAA, the window
   follow) — write those bullets when the rebuild is packaged.
 
+## §1d v1.0.2 — BUILT, GATED AND STAGED (2026-09-09, late; operator: "Do v1.0.2 all Pc are on")
+
+All three artifacts at source `a9e7d95` (last code change `3bbf3e9`), in
+`~/Release/Case Zero/1.0.2/` with `SHA256SUMS` (verified `sha256sum -c`, and the notes'
+checksum block matches it) and the paste-ready `docs/release-notes-v1.0.2.md`, whose
+bullets now carry parts 105-108 (log file + `--diag`, the store mirror, the glyph-scan
+fix, the fence park, 16:10, MSAA as a setting, the window follow, the low-end
+recommendation). Tag `v1.0.2` is on the notes commit. **NOT PUBLISHED — the upload is
+the operator's click, as for v1.0.0/v1.0.1.**
+
+* **Linux** (old base, ubuntu 22.04 / clang 15): identity gate OK (`.text` 36,109,362
+  bytes identical RelWithDebInfo vs Release), floor 2.35 (libavutil and libgcc_s are the
+  2.35 members), `GATE PASSED` for the tarball AND the AppImage in ubuntu:22.04.
+  **The first gate run was in Rocky 9 (glibc 2.34) and failed every section with
+  `GLIBC_2.35 not found`** — that is BELOW the floor, the documented refusal, not a
+  defect; `release_build_oldbase.sh`'s NEXT hint said Rocky 9 alone and now says both.
+* **Windows** (czwin, clang-cl 22.1.8): `cpu/fence_wait.cpp` and `cpu/native_kbm.cpp`
+  compile and link (`synchronization` resolves `WaitOnAddress`); the fence park
+  announces itself and its first episode parks (`[fencewait] ... park -> timeout`);
+  `--diag` and the log file both byte-identical to the console (318,437 and 57,338
+  bytes); `release_package_windows.ps1` staged, ran `--smoke` on the staged exe and
+  zipped (21 MB). The ssh session HANGS after vc.bat's build finishes (the exe was
+  linked in 0.6 s; the channel never closed) — poll the exe's write time, not the ssh.
+* **Found by the Windows headless boot and FIXED (`3bbf3e9`)**: `XamInputSetState`
+  logged a `[kernel]` line on EVERY controller tick — 5,383 in 100 s, and 65,034 of the
+  131,516 lines of the operator's part-108 rumble log (half of every session's
+  `cz_runtime.log` since rumble landed, an fprintf on the frame path). It now logs
+  under `CZ_RUMBLE_TRACE=1` only, and only on a change of the motor pair. All three
+  artifacts were rebuilt after it (the Linux pair twice this night).
+* **The seven dropped key bindings are NAMED** (owed from §1c): PAUSEMENU,
+  FRONTEND_PAUSEMENU, PLAYER_CALL_SURVIVOR_GOTO_POINT, PLAYER_HAND_TO_HAND_KICK,
+  AI_RIDEABLE_BRAKE, AI_RIDEABLE_PUMP, AI_PUSHABLE_ACCELERATE — `[kbm] splice: 86 of
+  93 key bindings applied to port 0 (7 had no free slot)`. GOTO_POINT is the one Q now
+  covers via BUTTON_4; the other six are a v1.0.3 question (are any reachable on KB/M
+  another way?).
+* **What a headless czwin run CANNOT show, so the operator's windowed session owes it**
+  (`windows-test-list-for-v102` items 2, 3, 5-10): the glyph scan starts only when a
+  real key or pad names the device (`NativeKbm_NoteDeviceInput`), and the fence
+  park's per-frame parks/MISSED line lives in the `CZ_VK_PROFILE` block — `play.bat`
+  already arms that profile, so one `schtasks /run /tn cz_play` session gives both.
+* czamd: `No route to host` at 192.168.0.27 all evening — its GPU column and the AMD
+  eye test of the mirror stay owed.
+
 ## §2 Instruments and arms this part added
 
 `CZ_FENCE_PARK`, `CZ_FENCE_PARK_SPIN_US`, `CZ_FENCE_PARK_TRACE`, `CZ_KBM_SCAN_LEGACY`,
