@@ -28203,15 +28203,51 @@ void DoSwapImpl(uint8_t* base, uint32_t frontBuffer, uint32_t width, uint32_t he
                     dMed = d[d.size() / 2];
                     dMax = d.back();
                 }
+                // THE PUMP'S OWN CPU PER FRAME, on the [fps] line and therefore
+                // available in an UNPROFILED run (part 110 §3.1).
+                //
+                // It exists because the quantity part 110 has to measure — the pump's
+                // CPU milliseconds per presented frame — was only ever obtainable by
+                // crossing two instruments taken over DIFFERENT windows: `perf`'s or
+                // `part50_thread_cpu.py`'s "% of one core" over its own 15 s sample,
+                // divided into a frame rate from somewhere else. This project has a
+                // name for that arithmetic and it invented 59 MB/frame that never
+                // existed (`two-counters-are-not-a-pair`). One `clock_gettime` per FPS
+                // WINDOW — not per frame — makes it one measurement over one window,
+                // banded by the same draw count as everything else on this line.
+                //
+                // Free: the [fps] window is seconds long, so this is one vDSO read per
+                // several hundred frames, against the profiler's thousands per frame.
+                // It is printed unconditionally under CZ_FPS_LOG because a number that
+                // needs its own env var is a number nobody has when they need it.
+                double pumpCpuMs = 0.0, pumpDuty = 0.0;
+                {
+                    static uint64_t lastPumpCpuNs = 0;
+                    static bool havePumpCpu = false;
+                    timespec pts{};
+                    clock_gettime(CLOCK_THREAD_CPUTIME_ID, &pts);
+                    const uint64_t nowNs =
+                        uint64_t(pts.tv_sec) * 1000000000ull + uint64_t(pts.tv_nsec);
+                    if (havePumpCpu && frames)
+                    {
+                        const double dNs = double(nowNs - lastPumpCpuNs);
+                        pumpCpuMs = dNs * 1e-6 / double(frames);
+                        pumpDuty = elapsed > 0.0 ? 100.0 * dNs * 1e-9 / elapsed : 0.0;
+                    }
+                    lastPumpCpuNs = nowNs;
+                    havePumpCpu = true;
+                }
                 fprintf(stderr,
                         "[fps] %.1f fps mean (%.2f ms) | %.1f fps median (%.2f ms) | "
                         "p99 %.2f ms | worst %.2f ms | >2x med %.1f%% | "
-                        "%llu frames in %.1f s | draws med %u (%u..%u)\n",
+                        "%llu frames in %.1f s | draws med %u (%u..%u) | "
+                        "pump cpu %.2f ms/frame (%.0f%% of a core)\n",
                         double(frames) / elapsed, 1000.0 * elapsed / double(frames),
                         1e6 / double(medUs), double(medUs) / 1000.0,
                         double(p99Us) / 1000.0, double(worstUs) / 1000.0,
                         n > 1 ? 100.0 * double(overTwice) / double(n - 1) : 0.0,
-                        (unsigned long long)frames, elapsed, dMed, dMin, dMax);
+                        (unsigned long long)frames, elapsed, dMed, dMin, dMax,
+                        pumpCpuMs, pumpDuty);
                 // ...and the register-run census beside it when armed, PER WINDOW rather
                 // than only at exit. The exit path is the right home for a summary
                 // (gotcha 543) but it is not a reliable one: two runs tonight ended
@@ -30121,6 +30157,50 @@ void DoSwapImpl(uint8_t* base, uint32_t frontBuffer, uint32_t width, uint32_t he
                             frames ? offNs * 1e-6 / double(frames) : 0.0,
                             frames ? double(dSleep) * 1e-6 / double(frames) : 0.0,
                             frames ? blockedNs * 1e-6 / double(frames) : 0.0);
+
+                    // --- A.1: THE TABLE'S OWN COVERAGE, AND WHAT COVERAGE DOES NOT
+                    // MEAN (part 110) ------------------------------------------------
+                    //
+                    // Every column above is a percentage of WALL. Nothing above says
+                    // what fraction of the PUMP'S CPU the named phases account for, or
+                    // names the part that is inside no scope at all — and `outside`
+                    // reads like a category ("the walk, the guest") when it is a
+                    // residual. So state it: phases, the walk (which is not a
+                    // ProfScope and is only ever obtained by subtraction), and the
+                    // genuinely UNSCOPED remainder, as shares of this thread's CPU.
+                    //
+                    // AND THE WARNING IS THE POINT, because part 110 measured the
+                    // coverage before writing this and it is HIGH — ~73% phases, ~28%
+                    // walk, ~0% unscoped — on the same build whose `streams` column
+                    // under-reports its own subsystem by a factor of thirty. **A phase
+                    // table can account for 100% of a thread and still be wrong about
+                    // every row**, because the defect is misattribution, not omission:
+                    // `UploadStream`'s cost is charged to `record`, which is a real
+                    // scope that really did contain it. Coverage is necessary and it is
+                    // nowhere near sufficient, and a line that printed only the number
+                    // would be the next thing to mislead somebody. The check that CAN
+                    // catch it compares each phase with the SYMBOLS implementing the
+                    // subsystem it is named after — `tools/phase_vs_perf.py`.
+                    const double cpuMs = double(dCpu) * 1e-6;
+                    const double phaseMs = double(known) * 1e-6;
+                    const double walkOnlyMs = double(pm4Ns) * 1e-6;
+                    const double unscopedMs =
+                        cpuMs > phaseMs + walkOnlyMs ? cpuMs - phaseMs - walkOnlyMs : 0.0;
+                    const auto cpct = [&](double m) {
+                        return cpuMs > 0.0 ? 100.0 * m / cpuMs : 0.0;
+                    };
+                    fprintf(stderr,
+                            "[vkprof]   COVERAGE: phases %.1f%% of the pump's CPU "
+                            "(%.2f of %.2f ms/frame) + PM4 walk %.1f%% (not a phase: "
+                            "`walk` minus the phases) + UNSCOPED %.1f%% — unscoped is "
+                            "NOT a category, it is code this table does not measure. "
+                            "AND HIGH COVERAGE IS NOT AGREEMENT: a phase names a SCOPE, "
+                            "not a subsystem (gotcha 343). Run tools/phase_vs_perf.py "
+                            "against a `perf` capture of this run before pricing "
+                            "anything off a column above.\n",
+                            cpct(phaseMs), frames ? phaseMs / double(frames) : 0.0,
+                            frames ? cpuMs / double(frames) : 0.0, cpct(walkOnlyMs),
+                            cpct(unscopedMs));
                 }
             }
 
