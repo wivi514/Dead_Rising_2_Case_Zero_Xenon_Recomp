@@ -19,35 +19,46 @@ Deck owner can tell us in about fifteen minutes, if the run leaves the two files
 
 ## The Linux build (preferred — it is the native path)
 
-1. In Desktop Mode, make a folder, e.g. `~/Games/CaseZeroRecomp/`.
-2. Put **`CaseZeroRecomp-linux-x86_64.AppImage`** in it (or unpack the `.tar.zst` there
-   instead — both are fine; the AppImage needs no unpacking).
-3. Make it executable: right-click → Properties → Permissions → "Is executable", or in a
-   terminal `chmod +x CaseZeroRecomp-linux-x86_64.AppImage`.
-4. Put your package file in **`assets/package/`** beside it (`~/Games/CaseZeroRecomp/assets/package/<the file>`).
-   The AppImage creates the folder on first launch if you would rather drag the file onto
-   the launcher window.
-5. Open a terminal in that folder (Konsole; right-click the folder → "Open Terminal Here")
+**Use the `.tar.zst`, not the AppImage.** Both work and both are the same build, but the
+AppImage's single-file advantage does not survive contact with this game: you have to put
+an 825 MB package beside it anyway, and the first run writes about 2 GB of unpacked game
+data beside it too — so either way you are managing a folder, and with the tarball that
+folder is simply visible. The tarball also has one less moving part: an AppImage mounts
+itself with FUSE, and where FUSE is missing the fallback re-extracts 27 MB on every
+launch. The unpacked build needs only Vulkan, libm and libc from the system.
+
+1. In Desktop Mode, make a folder, e.g. `~/Games/CaseZeroRecomp/` (the SD card is fine —
+   budget ~3 GB for the package plus what the first run unpacks).
+2. Unpack **`CaseZeroRecomp-linux-x86_64.tar.zst`** into it. In Konsole:
+   ```
+   tar --zstd -xf CaseZeroRecomp-linux-x86_64.tar.zst
+   ```
+   (If you would rather use the AppImage, put it in the folder and `chmod +x` it; every
+   step below is the same with `./CaseZeroRecomp-linux-x86_64.AppImage` in place of
+   `./cz_runtime`.)
+3. Put your package file in **`assets/package/`** inside that folder. If the folder is not
+   there yet, the first launch makes it — or drag the package onto the launcher window.
+4. Open a terminal in that folder (Konsole; right-click the folder → "Open Terminal Here")
    and run:
    ```
-   ./CaseZeroRecomp-linux-x86_64.AppImage --diag
+   ./cz_runtime --diag
    ```
    That prints one line per fact about the Deck and exits. It also writes `cz_diag.txt`
    in the folder. **This alone answers half our questions** (which Vulkan driver, which
    features, which display driver).
-6. Then run the game from the same terminal:
+5. Then run the game from the same terminal:
    ```
-   ./CaseZeroRecomp-linux-x86_64.AppImage
+   ./cz_runtime
    ```
    The first run unpacks the package and translates ~1,400 shaders under a progress
    window. On a Deck expect **up to a minute** for the shader step (12.5 s on a desktop
    Ryzen restricted to four cores; the Deck's cores are slower). Wait for it.
-7. Whatever happens, **`cz_runtime.log`** is in the folder (and `cz_runtime.log.1` is
+6. Whatever happens, **`cz_runtime.log`** is in the folder (and `cz_runtime.log.1` is
    the run before). Attach it.
-8. If it reaches the title screen: play a few minutes, note the frame rate the window
+7. If it reaches the title screen: play a few minutes, note the frame rate the window
    title shows, then quit with the launcher/Escape so the log ends cleanly.
-9. Only THEN add it to Steam (Games → Add a Non-Steam Game → browse to the AppImage) and
-   try Game Mode. Report Game Mode separately from Desktop Mode — they are different
+8. Only THEN add it to Steam (Games → Add a Non-Steam Game → browse to `cz_runtime`, or
+   to the AppImage if you used that) and try Game Mode. Report Game Mode separately from Desktop Mode — they are different
    display paths (Game Mode is gamescope; the log's `[host] gamescope session detected`
    line says which path it took).
 

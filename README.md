@@ -96,8 +96,12 @@ game folder at any time without losing progress.
   2.43 — see known issues). An AppImage is provided from v1.0.2.
 - **Steam Deck**: not yet verified. v1.0.1 cannot start there (glibc); v1.0.2's
   Linux build removes that cause but has not been run on a Deck by anyone on the
-  project. If you have one, `docs/steam-deck-testing.md` says exactly what to try
-  and what to send back.
+  project. **If you try it, use the `.tar.zst` rather than the AppImage** — you have
+  to keep an 825 MB package and ~2 GB of unpacked data in the folder either way, so
+  the single file buys nothing and the AppImage adds a FUSE dependency. Do the first
+  run in Desktop Mode: it takes about a minute and Game Mode shows no progress
+  console. `docs/steam-deck-testing.md` says exactly what to try and what to send
+  back.
 - **~2 GB free disk space** after first-run unpacking.
 - **Your own copy of the game** (see above).
 
@@ -110,10 +114,11 @@ game folder at any time without losing progress.
 - **Linux glibc floor**: v1.0.1 refuses to start on distributions below glibc
   2.43 with a `GLIBC_x.yz not found` message (that includes every SteamOS).
   v1.0.2 is built on an older base (floor 2.35) and also ships as an AppImage.
-- **Steam Deck**: untested by the project — see Requirements. The Windows build
-  under Proton is likewise untested; on the dev box the same zip runs end to end
-  under Wine 11, so a Deck failure there would be new information — please
-  report it with `PROTON_LOG=1`.
+- **Steam Deck**: untested by the project — see Requirements for which download to
+  use. The Windows build under Proton is likewise untested and is the fallback, not
+  the path to try first; on the dev box the same zip runs end to end under Wine 11,
+  so a Deck failure there would be new information — please report it with
+  `PROTON_LOG=1`.
 - **No macOS build yet** — nothing blocks it in principle; it awaits test
   hardware.
 

@@ -34,7 +34,10 @@ shader cache are reused.
 - **`CaseZeroRecomp-linux-x86_64.AppImage`**, a single file. Put it anywhere, make it
   executable, run it. It creates `assets/package/` NEXT TO ITSELF on the first launch —
   that is where your game package goes (or drag the package onto the launcher). The
-  `.tar.zst` is still provided and is the same build.
+  `.tar.zst` is the same build. **On a Steam Deck, or any handheld, prefer the
+  `.tar.zst`**: you keep the 825 MB package and ~2 GB of unpacked data in the folder
+  either way, so a single file buys nothing there, and the AppImage needs FUSE to mount
+  itself.
 - **Fixed: one frame per second on Wayland desktops.** The Linux builds preferred X11
   (through XWayland) over Wayland, and on at least NVIDIA + XWayland that path presented
   exactly one frame a second — v1.0.0 and v1.0.1 both did this. The game now uses Wayland
