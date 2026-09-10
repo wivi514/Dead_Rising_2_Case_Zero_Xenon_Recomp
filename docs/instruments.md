@@ -1589,7 +1589,45 @@ CZ_VK_NO_DRIVER_RECORD=1   **DESTRUCTIVE.** Skip every `vkCmd*` in the record pa
                    each range boundary, and for scheduling. It announces itself on first
                    use, because an arm this blunt produces a black frame with every
                    counter reading normal
+CZ_VK_NO_DODRAW=1  **DESTRUCTIVE, and the SERIAL-FLOOR ceiling probe (part 110 §3.1).**
+                   The PM4 walk runs in full — every packet, every register write, every
+                   state change, and the resolve path, so frames still present and the
+                   route still reaches the crowd — but `DoDraw`'s body does not: no
+                   decode, no constants, no streams, no textures, no recording. The draw
+                   COUNT is still incremented, deliberately, because `[fps] draws med`
+                   is how the crowd band is identified and a zero there makes the run
+                   unreadable.
+                   It answers part 110's decision point: **how much of the pump is
+                   inherently serial?** `F` = the pump's CPU per frame with this on;
+                   `M` = the rest; `F + M/3` is the best three workers could ever do,
+                   before dispatch, snapshot, merge and contention, all additive.
+                   **THE ONLY ADMISSIBLE READING IS THE PUMP THREAD'S CPU PER PRESENTED
+                   FRAME** (`pump cpu` on the `[fps]` line, banded by
+                   `tools/part110_pumpcpu.py`). Not the wall: the GPU is empty, so the
+                   frame is meaningless twice over and an arm that renders less is
+                   inadmissible for wall by this project's own A/B rule. It announces
+                   itself at boot and prints `[nododraw]` every FPS window (gotchas 151,
+                   543); its control arm prints nothing because the counter never moves
 ```
+
+The `[fps]` line carries the PUMP THREAD'S OWN CPU PER FRAME as of part 110 — `pump cpu
+N.NN ms/frame (M% of a core)` — and it is not an arm: one `clock_gettime` per FPS
+WINDOW, printed whenever `CZ_FPS_LOG` is on. It exists because the quantity part 110 had
+to measure was previously obtainable only by crossing two instruments taken over
+DIFFERENT windows (a `% of one core` from `perf` or `part50_thread_cpu.py` over its own
+sample, divided into a frame rate from somewhere else), which is the arithmetic that once
+invented 59 MB/frame that never existed. Read it with `tools/part110_pumpcpu.py`, which
+bands it by draw count and prints the wall column beside it — on a normal arm the two sit
+within a few tenths of a millisecond, which is the statement *this frame is one thread
+long*.
+
+`CZ_VK_PROFILE` also prints a **COVERAGE** line as of part 110: what share of the pump's
+CPU the named phases account for, what share is the PM4 walk (not a ProfScope at all —
+`walk` minus the phases), and what share is genuinely UNSCOPED. **Read its warning as
+well as its number.** The coverage is high — ~73% phases, ~28% walk, ~0% unscoped — on
+the same build whose `streams` column under-reports its own subsystem by a factor of
+thirty, because the defect is MISATTRIBUTION and not omission. A phase names a SCOPE, not
+a subsystem (gotcha 343). The check that catches that is `tools/phase_vs_perf.py`.
 
 ## The title's own debug scaffolding (`runtime/cpu/debug_tunables.cpp`)
 
