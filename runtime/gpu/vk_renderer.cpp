@@ -30750,12 +30750,6 @@ void ApplyPendingRenderScale()
         }
         ++flushed;
     }
-    if (g_texMemoHits || g_texMemoMiss)
-        fprintf(stderr, "[texmemo] %llu hits, %llu misses (%.1f%% served), %llu "
-                        "disagreements, final gen %llu\n",
-                (unsigned long long)g_texMemoHits, (unsigned long long)g_texMemoMiss,
-                100.0 * double(g_texMemoHits) / double(g_texMemoHits + g_texMemoMiss),
-                (unsigned long long)g_texMemoDisagree, (unsigned long long)g_texGen);
     R->snapshots.clear();
     TexGenBump();
     for (auto& [key, cube] : R->cubeSnapshots)
@@ -30907,6 +30901,18 @@ void VkRenderer_DumpStats()
         return;
     fprintf(stderr, "[vk] --- renderer stats (frame %llu) ---\n",
             (unsigned long long)R->frame);
+    // THE MEMO'S OWN REPORT, and it lives HERE because its first home could not fire.
+    // Part 109 put this line inside the LIVE RESCALE path — a function a headless crowd
+    // run never calls — so the verifier arm ran a whole route and printed nothing, and
+    // "0 disagreements" and "the instrument never spoke" were the same output. Every
+    // recipe in this project ends on a `timeout` SIGTERM, and this function is what that
+    // handler calls; a counter reported anywhere else is a counter nobody reads.
+    if (g_texMemoHits || g_texMemoMiss)
+        fprintf(stderr, "[texmemo] %llu hits, %llu misses (%.1f%% served), %llu "
+                        "disagreements, final gen %llu\n",
+                (unsigned long long)g_texMemoHits, (unsigned long long)g_texMemoMiss,
+                100.0 * double(g_texMemoHits) / double(g_texMemoHits + g_texMemoMiss),
+                (unsigned long long)g_texMemoDisagree, (unsigned long long)g_texGen);
     // OPEN ITEM 0w — the worst frames of the run and what was inside them.
     {
         SlowFrameRec t[12];

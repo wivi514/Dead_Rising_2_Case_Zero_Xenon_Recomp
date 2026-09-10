@@ -172,3 +172,63 @@ emplace, erase and clear, `TexInsert`, and both arms of `ReclaimTextureSlot`.
 **Next session starts here:** one crowd run with `CZ_VK_TEXMEMO=1 CZ_VK_TEXMEMO_VERIFY=1`
 and read `[texmemo]`. Zero disagreements is the gate; then three runs an arm against the
 4.1 baseline, kill rule 0.4 ms.
+
+### 4.3 Item 1 — VERIFIED CORRECT, PRICED, and CLOSED under its own kill rule (2026-09-10)
+
+**The verifier reads zero.** Three crowd runs with `CZ_VK_TEXMEMO=1`, one of them also
+carrying `CZ_VK_TEXMEMO_VERIFY=1`:
+
+| run | hits | misses | served | disagreements |
+|---|---|---|---|---|
+| verify | 235,158,100 | 81,699,641 | 74.2% | **0** |
+| on_1 | 229,557,196 | 84,405,725 | 73.1% | 0 |
+| on_3 | 253,479,524 | 82,021,676 | 75.6% | 0 |
+
+The generation counter works: `final gen` is ~2,935 over a whole run, so invalidation is
+rare and none of the misses are it — they are real fetch-constant changes between draws.
+
+**THE INSTRUMENT COULD NOT FIRE, AND THAT WAS FOUND BY RUNNING IT.** The exit report was
+written into the LIVE RESCALE path — a function a headless crowd run never calls — so the
+first verify run drove the whole route and printed nothing at all, and "0 disagreements"
+and "the instrument never spoke" were the same output. It now lives in
+`VkRenderer_DumpStats()`, which is what the `timeout` SIGTERM handler calls, and the
+control arm proves the report is a real variable: all three `memo OFF` runs print no
+`[texmemo]` line and all three `memo ON` runs do. Gotcha 536.
+
+**The price, three runs an arm, alternated, profiler OFF, 3440x1440, matched draw bands:**
+
+| band (draws) | OFF | ON | delta |
+|---|---|---|---|
+| 8000-8249 | 9.80 | 9.72 | −0.08 (−0.8%) |
+| 8500-8749 | 10.40 | 10.11 | −0.29 (−2.8%) |
+| 8750-8999 | 10.76 | 10.39 | −0.37 (−3.4%) |
+| 9000-9249 | 10.90 | 10.63 | −0.27 (−2.5%) |
+| 9250-9499 | 11.08 | 10.82 | −0.26 (−2.4%) |
+| **weighted** | **10.75** | **10.42** | **−0.33 ms (−3.1%)** |
+
+**BANDING WAS NOT OPTIONAL HERE.** The ON arm happened to land in denser crowds (median
+9,411 draws against the OFF arm's 8,989 — the random zombie spawn this route's header
+warns about), so the two arms' raw run medians are 10.81 and 10.82 ms: a dead null. The
+effect is entirely hidden by a 4.7% draw-count difference until the bands are matched.
+Reading `tools/read_crowd.py`'s run medians alone would have killed a real 0.33 ms.
+`tools/part109_band.py` is that reader, and it refuses to summarise arms with no
+matched bands rather than averaging across a difference it cannot see.
+
+**VERDICT: CLOSED. The kill rule was 0.4 ms and this is 0.33 ms.** The code stays in the
+tree, opt-in and unchanged, because it is verified correct over 718 million served
+lookups and because it costs nothing when off — but it does not ship, and this plan does
+not get to move its own goalposts after seeing the number (§1).
+
+**And the ceiling is not much higher, which is why it is not worth a second attempt.** The
+saving is 0.33 ms over ~11,760 hits a frame = **28 ns a hit**, so even a perfect memo
+serving 100% of the ~13,900 calls would be ~0.39 ms. A wider (set-associative) memo to
+catch alternating materials cannot reach the kill rule. The item is ~0.4 ms in principle,
+not in execution, and the gap to close is 2.5-3 ms.
+
+**A consequence for items 2 and 3, taken from the profiled runs of §4.1 and to be
+re-checked by item 0's decomposition:** at the crowd, `textures` reads 5.0% and `streams`
+reads **0.3%**. Item 2's whole envelope is therefore ~0.04 ms and it is almost certainly
+dead on price before a line is written — the flat cache of part 55 already took that cost
+out. `constants` reads 18.2% ≈ 2.71 ms, of which `constShared` — a 2,192-byte `memset`
+into write-combined arena memory on EVERY draw — is 3.8% ≈ 0.57 ms on its own. Item 3 is
+bigger than the plan assumed and item 2 is smaller.
