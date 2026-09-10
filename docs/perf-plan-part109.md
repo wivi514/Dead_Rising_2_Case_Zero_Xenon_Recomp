@@ -131,4 +131,44 @@ to say so and name what remains rather than to keep buying items.
 
 ## §4. Execution record
 
-(filled in as items run)
+### 4.1 The baseline, and the finding that shapes the whole plan (2026-09-10)
+
+Six more runs, `tools/part80_crowdroute.sh`, mirror ON, MSAA 2x:
+
+| arm | runs | crowd median | p99 | draws |
+|---|---|---|---|---|
+| **3440x1440, profiler OFF** | 3 | 10.72 / 11.39 / 11.42 ms | 13.9-14.5 | 9,036-9,657 |
+| **1920x1080, profiler OFF** | 3 | **10.74 / 10.96 / 10.97 ms** | 13.6-14.3 | 8,585-8,700 |
+| 1920x1080, `CZ_VK_PROFILE=10` | 3 | 14.86 / 15.19 / 15.98 ms | 17.7-18.7 | 8,575-9,301 |
+
+**THE FINDING: 1080p and 3440x1440 read the SAME frame time.** 10.9 ms against 11.2 ms
+across a 2.4x difference in pixels. The frame is **CPU-bound at the operator's own native
+resolution**, not just at 1080p — so the entire 2.5-3 ms gap to 8.33 ms is CPU, and
+nothing in this plan needs to argue about the GPU at all. (The draw counts differ by ~8%
+between the two, so this is a regime statement, not a matched A/B; it does not need to be
+one.)
+
+**The profiler's bill, re-measured on this box: +4.2 to +5.0 ms, about 40%.** Gotcha 454
+stands and every mechanism number below is read from profiled runs while every wall number
+comes from an unprofiled one.
+
+**The p99 is 13.6-14.5 ms against an ~11 ms median**, so item 5 is not optional: a median
+at 8.33 with a p99 at 14 is not 120 fps.
+
+### 4.2 Item 1 — built, OPT-IN, not yet verified or priced
+
+`CZ_VK_TEXMEMO=1` engages a 32-entry per-fetch-slot memo; `CZ_VK_TEXMEMO_VERIFY=1`
+computes both answers and counts disagreements; an exit line reports hits, misses and
+disagreements. **Default OFF on purpose** — HEAD must behave exactly like the released
+v1.0.2 until a crowd run reads 0 disagreements and three runs an arm clear the kill rule.
+
+The design's load-bearing part is what it must NOT break. `TexFind` stamps
+`lastUsedFrame` on every lookup and the LRU reclaimer evicts by it, so a memo that skipped
+the lookup would stop marking live textures as used and the reclaimer would evict them
+mid-session. The memo therefore stores the entry pointer and stamps it itself, and
+`g_texGen` invalidates every entry at all six sites that can change an answer: snapshot
+emplace, erase and clear, `TexInsert`, and both arms of `ReclaimTextureSlot`.
+
+**Next session starts here:** one crowd run with `CZ_VK_TEXMEMO=1 CZ_VK_TEXMEMO_VERIFY=1`
+and read `[texmemo]`. Zero disagreements is the gate; then three runs an arm against the
+4.1 baseline, kill rule 0.4 ms.
