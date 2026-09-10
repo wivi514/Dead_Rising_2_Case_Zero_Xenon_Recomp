@@ -69,7 +69,18 @@ CAP=$(mktemp -d "${TMPDIR:-/tmp}/cz-part47-gate.XXXXXX")
 # "can our renderer reproduce that phase", so a run that matches it at any sampled
 # moment has answered yes. A median would answer a different and less useful question --
 # "how close are we on average across phases the reference does not show".
-( cd runtime/build && env CZ_NO_WINDOW=1 CZ_VKDRAW=1 "CZ_CAPTURE_KEY=$CAP" \
+# THE RESOLUTION IS PINNED, AND PART 111 PAID FOR THIS LINE. Without `CZ_VK_RES` the
+# renderer takes its internal resolution from the DESKTOP, and this gate correlates the
+# result against E3 — a 16:9 photograph of an Xbox 360 screen. On a 21:9 desktop
+# (3440x1440) the render is the right scene at the wrong aspect, and the gate reads
+# +0.33..+0.48 against its own +0.70 threshold: a hard FAIL, on an unmodified renderer,
+# for a reason that has nothing to do with the code under test. Part 111 spent a control
+# build proving that (HEAD and the working tree both fail unpinned and both pass pinned
+# at +0.86), which is exactly the cost this line now removes. 1280x720 is the reference's
+# own shape; see the memory note "pin the resolution in every perf run" — same defect,
+# different harness.
+( cd runtime/build && env CZ_NO_WINDOW=1 CZ_VKDRAW=1 CZ_VK_RES="${GATE_RES:-1280x720}" \
+    "CZ_CAPTURE_KEY=$CAP" \
     CZ_FAKE_START_MS=8000 CZ_FAKE_PRESS_SEQ=NONE,NONE,NONE,F9,F9,F9,F9,F9,NONE \
     timeout 180 ./cz_runtime > "$CAP/run.log" 2>&1 )
 # A shader the cache lacks is ONE log line and a silent counter, so it is checked here
