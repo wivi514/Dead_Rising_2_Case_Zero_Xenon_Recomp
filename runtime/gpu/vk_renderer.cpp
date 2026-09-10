@@ -2836,6 +2836,28 @@ struct ShaderMeta
     VkShaderModule moduleRt = VK_NULL_HANDLE;
     bool isVertex = false;
     std::vector<VertexAttribute> attributes; // vertex shaders only
+    // HOW MUCH OF THE VFETCH TABLE THIS SHADER CAN READ (part 109). Derived from
+    // `attributes` when the sidecar is parsed, never at draw time.
+    //
+    // The shared constant block is zeroed on EVERY draw — 2,192 bytes into
+    // write-combined arena memory, ~20 MB a frame at the operator's crowd, and `perf`
+    // puts `__memset_avx2` at 4.2% of the pump thread = 0.44 ms of a 10.8 ms frame.
+    // 1,536 of those 2,192 bytes are the dependent-vertex-fetch table (96 slots x 16),
+    // and **only a slot this shader actually declares can ever be read**: XenosRecomp's
+    // `XeVfetchDep` addresses the table by the slot baked into the shader, so a slot no
+    // attribute names is dead memory. 45 of this title's 67 vertex shaders declare NO
+    // dependent fetch at all and read none of it.
+    //
+    // Zeroing is still load-bearing for the slots that ARE declared: the publish loop
+    // `continue`s on a bad range or a failed upload, and the shader's own bounds check
+    // then sees size 0 and returns float4(0,0,0,0) — the mesh collapses to the origin
+    // rather than reading a stale address. So this is the highest declared slot plus
+    // one, not the count of declared slots, and a shader with none gets zero.
+    // The declared slots themselves, sorted and deduped — not just the highest one. A
+    // PREFIX up to the highest slot saved 940 of 2,192 bytes a draw (42.9%); the shaders
+    // that do use dependent fetches declare a handful of slots scattered up to ~37, so
+    // zeroing the entries rather than the span is most of the rest.
+    std::vector<uint16_t> vfetchSlots;
     std::vector<uint32_t> interpolators;
     std::vector<uint32_t> tfetchConsts;
     // PARALLEL to tfetchConsts: 0 = 1D, 1 = 2D, 2 = 3D, 3 = cube, and it decides which
@@ -3215,6 +3237,10 @@ bool LoadShaderMeta(const std::filesystem::path& path, ShaderMeta& meta)
             a.strideDwords = uint32_t(JsonIntField(obj, "strideDwords", 0));
             a.offsetDwords = uint32_t(JsonIntField(obj, "offsetDwords", 0));
             a.indirect = uint32_t(JsonIntField(obj, "indirect", 0));
+            if (a.indirect && a.fetchSlot < 96 &&
+                std::find(meta.vfetchSlots.begin(), meta.vfetchSlots.end(),
+                          uint16_t(a.fetchSlot)) == meta.vfetchSlots.end())
+                meta.vfetchSlots.push_back(uint16_t(a.fetchSlot));
             meta.attributes.push_back(a);
             cursor = objClose + 1;
             const size_t nextBrace = text.find('{', cursor);
@@ -3445,6 +3471,10 @@ uint64_t g_flatCacheLookups = 0;
 // better" is a judgement, and this is the number that says the code ran at all — on the
 // title backdrop it should read ~80 a frame and `CZ_VK_NO_POLY_OFFSET=1` must take it to 0.
 uint64_t g_polyOffsetDraws = 0;
+// THE SCOPED SHARED-BLOCK ZERO (part 109), counted so the arm proves it engaged. Bytes
+// NOT written rather than a boolean: "the fast path is on" and "the fast path is reached"
+// are different claims, and this title's shader mix decides the second (gotcha 408).
+uint64_t g_sharedZeroDraws = 0, g_sharedZeroSaved = 0;
 // Draws that enabled the STENCIL TEST. ~18% of a gameplay frame on the operator's own
 // captures, and this renderer honoured none of them until part 56.
 uint64_t g_stencilDraws = 0;
@@ -23057,7 +23087,63 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
         }
         {
             ProfScope _pcs(&g_prof.constShared);
-            memset(shared, 0, kSharedSize);
+            // SCOPED (part 109). The block is one contiguous allocation and the shader
+            // reads it as one, but the middle 1,536 bytes are the vfetch table and only
+            // the slots this vertex shader declares can be read out of it — so zero the
+            // head, the declared prefix of the table, and the tail, and leave the rest
+            // of the table as whatever the arena held. `CZ_VK_FULL_SHARED_ZERO=1` is the
+            // same-binary control arm: it restores the unconditional 2,192-byte zero, so
+            // any picture defect this could possibly cause has a one-variable bisection.
+            //
+            // The tail is NOT optional and is the part that would be silently wrong if
+            // dropped: the user clip planes live at 2,080 and a zero plane dots to
+            // distance 0, which Vulkan KEEPS, so a draw with no planes enabled clips
+            // nothing BY CONSTRUCTION — garbage there would clip the world away. The RT
+            // shadow words at 2,176 are read as a descriptor index, and a nonzero one is
+            // a valid index into a real heap: it would sample some other texture rather
+            // than fail.
+            // AND `CZ_VK_SHARED_ZERO_POISON=1` IS WHAT MAKES THE CLAIM TESTABLE RATHER
+            // THAN ARGUED. The whole optimisation rests on one proposition — no shader
+            // reads a vfetch slot its sidecar does not declare — and "the picture looks
+            // the same" cannot distinguish that from "the arena happened to hold zeros".
+            // The poison arm writes 0xFF over exactly the bytes the fast path skips, so
+            // a shader that reads one gets a colossal stream address and a size of
+            // 0xFFFFFFFF instead of a quiet zero. If the picture is unchanged UNDER
+            // POISON, nothing reads those bytes and the skip is safe; if it breaks, the
+            // premise is false and the item dies with a reproduction attached. A test
+            // that cannot fail proves nothing by passing (gotcha 30).
+            // OPT-IN, BECAUSE IT MISSED ITS OWN KILL RULE. It is correct (its poison
+            // arm is inside the picture null) and it is worth -0.21 ms, and part 109
+            // pre-registered 0.4 ms as the bar. HEAD therefore behaves exactly like the
+            // released v1.0.2 and `CZ_VK_SCOPED_SHARED_ZERO=1` engages it; the operator
+            // decides whether a bundle of sub-threshold items is worth taking, because
+            // the decomposition says there is no single large item left and a 2.5 ms gap
+            // closed by sub-threshold items is the only shape still available. Flipping
+            // this to on-by-default is one line and its gates are already run.
+            static const bool fullZero = !EnvOn("CZ_VK_SCOPED_SHARED_ZERO");
+            static const bool poison = EnvOn("CZ_VK_SHARED_ZERO_POISON");
+            if (fullZero)
+            {
+                memset(shared, 0, kSharedSize);
+            }
+            else
+            {
+                // The head (descriptor indices, bools, the loop and bool files) and the
+                // tail (clip planes, RT shadow) are always zeroed; the vfetch table in
+                // between is zeroed ONE DECLARED ENTRY AT A TIME. Each is 16 bytes — a
+                // single vector store — and a shader declares a handful, so this writes
+                // tens of bytes where the block wrote 1,536.
+                memset(shared, 0, kSharedVfetchTable);
+                if (poison)
+                    memset(shared + kSharedVfetchTable, 0xFF,
+                           kSharedClipPlanes - kSharedVfetchTable);
+                for (uint16_t slot : vs.vfetchSlots)
+                    memset(shared + kSharedVfetchTable + uint32_t(slot) * 16, 0, 16);
+                memset(shared + kSharedClipPlanes, 0, kSharedSize - kSharedClipPlanes);
+                g_sharedZeroSaved += kSharedClipPlanes - kSharedVfetchTable -
+                                     uint32_t(vs.vfetchSlots.size()) * 16;
+            }
+            g_sharedZeroDraws++;
         }
     }
     // ROUTE (B): where the factor image is and how to address it. Returns false — and
@@ -28133,6 +28219,19 @@ void DoSwapImpl(uint8_t* base, uint32_t frontBuffer, uint32_t width, uint32_t he
                 // only speaks on the way out is a census that some runs simply do not
                 // have. A windowed print costs ten lines every FPS window on a
                 // diagnostic-only arm and cannot be lost.
+                // The scoped shared-block zero's own proof, per window rather than at
+                // exit. Bytes NOT written, and the share of the 2,192 a draw used to
+                // cost unconditionally — an arm that says "on" without saying "reached"
+                // is how a null gets quoted as a saving.
+                if (g_sharedZeroDraws)
+                    fprintf(stderr,
+                            "[sharedzero] %llu draws, %.0f bytes/draw not written "
+                            "(%.1f%% of the %u-byte block)\n",
+                            (unsigned long long)g_sharedZeroDraws,
+                            double(g_sharedZeroSaved) / double(g_sharedZeroDraws),
+                            100.0 * double(g_sharedZeroSaved) /
+                                (double(g_sharedZeroDraws) * double(kSharedSize)),
+                            kSharedSize);
                 Pm4_RegRunCensusReport();
                 // Part 107 item 2: the Draw Thread's fence wait, per window, beside
                 // the frame rate it is meant to move — so a plain crowd run (no phase
