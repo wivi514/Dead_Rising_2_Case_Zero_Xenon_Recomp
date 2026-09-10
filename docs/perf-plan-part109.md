@@ -193,7 +193,7 @@ first verify run drove the whole route and printed nothing at all, and "0 disagr
 and "the instrument never spoke" were the same output. It now lives in
 `VkRenderer_DumpStats()`, which is what the `timeout` SIGTERM handler calls, and the
 control arm proves the report is a real variable: all three `memo OFF` runs print no
-`[texmemo]` line and all three `memo ON` runs do. Gotcha 536.
+`[texmemo]` line and all three `memo ON` runs do. Gotchas 543-544.
 
 **The price, three runs an arm, alternated, profiler OFF, 3440x1440, matched draw bands:**
 
@@ -232,3 +232,87 @@ dead on price before a line is written — the flat cache of part 55 already too
 out. `constants` reads 18.2% ≈ 2.71 ms, of which `constShared` — a 2,192-byte `memset`
 into write-combined arena memory on EVERY draw — is 3.8% ≈ 0.57 ms on its own. Item 3 is
 bigger than the plan assumed and item 2 is smaller.
+
+### 4.4 Item 0 — THE DECOMPOSITION, and it disagrees with the phase profiler (2026-09-10)
+
+`tools/part109_probe.sh` (new): part 107's stand-in probe re-pointed at the operator's own
+box — 8c/16t unmasked at 4654 MHz, **3440x1440 through a real swapchain**, no
+`CZ_VK_PROFILE`. A flat `perf record -F 999` of the whole process for 30 s inside the
+stationary crowd soak, read per thread by `tools/part53_symbols.py` and split by source
+line by `tools/part55_srcline.py`.
+
+**The gate had to be fixed before the profile was worth anything.** The route's camera
+sweeps swing Chuck's view INTO the crowd and back out before the soak begins, so the
+first run's windows read 2,512 / **9,141** / 6,495 / 5,828 / 5,799 / 5,944 / 8,942, the
+one-window gate fired on the 9,141 spike, and `perf` sampled the 5,800-6,500-draw walk.
+Nothing in the artifacts would have said so. The gate now requires **two consecutive**
+crowd windows and the soak is 120 s.
+
+**Who is busy** (15 s window, 53 threads):
+
+| thread | % of one core | what it is |
+|---|---|---|
+| pump | **97.7%** | the renderer + the PM4 walk — **the critical path** |
+| guest | 72.9% | recompiled title code, diffuse (`__imp__sub_*`) |
+| guest | 58.5% | recompiled title code (`__imp__sub_827D5B18` 15.3% of it) |
+| guard x3 | 33.7-34.0% | `GuardFold` 84% — the parallel content-guard pool |
+
+Process total **391% of one core = 3.9 of 8 physical cores**. The busiest thread is 25% of
+all the CPU this process uses, so the frame is still one thread's length.
+
+**Where the pump's ~10.5 ms goes** (self time; the crowd frame is 10.8 ms and the pump is
+97.7% busy, so a point of the thread is ~0.105 ms of frame):
+
+| symbol | % of pump | ms/frame | note |
+|---|---|---|---|
+| `DoDraw` | 21.37 | 2.25 | **no hotspot: 388 source lines, the top one 7.8% of it** |
+| `WriteRegisterRun` | 10.37 | 1.09 | of which **`pm4.cpp:895` alone is 7.25% of the pump = 0.76 ms** |
+| `UploadStream` | 9.43 | 0.99 | |
+| `ExecutePacket` | 8.74 | 0.92 | |
+| `UploadTextureUncached` | 6.89 | 0.73 | |
+| `[unknown]` | 6.86 | 0.72 | unresolved — the driver, not yet attributed |
+| `__memset_avx2` | 4.18 | 0.44 | the per-draw `kSharedSize` zero |
+| `PersistFind` | 3.99 | 0.42 | called from `UploadStream` |
+| `CopyConstWindow` | 3.57 | 0.38 | |
+| `ExecuteLinear` | 3.31 | 0.35 | |
+| `__memmove_avx` | 3.16 | 0.33 | |
+| `TexFind` | 2.57 | 0.27 | |
+| `__memcmp_avx2` | 2.57 | 0.27 | the stream guard |
+| `PipelineKey` `_M_locate` | 1.41 | 0.15 | the one `std::unordered_map` left on this path |
+
+Grouped: **the PM4 walk is 22.4% = 2.36 ms** (`WriteRegisterRun` + `ExecutePacket` +
+`ExecuteLinear`), **the stream path 13.4% = 1.41 ms** (`UploadStream` + `PersistFind`),
+**the texture path 9.5% = 1.00 ms**.
+
+**RETRACTION, in place, of §4.3's last paragraph.** It read the phase profiler's `streams
+0.3%` and concluded item 2 "is almost certainly dead on price before a line is written."
+**That is wrong and it is wrong for a reason this project has already written down once:
+a `ProfScope` is a region of code, not a subsystem (gotcha 343).** The `streams` scope
+covers a slice of `UploadStream`; the SYMBOL is 9.43% of the pump and 13.4% with
+`PersistFind`, which is 1.41 ms — the third-largest thing on the critical path. Part 55
+learned exactly this about exactly this function and it was re-learned here in one
+session. The phase table's shares are a map of the scopes someone thought to open;
+`perf` needs nobody to have thought of anything.
+
+**What the source-line split then says about each:**
+
+* **`DoDraw` (2.25 ms) has no item in it.** 388 lines, the hottest 7.8% of the symbol
+  (0.18 ms). It is a large per-draw function and its cost is its size. Nothing here is
+  buyable in one change; it is the argument for doing less per draw, not for optimising a
+  line.
+* **`WriteRegisterRun` is a single line.** `pm4.cpp:895` — the scalar byte-swap loop of
+  `Source::Read` — is **69.9% of the symbol, 7.25% of the pump, ~0.76 ms of the frame**,
+  and the disassembly shows plain `bswap` 4x-unrolled with no vector instruction. That is
+  item 4's concentrated core and it is where part 109 went next (§4.5).
+* **`UploadStream` is CACHE MISSES, not computation.** Its four hot lines are the flat
+  cache's probe compare (`keys[i] == k`, 29% of the symbol), the probe step (9%), the
+  `PersistEntry::dynamic` test (17%) and `return *hit` (15%) — four dependent loads, all
+  of them the first touch of a line. A perfect hash (this plan's §2 item 2 design) would
+  not move any of them. What would is **fewer lookups**: the profiler counts ~9.46 stream
+  lookups a draw against the two-to-five streams a draw actually has, and
+  `CZ_VK_STREAM_DEDUP_CENSUS=1` — written in part 87 to ask exactly this and **never
+  run** — is the measurement that decides. Item 2 is redirected, not dead.
+* **`__memset_avx2` at 0.44 ms** is the per-draw `memset(shared, 0, kSharedSize)`: 2,192
+  bytes into write-combined arena memory on every one of ~9,300 draws = 20 MB a frame.
+  The vertex-fetch table is 1,536 of those 2,192 bytes and is written only for the
+  handful of slots a dependent fetch uses.

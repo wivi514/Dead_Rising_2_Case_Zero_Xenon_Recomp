@@ -36,9 +36,10 @@ PERF_SECS="${PERF_SECS:-30}"
 CPU_SECS="${CPU_SECS:-15}"
 DRAW_GATE="${DRAW_GATE:-8000}"
 RES="${RES:-3440x1440}"
-# The soak has to outlast the sampling window or `perf` records the route's tail instead
-# of the crowd: 15 s of thread CPU + 30 s of perf + slack.
-SOAK="${SOAK:-90}"
+# The soak has to outlast the GATE plus the sampling window or `perf` records the route's
+# tail instead of the crowd: up to 20 s waiting for two consecutive crowd windows, then
+# 15 s of thread CPU and 30 s of perf, and slack for a boot slower than this one.
+SOAK="${SOAK:-120}"
 mkdir -p "$OUT"
 
 maxf=$(cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_max_freq 2>/dev/null || echo "?")
@@ -65,11 +66,21 @@ LOG=""
 for _ in $(seq 1 30); do LOG=$(ls -t "$OUT"/crowd_*_"$TAG".log 2>/dev/null | head -1); [ -n "$LOG" ] && break; sleep 1; done
 echo "    pid=$PID  log=$LOG"
 
+# TWO CONSECUTIVE WINDOWS, NOT ONE. The route's camera sweeps swing Chuck's view INTO
+# the crowd and back out again before the stationary soak begins, so a single window can
+# read 9,141 draws and the next four read 5,800-6,500. The first version of this gate
+# fired on that spike and `perf` sampled the walk instead of the soak — a profile of a
+# load nobody asked about, and nothing in the artifacts would have said so. The soak is
+# stationary, so two windows in a row at the gate is what distinguishes it from a sweep.
 reached=0
+prev=0
 for _ in $(seq 1 200); do
     kill -0 "$PID" 2>/dev/null || break
     d=$(grep -a "^\[fps\]" "$LOG" 2>/dev/null | grep -aoE "draws med [0-9]+" | tail -1 | awk '{print $3+0}')
-    if [ "${d:-0}" -ge "$DRAW_GATE" ]; then reached=1; break; fi
+    if [ "${d:-0}" -ge "$DRAW_GATE" ] && [ "$prev" -ge "$DRAW_GATE" ] && [ "${d:-0}" != "$prev" ]; then
+        reached=1; break
+    fi
+    [ "${d:-0}" != "$prev" ] && prev="${d:-0}"
     sleep 2
 done
 if [ "$reached" != 1 ]; then echo "    !! never reached $DRAW_GATE draws (last=${d:-none}); sampling anyway"; fi

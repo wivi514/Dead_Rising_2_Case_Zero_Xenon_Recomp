@@ -6228,3 +6228,30 @@ From phase C part 18 (the frame rate — and none of it was work):
     parts); when a fix does nothing twice, ask whether it is applied at all before
     asking whether it is right; and a per-tick write of a level the pad also owns
     fights the pad tick by tick — feed edges, or feed nothing (the aim flicker). (part 108)
+
+543. **A report line put anywhere but on the run's own exit path is a report that never
+    prints — and "no disagreements" and "the instrument never spoke" are the same
+    output.** Part 109's texture-memo verifier computes both answers and counts
+    mismatches, and its summary line had been written into the LIVE RESCALE function.
+    A headless crowd run never changes resolution, so the whole route ran, the memo
+    served 235 million lookups, and the log contained no `[texmemo]` line at all. The
+    only reason it was caught is that the expected line was *known* — a counter nobody
+    was waiting for would have been "verified" by its own silence. Every recipe in this
+    project ends on a `timeout` SIGTERM, so the exit path is `VkRenderer_DumpStats()`
+    and nowhere else. And the fix is only trustworthy because the CONTROL arm prints
+    nothing: memo off, no line; memo on, a line. A report that appears in both arms is
+    not evidence the arm engaged (gotcha 408's other half). (part 109)
+
+544. **A route whose load varies run to run turns a real saving into a dead null, and the
+    run median is the statistic that hides it.** Part 109's texture memo read 10.81 ms
+    (off) against 10.82 ms (on) over three runs an arm — until the draw counts were
+    looked at: the ON arm had landed in denser crowds, median 9,411 draws against 8,989,
+    because `part80_crowdroute.sh`'s crowd is spawned with randomness and identical
+    inputs do not put Chuck on the same spot twice (the script's own header says so).
+    This route costs about 0.0005 ms a draw, so a 4.7% draw difference is 0.2 ms — most
+    of the effect. Matched 250-draw bands recover **−0.33 ms, monotone in all five
+    bands**. `tools/read_crowd.py` alone would have killed a real item; use
+    `tools/part109_band.py`, which refuses to summarise arms that share no band rather
+    than averaging across a difference it cannot see. Same conclusion part 26 reached
+    for pictures (gotcha 254) and part 76 for frame stats — the [fps]-window form of it.
+    (part 109)
