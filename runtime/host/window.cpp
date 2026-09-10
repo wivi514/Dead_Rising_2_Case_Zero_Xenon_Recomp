@@ -1792,11 +1792,12 @@ bool Host_RunLauncher()
                         "continuing without the launcher\n", drv);
         return true;
     }
-    // 460 tall: 9 rows at 34px from y=96 put the footer at y=416, which the old
-    // 420 clipped (part 99 added SUBTITLES and SKIP INTRO LOGOS).
+    // 492 tall: 10 rows at 34px from y=96 put the drop-hint footer at y=450, and the
+    // control-hint line below it at y=472 (part 108's controller support). It was 460
+    // for nine rows, itself grown from the 420 that clipped part 99's two new rows.
     SDL_Window* win = SDL_CreateWindow("Dead Rising 2: Case Zero",
                                        SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
-                                       720, 460, SDL_WINDOW_ALLOW_HIGHDPI);
+                                       720, 492, SDL_WINDOW_ALLOW_HIGHDPI);
     if (!win)
         return true;
     ApplyGameIcon(win);
@@ -1807,6 +1808,77 @@ bool Host_RunLauncher()
         return true;
     }
     SDL_EventState(SDL_DROPFILE, SDL_ENABLE);
+
+    // THE PAD DRIVES THIS SCREEN TOO (part 108). Until now the launcher read six keys
+    // and nothing else — no pad, no mouse — so on a Steam Deck in Game Mode, where
+    // there is no keyboard unless the player summons the on-screen one, this modal
+    // window is a wall: it looks exactly like "the game doesn't start", which is the
+    // whole of what every Deck report has been able to say (docs/steam-deck-plan.md).
+    // Nobody here owns a Deck, so this is the one Deck failure mode we can remove
+    // without one.
+    //
+    // The pads are opened through the GAME's own OpenController, not a local copy, so
+    // the handle carries into the session: `g_controller` is already set when
+    // Host_WindowInit runs its enumeration, whose OpenController early-returns. The
+    // subsystem init is tolerated-on-failure — a missing controller subsystem must
+    // cost the keyboard nothing.
+    const bool padSubsys = SDL_WasInit(SDL_INIT_GAMECONTROLLER)
+                           || SDL_InitSubSystem(SDL_INIT_GAMECONTROLLER) == 0;
+    if (padSubsys)
+        for (int i = 0; i < SDL_NumJoysticks(); i++)
+            OpenController(i);
+    else
+        fprintf(stderr, "[launcher] no controller subsystem (%s) — keyboard only\n",
+                SDL_GetError());
+
+    // The left stick's last committed direction per axis (-1/0/+1), for the
+    // edge-trigger in the loop; a stick reports continuously and this is what turns
+    // that into presses.
+    int stickX = 0, stickY = 0;
+    int lastSaid = -1;              // the row the pad test last reported
+    std::string lastValue;          // and that row's value, so a CHANGE is visible
+    // A pad press becomes the key it stands for and re-enters the queue. SDL_PushEvent
+    // copies the event, so the local is fine; a full queue is the only failure and
+    // losing a menu press to it is harmless.
+    auto PadKey = [](SDL_Keycode k) {
+        SDL_Event k1{};
+        k1.type = SDL_KEYDOWN;
+        k1.key.state = SDL_PRESSED;
+        k1.key.keysym.sym = k;
+        k1.key.keysym.scancode = SDL_GetScancodeFromKey(k);
+        SDL_PushEvent(&k1);
+    };
+
+    // THE PAD'S POSITIVE CONTROL (part 108). A menu nobody here can press a button on
+    // is a menu nobody here can prove works, and the machine that needs this feature
+    // most is the one machine this project does not own. CZ_LAUNCHER_PAD_TEST is a
+    // comma list of pad inputs — DOWN UP LEFT RIGHT A B START, and LSDOWN/LSUP/
+    // LSLEFT/LSRIGHT for the left stick — pushed as real SDL controller events, one
+    // per loop turn, with the selected row and its value printed after each. It
+    // exercises the SAME event cases a physical pad delivers, so a mapping that is
+    // wrong here is wrong on a Deck. It never fires unless the variable is set, and it
+    // ends with the launcher still waiting for a human.
+    std::vector<std::string> padTest;
+    if (const char* t = getenv("CZ_LAUNCHER_PAD_TEST"))
+    {
+        std::string cur;
+        for (const char* c = t;; ++c)
+        {
+            if (*c == ',' || !*c)
+            {
+                if (!cur.empty())
+                    padTest.push_back(cur);
+                cur.clear();
+                if (!*c)
+                    break;
+            }
+            else
+                cur += *c;
+        }
+        std::reverse(padTest.begin(), padTest.end());   // pop_back() walks it in order
+        fprintf(stderr, "[launcher] CZ_LAUNCHER_PAD_TEST: %zu synthetic pad inputs\n",
+                padTest.size());
+    }
 
     // The dropped-package install writes its progress into THIS window; declared
     // before the loop so the drop handler below can call it.
@@ -1893,12 +1965,90 @@ bool Host_RunLauncher()
                          i == sel ? 245 : 190, i == sel ? 235 : 190, i == sel ? 200 : 195);
             LauncherText(ren, 300, y, rows[i].value, 2, 200, 170, 60);
         }
+        // With the scripted pad armed, say where the selection is and what the row
+        // reads AFTER the previous input landed — the line that makes the test a
+        // measurement rather than a run that did not crash.
+        if (getenv("CZ_LAUNCHER_PAD_TEST") && sel != lastSaid)
+        {
+            fprintf(stderr, "[padtest]   row %d %s = %s\n", sel, rows[sel].label,
+                    rows[sel].value.empty() ? "(none)" : rows[sel].value.c_str());
+            lastSaid = sel;
+        }
+        else if (getenv("CZ_LAUNCHER_PAD_TEST") && rows[sel].value != lastValue)
+        {
+            fprintf(stderr, "[padtest]   row %d %s = %s\n", sel, rows[sel].label,
+                    rows[sel].value.empty() ? "(none)" : rows[sel].value.c_str());
+        }
+        lastValue = rows[sel].value;
+
         const std::string foot = notice.empty()
             ? (installed ? "GAME INSTALLED"
                          : "DROP YOUR XBLA PACKAGE FILE ONTO THIS WINDOW TO INSTALL")
             : notice;
         LauncherText(ren, 24, 96 + kRows * 34 + 14, foot, 2, 160, 160, 170);
+        // The control hint names the pad only when one is attached, so a
+        // keyboard-only machine is not told about buttons it does not have.
+        LauncherText(ren, 24, 96 + kRows * 34 + 36,
+                     g_controller ? "ARROWS / D-PAD MOVE   ENTER / A SELECT   "
+                                    "ESC / B QUIT"
+                                  : "ARROWS MOVE   ENTER SELECT   ESC QUIT",
+                     2, 120, 120, 130);
         SDL_RenderPresent(ren);
+
+        // ---- the scripted pad, if armed ----
+        if (!padTest.empty())
+        {
+            const std::string in = padTest.back();
+            padTest.pop_back();
+            SDL_Event p{};
+            static const struct { const char* name; uint8_t button; } kBtn[] = {
+                { "UP", SDL_CONTROLLER_BUTTON_DPAD_UP },
+                { "DOWN", SDL_CONTROLLER_BUTTON_DPAD_DOWN },
+                { "LEFT", SDL_CONTROLLER_BUTTON_DPAD_LEFT },
+                { "RIGHT", SDL_CONTROLLER_BUTTON_DPAD_RIGHT },
+                { "A", SDL_CONTROLLER_BUTTON_A },
+                { "B", SDL_CONTROLLER_BUTTON_B },
+                { "START", SDL_CONTROLLER_BUTTON_START },
+            };
+            static const struct { const char* name; uint8_t axis; int16_t v; } kAxis[] = {
+                { "LSUP", SDL_CONTROLLER_AXIS_LEFTY, -32000 },
+                { "LSDOWN", SDL_CONTROLLER_AXIS_LEFTY, 32000 },
+                { "LSLEFT", SDL_CONTROLLER_AXIS_LEFTX, -32000 },
+                { "LSRIGHT", SDL_CONTROLLER_AXIS_LEFTX, 32000 },
+                { "LSCENTRE", SDL_CONTROLLER_AXIS_LEFTY, 0 },
+            };
+            bool sent = false;
+            for (const auto& b : kBtn)
+                if (in == b.name)
+                {
+                    p.type = SDL_CONTROLLERBUTTONDOWN;
+                    p.cbutton.button = b.button;
+                    p.cbutton.state = SDL_PRESSED;
+                    sent = SDL_PushEvent(&p) >= 0;
+                }
+            for (const auto& a : kAxis)
+                if (in == a.name)
+                {
+                    p.type = SDL_CONTROLLERAXISMOTION;
+                    p.caxis.axis = a.axis;
+                    p.caxis.value = a.v;
+                    sent = SDL_PushEvent(&p) >= 0;
+                    // A stick must return to centre before it can fire again; the
+                    // recentre is part of the input, not a separate script step.
+                    if (a.v)
+                    {
+                        SDL_Event z{};
+                        z.type = SDL_CONTROLLERAXISMOTION;
+                        z.caxis.axis = a.axis;
+                        z.caxis.value = 0;
+                        padTest.insert(padTest.begin(), "");   // keep the turn count
+                        SDL_PushEvent(&z);
+                        padTest.erase(padTest.begin());
+                    }
+                }
+            fprintf(stderr, "[padtest] %-8s -> %s\n", in.c_str(),
+                    sent ? "pushed" : "UNKNOWN INPUT (nothing pushed)");
+        }
 
         // ---- input ----
         SDL_Event e;
@@ -1951,6 +2101,58 @@ bool Host_RunLauncher()
                 });
             notice = ok ? "INSTALLED - PRESS ENTER TO PLAY"
                         : "INSTALL FAILED: " + err.substr(0, 48);
+            break;
+        }
+        case SDL_CONTROLLERDEVICEADDED:
+            OpenController(e.cdevice.which);
+            break;
+        case SDL_CONTROLLERDEVICEREMOVED:
+            CloseController(e.cdevice.which);
+            break;
+        case SDL_CONTROLLERAXISMOTION:
+        {
+            // The left stick as a D-pad, EDGE-TRIGGERED: SDL sends axis motion
+            // continuously while a stick is held, so a level test would scroll the
+            // menu at the event rate. The two thresholds are deliberately apart —
+            // a direction is entered at ~3/4 deflection and left below ~1/4 — because
+            // a single threshold makes a stick resting near it chatter. This exists so
+            // that a Steam Input layout emitting only a stick still works; a Deck
+            // player does not choose the layout the platform picked for them.
+            if (e.caxis.axis != SDL_CONTROLLER_AXIS_LEFTX
+                && e.caxis.axis != SDL_CONTROLLER_AXIS_LEFTY)
+                break;
+            const bool vertical = e.caxis.axis == SDL_CONTROLLER_AXIS_LEFTY;
+            int& latch = vertical ? stickY : stickX;
+            const int v = e.caxis.value;
+            const int now = v > 24000 ? 1 : v < -24000 ? -1
+                            : (v > -8000 && v < 8000) ? 0 : latch;
+            if (now == latch || (latch = now) == 0)
+                break;
+            PadKey(vertical ? (now > 0 ? SDLK_DOWN : SDLK_UP)
+                            : (now > 0 ? SDLK_RIGHT : SDLK_LEFT));
+            break;
+        }
+        case SDL_CONTROLLERBUTTONDOWN:
+        {
+            // Every pad button becomes the KEY it corresponds to, pushed back into
+            // this same queue, so the row behaviour below stays the single source of
+            // truth for what a press does. A second implementation of "what does LEFT
+            // do on the RESOLUTION row" is a second thing to keep in step.
+            switch (e.cbutton.button)
+            {
+            case SDL_CONTROLLER_BUTTON_DPAD_UP:    PadKey(SDLK_UP);     break;
+            case SDL_CONTROLLER_BUTTON_DPAD_DOWN:  PadKey(SDLK_DOWN);   break;
+            case SDL_CONTROLLER_BUTTON_DPAD_LEFT:  PadKey(SDLK_LEFT);   break;
+            case SDL_CONTROLLER_BUTTON_DPAD_RIGHT: PadKey(SDLK_RIGHT);  break;
+            case SDL_CONTROLLER_BUTTON_A:          PadKey(SDLK_RETURN); break;
+            case SDL_CONTROLLER_BUTTON_B:          PadKey(SDLK_ESCAPE); break;
+            // START plays from ANY row, which is the one place the pad is not a
+            // spelling of a key: "start the game" is what that button means
+            // everywhere, and a player sitting on the FOV row should not have to walk
+            // back up to PLAY. A is Enter exactly, so it stays row 0 only.
+            case SDL_CONTROLLER_BUTTON_START:      play = true;         break;
+            default: break;
+            }
             break;
         }
         case SDL_KEYDOWN:

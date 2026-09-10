@@ -9,6 +9,10 @@ Deck owner can tell us in about fifteen minutes, if the run leaves the two files
 
 - A Steam Deck in **Desktop Mode** for the first run (a terminal shows what is happening;
   Game Mode has no console and a first run that takes a minute looks hung there).
+  **The launcher takes the pad as of v1.0.3** — D-pad or left stick to move, A to
+  select, START to play from any row, B to quit — so Game Mode no longer needs a
+  keyboard to get past it. On v1.0.2 and earlier it was arrow keys and Enter only,
+  which on a Deck looks exactly like a game that will not start.
 - The XBLA package file from your Xbox 360 (see the README; ~825 MB, no extension).
 - **v1.0.2 or later** — v1.0.1's Linux build cannot start on SteamOS, and that is
   already known; testing it again tells us nothing.

@@ -4053,3 +4053,15 @@ CZ_RUMBLE_TEST=1   the POSITIVE CONTROL: one pulse, both motors at 32768 for 500
                    movement here with a silent game means the request never left the
                    guest — the title's own DISABLE VIBRATION option (F4 debug menu) first
 ```
+
+CZ_LAUNCHER_PAD_TEST=IN,IN,...  **the launcher pad's positive control (part 108).** A
+                   comma list of synthetic pad inputs — `UP DOWN LEFT RIGHT A B START`
+                   and `LSUP LSDOWN LSLEFT LSRIGHT` for the left stick — pushed as real
+                   SDL controller events, one per loop turn, each followed by a
+                   `[padtest]   row N LABEL = VALUE` line. It exists because the machine
+                   that most needs pad support (a Steam Deck in Game Mode) is the one
+                   machine this project does not own, and a menu nobody can press a
+                   button on is a menu nobody can prove works. It drives the SAME event
+                   cases a physical pad delivers, so a wrong mapping here is wrong on a
+                   Deck. Settings are only SAVED when the run reaches PLAY, so a test
+                   ending in `B` leaves cz_settings.txt untouched.

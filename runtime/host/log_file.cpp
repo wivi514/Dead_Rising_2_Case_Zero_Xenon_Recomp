@@ -226,6 +226,19 @@ bool Begin(const std::filesystem::path& dir, const char* name)
     g_path = chosen;
     g_live = true;
     g_thread = std::thread(TeeLoop);
+    // EVERY exit path must end the tee, not just the two that remember to. `g_thread`
+    // is a namespace-scope std::thread, so a `return` out of main that skips End()
+    // destroys it while it is still joinable and the C++ runtime calls std::terminate
+    // — the process ABORTS with a core dump instead of exiting. That is not
+    // theoretical: `return 0` on the launcher-quit path (main.cpp, "the player closed
+    // the launcher") did exactly this, so closing the launcher without playing
+    // aborted, and four more `return 1` failure paths (first-run gate, timebase, image
+    // load, entry point) did too — every one of them a case where the log file is the
+    // evidence the player was asked to send. atexit runs BEFORE the destructor of a
+    // namespace-scope object constructed at static-init time, so the join happens
+    // first and the destructor then sees a non-joinable thread. End() is idempotent,
+    // so the explicit calls that already exist stay correct.
+    std::atexit([] { End(); });
     // The first line through the tee: in the console AND at the top of the file, so a
     // player reading either knows where the other copy is.
     std::fprintf(stderr, "[log] writing a copy of this output to %s (attach it to a bug "
