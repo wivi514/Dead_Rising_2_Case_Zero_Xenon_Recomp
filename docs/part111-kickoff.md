@@ -3,7 +3,30 @@
 **READ `docs/perf-plan-part110.md` §7 FIRST.** It is four pages and it is the whole state.
 This file says only what to do next and what not to re-derive.
 
-## §0. The one decision, and it is the operator's
+## §0. THE DECISION IS MADE: BUILD IT. `docs/perf-plan-part111.md` IS THE PLAN.
+
+The operator was shown the ceiling — item B tops out at **~113 fps** and cannot reach the
+120 they asked for — and said build it anyway (2026-09-10). So the ceiling is accepted, not
+overlooked, and the work is to capture as much of the ~2.3 ms as survives the code.
+
+**Read `docs/perf-plan-part111.md` before anything else.** Its §1 is the finding that
+reorders part 110's sketch (the constants cannot be deferred, because their source is the
+register file the pump itself overwrites — the VS window changes on 98.3% of draws), and
+its §0 carries the budget that decides when to stop: **item B has ~2.1 ms of USEFUL
+headroom, not 5.6**, because the wall stops responding once the pump reaches the guest's
+8.8 ms floor.
+
+Order of work: **§3's census, then B1 (pre-zero the arena — hazard-free, and its kill rule
+refutes the whole design for one day's work), then B2 (streams and textures, where the
+money is), then stop at 8.8 ms.** B3 (the constants) is expected to be refuted by the
+census and never built.
+
+The two verified sub-threshold items are independent of all of this and still shipped OFF:
+`CZ_VK_TEXMEMO=1` (−0.33 ms) and `CZ_VK_SCOPED_SHARED_ZERO=1` (−0.21 ms). **Note that the
+second one is an ALTERNATIVE to B1, not an addition** — see the plan's §4.1.
+
+## §0b. The original decision framing, kept because the numbers in it are the case
+
 
 Part 110 answered both of their asks. One of the answers is a decision they have to make
 before any code is written.
