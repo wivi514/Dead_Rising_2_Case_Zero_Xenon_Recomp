@@ -1,4 +1,4 @@
-// The seam between this runtime and libxlive (fake_xbox_live).
+// The seam between this runtime and libxlive (XenonLive).
 //
 // WHAT THIS IS FOR. Until now the signed-in user was three constants and the
 // achievements the title earned lived in a std::set that died with the process

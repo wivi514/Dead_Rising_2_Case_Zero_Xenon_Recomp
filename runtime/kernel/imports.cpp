@@ -74,7 +74,7 @@
 #include "kobject.h"
 #include "memory.h"
 #include "xex_imports.h"
-#include "xlive_glue.h"  // fake_xbox_live: the account, and where achievements go
+#include "xlive_glue.h"  // XenonLive: the account, and where achievements go
 
 // ---------------------------------------------------------------------------
 // Stub helpers
@@ -5121,7 +5121,7 @@ static uint32_t DispatchAppMessage(uint32_t app, uint32_t message, void* buffer,
     //
     // The layouts are the guest's, cross-checked against Xenia's SDK-derived
     // structs; every size below matches the length this title passes at its own
-    // call site (see fake_xbox_live/proto/xgi_messages.md, which records the
+    // call site (see XenonLive/proto/xgi_messages.md, which records the
     // agreement):
     //
     //   XGI_STATS_WRITE          0x18   +0 session, +8 xuid, +16 count, +20 views

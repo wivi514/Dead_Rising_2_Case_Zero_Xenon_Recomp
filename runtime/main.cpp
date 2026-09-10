@@ -699,7 +699,7 @@ int main(int argc, char** argv)
     // free when off; see kernel/file_imports.cpp for why it exists at all.
     FileImportsWriteSelfTest();
 
-    // fake_xbox_live, before any guest code runs, because the very first thing
+    // XenonLive, before any guest code runs, because the very first thing
     // the title asks about the user is its name. XexTitleId() is valid from
     // here — the image is loaded and its execution info published — and Start
     // never blocks, so this costs the boot nothing whether or not the player
