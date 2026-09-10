@@ -5055,9 +5055,11 @@ static std::map<uint64_t, uint32_t> g_userContexts;
 //              0021 0025 0026
 //   XLB  0xFC: 00000000 00058004 00058006 0005800E 00058020 00058023
 //   XMP  0xFA: 00070009 0007001B
-// Every one of those past 000B0008 is Xbox Live session, matchmaking, presence or
-// media-player work that this runtime has no way to perform, so failing them is the
-// honest answer rather than a gap. A1 only ever sends 000B0006 during boot.
+// Handled below: 000B0006 (presence contexts), 000B0008 (achievements) and
+// 000B0025 (XSessionWriteStats, the leaderboard write). Everything else is
+// session, matchmaking, presence or media-player work this runtime cannot yet
+// perform, so failing it is the honest answer rather than a gap. A1 only ever
+// sends 000B0006 during boot.
 static uint32_t DispatchAppMessage(uint32_t app, uint32_t message, void* buffer,
                                    uint32_t bufferLength)
 {
