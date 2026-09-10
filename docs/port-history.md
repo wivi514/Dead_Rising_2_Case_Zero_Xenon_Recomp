@@ -6880,3 +6880,39 @@ the operator's live-USB RADV test (H3, the one that matters), the first Deck rep
 * **The tee's identity gate FAILED on its first run** (console 5,828 bytes short: `End()`
   closed the saved stderr under the copier thread) — which is the evidence it can fail
   (gotcha 527). Packaging scripts strip `cz_runtime.log*`/`cz_diag.txt*` from the stage.
+
+## Part 106's status block, moved out of CLAUDE.md by part 110
+
+Where the port was, as of 2026-09-08 (**PART 106 — PERFORMANCE IS LIVE AGAIN WITH A
+TARGET, AND THE GPU FRAME IS HALVED.** The operator's instruction closing the Deck work:
+*"search for way to improve performance on linux that could also work on all platform
+this game should be atleast playable 60fps locked at 1080p on gtx 1060."* Three new
+same-binary arms (`CZ_VK_NULL_PS`, `CZ_VK_SCISSOR_1PX`, `CZ_VK_TRI1`) and a per-pass
+pipeline-statistics census (`CZ_VK_GPU_STATS`) decomposed the title's own passes for
+the first time in 28 parts: at the crowd at 1080p 2x on the RTX 3070, the 8.84 ms device
+frame was **~4.5 ms of VERTEX/INDEX FETCH ACROSS PCIe** (the 1 GB cross-frame stream
+store had lived in system RAM since it was built), 1.1 ms fragments, ~1.1 ms per-draw
+front end. **SHIPPED ON BY DEFAULT: a device-local MIRROR of the store** (the CPU keeps
+its cached host writes; last frame's written ranges are copied host → VRAM at the top of
+each frame; hits bind the mirror once their copy is queued ahead of them) — **crowd GPU
+8.84 → 4.00-4.11 ms, light load 5.00 → 3.25, wall −22 to −24% where GPU-bound and a small
+gain at the CPU-bound crowd**; validation clean, sync validation 0 hazards, 3 runs vs 7
+baselines + controls. `CZ_VK_NO_STORE_MIRROR=1` is the control and the FIRST picture
+bisection from now on. Gotcha 363 ("geometry in VRAM is wrong for a recompiler") is
+retracted in part — its arena half stands; gotchas 530-532; the pass extent census had
+been blind since part 89 and is fixed. On the project's own scaling a GTX 1060 goes from
+~34 to ~14-15 ms at the crowd — the GPU half of the target on paper; **the CPU half
+(10.6 ms of pump time here at the crowd) is part 107's item 1.** `docs/perf-plan-part106.md`
+is the plan and record, `phase5-notes.md` §6ew the narrative, `docs/part107-kickoff.md`
+WAS the live hand-off (superseded by `part108-kickoff.md`). Owed: the operator's eye at the crowd with the mirror (a wrong
+generation stamp is a one-frame stale mesh no headless number sees), czamd's GPU column,
+a real 1060, and the artifact rebuild that now carries both the log file and the mirror):
+
+* **The ledger's "at the hardware's price" was a ratio between two cards, not a cost
+  against the work** (gotcha 531): both cards fetched every vertex over PCIe in
+  proportion to their bandwidth, so the ratio was perfect and the cost was double.
+* **The null-PS arm measured CHEAPER than the no-fragment arm** — the pipeline link
+  strips every vertex output a dead fragment stage no longer consumes (gotcha 532).
+* **Every earlier GPU number stands as measured; every "GPU-bound" reading of czamd and
+  every 1080p projection from before this part is a fetch-bound reading.** Re-derive
+  from §6ew before quoting one.
