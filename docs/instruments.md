@@ -3643,6 +3643,45 @@ CZ_PM4_REGRUN_CENSUS=1  how long is a bulk register run? (part 109) Buckets ever
                   CALLS are runs of 1-7 carrying 8.8% of the dwords. It said a wide
                   vector swap would cover the whole population, and it was right about
                   that and the item still measured +0.14 ms — gotcha 545.
+CZ_VK_PARDRAW_CENSUS=1  **what on the per-draw path MUTATES shared state, and what READS
+                  state the pump will overwrite?** (part 111 §3 — item B's ask-first
+                  step.) Counts the high-frequency operations (arena bumps, cache finds)
+                  and TIMES the low-frequency mutations (cache inserts, mirror pushes,
+                  descriptor writes), because a `steady_clock` read is ~25 ns and the
+                  arena bump runs 2.4 times a draw — timing that would add 1.4 ms to the
+                  frame and measure the instrument. Prints a per-subsystem table at exit
+                  plus one summary line: `S`, the timed mutations that must stay serial or
+                  shard, and the read share of shared-table traffic. **ANSWERED §10.1:
+                  stream cache 91.05% reads / 8.95% inserts costing 0.073 ms/frame;
+                  descriptor writes 0/frame; texture finds 10,376/frame and EVERY ONE IS
+                  A READ-MODIFY-WRITE (the `lastUsedFrame` stamp); 1.35 `g_regs`
+                  const-window copies a draw, which is what refutes B3.** A DIAGNOSTIC
+                  ARM; never quote a frame time from a run carrying it.
+
+CZ_VK_PREZERO=1  **an ARM, OFF by default, and it is off because it was MEASURED
+                  (part 111 §4, §10.2).** The per-draw 2,192-byte shared-block clear runs
+                  on the guard pool's workers, ahead of a fixed-stride sub-arena's bump,
+                  with per-chunk CAS ownership and an inline fallback on every miss.
+                  **ANSWERED: a null.** It engages perfectly — 100% of draws served, zero
+                  fallbacks, zero drain, zero busy-chunk waits, and `perf` says
+                  `__memset_avx2` on the pump goes 3.96% -> 0.04% (0.43 -> 0.004 ms/frame)
+                  while the three guard workers go 30.9% -> 35.3% of a core each. **The
+                  pump's CPU per frame moves +0.00 ms** over three runs an arm and six
+                  matched draw bands. The cost is store BANDWIDTH, which is machine-wide,
+                  so the same stores from another core buy nothing; the vacated 4% is
+                  redistributed across every other pump symbol (gotcha 238, demonstrated).
+                  Kept as an arm because a machine with a slower core relative to its
+                  memory — part 107's Ryzen 3 stand-in, a Steam Deck — may answer
+                  differently, and asking costs one run. Prints a `[prezero]` line per FPS
+                  window carrying BOTH SIDES OF THE BILL: draws served, MB/frame moved off
+                  the pump, MB/frame still inline, worker milliseconds, and the pump's
+                  drain and busy-chunk waits. A hit rate says the fast path ran; the worker
+                  milliseconds say where the work went (gotcha 344).
+CZ_VK_PREZERO_POISON=1  **B1's positive control.** The workers write 0xAA where the zero
+                  would go. THE PICTURE MUST BREAK; if it does not, the pre-zeroed block is
+                  not what the draw reads, the fast path never engaged, and every number
+                  from it is meaningless (gotcha 30).
+
 CZ_VK_SCOPED_SHARED_ZERO=1  **an ARM, off by default (part 109).** Zero only the vfetch
                   table entries the vertex shader DECLARES instead of the whole
                   2,192-byte shared block: 1,530 of 1,536 table bytes go unwritten on the

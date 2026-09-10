@@ -260,4 +260,243 @@ the budget is spent.
 
 ## §10. Execution record
 
-*(empty — part 111 writes here)*
+### 10.1 — STEP 1, §3's census: RUN, AND IT CLEARS B2 WHILE REFUTING B3
+
+`CZ_VK_PARDRAW_CENSUS=1`, one crowd run (`tools/part80_crowdroute.sh`, peak 9,398 draws,
+21 windows at ≥8,000). The instrument counts the high-frequency operations and TIMES the
+low-frequency ones — a `steady_clock` read is ~25 ns and the arena bump runs 2.4 times a
+draw, so timing that would have added 1.4 ms to the frame and measured the instrument.
+
+Read the per-DRAW column, not the per-frame one: the run averages over 21,791 frames
+including the boot and the menus, so its denominator is 5,838 draws/frame where the crowd
+windows are ~9,400. The per-draw rates are the load-independent quantity, and they
+reproduce part 110's independent readings (4.94 stream lookups a draw × 9,400 = 46,400
+against part 110's "~47,000 a frame").
+
+| operation | per frame (run avg) | per draw | what it settles |
+|---|---|---|---|
+| arena bump | 14,010 (42.96 MB) | 2.40 | serial, ours, and cheap enough to keep on the pump |
+| persist bump | 6 (0.01 MB) | — | trivial |
+| **stream-cache finds** | **28,834** | 4.94 | the READ traffic |
+| **stream-cache inserts** | **2,581 = 8.95%** | 0.44 | **91.05% of the traffic is reads** |
+| stream-insert cost | **0.073 ms/frame** | 28 ns | the serial residue B2 cannot shard away |
+| persist finds / inserts / mirror pushes | 2,581 / 6 / 32 | — | 0.002 ms/frame — trivial |
+| **texture finds** | **10,376** | 1.78 | **every one WRITES `lastUsedFrame`** |
+| texture inserts | 0.1 | — | trivial |
+| **descriptor-set writes** | **0** | 0 | **B2's workers need no Vulkan calls at all** |
+| pipeline-cache finds / inserts | 1,731 / 0.08 | — | trivial |
+| **`g_regs` const-window copies** | **7,858** | **1.35** | **B3's source race, counted** |
+| `g_regs` fetch walks | 5,838 | 1.00 | the decisions stay on the pump |
+
+**`S` — the timed mutations that must stay serial or shard — is 0.075 ms/frame** at this
+denominator, ~0.12 ms at the crowd. **The §3 kill does not fire and is not close:**
+`F + S + M2/3` = 2.49 + 0.12 + 0.89 = **3.5 ms** against a 9.5 ms bar.
+
+Four things the census decided that the plan had listed as open:
+
+* **B2's tables can be read-mostly.** 91.05% of shared-table traffic is reads, and the
+  whole mutating half costs 0.075 ms/frame. A small serial insert queue drained by the
+  pump is enough; per-worker shards with a frame-end merge are not needed and should not
+  be built.
+* **The workers make no Vulkan calls.** Descriptor writes are **0 per frame** at the
+  crowd — they happen only on a texture upload or a first-sight sampler, both of which
+  are misses that do not occur in a warm crowd. So `vkUpdateDescriptorSets`'s external
+  synchronisation requirement, which §3 called "the other real question", is not a
+  constraint on B2's design at all.
+* **The texture table's LRU stamp is real and now has a number: 10,376 read-modify-writes
+  a frame.** §5's item 4 named this as the trap (part 109's texture memo nearly broke the
+  reclaimer by skipping the lookup that stamps `lastUsedFrame`). It is not a barrier — the
+  store is a single monotonic `uint64` of the same value from every writer — but a sharded
+  or deferred texture path must keep it and needs its own verifier arm.
+* **B3 IS REFUTED, as §6 expected, and by a count rather than an argument.** There are
+  **1.35 `g_regs` const-window copies per draw**, i.e. essentially every draw re-reads the
+  live register file that the pump's own walk is rewriting. `CZ_PM4_ALU_WRITE_CENSUS`'s
+  recorded answer (checked rather than re-run, per §6) says the same thing from the other
+  side: constant uploads are whole-span bursts interleaved with draws, not bulk runs
+  between them. **B3 will not be built.**
+
+
+### 10.2 — B1: BUILT, FULLY ENGAGED, AND ITS PRE-REGISTERED KILL FIRES AT +0.00 ms
+
+**The item works exactly as designed and recovers nothing.** Three configurations, three
+runs an arm, alternated, read as the pump's CPU per frame in matched draw bands
+(`tools/part110_pumpcpu.py`, 65-66 crowd windows an arm, 6 shared bands):
+
+| arm | how it is proved engaged | pump cpu vs stock |
+|---|---|---|
+| **stock** (`CZ_VK_NO_PREZERO=1`) | `[sharedzero] 0 bytes/draw not written`, no `[prezero]` line at all | — (10.88 ms) |
+| **scoped** (`CZ_VK_SCOPED_SHARED_ZERO=1`) | `[sharedzero] 1,530 bytes/draw not written (69.8%)` | **−0.13 ms**, 5 of 6 bands negative |
+| **pre-zeroed** (B1, default) | `[prezero] 100.0% of draws served pre-zeroed, 0 inline fallbacks, 19.1-19.7 MB/frame moved off the pump, drain 0.000 ms, 0 busy-chunk waits` | **+0.00 ms**, not monotone (−0.13 … +0.25) |
+
+**§4.3's kill required ≥0.18 ms of pump CPU. It got 0.00. The kill fires.**
+
+**But its stated REASON is wrong, and that matters more than the verdict.** §4.3 said a
+failure would mean "the dispatch overhead is too high for a job this size". The
+measurement says the opposite: the dispatch machinery is flawless. 100% of draws served,
+**zero** inline fallbacks, **zero** milliseconds of drain, **zero** busy-chunk waits, over
+three runs. Nothing was spent getting the work to the workers. The work simply arrived
+somewhere that did not help.
+
+**THE THREE ARMS ARE A CONTROLLED PAIR AND THEY NAME THE MECHANISM.** The scoped arm and
+B1 both attack the same 2,192-byte `memset`, from opposite directions:
+
+* **scoped** writes **70% fewer bytes**, on the **same thread** → **−0.13 ms**;
+* **B1** writes the **same bytes** (25-38% more, counting the watermark margin and the
+  2,304-byte stride), on **another thread** → **+0.00 ms**.
+
+So the quantity that costs the pump is **bytes written, not which core writes them**. This
+is a store-bandwidth bound, and bandwidth is a machine-wide resource that does not care
+which core issues the stores — relocating them buys nothing, and the 27 MB/frame of
+concurrent worker stores may even take some of it back (the +0.22 ms first pair).
+
+**AND THE PERF PAIR SHOWS THE WORK LEAVING AND THE FRAME NOT MOVING.** Two
+`tools/part109_probe.sh` captures at matched draws (9,334 / 9,340), binaries archived
+(gotcha 550):
+
+| | stock | pre-zeroed |
+|---|---|---|
+| `__memset_avx2` on the PUMP | **3.96% of the pump = 0.43 ms/frame** | **0.04% ≈ 0.004 ms** |
+| the pump thread | 97.7% of a core | **97.5%** |
+| each of the three guard workers | 30.9% of a core | **35.3%** |
+| pump CPU per frame (66 windows an arm) | 10.88 ms | **10.88 ms** |
+
+**0.43 ms of work provably left the pump, the workers provably picked it up, and the
+pump's frame time did not move by a hundredth of a millisecond.** Where it went is in the
+symbol table: with the pump's total unchanged and one symbol gone, every remaining symbol
+grew by roughly the 4% the memset vacated — `UploadStream` 8.99 → 9.71%, `WriteRegisterRun`
+10.59 → 10.93%, `ExecutePacket` 7.92 → 8.19%, `__memmove` 3.04 → 3.46%, `[unknown]`
+7.54 → 8.24%. Nothing got faster; the rest of the frame expanded to fill the gap, because
+the worker's stores now compete for the same memory pipe.
+
+**This is gotcha 238 in its purest form, demonstrated rather than suspected**: a profiler
+column fell to zero and the replacement cost was charged to *everything else*.
+
+**One correction while it is fresh:** the 0.44 ms `__memset_avx2` attribution part 109
+made is CORRECT — this capture reads 0.43 ms for the same symbol on the same thread, and
+an intermediate guess that extrapolated a smaller ceiling from the scoped arm's −0.13 ms
+was wrong. §4.3's 0.18 ms kill was a fair bar against a real 0.43 ms item. B1 did not
+miss it narrowly; it recovered nothing at all. (The scoped arm recovers 0.13 rather than
+the 0.30 that 69.8% of the bytes would suggest because its path makes three to eight
+`memset` calls where the block made one, and the call overhead eats the difference — no
+contradiction, and it is why the two arms had to be measured rather than reasoned about.)
+
+**This is the third independent measurement pointing the same way**, and the first one
+built to test it:
+
+* part 109 (c): three of the five largest blocks on the pump are memory-bound, not compute;
+* part 109's vectorised byte swap — a pure COMPUTE reduction on the same store stream —
+  measured **+0.14 ms** despite engaging at 90.6% (gotcha 545);
+* part 111 B1: a pure RELOCATION of the same store stream measures **+0.00 ms** despite
+  engaging at 100%.
+
+**WHAT IT PREDICTS FOR B2, and this is what B1 was built to buy.** §5's design is "the
+pump keeps the decisions, the workers do the bytes" — the cache lookup, the guard decision
+and the arena allocation stay on the pump; `CopySwapped` and the texture untile go to a
+worker. Those are **exactly** the bandwidth-bound half: `UploadStream` 0.99 +
+`__memcmp_avx2` 0.27 + `UploadTextureUncached` 0.73 = **1.99 of B2's 2.68 ms is bytes**,
+and B1 has just measured what moving bytes to another core is worth. The remaining
+0.69 ms (`PersistFind` 0.42 + `TexFind` 0.27) is memory **latency**, which is the class
+parallelism does help — but §5's own design leaves it on the pump, because those are the
+change detectors and gotcha 474 says a change detector cannot be memoised away.
+
+**So B2 as specified is predicted to be worth ~nothing, and the plan stops here** (§9
+step 3: "B2 — only if B1 passed"). Part 111 does not build it. What a later part should
+ask instead is in the hand-off: the addressable class on this pump is **fewer bytes**
+(the scoped item's shape) and **overlapped misses** (the guard pool's original shape),
+not **the same bytes on another core**.
+
+### 10.3 — The gates, and one of them was broken before part 111 touched anything
+
+`--smoke` OK; `find_unlowered_switches.py` clean; `shader_dim_census.py` clean; both PM4
+boundary oracles clean; `no translated shader` = 0.
+
+**`tools/part47_gates.sh`'s E3 picture gate FAILED, and it was the gate.** It captures with
+`CZ_VKDRAW=1` and no `CZ_VK_RES`, so the renderer takes its internal resolution from the
+DESKTOP — 3440x1440 here — and the gate then correlates that against E3, a 16:9 photograph
+of an Xbox 360 screen. The right scene at the wrong aspect reads **+0.33 to +0.48** against
+the gate's own +0.70 threshold.
+
+It was diagnosed the way this project requires rather than by the plausible story
+(the control is the old binary run NOW, gotchas 50/51/86): a `git worktree` at HEAD,
+built and run the same afternoon.
+
+| | unpinned (3440x1440) | pinned (1280x720) |
+|---|---|---|
+| **HEAD control, 1f9098a, unmodified** | **+0.4905** best of 5, 0 agreed | — |
+| the part-111 tree | +0.4831 best of 5, 0 agreed | **+0.8621 best, 4 of 5 LAYOUT AGREES** |
+
+So the failure reproduces exactly on code that predates this part, and the same part-111
+binary passes at +0.86 — inside part 49's own recorded 0.688-0.875 spread. **The gate now
+pins `CZ_VK_RES` (`GATE_RES` overrides).** This is the memory note "pin the resolution in
+every perf run" in a harness nobody had checked: an unpinned resolution here does not
+skew a number, it convicts an innocent change, and it would have done so for every session
+run on a non-16:9 desktop since the gate was written in part 47.
+
+### 10.4 — B1's race argument, per shared structure (§8: ThreadSanitizer OR this)
+
+*"It did not crash in three runs"* is not a gate, so here is the argument. B1 shares five
+things between the pump and the guard pool's workers.
+
+1. **The queue cursors** (`g_pzQueued` / `g_pzClaim` / `g_pzDone`). The `ParRec` idiom,
+   unchanged: the pump publishes with a release store to `g_pzQueued` and every worker
+   acquire-loads it before claiming, so everything the pump wrote before the post is
+   visible to every claimer. Claims are a `compare_exchange_weak` on `g_pzClaim`.
+2. **`g_pzBase`** (the region's mapped address, stamped so a worker never reads `R`).
+   Written by the pump at dispatch, published by the same release store as (1). The
+   pump's own help-drain runs BEFORE `g_pzBase` is updated and therefore uses the old
+   value, which is correct — those chunks belong to the previous dispatch.
+3. **The chunk states** (`g_pzChunkState[]`). This is the one that needed designing, and
+   the first version was wrong. A plain `ready` flag let the pump reach a chunk first,
+   memset it inline, fill its constants — and then a worker claim that same chunk and
+   zero the constants underneath it. Intermittent garbage descriptor indices and cleared
+   clip planes, at exactly the load where the workers fall behind and nobody is looking
+   at correctness. **The fix is exclusive ownership by compare-exchange**: FREE is claimed
+   by whichever of the two gets there first, and only the owner writes the bytes. A pump
+   that finds BUSY *waits* rather than going inline (bounded by one 295 KB `memset`, and
+   counted — `g_pzWaits` read 0 in every run).
+4. **The sub-arena memory itself.** Follows from (3): a worker writes chunk `c` only after
+   winning the CAS, and the pump touches a slot in `c` only after an acquire-load reads
+   READY (so the memset happens-before) or after winning the CAS to PUMP. Exclusive
+   ownership, both directions.
+5. **The counters.** All of them are pump-only except `g_pzWorkerSkips`, which
+   `Prezero_RunChunk` reaches from a worker AND from the pump helping its own drain —
+   so that one is `std::atomic<uint64_t>` and the others are deliberately not. A race
+   argument that says "these threads never overlap" has to be true for every counter it
+   covers, not just the interesting ones.
+
+**And the lifetime hazard, which no fence covers.** `GrowSharedArenaIfNeeded` destroys the
+buffer the workers write into, so it drains first; `Prezero_Dispatch` drains before it
+re-posts, because with `framesInFlight = 1` the previous dispatch's region and the new
+one are the SAME memory and a generation counter on the flags would not have covered a
+straggler still inside its `memset`. The drain has the pump HELP (claim and zero what is
+unclaimed) rather than block, so its cost is bounded by one chunk per worker — it measured
+**0.000 ms/frame**.
+
+**One interaction found by asking rather than by a crash:** with `CZ_VK_NO_PARALLEL_GUARD=1`
+— the first picture-bisection arm this project reaches for — the pool grants no workers,
+and the pool also does not spawn its threads until the first frame files a guard job. In
+both cases posted chunks would have been left for the PUMP to clear at the next drain,
+i.e. the pump would `memset` the whole posted region instead of 2,192 bytes a draw: a
+regression, in the arm least likely to be measured. `Prezero_Dispatch` now posts nothing
+and zeroes the capacity when there are no started workers, which sends every draw down the
+general-arena path — byte-for-byte the pre-part-111 one.
+
+### 10.5 — Gates
+
+| gate | result |
+|---|---|
+| `--smoke` | OK |
+| `find_unlowered_switches.py` | clean |
+| `shader_dim_census.py` | clean |
+| PM4 boundary oracles (both) | clean |
+| E3 picture, `tools/part47_gates.sh` | **ALL GATES CLEAN**, best +0.8652, 4 of 5 LAYOUT AGREES (after §10.3's fix) |
+| A5 kernel diff, `--include-high-frequency` | **exit 0** — 5 permutation windows, 0 real |
+| `truncated=` | **0** |
+| `no translated shader` | 0 |
+| **B1 poison positive control** | **PASSES: the picture breaks**, +0.87 -> **+0.27**. The pre-zeroed block is what the draw reads, so the null is a real null and not an inert arm (gotcha 30) |
+
+B1 issues no Vulkan commands and adds no barriers — it is a host write into
+`HOST_VISIBLE | HOST_COHERENT` memory, made visible by the implicit host-write dependency
+of `vkQueueSubmit`, which is the same guarantee the arena has always relied on. The
+shipped default is `CZ_VK_PREZERO` OFF, so the binary's Vulkan behaviour is part 110's.
+
