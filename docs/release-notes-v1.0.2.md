@@ -1,8 +1,8 @@
 # Release notes — v1.0.2
 
 **This is the text to paste into the GitHub Release body.** Binaries are commit
-`a9e7d95` (all three artifacts built from that source on 2026-09-09; the last source
-change is `3bbf3e9`, and the docs commits after it change no code). It carries parts 104-108: the golden texture
+`8b67e6a` (all three artifacts rebuilt from that source on 2026-09-09; the docs commits
+after it change no code). It carries parts 104-108: the golden texture
 store as one pack file, the AppImage data root, Wayland-first on Linux, the window
 title and icon, the log file and `--diag`, the device-local geometry mirror, the
 keyboard/mouse start-up scan fix, 16:10 resolutions, MSAA as a setting, the window
@@ -76,6 +76,13 @@ shader cache are reused.
 - **In windowed mode the window follows the resolution.** It opens at the resolution
   you chose (fitted to your desktop), and resizes when you apply a new one or leave
   fullscreen. A maximised window stays maximised.
+- **The start-up launcher takes a controller.** D-pad or left stick to move, A to
+  select, START to play from any row, B to quit. It used to read arrow keys and Enter
+  and nothing else, which made it a dead end on a handheld or a couch setup with no
+  keyboard attached.
+- **Ultrawide resolutions are in the launcher's list**: 2560x1080, 3440x1440 and
+  3840x1600. Picking a 21:9 resolution is what turns on the game's wide mode, and until
+  now the only 21:9 entry you could reach there was your own desktop's size.
 - **A log file for bug reports.** Every run writes `cz_runtime.log` beside the
   executable (the previous run is kept as `cz_runtime.log.1`), and
   `cz_runtime --diag` writes `cz_diag.txt` with your GPU, driver, and the Vulkan
@@ -98,6 +105,11 @@ shader cache are reused.
   you instead. Q now acts as the Y button everywhere the game reads it.
 - **Mouse wheel: one notch, one item.** Scrolling through the inventory needed two
   notches per step for some players; every notch counts now.
+- **Fixed: closing the launcher without playing crashed instead of exiting.** Backing
+  out with Escape (or the window's close button) ended the process with an abort rather
+  than a clean exit. The same fault hit four other exits, including the one that
+  reports missing game data — the case where the log file is exactly what we ask you to
+  send.
 - **A quieter log.** The audio decoder no longer writes a warning line thirty times a
   second; those lines were harmless (the decoder costs about 3% of one core) but they
   made it look like the culprit for stutter that came from elsewhere. The controller
@@ -180,7 +192,7 @@ XenonRecomp and XenosRecomp.
 ### Checksums (SHA-256)
 
 ```
-9bb26a10f2c578a6bcef24162e3c4393bbd081bdb858e48757a42352e8ff1af2  CaseZeroRecomp-linux-x86_64.tar.zst
-5dadd0dc102f54b8d45369909d65d60365e1b5a13315d7cab76568b8e9e55794  CaseZeroRecomp-linux-x86_64.AppImage
-c7a7ef09be6148c385409689694cdebbd12fac4ce42c3892068aec0161cbb5fc  CaseZeroRecomp-windows-x86_64.zip
+558937b1b8f2d84a6c6832d09417d11c53c8f7281aab658187127f8659ce46ab  CaseZeroRecomp-linux-x86_64.tar.zst
+964a62c04c9b8eb343e1af359dcd3295057ceef95fcd9d44e048fa1b64cb448c  CaseZeroRecomp-linux-x86_64.AppImage
+b500033f5928d94eb075f48bf8207b444f72720dd3a1a22d49f63efedb0fa558  CaseZeroRecomp-windows-x86_64.zip
 ```
