@@ -306,4 +306,81 @@ operator's decision about whether to take them.
 
 ## §6. Execution record
 
-*(empty — part 110 writes here)*
+### 6.1 — A.3 first, not A.1, and the reason is a retraction of A.1's claim
+
+The plan's order put A.1 first on the grounds that it "alone would have prevented all
+three mistakes". **That is wrong and A.1's own measurement is what refutes it.**
+
+The coverage was measured before the line was written, off part 80's archived profiled
+logs: at 2,472 draws the phases account for **69.1% of wall**, the PM4 walk for **27.3%**,
+sleep for 2.3% — and the pump is 96.6% on CPU. As shares of the pump's CPU that is
+**~73% phases, ~28% walk, ~0% UNSCOPED**. There is no missing time. The table already
+accounts for essentially the whole thread.
+
+**So the defect is MISATTRIBUTION, not omission, and a coverage line cannot see it.**
+`UploadStream`'s cost is not unscoped; it is charged to `record`, a real scope that
+really did contain it, because `ProfScope(streams)` deliberately wraps only the
+`CopySwapped` and the flat-cache lookup, the content guard and the cross-frame store sit
+outside it. A phase table can account for 100% of a thread and be wrong about every row.
+
+A.1 was still built, because a table that does not state its own denominator is worse
+than one that does — but **the line carries the warning as well as the number**, in those
+words, and points at the check that can actually catch the defect.
+
+### 6.2 — A.3: `tools/phase_vs_perf.py`, and its positive control fires
+
+Reads the phase table out of a profiled log and the per-thread symbol shares out of a
+`perf.data`, puts them on one denominator (the profiler's own `pump thread: N% on CPU`
+line is exactly the conversion between "share of wall" and "share of the pump's cpu"),
+and compares each phase with the symbols implementing **the subsystem it is named
+after** — not with the symbols that happen to run inside the scope, which is a comparison
+that could never catch this. Exit 1 past 2x.
+
+**Positive control (gotcha 30), on part 109's archived artifacts:**
+
+| phase | table | symbols | ratio | verdict |
+|---|---|---|---|---|
+| `streams` | 0.24% | 13.14% | **53.7x** | LIES |
+| `textures` | 5.09% | 10.85% | **2.13x** | LIES |
+| `constants` | 17.22% | 7.54% | 0.44x | note (advisory) |
+| `pm4` (walk) | 22.75% | 21.13% | 0.93x | ok |
+
+`streams` is flagged, so the checker fails on the case that already happened — and it
+found a second one nobody had looked at: **`textures` under-reports its own subsystem by
+2.1x**, because `TexFind` (the cache lookup) and `DecodeTextureFetch` sit outside the
+scope and are charged to `other`/`otherFetch`.
+
+The `constants` row is ADVISORY and the reason is a limit of the TOOL, stated rather than
+hidden: `constVsPatch` is not a call — `SceneXformForm` and the two patch helpers are
+inline code in `DoDraw` — so at -O2 their cycles land in the `DoDraw` symbol and no
+symbol regex can claim them back. That row's symbol column is a lower bound.
+
+**A mechanical finding worth its own line, because it would otherwise make every archived
+capture in this project unreadable:** `perf` resolves a DSO by build-id and REFUSES a
+file at the recorded path whose build-id has moved on. `tools/part80_crowdroute.sh`
+re-links `cz_runtime_crowd` on every build, so part 109's captures read **89%
+`[unknown]`** on the pump thread today — which looks exactly like a capture with no
+symbols. `--binary` builds a symfs symlink farm (the system roots symlinked in, so libc
+and the driver still resolve) and points `perf script` at it. Only one of part 109's four
+captures still has its matching binary (`unkres.bin`); the other three are unreadable
+forever. **Archive the binary with the capture.**
+
+### 6.3 — The instrument §3.1 actually needs, and why it is new
+
+§3.1's quantity is the pump thread's CPU milliseconds per presented frame. Until now that
+was obtainable only by crossing two instruments taken over **different windows**: a "% of
+one core" from `perf` or `part50_thread_cpu.py` over its own 15 s sample, divided into a
+frame rate from somewhere else. This project has a name for that arithmetic and it once
+invented 59 MB/frame that never existed (`two-counters-are-not-a-pair`).
+
+So the `[fps]` line now carries `pump cpu N.NN ms/frame (M% of a core)` — one
+`clock_gettime` per FPS WINDOW, not per frame, printed whenever `CZ_FPS_LOG` is on and
+therefore available in a completely uninstrumented run. `tools/part110_pumpcpu.py` bands
+it by draw count the way `part109_band.py` bands wall time.
+
+**Its first reading reproduces part 109's cross-instrument arithmetic exactly**, which is
+the check that it is measuring the right thing: at 9,100-9,140 draws, wall 11.2 ms median,
+**pump cpu 11.03 ms/frame at 98% of a core**. Part 109 got 97.7% and ~10.5 ms by dividing
+one instrument into another; one window of one run now says it directly.
+
+
