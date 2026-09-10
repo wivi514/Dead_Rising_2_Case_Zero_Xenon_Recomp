@@ -6131,6 +6131,25 @@ size_t PersistSize()
 }
 
 // The texture cache, through the same seam and for the same reason.
+// THE TEXTURE-RESOLUTION GENERATION (part 109 item 1). `UploadTexture` is called once per
+// texture fetch per draw — ~13,900 times a frame at the crowd — and 0.0014% of those calls
+// do any work: the rest hash six fetch-constant dwords, decode them, and look the result
+// up. The fetch constants for a slot almost never change between draws, so the answer is
+// memoisable per fetch-constant index — but ONLY against everything else the answer
+// depends on, which is why this counter exists rather than a bare cache.
+//
+// It is bumped by every mutation of the two things a resolved slot depends on:
+//   * the resolve-snapshot set (emplace, erase, and the whole-set clear) — a snapshot
+//     appearing mid-frame changes a fetch's answer from "the cached upload" to "the
+//     snapshot", which is the ordering the big comment in UploadTexture exists to protect;
+//   * the texture table (TexInsert, and BOTH arms of ReclaimTextureSlot's eviction) — a
+//     recycled bindless slot would otherwise be handed out from a stale memo.
+// Miss anything that changes an answer and the symptom is a frozen or wrong texture, so
+// the memo ships with CZ_VK_TEXMEMO_VERIFY=1, which computes both answers and counts
+// disagreements.
+uint64_t g_texGen = 1;
+inline void TexGenBump() { ++g_texGen; }
+
 TextureEntry* TexFind(uint64_t key)
 {
     TextureEntry* e = nullptr;
@@ -6149,6 +6168,7 @@ TextureEntry* TexFind(uint64_t key)
 }
 void TexInsert(uint64_t key, TextureEntry&& e)
 {
+    TexGenBump();
     if (!g_flatCacheOff)
         R->textures.Insert(key, e);
     else
@@ -9360,6 +9380,7 @@ uint32_t ReclaimTextureSlot(bool isCube)
             return UINT32_MAX;
         RetireImage(t.vals[bestIdx].image);
         t.Erase(bestKey);
+        TexGenBump();   // a recycled slot must not be served from the memo
     }
     else
     {
@@ -9382,6 +9403,7 @@ uint32_t ReclaimTextureSlot(bool isCube)
             return UINT32_MAX;
         RetireImage(best->second.image);
         R->texturesMap.erase(best);
+        TexGenBump();   // a recycled slot must not be served from the memo
     }
     return bestSlot;
 }
@@ -9701,8 +9723,96 @@ static bool PackedLevelOffset(uint32_t width, uint32_t height, uint32_t blockDim
 // cannot be conflated: set 0 holds `Texture2D` views and set 2 holds `TextureCube` ones,
 // so a 2D slot number published into the cube array indexes a descriptor that was never
 // written.
+// THE PER-SLOT MEMO (part 109 item 1). 32 fetch-constant groups, so the table is 32
+// entries and the index is the slot itself — no hashing to find the memo.
+//
+// A hit must still STAMP RECENCY. `TexFind` writes `lastUsedFrame` on every lookup and the
+// LRU reclaimer evicts by it, so a memo that skipped the lookup would silently stop
+// marking a texture as used and the reclaimer would evict textures that are in use every
+// frame. That is the whole hazard class of a fast path that bypasses a check nobody
+// remembered was there, so the memo stores the ENTRY POINTER and stamps it itself; the
+// generation covers the pointer's validity as well as the answer's.
+// The texture cache's key, factored out so the memo and `UploadTextureUncached` cannot
+// drift: two copies of a hash is two things to keep in step, and a silent divergence here
+// would hand back another texture's slot.
+inline uint64_t TexMemoKey(const uint32_t* regs, uint32_t constIdx, uint32_t shaderDim)
+{
+    uint64_t key = 1469598103934665603ull;
+    for (uint32_t i = 0; i < 6; i++)
+    {
+        key ^= regs[xenos::kFetchConstantBase + constIdx * 6 + i];
+        key *= 1099511628211ull;
+    }
+    key ^= shaderDim;
+    key *= 1099511628211ull;
+    return key;
+}
+
+struct TexSlotMemo
+{
+    uint32_t regs[6] = {};
+    uint32_t dim = 0xFFFFFFFFu;
+    uint64_t gen = 0;              // 0 = empty; never matches g_texGen, which starts at 1
+    uint32_t slot = 0;
+    TextureEntry* entry = nullptr; // non-null only when the answer came from the table
+};
+TexSlotMemo g_texMemo[32];
+uint64_t g_texMemoHits = 0, g_texMemoMiss = 0, g_texMemoDisagree = 0;
+
+uint32_t UploadTextureUncached(uint8_t* base, const uint32_t* regs, uint32_t constIdx,
+                               uint32_t shaderDim);
+
 uint32_t UploadTexture(uint8_t* base, const uint32_t* regs, uint32_t constIdx,
                        uint32_t shaderDim)
+{
+    // OPT-IN UNTIL IT IS VERIFIED AND MEASURED. The memo is built and its verifier arm
+    // works, but no run has yet read 0 disagreements and no A/B has priced it, so HEAD
+    // must behave exactly like the released v1.0.2 build. `CZ_VK_TEXMEMO=1` engages it;
+    // flip this to on-by-default (and rename the arm to CZ_VK_NO_TEXMEMO) only after a
+    // crowd run reads 0 disagreements AND three runs an arm clear the 0.4 ms kill rule.
+    static const bool memoOn = EnvOn("CZ_VK_TEXMEMO");
+    static const bool verify = EnvOn("CZ_VK_TEXMEMO_VERIFY");
+    if (memoOn && constIdx < 32)
+    {
+        TexSlotMemo& m = g_texMemo[constIdx];
+        const uint32_t* r = &regs[xenos::kFetchConstantBase + constIdx * 6];
+        if (m.gen == g_texGen && m.dim == shaderDim &&
+            std::memcmp(m.regs, r, sizeof(m.regs)) == 0)
+        {
+            ++g_texMemoHits;
+            if (m.entry)
+                m.entry->lastUsedFrame = R->frame;   // the stamp TexFind would have made
+            if (!verify)
+                return m.slot;
+            const uint32_t real = UploadTextureUncached(base, regs, constIdx, shaderDim);
+            if (real != m.slot)
+            {
+                if (g_texMemoDisagree++ < 8)
+                    fprintf(stderr, "[texmemo] DISAGREEMENT slot %u dim %u: memo %u real "
+                                    "%u (gen %llu)\n", constIdx, shaderDim, m.slot, real,
+                            (unsigned long long)g_texGen);
+                return real;
+            }
+            return m.slot;
+        }
+        ++g_texMemoMiss;
+        const uint32_t slot = UploadTextureUncached(base, regs, constIdx, shaderDim);
+        std::memcpy(m.regs, r, sizeof(m.regs));
+        m.dim = shaderDim;
+        m.gen = g_texGen;
+        m.slot = slot;
+        // Only a table answer carries a stampable entry. Snapshot and dummy answers do
+        // not live in R->textures, and the generation already invalidates them.
+        m.entry = TexFind(TexMemoKey(regs, constIdx, shaderDim));
+        if (m.entry && m.entry->slot != slot)
+            m.entry = nullptr;      // the answer did not come from the table
+        return slot;
+    }
+    return UploadTextureUncached(base, regs, constIdx, shaderDim);
+}
+
+uint32_t UploadTextureUncached(uint8_t* base, const uint32_t* regs, uint32_t constIdx,
+                               uint32_t shaderDim)
 {
     ProfScope _p(&g_prof.textures);
     // One increment, unconditionally. The PROFILER's `textures` phase already times this
@@ -9733,19 +9843,13 @@ uint32_t UploadTexture(uint8_t* base, const uint32_t* regs, uint32_t constIdx,
     // which is also the correctness check.
     if (shaderDim == 3)
         COUNT("texture: CUBE fetch");
-    uint64_t key = 1469598103934665603ull;
-    for (uint32_t i = 0; i < 6; i++)
-    {
-        key ^= regs[xenos::kFetchConstantBase + constIdx * 6 + i];
-        key *= 1099511628211ull;
-    }
     // THE DIMENSION IS PART OF THE KEY, because the cached value is a slot number and a
     // slot number only means something against one heap. Two shaders could in principle
     // sample the same fetch constant as a 2D texture and as a cube; without this the
     // second one would be served the first one's slot, indexing the wrong descriptor
     // array. It costs one multiply and removes a whole class of impossible-to-read bug.
-    key ^= shaderDim;
-    key *= 1099511628211ull;
+    // (The hash itself is `TexMemoKey`, shared with the per-slot memo above.)
+    const uint64_t key = TexMemoKey(regs, constIdx, shaderDim);
     const xenos::TextureFetch t = xenos::DecodeTextureFetch(regs, constIdx);
     if (t.type != 2)
     {
@@ -26224,6 +26328,7 @@ void DoResolve(uint8_t* base, const uint32_t* regs)
                 RetireImage(v);
             }
             R->snapshots.erase(it);
+            TexGenBump();
             it = R->snapshots.end();
             Count("resolve: snapshot resized");
         }
@@ -26307,6 +26412,7 @@ void DoResolve(uint8_t* base, const uint32_t* regs)
                             baseKey, RZx(w), RZ(h), w, h, passW, passH, InternalW(),
                             InternalH());
                 it = R->snapshots.emplace(key, std::move(s)).first;
+                TexGenBump();
                 Count("resolve: snapshot created");
             }
             else
@@ -30644,7 +30750,14 @@ void ApplyPendingRenderScale()
         }
         ++flushed;
     }
+    if (g_texMemoHits || g_texMemoMiss)
+        fprintf(stderr, "[texmemo] %llu hits, %llu misses (%.1f%% served), %llu "
+                        "disagreements, final gen %llu\n",
+                (unsigned long long)g_texMemoHits, (unsigned long long)g_texMemoMiss,
+                100.0 * double(g_texMemoHits) / double(g_texMemoHits + g_texMemoMiss),
+                (unsigned long long)g_texMemoDisagree, (unsigned long long)g_texGen);
     R->snapshots.clear();
+    TexGenBump();
     for (auto& [key, cube] : R->cubeSnapshots)
     {
         vkDestroyImageView(R->device, cube.image.view, nullptr);
