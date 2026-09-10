@@ -6288,3 +6288,56 @@ From phase C part 18 (the frame rate — and none of it was work):
     nothing but shortening that work moves it — which also means a median target hit
     without touching the shape leaves the worst case 35% behind it. Classify the tail
     before designing for it; "what is IN the slow frames" is one traced run. (part 109)
+
+547. **A profiler can account for 100% of a thread and be wrong about every row, because
+    the failure is MISATTRIBUTION and not omission.** Part 110's plan opened by asking for
+    a coverage line — "what fraction of the pump do the phases account for?" — on the
+    theory that a large unscoped residual was hiding `UploadStream`, whose `streams`
+    column reads 0.3% while the symbol is 9.4% of the pump. The coverage was measured
+    before the line was written: **~73% phases, ~28% the PM4 walk, ~0% unscoped.** There
+    is no missing time. `UploadStream`'s cost is charged to `record`, a real scope that
+    really did contain it, because `ProfScope(streams)` deliberately wraps only the
+    `CopySwapped`. So the coverage line could never have caught the thing it was proposed
+    to catch, and it ships carrying that warning next to its number. The check that DOES
+    catch it compares a phase with the symbols implementing **the subsystem it is named
+    after** — never with the symbols that happen to run inside the scope, which is a
+    comparison that agrees with itself by construction. (part 110)
+
+548. **A probe changes codegen even when its body never runs, so "free when off" is a
+    measurement and not an argument.** Part 110's sampled whole-function timers were
+    written to cost one predictable branch on an already-hot global, tested before the
+    counter is even incremented — reasoning from the source, and this project has an
+    entry about that too (453). Their own pre-registered identity gate refuted it: three
+    runs an arm with **both binaries alternated in one session**, matched draw bands,
+    **+0.65 / +0.67 / +0.43 / +0.29 / +0.42 ms** of pump CPU in every band with real
+    sample counts, against a bar of ±0.10. That is ~6 ns per call over ~78,000 calls a
+    frame, twenty times a branch. The mechanism is the RAII object: a non-trivial
+    destructor on a wrapper whose body is a tail call forces a real call and a stack
+    frame, and on a large function it lands on every early return. No runtime flag
+    refunds that, so the fix is a COMPILE-time one — and its gate is then free and exact
+    rather than another six runs: **the default build's `.text` must be byte-identical to
+    the binary before the probe existed.** (part 110)
+
+549. **A ceiling arm's most valuable number can be the one it was not built to produce.**
+    `CZ_VK_NO_DODRAW=1` exists to measure the pump's serial floor, and it did: 10.93 →
+    2.49 ms, with the `F + M/3` kill missing by a wide margin. But the arm also removed
+    8.44 ms of critical-path CPU and moved the WALL by only 2.27 ms — which says
+    something that is neither the pump nor the GPU costs 8.8 ms a frame and already
+    overlaps most of the renderer. That reframed the entire item: not "can the work move"
+    (yes) but "what does moving it buy" (~2.3 ms, stopping at ~113 fps, short of the 120
+    the whole plan was written for). **Read every column an arm produces, not the one the
+    plan asked for** — and note that the plan's own arithmetic, "the wall is 0.3-0.7 ms
+    above the pump", was true and stopped being true the moment the arm made the pump
+    stop being the critical path. A relation between two measurements is itself a claim
+    with a regime. (part 110)
+
+550. **`perf` refuses a DSO whose build-id has moved on, and the symptom looks exactly
+    like a capture with no symbols.** Three of part 110's four archived `perf.data` files
+    from the night before read **89% `[unknown]`** on the pump thread, because
+    `tools/part80_crowdroute.sh` re-links `cz_runtime_crowd` from `cz_runtime` at the
+    start of every run and the binaries those captures describe no longer exist. The one
+    that still reads is the one whose binary happened to be saved beside it. **Archive
+    the executable with the capture**, always; `perf buildid-list -i <perf.data>` says
+    which one a capture wants. Recovery for a binary you still have is a symfs symlink
+    farm (`--symfs`, with the system roots symlinked in so libc and the driver still
+    resolve), which `tools/phase_vs_perf.py --binary` builds for you. (part 110)
