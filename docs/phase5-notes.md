@@ -21834,3 +21834,70 @@ unchanged by construction (the skip-samples trim is applied either way; only the
 timestamp bookkeeping differs). 0 lines in the same route. The two audio threads are
 now NAMED (`cz-xma-decode`, `cz-audio-pump`), so every future per-thread table says
 what they cost.
+
+## §6ey — Part 110: the profiler that lied for three parts, and the price of the four idle cores (2026-09-10)
+
+`docs/perf-plan-part110.md` §6-§7 is the plan and the full record; this is the narrative.
+Gotchas 547-550.
+
+### 1. The instrument, and a retraction of the plan's own premise
+
+`streams` reads 0.3% of the frame while the symbol `UploadStream` is 9.4% of the pump. The
+plan's first item was a COVERAGE line, on the theory that a large unscoped residual was
+hiding it. **The coverage was measured before the line was written and there is no
+residual**: ~73% phases, ~28% the PM4 walk, ~0% unscoped. The table already accounts for
+the whole thread. `UploadStream`'s cost is charged to `record`, a real scope that really
+did contain it, because `ProfScope(streams)` deliberately wraps only the `CopySwapped`.
+
+So the defect is MISATTRIBUTION, not omission, and a coverage line cannot see it (gotcha
+547). It was built anyway — a table that does not state its own denominator is worse than
+one that does — but it ships carrying that warning, and the check that actually catches
+the defect is `tools/phase_vs_perf.py`: read the phase table out of a profiled log and the
+per-thread symbol shares out of a `perf.data`, put them on one denominator, and exit 1
+when a phase disagrees with the symbols implementing THE SUBSYSTEM IT IS NAMED AFTER by
+more than 2x. Its positive control flags `streams` at **53.7x** on part 109's own archive,
+and it found a second lie nobody had looked at: **`textures` at 2.1x**, because `TexFind`
+and `DecodeTextureFetch` sit outside the scope.
+
+A.2's sampled whole-function timers were built too and they work — one line of an ordinary
+profiled run now reads `streams 0.2%` beside `UploadStream 14.8%`. **They failed their own
+pre-registered identity gate**, at +0.4 to +0.7 ms with the timers off, because an RAII
+probe changes codegen even when its body never runs (gotcha 548). They are compile-time
+only now, and the gate on that is free and exact: a default build's `.text` is
+byte-identical to the binary before they existed.
+
+### 2. The four idle cores: a floor, a ceiling, and a decision
+
+`CZ_VK_NO_DODRAW=1` runs the PM4 walk in full with `DoDraw`'s body removed. Six alternated
+runs, 102 crowd windows an arm, matched draw bands:
+
+| | pump cpu | wall |
+|---|---|---|
+| baseline | 10.93 ms | 11.07 ms (90 fps) |
+| the arm | **2.49 ms** | **8.80 ms** |
+
+`F` = 2.49 ms cross-checks against part 109's independent `perf` symbol reading of the walk
+(2.36 ms), and the arm proves itself from the inside — in its own capture the pump is 72.8%
+walk and `DoDraw` is 1.02%. `M` = 8.44, `F + M/3` = **5.33 ms** against a pre-registered
+kill of 8.0: **it does not fire**, and §3's thesis is confirmed almost exactly.
+
+**And then the column nobody asked for.** Removing 8.44 ms of critical-path CPU with the
+GPU idle moved the WALL by only 2.27 ms. A thread census names what is left: the title's
+own recompiled code, two threads at 76.7% and 61.7% of a core (6.75 and 5.43 ms/frame),
+diffuse `__imp__sub_*`, **neither saturated** — so the 8.8 ms is a dependency chain, not a
+throughput limit. Five more runs killed the suspect on our side of that chain: cutting
+`CZ_PM4_TICK_US` from 100 to 25 and to 10 is a **dead null** (8.94 -> 8.93 ms).
+
+So `wall ~ max(pump, 8.8, GPU)`, and item B is worth **~2.3 ms, ~90 -> ~113 fps**, and
+**120 fps CPU-side is not reachable at this crowd on this machine.** The plan's own
+arithmetic — "the wall is 0.3-0.7 ms above the pump" — was true and stopped being true the
+moment the arm stopped the pump being the critical path (gotcha 549).
+
+### 3. What this leaves
+
+Item B is GO by the plan's rule and capped by something outside it, so whether to build it
+is a judgement about spending a substantial threading effort for +23 fps short of the goal
+— the operator's, not this document's. **And the 8.8 ms is a new subject**: it is the
+guest's own code, it is now the largest single term in the frame, no part of this project
+has ever decomposed it, and it is what decides whether 120 fps is reachable on any
+hardware. `docs/part111-kickoff.md` §1.
