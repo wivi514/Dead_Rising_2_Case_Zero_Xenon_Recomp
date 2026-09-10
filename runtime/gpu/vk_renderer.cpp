@@ -2003,7 +2003,17 @@ inline int SceneXformForm(const uint32_t* c, float& bEff)
                m[r * 4 + 2] * m[s * 4 + 2];
     };
     const float n3sq = dot3(3, 3);
-    if (std::fabs(n3sq - 1.0f) > 0.004f)     // unit view row; orthos/affines are 0
+    // 0.01, not 0.004 (part 108, item 0ad): the DOOR TRANSITION camera's view row has
+    // norm 1.0024 (n3sq 1.0048) — the title scales that camera's view by a quarter of
+    // a percent — and at 0.004 every world draw of the transition read "not a scene
+    // transform", the wide patch never ran, and the whole doorway rendered as the
+    // 16:9 frustum stretched to 21:9 until the roaming camera (norm 1.0000 exactly)
+    // came back on the first movement. 1,161 of 1,161 world draws xf=0 in the
+    // stretched F9, 1,153 of 1,153 xf=2 after the step. Orthos and affines read 0
+    // here and the cube faces fail the 9/16 ratio below, so the wider band admits
+    // nothing new. CZ_VK_XFORM_STRICT=1 restores 0.004, the control arm.
+    static const float unitSlack = Env("CZ_VK_XFORM_STRICT") ? 0.004f : 0.01f;
+    if (std::fabs(n3sq - 1.0f) > unitSlack)  // unit view row; orthos/affines are 0
         return 0;
     const float n0 = std::sqrt(dot3(0, 0)), n1 = std::sqrt(dot3(1, 1));
     if (!(n0 > 0.0f) || !(n1 > 0.0f))
@@ -2183,6 +2193,33 @@ inline void FovCensus(const uint32_t* c, uint32_t depthControl)
                   : std::array<uint32_t, 5>{ 0xC0320051u, 0, 0, 0,
                                              depthControl & 0x6 };
     std::lock_guard<std::mutex> lock(mu);
+    // The COMPOSITE's fov over time (part 108, item 0ad): composites aggregate under
+    // one marker above, so a camera class with a different fov — the door transition
+    // camera — was invisible to this census. Print when the composite's bEff CHANGES
+    // by more than 0.5% from the last one printed, at most 20 lines a second (the
+    // roaming camera smooths its fov during an aim, which would otherwise be a line
+    // per draw). A door that renders at the wrong ratio should show up here as a
+    // bEff the roaming camera never carries.
+    if (form == 2)
+    {
+        static float lastB = 0.0f;
+        static double secStart = 0.0;
+        static int linesThisSec = 0;
+        if (std::fabs(bEff - lastB) > 0.005f * std::max(bEff, 1e-6f))
+        {
+            const double t = std::chrono::duration<double>(
+                                 std::chrono::steady_clock::now().time_since_epoch()).count();
+            if (t - secStart >= 1.0) { secStart = t; linesThisSec = 0; }
+            if (linesThisSec < 20)
+            {
+                ++linesThisSec;
+                fprintf(stderr, "[fov-composite] bEff %.4f -> %.4f (vfov %.2f -> %.2f deg)\n",
+                        lastB, bEff, lastB > 0 ? 2.0 * std::atan(1.0 / lastB) * 57.29578 : 0.0,
+                        2.0 * std::atan(1.0 / bEff) * 57.29578);
+            }
+            lastB = bEff;
+        }
+    }
     const bool fresh = ++seen[key] == 1;
     ++calls;
     if (fresh)
@@ -23035,6 +23072,24 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
     // the same failure the comment above describes, one field over.
     char psbindLine[8192];
     bool psbindFull = false;
+    // THE TRANSFORM FORM PER DRAW (part 108, item 0ad): what SceneXformForm makes of
+    // this draw's raw c0..c3 — 0 unrecognized (not patched), 1 raw projection, 2
+    // view-projection composite — with the row norms, so a frame that renders
+    // STRETCHED can be read draw by draw: recognized-and-patched draws cannot be
+    // stretched by the wide patch, so a stretched frame whose world draws all read
+    // xf=2 indicts something after the classifier, and one reading xf=0 with a unit
+    // row3 names a camera the classifier rejects (its norms say why).
+    int xfForm = -1; float xfB = 0.0f, xfN0 = 0.0f, xfN1 = 0.0f, xfN3 = 0.0f;
+    if (drawCensus || burstCensus)
+    {
+        const uint32_t* c0 = &regs[xenos::kAluConstantBase];
+        xfForm = SceneXformForm(c0, xfB);
+        float m[16];
+        memcpy(m, c0, sizeof m);
+        xfN0 = std::sqrt(m[0]*m[0] + m[1]*m[1] + m[2]*m[2]);
+        xfN1 = std::sqrt(m[4]*m[4] + m[5]*m[5] + m[6]*m[6]);
+        xfN3 = std::sqrt(m[12]*m[12] + m[13]*m[13] + m[14]*m[14]);
+    }
     // The pass's WRITE state belongs on this line too. "colour = f(constants,
     // textures)" is only true of a draw that writes its colour at all: an empty
     // RB_COLOR_MASK makes a pipeline that discards every channel, and its output is
@@ -23047,7 +23102,8 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
         (drawCensus || burstCensus)
             ? snprintf(psbindLine, sizeof psbindLine,
                        "draw %llu verts=%u prim=%u vs=%016llx ps=%016llx mask=%X "
-                       "blend=%08X po=%u/%g/%g su=%08X dc=%08X sr=%08X cl=%08X ucp=%g/%g/%g/%g",
+                       "blend=%08X po=%u/%g/%g su=%08X dc=%08X sr=%08X cl=%08X ucp=%g/%g/%g/%g"
+                       " xf=%d bEff=%.4f n0=%.4f n1=%.4f n3=%.4f",
                        (unsigned long long)R->drawsThisFrame, draw.indexCount, draw.primType,
                        (unsigned long long)vsBind.hash, (unsigned long long)psBind.hash,
                        regs[xenos::kRbColorMask] & 0xF, regs[xenos::kRbBlendControl0],
@@ -23099,7 +23155,8 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
                        // than a body cut, and the whole clip-plane theory needs
                        // re-examining before a line of shader work is done for it.
                        F32(regs[xenos::kPaClUcp0X]), F32(regs[xenos::kPaClUcp0X + 1]),
-                       F32(regs[xenos::kPaClUcp0X + 2]), F32(regs[xenos::kPaClUcp0X + 3]))
+                       F32(regs[xenos::kPaClUcp0X + 2]), F32(regs[xenos::kPaClUcp0X + 3]),
+                       xfForm, xfB, xfN0, xfN1, xfN3)
         : psbind ? snprintf(psbindLine, sizeof psbindLine,
                             "[psbind] frame=%llu ps=%016llx mask=%X blend=%08X",
                             (unsigned long long)R->frame,

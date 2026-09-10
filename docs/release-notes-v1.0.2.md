@@ -45,6 +45,11 @@ shader cache are reused.
   gave them whatever your frame rate. Any pad SDL drives with
   rumble support; the game's own vibration option still applies. Set `CZ_NO_RUMBLE=1`
   to switch it off.
+- **Lights and glows no longer wrap to the opposite edge of the screen**, and the
+  title screen's zombies no longer show in the far corner: textures now clamp at
+  their edges the way the game asks, where they used to wrap.
+- **Door transitions at 21:9 keep their proportions.** Walking through a door used
+  to stretch the picture until you moved.
 - **Mouse wheel: one notch, one item.** Scrolling through the inventory needed two
   notches per step for some players; every notch counts now.
 - **A quieter log.** The audio decoder no longer writes a warning line thirty times a

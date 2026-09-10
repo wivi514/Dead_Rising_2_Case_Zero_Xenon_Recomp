@@ -166,6 +166,15 @@ unless the operator says otherwise.
   (2.8% of a core at the crowd; libavcodec 0.31% of cycles); the per-packet
   `Could not update timestamps` log line fixed by giving packets a timestamp; the
   audio threads named. §6ey addendum 6.
+* **0ae FIXED and 0ad FIXED the same night, both operator-verified** — 0ae: the
+  samplers honour the fetch constants' clamp modes (a REPEAT-on-CLAMP wrap deferred
+  since part 41; `CZ_VK_NO_FETCH_CLAMP=1`; gotcha 540; *"neon sign is perfect"*).
+  0ad: the door camera's view row is 0.24% off unit and the scene-transform
+  classifier rejected it, so the wide patch never ran; tolerance 0.004 → 0.01
+  (`CZ_VK_XFORM_STRICT=1`; gotcha 541; *"Yeah it worked"*). The plan's §1 mechanism
+  is retracted in place. Remaining from the plan: 0ab (the tile-boundary black) and
+  0ac (the sliver over Chuck — the draw-ID arm should save the PICTURE as well as
+  the map, so one F9 names the draw; a tool change owed).
 * **NEW, not taken, three more operator reports with F9 captures** — `open-items.md`
   0ac (Chuck's camera-fade copy stretched at some camera spots), 0ad (the door
   transition at the wrong ratio at 21:9 — test at 1920x1080 first), 0ae (a light's

@@ -36,6 +36,15 @@ a burst before anything can be designed.
 
 ## §1 Item 0ad — the door transition at the wrong ratio
 
+**FIXED THE SAME EVENING, AND §1.0-§1.2 BELOW ARE RETRACTED IN PLACE (gotcha 541).**
+The mechanism was NOT an unpaired patch: three instrumented doors showed the fov site
+firing every frame, the composite's fov unchanged, and the resolved scene itself
+stretched; the F9 census's new per-draw `xf=` field then read every world draw of the
+transition as UNRECOGNIZED — the door camera's view row has norm 1.0024 and the
+classifier's unit-row tolerance was 0.004 on its square. Tolerance 0.01 now
+(`CZ_VK_XFORM_STRICT=1` the control); operator: *"Yeah it worked."* §6ey addendum 8.
+The text below is kept as the record of a mechanism that fit every fact and was wrong.
+
 ### 1.0 What is known (from the code, not yet from a run)
 
 * `cpu/camera_fov.cpp`: the guest-side fov substitution (part 62) hands the game a

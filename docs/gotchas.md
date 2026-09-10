@@ -6198,3 +6198,20 @@ From phase C part 18 (the frame rate — and none of it was work):
     to keep two predictions separable, put the second half on the board with its
     symptom named, and re-read the board when a symptom of that shape is reported.
     (part 108)
+
+541. **A classifier's tolerance is a defect boundary, and the mechanism you read out
+    of the code is a hypothesis until a per-draw census says so.** The door
+    transition rendered stretched at 21:9; the plan, written from the code, said the
+    wide patch was running UNPAIRED with the fov substitution on a camera class it
+    never substitutes for — a mechanism that fit every reported fact (21:9 only,
+    until the player moves). Three instrumented doors refuted it piece by piece: the
+    fov site kept firing, the composite's fov never changed, the resolved scene
+    itself was stretched. The per-draw `xf=` field in the F9 census then read 1,161
+    of 1,161 world draws UNRECOGNIZED in the stretched frame, with the view row's
+    norm at 1.0024 against a 0.004 tolerance on its square — the title scales that
+    camera's view by a quarter of a percent, and the classifier answered "not a
+    scene transform", so the patch never ran at all. Widening the band to 0.01 fixed
+    it (`CZ_VK_XFORM_STRICT=1` the control). Two lessons: an exact-looking test on
+    a title's own matrices needs its tolerance justified by a census of every camera
+    class, and a mechanism that explains the symptoms is not yet the mechanism — ask
+    the draw. (part 108)

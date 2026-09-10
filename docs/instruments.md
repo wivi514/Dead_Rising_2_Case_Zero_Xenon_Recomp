@@ -4004,6 +4004,15 @@ CZ_RUMBLE_TRACE=1  every request from the title (`[rumble] request #N L=.. R=..`
                    `cz-audio-pump` (Linux), so `top -H`, `/proc/<pid>/task/*/comm` and the
                    part-107 per-thread table can say what they cost (2.8% of a core at the
                    crowd for the decoder; phase5-notes §6ey addendum 6)
+CZ_VK_XFORM_STRICT=1  the control arm for the scene-transform classifier's unit-row
+                   tolerance (part 108, item 0ad): restores |n3²−1| ≤ 0.004, under which
+                   the door transition camera (view row norm 1.0024) was rejected and
+                   rendered unpatched — stretched at 21:9. Default 0.01. The F9 census
+                   now carries `xf= bEff= n0= n1= n3=` per draw (0 unrecognized, 1 raw,
+                   2 composite, and the row norms), and CZ_VK_FOV_CENSUS prints
+                   `[fov-composite] bEff A -> B` when the world's composite fov changes
+                   by > 0.5% (20/s cap) — the two instruments that separated "the patch
+                   is unpaired" from "the classifier rejects the camera" (gotcha 541)
 CZ_VK_NO_FETCH_CLAMP=1  the control arm for the fetch constants' ADDRESS MODES (part 108,
                    item 0ae): every sampler REPEAT, the part-41..107 renderer, where a
                    screen-space blur sampling past a full-screen texture's edge read the

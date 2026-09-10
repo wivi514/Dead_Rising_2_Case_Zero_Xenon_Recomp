@@ -21690,6 +21690,40 @@ saw only the raw 45° and the composite 41.64° projections — but the dump cap
 eight distinct windows and no door was walked in this session, so the door camera's
 projection is still unseen. Next: `CZ_VK_FOV_MISS=32` with a door.
 
+**The neon sign, the operator's eye, later the same night: *"neon sign is perfect, it
+worked."*** 0ae is closed at both places it was reported.
+
+### §6ey addendum 8 — the door transition's ratio: the classifier rejected the camera (2026-09-09, item 0ad FIXED)
+
+Six instrumented doors in one evening, each refuting a piece of the plan's mechanism
+(`picture-plan-part109.md` §1 said the wide patch ran UNPAIRED with the fov
+substitution on a camera class it never substitutes for):
+
+1. `CZ_FOV_PARAM_TRACE` per-second counter: the roaming camera's fov site fired once
+   per frame straight through the door — it never stops reading.
+2. The F8 burst through the door: the last frames show the stretch (Chuck broad);
+   two F9s, in the doorway and after the step, one stretched and one not.
+3. `CZ_VK_FOV_CENSUS` with the new `[fov-composite]` change line: the world's
+   composite kept bEff 1.8892 (the substituted 55.79°) through the door — the
+   projection did NOT change. The resolved scene snapshot (`0684B000`) of the
+   stretched frame is itself stretched: the 3D draws rendered so, not the composite.
+4. The F9 census's new per-draw fields `xf= bEff= n0= n1= n3=` (SceneXformForm on
+   the draw's raw c0..c3): **stretched frame 9465: 1,161 of 1,161 world draws
+   `xf=0`, n0/n1 = 0.5639, n3 = 1.0024; after the step, frame 9585: 1,153 of 1,153
+   `xf=2`, n3 = 1.0000.** The door camera's view row is 0.24% off unit — the title
+   scales that camera's view — and `SceneXformForm`'s unit-row test (|n3²−1| ≤
+   0.004) rejected every draw of the transition, so the wide patch never ran and the
+   16:9 frustum was presented stretched to 21:9 until the roaming camera, unit
+   exactly, came back on the first movement. Every reported fact (21:9 only, until
+   the player moves) fit BOTH mechanisms; only the draw census separated them.
+
+**Fix**: the tolerance is 0.01 on the squared norm (`CZ_VK_XFORM_STRICT=1` restores
+0.004, the control); orthos and affines read 0 and cube faces fail the 9/16 ratio,
+so the band admits nothing else. The operator, through the same door: *"Yeah it
+worked."* Gotcha 541. The plan's §1.0-§1.2 stand retracted in place; §1.3's gate was
+right. Evidence: `~/DR2CZ-troubleshooting/part108/plan109/door/` (the four session
+logs, the bursts, the censuses with `xf=`).
+
 ### §6ey addendum 4 — the mouse wheel took two notches per item (2026-09-09, the second public report taken)
 
 Item 2 of `open-items.md` 0aa, the operator's next instruction the same evening. Read

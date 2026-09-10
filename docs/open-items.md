@@ -3588,6 +3588,12 @@ draws and compare their constant files.
 
 ### 0ad — a door transition at the WRONG RATIO (`capture_012535`)
 
+**FIXED 2026-09-09 late (`phase5-notes.md` §6ey addendum 8, gotcha 541)**: the door
+camera's view row is 0.24% off unit and `SceneXformForm` rejected every draw of the
+transition, so the wide patch never ran; tolerance 0.004 → 0.01 on the squared norm,
+`CZ_VK_XFORM_STRICT=1` the control. Operator: *"Yeah it worked."* The text below,
+including the "override coverage" hypothesis, is the pre-census record.
+
 *"Sometimes when opening a door it got weird ratio."* The capture is the door-opening
 transition (no HUD, letterboxed): the doorway, the room beyond and Chuck all look
 wider than they should at 21:9 — the same shape as part 60's aspect work before it
@@ -3620,8 +3626,8 @@ fetch, deferred since part 41 (`phase5-notes.md` §6ey addendum 7, gotcha 540;
 `CZ_VK_NO_FETCH_CLAMP=1` the control).** The operator's clarification: the dark neon
 letters are the game's own flicker and NOT the defect; the defect is content past one
 screen edge appearing at the opposite edge (a light's glow; title-screen zombies in
-the far corner). Title screen verified (*"no longer appears"*); the neon sign still to
-be checked. NOT the tile family after all — 0ab stands on its own. The text below is
+the far corner). Title screen verified (*"no longer appears"*) and the neon sign too
+(*"perfect, it worked"*) — CLOSED. NOT the tile family after all — 0ab stands on its own. The text below is
 the pre-clarification analysis, kept for the record.
 
 *"When looking at lighting, if it's on one side of the screen that the light is,
