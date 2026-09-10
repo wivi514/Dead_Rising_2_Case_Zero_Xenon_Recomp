@@ -3646,6 +3646,41 @@ should sit at x=640; (3) the pass extent census for the bloom passes' scissors a
 window offsets. The oracle: capture E and the R2 traces show the neon lit where it
 is; this is ours.
 
+## Item 0af — the AMD in-game BLACK SQUARE survives v1.0.2, and it CLEARS ON A COMPOSITOR EVENT (operator, 2026-09-09)
+
+The operator's verdict on the v1.0.2 cold run on czamd was "everything is perfect... no
+longer any stutter", then, asked specifically: **"The in game black square is still
+there but no one talked about it in their issues only happened to me"**. So it survives
+part 106's store mirror, part 107's fence park and the cold-cache rebuild, and it is
+still a population of ONE machine and one reporter.
+
+**THE NEW EVIDENCE, and it is the most useful thing anyone has said about this defect:
+the operator clears it by ALT-TAB or Win+PrintScreen.** Neither of those touches our
+rendering — they are window-manager and compositor events that force the surface to be
+re-acquired and repainted. That points at the PRESENT path (swapchain image reuse, a
+stale acquired image, or the compositor's own copy) and AWAY from the rendered image,
+which is where every earlier guess on this item has looked. **Design the next arm on
+that**: `CZ_VK_NO_SWAPCHAIN=1` (the blit-through-SDL control) is the first bisection,
+then the present mode — czamd ran **MAILBOX** on the laptop and **FIFO** on czamd
+tonight, and mailbox's "newest finished frame wins" is exactly the mechanism that can
+leave a stale image on screen.
+
+**The driver hypothesis is REFUTED by the log, and cheaply.** The operator wondered
+whether it was "just because I didn't do the driver update for probably more than a
+year". Tonight's run prints
+`[vk] driver: AMD proprietary driver — 26.8.1 (AMD proprietary shader compiler)
+(driver id 1), conformance 1.4.0.0` with `Vulkan 1.4.315`. A driver a year old could not
+report Vulkan 1.4 at all — 26.8.1 is roughly a month old. **Do not spend an operator
+sitting on a driver update for this.**
+
+**Shipping decision for v1.0.2** (the operator's): keep it in the notes as a known issue
+and give players the workaround they use themselves — alt-tab out and back, or
+Win+PrintScreen — while it is fixed. It has never appeared in a public issue.
+
+Related: the main-menu zombie flicker on the same box (item 00's carry-over, and
+`tools/part69_menu_flicker.sh` still has never run with a working control) — the two may
+be one thing, and a present-path cause would explain why a MENU is affected at all.
+
 ## Item 0aa — public player reports QUEUED for a later part (operator, 2026-09-09; Reddit)
 
 The operator handed over four screenshots of the v1.0.0/v1.0.1 threads with the

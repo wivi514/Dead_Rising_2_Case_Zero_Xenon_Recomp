@@ -150,13 +150,15 @@ downloads.
 
 ### Known issues (minor)
 
-- **On AMD GPUs** (tested on an RX 6600): the zombies on the **main menu** may flicker
-  in and out — gameplay itself was unaffected in our testing — and a **flickering black
-  square** has been seen in-game. Both are being investigated; NVIDIA is unaffected.
-  Also on AMD, one launch after a GPU driver update may sit on a black screen for a
-  minute or two while the driver recompiles its pipeline cache — it is not hung, and
-  later launches are fast. Rarely, a launch on that machine has sat on the loading
-  screen without ever reaching the title; quit and relaunch.
+- **On AMD GPUs** (tested on an RX 6600): a **flickering black square** can appear in
+  game. **If you hit it, alt-tab out and back, or press Win+PrintScreen** — either one
+  clears it. We see this on our own AMD test machine and no player has reported it;
+  it is being investigated and NVIDIA is unaffected. The zombies on the **main menu**
+  may also flicker in and out on that GPU. Also on AMD, one launch after a GPU driver
+  update may sit on a black screen for a minute or two while the driver recompiles its
+  pipeline cache — it is not hung, and later launches are fast. Rarely, a launch on
+  that machine has sat on the loading screen without ever reaching the title; quit and
+  relaunch.
 - A subtle **shading flicker on Chuck's hair** in motion; real hardware does not show
   it and it is being tracked.
 - The occasional spot may shade slightly differently than the console.
