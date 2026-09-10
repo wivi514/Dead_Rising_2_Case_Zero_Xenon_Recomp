@@ -234,6 +234,55 @@ the operator's click, as for v1.0.0/v1.0.1.**
 * czamd: `No route to host` at 192.168.0.27 all evening — its GPU column and the AMD
   eye test of the mirror stay owed.
 
+### §1d addendum — the AMD rig ran v1.0.2 from a COLD shader cache, operator-verified (2026-09-09, late)
+
+Operator instruction: *"Start the launcher on the amd rig with no shader pre-cached to
+see if all goes well."* Verdict after the session: **"Everything is perfect on amd rig no
+longer any stutter."** czamd = DESKTOP-8P7732J, RX 6600, Ryzen 5 5500, 1080p, MSAA 2x
+(their persisted `cz_settings.txt`), swapchain FIFO. Log rescued to
+`~/DR2CZ-troubleshooting/part108/czamd-v102/`.
+
+**Getting there cost most of the session and both reasons are worth recording.** czamd
+had moved AGAIN by DHCP (.60 → .27 → **192.168.0.59**; identified by its ed25519 HOST KEY
+matching the one recorded at both earlier addresses — that is the cheap identification
+when a scan returns several Windows boxes). And `ssh czamd` used the operator's
+passphrase-protected `id_ed25519`, which no agent held: the server ACCEPTED the key and
+then the SIGNATURE failed, which reads as "Permission denied" and looks like a wrong key.
+Fixed the way czwin already worked — a dedicated passphrase-free `~/.ssh/id_cz_amd`,
+installed once over a password login. **The install command must be `-EncodedCommand`
+base64**: the first attempt was hand-quoted through bash → ssh → PowerShell and died
+exactly as this repo's own czamd note warns.
+
+**The cold-cache first run, which is the thing under test:**
+
+| | |
+|---|---|
+| disc shader build | 1,265 pixel + 102 vertex = **1,367 translated, 0 failed, 0 refused**, 0 already present |
+| `no translated shader` | **0** for the whole session |
+| golden pack | 10,067 signatures in **396.9 ms**, 0 loose files walked (part 104's pack, first AMD reading) |
+| glyph scan (part 107) | **0.128 s**, 26 of 26 glyphs — the same scan burned a core for 137-150 s on every run before the fix |
+| store mirror (part 106) | 1,024 MB twinned in VIDEO memory, device-local heap 7,920 MB |
+| fence park (part 107) | engages, 2.3-6.1 parks/frame, **MISSED 0.0** in every window |
+
+**Frame rate, 13 windows of 10 s** (`CZ_FPS_LOG=10`, no profiler and no frame stats — the
+"how does it feel" configuration, so these are quotable):
+
+| era | draws (median) | fps median | p99 | frames > 2x median |
+|---|---|---|---|---|
+| menus | 64 | 447.8 | 18.0 ms | 20.4% |
+| light | 2,100-2,500 | 102-108 | 12.8-15.9 ms | 0.1-0.2% |
+| **crowd** | **7,449-7,861** | **70.3-71.4** | **18.9-21.0 ms** | **0.1%** |
+
+**A full crowd on an RX 6600 at 1080p with 2x MSAA holds 70 fps with 0.1% of frames
+above twice the median** — and the operator's "no longer any stutter" is that last column
+said in words. The pipeline compilation of a cold cache went to the async path and never
+reached the frame thread; the worst frame in any crowd window was 34 ms.
+
+**Owed and NOT answered by this run**: the two AMD picture reports the v1.0.2 notes still
+carry as known issues (the main-menu zombie flicker, the in-game flickering black square)
+were not specifically looked for, and "everything is perfect" is a whole-session
+impression rather than a check of either. Ask before editing that paragraph of the notes.
+
 ## §2 Instruments and arms this part added
 
 `CZ_FENCE_PARK`, `CZ_FENCE_PARK_SPIN_US`, `CZ_FENCE_PARK_TRACE`, `CZ_KBM_SCAN_LEGACY`,
