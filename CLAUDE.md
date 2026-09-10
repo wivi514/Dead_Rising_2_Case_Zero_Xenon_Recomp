@@ -224,9 +224,19 @@ mask; trust the microcode's own swizzles.
     correct and worth **−0.33 ms** (`CZ_VK_TEXMEMO=1`) and **−0.21 ms**
     (`CZ_VK_SCOPED_SHARED_ZERO=1`), both shipped OFF because each missed a 0.4 ms bar
     pre-registered when the plan still expected 1.5 ms items — and item 0 then established
-    there are none. Whether to take the bundle is risk appetite, not measurement. The
-    Windows EYE tests (windows-test-list items 2-10) are still owed in a cz_play
-    session.** ~~It was
+    there are none. Whether to take the bundle is risk appetite, not measurement.
+    **AND THE LIVE PLAN IS NOW `docs/perf-plan-part110.md`, WRITTEN FOR A FRESH
+    CONVERSATION — the operator's two asks after part 109 closed: (A) FIX THE PROFILER,
+    which reads `streams 0.3%` where the symbol is 9.4% of the pump and has now misled
+    three separate parts about the SAME function (22, 55, 109); and (B) USE THE FOUR IDLE
+    CORES — the pump is 97.7% of a core doing the walk AND every per-draw call while the
+    machine runs 3.91 of 8, the budget is `3 workers, guard takes all three, record gets
+    zero`, and ~2.30 ms of the pump is the inherently serial walk against ~8 ms of
+    per-draw work. ITS §5 IS THE ORDER OF WORK AND ITS §3.1 IS THE DECISION POINT: build
+    `CZ_VK_NO_DODRAW=1`, measure the pump's serial floor, and if `F + M/3 > 8.0 ms` CLOSE
+    ITEM B WITHOUT WRITING THREADING CODE. Nothing in §3.3 gets built before that number
+    exists.** The Windows EYE tests (windows-test-list items 2-10) are still owed in a
+    cz_play session.** ~~It was
     `part107-kickoff.md` — PERFORMANCE IS LIVE AGAIN with a TARGET (60 fps locked at
     1080p on a GTX 1060); part 106 decomposed the GPU frame for the first time, found
     half of it was vertex fetch over PCIe, and SHIPPED the store MIRROR on by default
