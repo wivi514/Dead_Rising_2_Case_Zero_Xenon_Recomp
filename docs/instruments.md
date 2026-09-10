@@ -3597,8 +3597,11 @@ CZ_VK_SCOPED_SHARED_ZERO=1  **an ARM, off by default (part 109).** Zero only the
                   average draw, 69.8% of the block, ~14 MB a frame of write-combined
                   stores removed. Worth **-0.21 ms** at the crowd, which missed part
                   109's 0.4 ms kill rule, so it ships OFF and the default is one line
-                  away. `CZ_VK_FULL_SHARED_ZERO=1` is a no-op now (the default IS the
-                  full zero) and is kept so an older recipe still parses.
+                  away. `CZ_VK_FULL_SHARED_ZERO=1` was the control while the
+                  scoped zero was the default for one evening; the polarity is now the
+                  other way round and that name is NOT READ ANYWHERE — a recipe carrying
+                  it gets the default (full) zero, which is what it wanted, but it is
+                  proving nothing. Use `CZ_VK_SCOPED_SHARED_ZERO=1` as the arm.
 CZ_VK_SHARED_ZERO_POISON=1  **the positive control for the above, and the thing that
                   makes it safe rather than plausible.** Writes 0xFF over exactly the
                   bytes the scoped zero skips, so a shader reading one gets a colossal
