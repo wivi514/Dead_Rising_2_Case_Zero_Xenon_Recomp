@@ -6341,3 +6341,35 @@ From phase C part 18 (the frame rate — and none of it was work):
     which one a capture wants. Recovery for a binary you still have is a symfs symlink
     farm (`--symfs`, with the system roots symlinked in so libc and the driver still
     resolve), which `tools/phase_vs_perf.py --binary` builds for you. (part 110)
+
+551. **Moving bandwidth-bound work to an idle core buys nothing, because bandwidth is not
+    a per-core resource.** Part 111 built the cleanest possible version of the item: the
+    per-draw 2,192-byte shared-block `memset` — no source, no race, memory only that draw
+    owns — pre-zeroed on the guard pool's workers ahead of a fixed-stride sub-arena's
+    bump. It engaged at **100% of draws with zero fallbacks, zero drain and zero waits**,
+    and `perf` confirms the work left: `__memset_avx2` on the pump **3.96% -> 0.04%**
+    (0.43 -> 0.004 ms/frame) while the three workers went 30.9% -> 35.3% of a core each.
+    **The pump's CPU per frame moved +0.00 ms** over three runs an arm and six matched
+    draw bands. The controlled pair is what names the mechanism: the SCOPED arm attacks
+    the same `memset` by writing **70% fewer bytes on the same thread** and pays
+    **−0.13 ms**, while relocating the **same bytes** pays nothing. **Ask whether an item
+    is bound by cycles or by bytes BEFORE deciding that another core can help** — a
+    thread census showing one core at 97.7% and four idle is evidence about occupancy,
+    not about what is scarce. This is the third measurement here to say it (part 109's
+    memory-bound decomposition; its vectorised byte swap at **+0.14 ms** despite engaging
+    at 90.6%, gotcha 545; and this). (part 111)
+
+552. **A gate that takes any input from the environment will eventually fail for a reason
+    that has nothing to do with the code under test.** `tools/part47_gates.sh` captured
+    with `CZ_VKDRAW=1` and no `CZ_VK_RES`, so the renderer took its internal resolution
+    from the DESKTOP; on a 21:9 desktop it then correlated a 3440x1440 render against E3,
+    a **16:9** photograph of an Xbox 360 screen, and read **+0.33 to +0.48** against its
+    own +0.70 threshold. The right scene, the wrong aspect, a hard FAIL — on an
+    unmodified renderer. It had been latent since part 47. **A skewed number is the mild
+    form of this defect; the severe form is that the gate CONVICTS AN INNOCENT CHANGE**,
+    and a session that trusts it will spend its remaining hours bisecting work that was
+    never wrong. The diagnosis is the standing rule and it is worth the twenty minutes: a
+    `git worktree` at HEAD, built and run the same afternoon (gotchas 50/51/86). HEAD
+    read +0.4905 unpinned; the same part-111 binary read **+0.8621 pinned**. Pin every
+    input a gate does not intend to vary. (part 111)
+

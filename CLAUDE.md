@@ -192,6 +192,35 @@ mask; trust the microcode's own swizzles.
     read `phase5-notes.md` §6ba before following anything in it.
   - **THE LIVE HAND-OFF IS ALWAYS THE HIGHEST-NUMBERED `partNN-kickoff.md`**, and it
     supersedes every earlier kickoff on "where the port is". **IT IS
+    `part112-kickoff.md` — ITEM B IS CLOSED BY MEASUREMENT AND THE REASON GENERALISES.
+    The operator said build it knowing its ~113 fps ceiling; part 111 built its cleanest
+    stage, measured it, and stopped, which is what B1's pre-registered kill was bought
+    for. B1 (pre-zero the shared block on the idle cores) ENGAGES PERFECTLY AND RECOVERS
+    NOTHING: 100% of draws served, zero fallbacks, zero drain, zero waits, `perf` says
+    `__memset_avx2` on the pump went 3.96% -> 0.04% (0.43 -> 0.004 ms/frame) and the three
+    guard workers went 30.9% -> 35.3% of a core each — and THE PUMP'S CPU PER FRAME MOVED
+    +0.00 ms over three runs an arm and six matched bands. THE MECHANISM IS NAMED BY A
+    CONTROLLED PAIR: the SCOPED arm writes 70% FEWER BYTES on the SAME thread and pays
+    −0.13 ms, while relocating the SAME bytes pays nothing. **The pump is bound by BYTES,
+    not by cycles, and bytes are machine-wide** (gotcha 551). So B2 is PREDICTED DEAD and
+    was not built (§5's design moves exactly the bandwidth half — 1.99 of its 2.68 ms),
+    and B3 was REFUTED BY THE CENSUS (1.35 `g_regs` const-window copies a draw). B1 ships
+    OFF (`CZ_VK_PREZERO=1` engages), kept only because a slower core relative to its
+    memory — part 107's Ryzen 3 stand-in, a Steam Deck — may answer differently for one
+    run. **The addressable class is FEWER BYTES and OVERLAPPED MISSES, not the same bytes
+    on another core.** §3's census also cleared B2's design questions for free (stream
+    cache 91.05% reads, mutating half 0.073 ms/frame, descriptor writes 0/frame, texture
+    finds 10,376/frame and every one a read-modify-write) —
+    `docs/perf-plan-part111.md` §10 is the record and `phase5-notes.md` §6ez the
+    narrative. **AND A GATE HAD BEEN BROKEN SINCE PART 47**: `tools/part47_gates.sh` took
+    its resolution from the DESKTOP, so on a 21:9 screen it correlated a 3440x1440 render
+    against a 16:9 reference and FAILED an unmodified renderer at +0.48. A control build
+    at HEAD read +0.4905 unpinned; the same binary reads +0.8621 pinned. Fixed; gotcha
+    552. THE TWO VERIFIED SUB-THRESHOLD ITEMS ARE STILL THE OPERATOR'S CALL and one
+    branch of it has now been measured away: `CZ_VK_SCOPED_SHARED_ZERO=1` (−0.13 to
+    −0.21 ms, now the ONLY shape that works on this memset) and `CZ_VK_TEXMEMO=1`
+    (−0.33 ms). **THE SUBJECT NOBODY HAS TOUCHED IS THE GUEST'S OWN 8.8 ms** — now the
+    largest single term in the frame (`part112-kickoff.md` §1.2).** ~~It was
     `part111-kickoff.md` — PART 110 ANSWERED BOTH OF THE OPERATOR'S ASKS AND ONE ANSWER
     IS A DECISION THAT IS THEIRS. (A) THE PROFILER IS FIXED, but not the way the plan
     said: its coverage was already ~100% and the defect is MISATTRIBUTION, so the
@@ -209,7 +238,7 @@ mask; trust the microcode's own swizzles.
     (`part111-kickoff.md` §0). **AND THERE IS A NEW SUBJECT: the 8.8 ms is the GUEST's own
     code, it is now the largest single term in the frame, and nothing in this project has
     ever profiled it** (§1). `docs/perf-plan-part110.md` §6-§7 is the record; gotchas
-    547-550.** ~~It was
+    547-550.~~ ~~It was
     `part108-kickoff.md`~~ — part 107 ran the CPU plan on the calibrated 4-core stand-in:
     the Draw Thread's FENCE wait (not the read pointer — retracted, gotcha 533) parks on
     a futex (`CZ_FENCE_PARK=0` the control; a frame-time null, kept ON), the third
@@ -1152,13 +1181,70 @@ ground is and that PERFORMANCE IS PARKED. (This
 line has now named the wrong plan TWICE — the two-live-pointers defect the block-rotation note at the bottom of this file
 describes, and the reason that note asks for the rule and not just the name; gotcha 13.)
 
-Where the port is, as of 2026-09-10 (**PART 110 — THE PROFILER IS FIXED AND THE FOUR IDLE
+Where the port is, as of 2026-09-10 (**PART 111 — ITEM B WAS BUILT ON ITS CLEANEST JOB AND
+THE PUMP TURNS OUT TO BE BOUND BY BYTES.** The operator decided to build item B knowing its
+~113 fps ceiling; part 111 ran the census, built B1, measured it, and STOPPED — which is
+exactly what B1's pre-registered kill was bought for. `docs/perf-plan-part111.md` §10 is the
+record, `phase5-notes.md` §6ez the narrative, `docs/part112-kickoff.md` THE LIVE HAND-OFF,
+gotchas 551-552):
+
+* **THE CENSUS (§3) ANSWERED MORE THAN IT WAS ASKED.** `CZ_VK_PARDRAW_CENSUS=1` counts the
+  high-frequency operations and TIMES the low-frequency mutations (a clock read is ~25 ns
+  against an arena bump that runs 2.4 times a draw). Stream cache **91.05% reads**, whole
+  mutating half **0.073 ms/frame** — a read-mostly table with a small serial insert queue is
+  enough and per-worker shards should not be built. **Descriptor writes 0/frame**, so B2's
+  workers would need no Vulkan calls at all. **Texture finds 10,376/frame and every one is a
+  read-modify-write** (the `lastUsedFrame` stamp) — §5's trap, quantified. **1.35 `g_regs`
+  const-window copies a draw refutes B3 by count.** `S` = 0.075 ms, so §3's kill does not
+  fire at 3.5 ms.
+* **B1 ENGAGES PERFECTLY AND RECOVERS NOTHING.** The shared-block pre-zero on the guard
+  pool's workers: 100% of draws served, **zero** fallbacks, **zero** drain, **zero**
+  busy-chunk waits. Two `perf` captures at matched draws show the work leaving and the frame
+  not moving: `__memset_avx2` on the pump **3.96% -> 0.04%** (0.43 -> 0.004 ms/frame), the
+  three guard workers **30.9% -> 35.3%** of a core each, the pump 97.7% -> 97.5% — and **the
+  pump's CPU per frame moves +0.00 ms** over three runs an arm and six matched draw bands.
+  Where it went is in the symbol table: every remaining pump symbol grew by about the 4% the
+  memset vacated. **Gotcha 238 demonstrated rather than suspected.**
+* **THE MECHANISM IS NAMED BY A CONTROLLED PAIR, NOT INFERRED.** The three-way A/B was not
+  optional, because pre-zeroing and the scoped item are ALTERNATIVES: the SCOPED arm writes
+  **70% fewer bytes on the same thread** and pays **−0.13 ms**; relocating the **same bytes**
+  pays nothing. **The pump is bound by BYTES, not by cycles, and bytes are a machine-wide
+  resource** (gotcha 551). §4.3's verdict stands and its stated REASON is retracted in place
+  — the dispatch overhead measured zero; what failed was the premise.
+* **SO B2 IS PREDICTED DEAD AND WAS NOT BUILT.** §5's design moves exactly the
+  bandwidth-bound half (`UploadStream` + `__memcmp_avx2` + `UploadTextureUncached` = **1.99
+  of B2's 2.68 ms is bytes**) and leaves the latency-bound 0.69 ms on the pump on purpose.
+  **The addressable class on this pump is FEWER BYTES and OVERLAPPED MISSES, not the same
+  bytes on another core**, and not compute (part 109's vectorised swap: +0.14 ms at 90.6%
+  engagement).
+* **B1 SHIPS OFF** (`CZ_VK_PREZERO=1` engages), kept as an arm for one dated reason: this box
+  is an 8-core 4654 MHz desktop whose memory pipe is the bound, and a slower core relative to
+  its memory — part 107's Ryzen 3 stand-in, a Steam Deck — may answer differently for one run.
+* **A GATE HAD BEEN BROKEN SINCE PART 47.** `tools/part47_gates.sh` took its resolution from
+  the DESKTOP, so on a 21:9 screen it correlated a 3440x1440 render against a 16:9 photograph
+  and FAILED an unmodified renderer at +0.48. Diagnosed with a control build at HEAD run the
+  same afternoon: **+0.4905 unpinned on HEAD, +0.8621 pinned on the part-111 binary.** Fixed.
+  **A skewed number is the mild failure of an environment-dependent gate; convicting an
+  innocent change is the severe one** (gotcha 552).
+* Gates: `--smoke` OK, A5 **exit 0** (5 permutation windows, 0 real), `truncated=0`,
+  `no translated shader` 0, unlowered switches / shader dims / both PM4 oracles clean, E3
+  **+0.8652** with 4 of 5 agreeing. **B1's poison positive control PASSES — the picture
+  breaks, +0.87 -> +0.27**, so the null is a real null and not an inert arm (gotcha 30).
+* The race argument per shared structure is §10.4, and **writing it before the run caught two
+  real defects with no debugging**: a worker that could zero constants the pump had already
+  written (a plain `ready` flag is not enough — ownership has to be a compare-exchange), and
+  a `CZ_VK_NO_PARALLEL_GUARD=1` arm in which the pump would have memset the whole region.
+
+Where the port was, as of 2026-09-10 (**PART 110 — THE PROFILER IS FIXED AND THE FOUR IDLE
 CORES HAVE A PRICE AND A CEILING.** The operator's instruction: *"You think you can make it
 so that we use more the third core last time you said it's pretty much only used like at 3%
 and if you can fix the profiler for the things he lie to us about?"* `docs/perf-plan-part110.md`
-§6-§7 is the plan AND the record, `docs/part111-kickoff.md` THE LIVE HAND-OFF, gotchas
-547-550. **AND THE OPERATOR HAS DECIDED, KNOWING THE CEILING: BUILD ITEM B.
-`docs/perf-plan-part111.md` IS THE BUILD PLAN** — its §1 INVERTS part 110's staging,
+§6-§7 is the plan AND the record, ~~`docs/part111-kickoff.md` THE LIVE HAND-OFF~~ — that
+was true for one day; the live hand-off is `part112-kickoff.md` — gotchas
+547-550. **AND THE OPERATOR DECIDED, KNOWING THE CEILING: BUILD ITEM B.
+`docs/perf-plan-part111.md` WAS THE BUILD PLAN AND PART 111 EXECUTED IT TO ITS OWN KILL
+RULE — B1 is a measured null, B2 is predicted dead and unbuilt, B3 was refuted by the
+census; see the part-111 block above.** ~~Its §1 INVERTS part 110's staging,
 because the constants CANNOT be deferred (their source is the register file the pump
 itself overwrites, and the const memo says the VS window changes on 98.3% of draws), so
 the order is B1 pre-zero the arena (hazard-free, 0.44 ms, and its kill refutes the whole
@@ -1166,7 +1252,9 @@ design for one day's work), then B2 streams+textures (2.68 ms, our own caches, s
 and B3 the constants is expected to be refuted by the census and never built. Its §0
 carries the budget that says WHEN TO STOP: **~2.1 ms of USEFUL headroom, not 5.6**, because
 `wall ~ max(pump, 8.8, GPU)` and the wall stops responding once the pump reaches the
-guest's floor):
+guest's floor.~~ The budget line survives its plan: it is still the right arithmetic, and
+part 111 spent none of the headroom because the pump turned out to be bound by bytes rather
+than by the core that issues them):
 
 * **ITEM A — the profiler.** `tools/phase_vs_perf.py` is the standing cross-check and it
   is what should have existed three parts ago: it reads the phase table out of a profiled
@@ -1211,40 +1299,9 @@ guest's floor):
   three of part 109's four are unreadable today (gotcha 550) — and **do not rebuild while a
   campaign is running**, because the route script copies `cz_runtime` at each run's start.
 
-Where the port was, as of 2026-09-09 (**PART 107 — THE CPU HALF OF THE 60 FPS TARGET ON A
-CALIBRATED 4-CORE STAND-IN, AND THE BUSIEST THREAD IN THE PROCESS WAS OURS.** The
-operator's instruction: *"Prepare the plan so we can run at minimum 60 fps on a cpu
-equivalent of ryzen 3100."* `docs/perf-plan-part107.md` is the plan and the record
-(§1.1-§1.2 the stand-in, §2b the items), `phase5-notes.md` §6ex the narrative, gotchas
-533-535, ~~`docs/part108-kickoff.md` THE LIVE HAND-OFF~~ — SUPERSEDED; the live hand-off is `part111-kickoff.md`. The stand-in is `taskset -c
-0-3,8-11` at a 3.2 GHz cap — **the cap may still be set on the operator's box; check
-`scaling_max_freq` first.** Its crowd read 16.6-17.4 ms (57-60 fps) before the part;
-four cores against eight at the same clock +32%. Item 1 (a third worker on 4c/8t):
-a null. Item 2 (the Draw Thread's wait, parked): built ON, `cpu/fence_wait.cpp`,
-`CZ_FENCE_PARK=0` the control — the polled word is the FENCE counter, not the read
-pointer (retracted in place, one traced run), the park engages (6.5/frame, 0 MISSED)
-and frame time is a NULL on both boxes; gates A5 exit 0, `truncated=0`, sync validation
-0 hazards / poison 30. **The finding: `tools/part107_standin_probe.sh`'s whole-process
-profile put the native-KB/M glyph scan (`DeviceWorker`, part 92) at 99.4% of a core for
-137-150 s from the first input poll — in EVERY crowd run from part 92 to part 106**, the
-crowd frame ~0.9 ms lighter the moment it ended. Fixed (aligned multi-probe pass: 26 of
-26 glyphs in 96 ms; rarest-byte memchr; physical arena first; low priority; START/END
-lines): **−5.7% frame-weighted, monotone, −1.49/−1.83 ms at the crowd on the stand-in
-(16.4 → 15.0 ms, 17.9 → 16.0), crowd windows under 16.7 ms 67% → 100%, p99 20.6 → 19.4;
-−1.41 ms at the crowd on 16 cpus (interim build).**
-`CZ_KBM_SCAN_LEGACY=1` is the control. Owed: the 4-vs-8 gap re-measured without the
-scan, the p99, the Windows compile (czwin unreachable), the artifact rebuild):
-
-* **A wait's mechanism is named by the values it polls** (gotcha 533): part 51's "ring
-  read-pointer spin" was the fence wait; the classify-every-episode counter caught it.
-* **A helper thread from a feature part is invisible to every phase profile after it**
-  (gotcha 534); the +32% core-count delta was measured with it running on both sides
-  (gotcha 535) and is owed a re-measurement.
-* Item 3(a) of the plan (bulk register runs) already existed; the walk's cost is the
-  per-packet dispatch.
 
 **Older per-part status blocks (parts 28-54, the superseded mid-part-44 closure and the
-superseded MID-PART-46 block) moved to `docs/port-history.md`, NOW INCLUDING PARTS 60-91's, 97's, 98's, 99's, 100's, 101's, 103's, 104's, 105's AND 106's** — part 110 moved part 106's out in the same commit that added its own block, part 107 moved part 105's out in the same commit that added its own block, part 106 moved part 104's out in the same commit that added its own block, part 105 moved part 103's out in the same commit that added its own block, part 104 moved part 101's out in the same commit that added its own block, part 103 moved part 100's out in the same commit that added its own block, part 101 moved parts 98's and 99's out in the same commit that added its own block, part 99 moved part 97's out in the same commit that added its own block, part 98 moved part 91's out in the same commit that added its own block, part 91 moved part 89's out in the same commit that added its own block, part 90 moved part 88's out in the same commit that added its own block, part 89 moved part 87's out in the same commit that added its own block, part 88 moved part 86's out in the same commit that added its own block, part 87 moved part 85's out in the same commit that added its own block, part 86 moved part 84's out in the same commit that added its own block, part 85 moved part 83's out in the same commit that added its own block, part 84 moved part 82's out in the same commit that added its own block, part 83 moved part 81's out in the same commit that added its own block, part 82 moved part 80's out in the same commit that added its own block, part 78 moved part 76's out in the same commit that added its own block, part 76 moved part 74's out in the same commit that added its own block, part 74 moved part 72's out in the same commit that added its own block, part 73 moved part 71's out in the same commit that added its own block, part 72 moved part 70's out in the same commit that added its own block, part 71 moved part 69's out in the same commit that added its own block, part 70 moved part 68's out in the same commit that added its own block, part 69 moved part 67's out in the same commit that added its own block, part 68 moved part 66's out in the same commit that added its own block, part 67 moved part 65's out the same way, part 65 moved part 63's out the same way, part 64 moved parts 61/62's out the same way, part 63 moved part 60's out the same way, part 61 moved part 59's out the same way, part 59 moved part 57's out the same way, part 57 moved part 55's out the same way, part 55 moved part 53's
+superseded MID-PART-46 block) moved to `docs/port-history.md`, NOW INCLUDING PARTS 60-91's, 97's, 98's, 99's, 100's, 101's, 103's, 104's, 105's, 106's AND 107's** — part 111 moved part 107's out in the same commit that added its own block, part 110 moved part 106's out in the same commit that added its own block, part 107 moved part 105's out in the same commit that added its own block, part 106 moved part 104's out in the same commit that added its own block, part 105 moved part 103's out in the same commit that added its own block, part 104 moved part 101's out in the same commit that added its own block, part 103 moved part 100's out in the same commit that added its own block, part 101 moved parts 98's and 99's out in the same commit that added its own block, part 99 moved part 97's out in the same commit that added its own block, part 98 moved part 91's out in the same commit that added its own block, part 91 moved part 89's out in the same commit that added its own block, part 90 moved part 88's out in the same commit that added its own block, part 89 moved part 87's out in the same commit that added its own block, part 88 moved part 86's out in the same commit that added its own block, part 87 moved part 85's out in the same commit that added its own block, part 86 moved part 84's out in the same commit that added its own block, part 85 moved part 83's out in the same commit that added its own block, part 84 moved part 82's out in the same commit that added its own block, part 83 moved part 81's out in the same commit that added its own block, part 82 moved part 80's out in the same commit that added its own block, part 78 moved part 76's out in the same commit that added its own block, part 76 moved part 74's out in the same commit that added its own block, part 74 moved part 72's out in the same commit that added its own block, part 73 moved part 71's out in the same commit that added its own block, part 72 moved part 70's out in the same commit that added its own block, part 71 moved part 69's out in the same commit that added its own block, part 70 moved part 68's out in the same commit that added its own block, part 69 moved part 67's out in the same commit that added its own block, part 68 moved part 66's out in the same commit that added its own block, part 67 moved part 65's out the same way, part 65 moved part 63's out the same way, part 64 moved parts 61/62's out the same way, part 63 moved part 60's out the same way, part 61 moved part 59's out the same way, part 59 moved part 57's out the same way, part 57 moved part 55's out the same way, part 55 moved part 53's
 out in the same commit that added its own, which is what the rule below asks for. — CLAUDE.md keeps only the
 live part and one part back, per the 2026-08-08 split's rule, and **part 53 moved part
 51's out in the same commit that added its own**, which is what the rule below asks for.

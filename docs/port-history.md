@@ -6916,3 +6916,37 @@ a real 1060, and the artifact rebuild that now carries both the log file and the
 * **Every earlier GPU number stands as measured; every "GPU-bound" reading of czamd and
   every 1080p projection from before this part is a fetch-bound reading.** Re-derive
   from §6ew before quoting one.
+
+## Part 107 status block (moved out of CLAUDE.md by part 111, per the rotation rule)
+
+Where the port was, as of 2026-09-09 (**PART 107 — THE CPU HALF OF THE 60 FPS TARGET ON A
+CALIBRATED 4-CORE STAND-IN, AND THE BUSIEST THREAD IN THE PROCESS WAS OURS.** The
+operator's instruction: *"Prepare the plan so we can run at minimum 60 fps on a cpu
+equivalent of ryzen 3100."* `docs/perf-plan-part107.md` is the plan and the record
+(§1.1-§1.2 the stand-in, §2b the items), `phase5-notes.md` §6ex the narrative, gotchas
+533-535, ~~`docs/part108-kickoff.md` THE LIVE HAND-OFF~~ — SUPERSEDED; the live hand-off is `part111-kickoff.md`. The stand-in is `taskset -c
+0-3,8-11` at a 3.2 GHz cap — **the cap may still be set on the operator's box; check
+`scaling_max_freq` first.** Its crowd read 16.6-17.4 ms (57-60 fps) before the part;
+four cores against eight at the same clock +32%. Item 1 (a third worker on 4c/8t):
+a null. Item 2 (the Draw Thread's wait, parked): built ON, `cpu/fence_wait.cpp`,
+`CZ_FENCE_PARK=0` the control — the polled word is the FENCE counter, not the read
+pointer (retracted in place, one traced run), the park engages (6.5/frame, 0 MISSED)
+and frame time is a NULL on both boxes; gates A5 exit 0, `truncated=0`, sync validation
+0 hazards / poison 30. **The finding: `tools/part107_standin_probe.sh`'s whole-process
+profile put the native-KB/M glyph scan (`DeviceWorker`, part 92) at 99.4% of a core for
+137-150 s from the first input poll — in EVERY crowd run from part 92 to part 106**, the
+crowd frame ~0.9 ms lighter the moment it ended. Fixed (aligned multi-probe pass: 26 of
+26 glyphs in 96 ms; rarest-byte memchr; physical arena first; low priority; START/END
+lines): **−5.7% frame-weighted, monotone, −1.49/−1.83 ms at the crowd on the stand-in
+(16.4 → 15.0 ms, 17.9 → 16.0), crowd windows under 16.7 ms 67% → 100%, p99 20.6 → 19.4;
+−1.41 ms at the crowd on 16 cpus (interim build).**
+`CZ_KBM_SCAN_LEGACY=1` is the control. Owed: the 4-vs-8 gap re-measured without the
+scan, the p99, the Windows compile (czwin unreachable), the artifact rebuild):
+
+* **A wait's mechanism is named by the values it polls** (gotcha 533): part 51's "ring
+  read-pointer spin" was the fence wait; the classify-every-episode counter caught it.
+* **A helper thread from a feature part is invisible to every phase profile after it**
+  (gotcha 534); the +32% core-count delta was measured with it running on both sides
+  (gotcha 535) and is owed a re-measurement.
+* Item 3(a) of the plan (bulk register runs) already existed; the walk's cost is the
+  per-packet dispatch.

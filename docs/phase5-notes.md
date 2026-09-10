@@ -21901,3 +21901,78 @@ is a judgement about spending a substantial threading effort for +23 fps short o
 guest's own code, it is now the largest single term in the frame, no part of this project
 has ever decomposed it, and it is what decides whether 120 fps is reachable on any
 hardware. `docs/part111-kickoff.md` §1.
+
+## §6ez — Part 111: item B built on its cleanest job, and the pump turns out to be bound by BYTES (2026-09-10)
+
+The operator decided to build item B knowing its ceiling (~113 fps, short of the 120 they
+asked for). `docs/perf-plan-part111.md` staged it B1 (pre-zero the shared block — no source,
+no race) then B2 (streams and textures) then B3 (the constants, expected to be refuted).
+Part 111 ran §3's census, built B1, measured it, and **stopped** — which is exactly what
+B1's pre-registered kill was bought for. §10 of that plan is the full record.
+
+### 1. The census answered more than it was asked
+
+`CZ_VK_PARDRAW_CENSUS=1` counts the high-frequency operations and TIMES the low-frequency
+mutations — a `steady_clock` read is ~25 ns against an arena bump that runs 2.4 times a
+draw, so timing everything would have added 1.4 ms and measured the instrument.
+
+Four verdicts, one crowd run: the stream cache is **91.05% reads**, its whole mutating half
+costs **0.073 ms/frame**, and a read-mostly table with a small serial insert queue is
+therefore enough (per-worker shards were not needed and should not be built). **Descriptor
+writes are 0/frame at the crowd**, so §3's "other real question" — `vkUpdateDescriptorSets`
+is externally synchronised — is not a constraint on B2 at all. **Texture finds are
+10,376/frame and every one is a read-modify-write**, because `TexFind` stamps
+`lastUsedFrame`; that is §5's trap with a number on it. And **1.35 `g_regs` const-window
+copies per draw** refutes B3 by count rather than by argument.
+
+### 2. B1 works perfectly and recovers nothing, and the third arm is why we know why
+
+Three configurations, three runs an arm, alternated, read as the pump's CPU per frame in
+matched draw bands. The three-way shape was not optional: pre-zeroing is blanket and the
+scoped item is a narrowing of the same `memset`, so they are **alternatives**, and a
+two-arm comparison could not have said which to ship.
+
+| arm | pump cpu vs stock |
+|---|---|
+| scoped — **70% fewer bytes, same thread** | **−0.13 ms**, 5 of 6 bands negative |
+| pre-zeroed — **same bytes, another thread** | **+0.00 ms**, not monotone |
+
+100% of draws served, zero fallbacks, zero drain, zero busy-chunk waits. Two `perf`
+captures at matched draws show the work leaving and the frame not moving: `__memset_avx2`
+on the pump **3.96% -> 0.04%** (0.43 -> 0.004 ms/frame), the three guard workers
+**30.9% -> 35.3%** of a core each, the pump **97.7% -> 97.5%**. Where the time went is in
+the symbol table — with the pump's total unchanged and one symbol gone, every remaining
+symbol grew by roughly the 4% it vacated (`UploadStream` 8.99 -> 9.71%, `WriteRegisterRun`
+10.59 -> 10.93%, `[unknown]` 7.54 -> 8.24%). **Gotcha 238 demonstrated rather than
+suspected**, and gotcha 551 is the transferable half: **the pump is bound by BYTES, not by
+cycles, and bytes are a machine-wide resource.**
+
+The kill's verdict stands; its stated reason is retracted in place. §4.3 said a failure
+would mean "the dispatch overhead is too high for a job this size" — but the dispatch
+overhead measured **zero**. What failed was the premise.
+
+### 3. What that predicts, and why part 111 stops
+
+§5's design is "the pump keeps the decisions, the workers do the bytes". That moves exactly
+the bandwidth-bound half — `UploadStream` 0.99 + `__memcmp_avx2` 0.27 +
+`UploadTextureUncached` 0.73 = **1.99 of B2's 2.68 ms is bytes** — and leaves the
+latency-bound 0.69 ms (`PersistFind`, `TexFind`) on the pump on purpose, because those are
+the change detectors and gotcha 474 says a change detector cannot be memoised away. So
+**B2 as specified is predicted to be worth ~nothing**, and §9 gates it on B1 passing. It
+was not built. B1 ships **OFF** (`CZ_VK_PREZERO=1` engages), kept as an arm because a
+machine with a slower core relative to its memory may answer differently for one run.
+
+**The addressable class on this pump is fewer bytes and overlapped misses, not the same
+bytes on another core.** The scoped item is the shape that works and it is still sitting
+off by default at −0.13 to −0.21 ms.
+
+### 4. And a gate had been broken since part 47
+
+`tools/part47_gates.sh` failed its E3 picture check at +0.48. It was the gate: no
+`CZ_VK_RES`, so the renderer took its resolution from the desktop, and a 21:9 render
+correlated against a 16:9 photograph reads +0.33-0.48. A `git worktree` at HEAD, built and
+run the same afternoon, read **+0.4905 unpinned** on unmodified code while the part-111
+binary read **+0.8621 pinned**. Fixed, and gotcha 552 is the general form: **a skewed
+number is the mild failure of an environment-dependent gate; convicting an innocent change
+is the severe one.**
+
