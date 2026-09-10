@@ -317,6 +317,68 @@ trace; tonight's windowed play session with only the fps counter) and NOT as a m
 arm — quote it with that caveat or re-run `~/.../czamd_ab.ps1`, which is written and
 staged.
 
+### §1d addendum 3 — the launcher takes a PAD, and v1.0.2 was REBUILT to carry it (2026-09-09, very late)
+
+Operator, after the Deck assessment: *"Add controller support to the launcher"*, then,
+seeing it run: *"Perfect"*. The three changes below are in the STAGED v1.0.2 artifacts —
+the tag moved from `cd7a347` to `faba1a8` and every hash was refreshed, which is the
+frozen-tag rule applied rather than argued with.
+
+1. **`Host_RunLauncher` reads the pad** (`host/window.cpp`): D-pad and left stick move,
+   A selects, START plays from ANY row, B quits. Each pad press is **turned into the KEY
+   it stands for and pushed back into the same queue**, so "what does LEFT do on the
+   RESOLUTION row" keeps ONE implementation. The stick is edge-triggered with split
+   thresholds (enter at ~3/4, leave below ~1/4) because a stick reports continuously and
+   one threshold chatters. Pads open through the GAME's `OpenController`, so the handle
+   carries into the session and `Host_WindowInit`'s enumeration early-returns.
+   **Why it matters: this is the one Steam Deck failure mode removable without a Deck** —
+   in Game Mode there is no keyboard unless the player summons one, and a modal window
+   that ignores the pad is indistinguishable from "the game does not start", which is
+   all any Deck report has ever been able to say.
+2. **`CZ_LAUNCHER_PAD_TEST` is its positive control** (`docs/instruments.md`): a comma
+   list of synthetic pad inputs pushed as real SDL controller events, one per loop turn,
+   each followed by `[padtest]   row N LABEL = VALUE`. It drives the same event cases a
+   physical pad delivers. Thirteen inputs walked the rows and changed DISPLAY MODE,
+   RESOLUTION, VSYNC, SHADOWS and MSAA. **A menu nobody here can press a button on is a
+   menu nobody here can prove works** — and the operator's own session then did it for
+   real: their presses saved 3440x1440 / vsync off / MSAA 2x through PLAY.
+3. **The 21:9 rungs were MISSING from the launcher's ladder** — the operator spotted it
+   by eye during that session (*"I wasn't seeing the 21:9 resolution?"*). The table held
+   no ultrawide entry at all; an ultrawide owner saw exactly one, their desktop's own
+   size, appended at the END by the display-size rule and only while the desktop
+   happened to be at it. **Wide mode has shipped since part 60 and `settings.cpp`
+   derives the aspect FROM the resolution, so a 21:9 row is how a player turns wide mode
+   on: the launcher was hiding a shipped feature.** 2560x1080 / 3440x1440 / 3840x1600
+   added, ordered by height then width. The in-game panel never had this defect because
+   it enumerates the display's real modes instead of a fixed table — **a fixed table
+   beside an enumerated one will drift, and only the eye caught it.**
+
+**AND THE PAD TEST FOUND A CRASH THAT PREDATES ALL OF IT.** Quitting the launcher
+**aborted the process**: `main`'s `return 0` on the launcher-decline path skipped
+`LogFile::End()`, so the namespace-scope `std::thread` was destroyed while joinable and
+the C++ runtime called `std::terminate` — `terminate called without an active exception`,
+exit 134, core dumped. **Escape has always done this**, so every player who opened the
+launcher and backed out hit it, and four more `return 1` paths did the same — the
+first-run gate refusal among them, which is precisely the case where the log file IS the
+evidence the player was asked to send. Fixed with `std::atexit([]{ End(); })` inside
+`Begin` (atexit runs BEFORE the destructor of a static-init object, so the join lands
+first; `End()` is idempotent). **Positive control: with the atexit line removed the
+first-run refusal aborts (134, core dumped); with it, exit 1 and a complete log.**
+
+Gates on the rebuild: `--smoke` OK; console/file log identity **74,083 bytes
+byte-identical** over a 25 s renderer boot; the pad arm **off by default** (a launch with
+no `CZ_LAUNCHER_PAD_TEST` prints no `[padtest]` line); `CZ_NO_WINDOW=1` still walks past
+the launcher; Linux `GATE PASSED` for tarball AND AppImage at ubuntu:22.04; Windows
+`--smoke` on the staged exe then zipped.
+
+**A process note, recorded because the repo's rule is explicit:** the abort fix landed in
+the SAME commit as the launcher's pad support (`e3981ad`) instead of its own. It was
+already pushed to a public repo, so the history stands rather than being rewritten.
+
+**Still true after all this:** the artifacts have had NO operator play-test since the
+rebuild — the czamd and czwin cold runs were on `a9e7d95`. The launcher changes were
+verified by eye on the dev box only.
+
 ## §2 Instruments and arms this part added
 
 `CZ_FENCE_PARK`, `CZ_FENCE_PARK_SPIN_US`, `CZ_FENCE_PARK_TRACE`, `CZ_KBM_SCAN_LEGACY`,
