@@ -4022,6 +4022,12 @@ CZ_VK_NO_FETCH_CLAMP=1  the control arm for the fetch constants' ADDRESS MODES (
                    distinct sampler prints `[vk] sampler #N ... clamp x=.. y=..` once,
                    and the served-as substitutions are COUNTED (phase5-notes §6ey
                    addendum 7, gotcha 540)
+CZ_KBM_NO_KEY_BUTTONS=1  the control arm for "Q drives the controller's BUTTON_4
+                   source" (part 108, the survivor wait-here report): without it Q is a
+                   key source only, and any padmap record already holding two sources
+                   (aim + Y goto, for one) is unreachable from the keyboard — the splice
+                   line's "N had no free slot" counts those (gotcha 542; names under
+                   CZ_KBM_TRACE=1). Edge-only writes, so the pad's own Y is untouched
 CZ_KBM_NO_TAP_SPLIT=1  the control arm for the same-tick tap split (part 108, the "wheel
                    takes two notches" report): the native KB/M feed carries a release
                    whose press was in the same batch to the NEXT controller tick, because

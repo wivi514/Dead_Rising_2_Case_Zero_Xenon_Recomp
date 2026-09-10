@@ -50,6 +50,9 @@ shader cache are reused.
   their edges the way the game asks, where they used to wrap.
 - **Door transitions at 21:9 keep their proportions.** Walking through a door used
   to stretch the picture until you moved.
+- **Keyboard and mouse: telling a survivor to wait at a spot works.** Aim with the
+  right mouse button and press Q, as the prompt says; it used to call the survivor to
+  you instead. Q now acts as the Y button everywhere the game reads it.
 - **Mouse wheel: one notch, one item.** Scrolling through the inventory needed two
   notches per step for some players; every notch counts now.
 - **A quieter log.** The audio decoder no longer writes a warning line thirty times a

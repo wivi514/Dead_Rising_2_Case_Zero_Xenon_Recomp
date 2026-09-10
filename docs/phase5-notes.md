@@ -21724,6 +21724,39 @@ worked."* Gotcha 541. The plan's §1.0-§1.2 stand retracted in place; §1.3's g
 right. Evidence: `~/DR2CZ-troubleshooting/part108/plan109/door/` (the four session
 logs, the bursts, the censuses with `xf=`).
 
+### §6ey addendum 9 — "tell the survivor to wait here" on keyboard and mouse (2026-09-09, the last fix of the night; for v1.0.2)
+
+The operator: *"it works with controller doing LT + Y, but on mouse and keyboard
+right click + Q just calls the survivor to come to you instead of to the aimed
+location."* Three builds:
+
+1. The map line `CALL_SURVIVOR_GOTO_POINT( BUTTON_2, HELD, KEY_Q, PRESSED, AND)` is
+   DR2 PC's MOUSEMAP line (BUTTON_2 = the right mouse button there) resolved
+   against the PAD token table (BUTTON_2 = B). Rewritten to BUTTON_L2. **No
+   change.**
+2. The keyboard controller's BUTTON_* sources are never set (the mouse reaches the
+   pad's sources through the XInput merge, a different object), so a mixed
+   key+button line could never hold — fed the mouse buttons as sources every tick.
+   **No change, and a REGRESSION: the steady 0 written for the right button fought
+   the pad's own left trigger tick by tick** (*"aiming with the controller aims and
+   stops aiming repeatedly"*). Reverted.
+3. The splice line: `86 of 93 key bindings applied to port 0 (7 had no free slot)`.
+   A title bind record holds two sources; the padmap's record for this command is
+   full (BUTTON_4 PRESSED AND BUTTON_L2 HELD), so OUR line was dropped at splice
+   time in every build — and CALLOUT's record had a free slot, so Q rode there:
+   "Q while aiming = call-out". Neither earlier fix was ever applied. **Fix**: Q
+   drives the controller's BUTTON_4 source on key EDGES (`native_kbm.cpp`, the
+   per-tick feed; `CZ_KBM_NO_KEY_BUTTONS=1` the control), so the pad's own record
+   fires on RMB (= L2) + Q, and every other padmap line that reads Y — the QTE's
+   MINIGAME_Y, the workbench pickup, the dialog dismiss — now works from Q the way
+   the chips promise. Edges only, so the pad's Y is untouched between presses.
+   The operator: *"It works now perfect."* Gotcha 542.
+
+Owed from this: the seven dropped bindings have NAMES (the `[kbm] no free slot`
+listing is `CZ_KBM_TRACE`-only) — list them in one traced boot and decide each; the
+same "key drives the button" treatment is available for SPACE/E/LMB (A/B/X) if any of
+the seven needs it.
+
 ### §6ey addendum 4 — the mouse wheel took two notches per item (2026-09-09, the second public report taken)
 
 Item 2 of `open-items.md` 0aa, the operator's next instruction the same evening. Read

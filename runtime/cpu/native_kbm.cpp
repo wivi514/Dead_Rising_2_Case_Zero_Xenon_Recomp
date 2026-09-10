@@ -759,6 +759,38 @@ void PostConversionFeed(PPCContext& ctx, uint8_t* base, uint32_t obj)
         SetSource(ctx, base, obj, kSrcRAlt, (ks.flags & 0x20) ? 1.0f : 0.0f, 0.0f);
     }
 
+    // A KEY AS A PAD FACE BUTTON (part 108, the operator's "tell the survivor to wait
+    // here" report — and the reason two earlier fixes did nothing). The title's bind
+    // record holds TWO sources. CALL_SURVIVOR_GOTO_POINT's padmap record is already
+    // full (BUTTON_4 PRESSED AND BUTTON_L2 HELD), so the mousemap's key line for it
+    // is SKIPPED at splice time ("no free slot") whatever it says, and Q while aiming
+    // fell through to CALLOUT, whose record had a free slot for the key. Rewriting
+    // the map cannot reach it. What can: the key drives the BUTTON the in-game art
+    // already promises it is — our chips draw the Y button as Q — so Q is written
+    // as the controller's BUTTON_4 source and every padmap line that reads Y works
+    // on the keyboard exactly as on the pad: the aim + Y goto, the QTE's Y, the
+    // workbench pickup, the dialog dismiss. ON EDGES ONLY: the previous version
+    // wrote the mouse buttons as sources every tick, and its steady 0 for the
+    // right button fought the pad's own left trigger tick by tick — the operator's
+    // "aiming with the controller aims and stops aiming repeatedly". The mouse needs
+    // no such feed at all: its buttons already reach these sources through the
+    // XInput merge. CZ_KBM_NO_KEY_BUTTONS=1 is the control arm.
+    {
+        static const bool off = getenv("CZ_KBM_NO_KEY_BUTTONS") != nullptr;
+        static int srcB4 = -2;
+        if (srcB4 == -2)
+        {
+            srcB4 = LookupName(base, kTokenNames, kTokenCount, "BUTTON_4");
+            fprintf(stderr, "[kbm] Q drives the controller's BUTTON_4 source (edges only): "
+                            "token %d%s\n", srcB4, off ? " (CZ_KBM_NO_KEY_BUTTONS=1: not fed)" : "");
+        }
+        if (!off && live && srcB4 > 0)
+            for (const Keystroke& ks : events)
+                if (ks.vk == 0x51 && !(ks.flags & 0x0004))
+                    SetSource(ctx, base, obj, uint32_t(srcB4),
+                              (ks.flags & 0x0001) ? 1.0f : 0.0f, 0.0f);
+    }
+
     // SECOND ITERATION: the stick/button/camera writes that used to live here
     // raced the title's own conversion (two writers into the RAW source array,
     // whichever landed last at the per-frame publish won — aim on a HELD

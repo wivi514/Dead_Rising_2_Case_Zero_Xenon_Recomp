@@ -6215,3 +6215,16 @@ From phase C part 18 (the frame rate — and none of it was work):
     a title's own matrices needs its tolerance justified by a census of every camera
     class, and a mechanism that explains the symptoms is not yet the mechanism — ask
     the draw. (part 108)
+
+542. **A binding that silently has nowhere to land looks exactly like a binding that
+    is wrong.** The keyboard splice merges our key lines into the title's own port-0
+    bind records, which hold TWO sources; a record the padmap already fills
+    (CALL_SURVIVOR_GOTO_POINT = Y PRESSED AND L2 HELD) drops the key line at splice
+    time — and the splice line reported it all along, "7 had no free slot", one
+    count with no names, on every boot since part 92. Two rewrites of the map line
+    changed nothing because the line never landed; the fix was to make Q DRIVE the
+    Y-button source so the pad's own record fires. Three rules: a count of dropped
+    items must NAME them (the trace-only listing hid seven commands for sixteen
+    parts); when a fix does nothing twice, ask whether it is applied at all before
+    asking whether it is right; and a per-tick write of a level the pad also owns
+    fights the pad tick by tick — feed edges, or feed nothing (the aim flicker). (part 108)

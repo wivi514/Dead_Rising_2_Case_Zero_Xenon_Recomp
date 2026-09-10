@@ -113,7 +113,15 @@ static const char kKbmDefaultMap[] =
     "COMMAND_PLAYER_RELEASE_PRIMED( BUTTON_1, RELEASED, NONE, NONE, NONE)\n"
     "COMMAND_PLAYER_QUICK_TIMED_RELEASE( BUTTON_1, QUICKTIMEDRELEASE, NONE, NONE, NONE)\n"
     "COMMAND_PLAYER_SPRAY( BUTTON_1, HELD, NONE, NONE, NONE)\n"
-    "COMMAND_PLAYER_CALL_SURVIVOR_GOTO_POINT( BUTTON_2, HELD, KEY_Q, PRESSED, AND)\n"
+    // DR2 PC's MOUSEMAP line for this command says BUTTON_2 — the mouse's right button
+    // in that file's namespace, the PAD's B button in the token table this loader
+    // resolves against. It does not matter which: the padmap's own record for the
+    // command is already full (BUTTON_4 PRESSED AND BUTTON_L2 HELD) and a title bind
+    // record holds two sources, so this line is SKIPPED at splice time whatever it
+    // says. The keyboard reaches the command because Q drives the controller's
+    // BUTTON_4 source (native_kbm.cpp, the per-tick feed) — the pad's own line then
+    // fires on RMB (= L2) + Q. Kept for the record; the comb here is the mousemap's.
+    "COMMAND_PLAYER_CALL_SURVIVOR_GOTO_POINT( BUTTON_L2, HELD, KEY_Q, PRESSED, AND)\n"
     "COMMAND_PLAYER_HAND_TO_HAND_SHIFT( KEY_LSHIFT, HELD, NONE, NONE, NONE)\n"
     "COMMAND_PLAYER_HAND_TO_HAND_PUNCH_HELD( KEY_Q, HELD, NONE, NONE, NONE)\n"
     "COMMAND_PLAYER_HAND_TO_HAND_PUNCH_RELEASED( KEY_Q, RELEASED, NONE, NONE, NONE)\n"
@@ -136,7 +144,10 @@ static const char kKbmDefaultMap[] =
     "COMMAND_AI_RIDEABLE_OFF( KEY_E, PRESSED, NONE, NONE, NONE)\n"
     "COMMAND_AI_RIDEABLE_TURN( LEFT_THUMBSTICK_X, NONE, NONE, NONE, NONE)\n"
     "COMMAND_AI_RIDEABLE_BRAKE( KEY_S, HELD, NONE, NONE, NONE)\n"
-    "COMMAND_AI_RIDEABLE_PUMP( KEY_W, HELD, BUTTON_1, HELD, OR)\n"
+    // Same namespace trap: the mousemap's BUTTON_1 is the LEFT mouse button, which the
+    // merge drives as the pad's X (BUTTON_3); the pad's BUTTON_1 is A. KEY_W already
+    // covers the command through the OR, so this is fidelity, not a report.
+    "COMMAND_AI_RIDEABLE_PUMP( KEY_W, HELD, BUTTON_3, HELD, OR)\n"
     "COMMAND_AI_RIDEABLE_JUMP( KEY_SPACE, HELD, NONE, NONE, NONE)\n"
     "COMMAND_AI_PUSHABLE_TURN( LEFT_THUMBSTICK_X, NONE, NONE, NONE, NONE)\n"
     "COMMAND_AI_PUSHABLE_ACCELERATE( KEY_W, HELD, NONE, NONE, NONE)\n"

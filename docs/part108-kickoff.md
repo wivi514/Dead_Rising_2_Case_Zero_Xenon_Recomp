@@ -175,6 +175,10 @@ unless the operator says otherwise.
   is retracted in place. Remaining from the plan: 0ab (the tile-boundary black) and
   0ac (the sliver over Chuck — the draw-ID arm should save the PICTURE as well as
   the map, so one F9 names the draw; a tool change owed).
+* **Survivor "wait here" on KB/M** (for v1.0.2): the key line for it never landed —
+  the padmap's record was full — so Q now drives the controller's BUTTON_4 source on
+  edges (`CZ_KBM_NO_KEY_BUTTONS=1`); *"It works now perfect."* §6ey addendum 9,
+  gotcha 542. Owed: name the seven dropped bindings (`CZ_KBM_TRACE=1`, one boot).
 * **NEW, not taken, three more operator reports with F9 captures** — `open-items.md`
   0ac (Chuck's camera-fade copy stretched at some camera spots), 0ad (the door
   transition at the wrong ratio at 21:9 — test at 1920x1080 first), 0ae (a light's
