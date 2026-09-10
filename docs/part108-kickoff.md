@@ -379,6 +379,35 @@ already pushed to a public repo, so the history stands rather than being rewritt
 rebuild — the czamd and czwin cold runs were on `a9e7d95`. The launcher changes were
 verified by eye on the dev box only.
 
+### §1d addendum 4 — v1.0.2 PUBLISHED, and PERFORMANCE IS LIVE AGAIN (2026-09-10)
+
+**v1.0.2 is published**:
+https://github.com/wivi514/Dead_Rising_2_Case_Zero_Xenon_Recomp/releases/tag/v1.0.2 —
+verified from the outside the way a stranger gets it: all three binaries downloaded back
+over the internet hash **byte-identical** to the gated artifacts, the attached
+`SHA256SUMS` verifies, the body's checksums match the files, and the tag points at the
+build source. The repo also has a description, 14 topics and a homepage now, and **`gh`
+is installed and authenticated on the dev box** (scopes repo/workflow/gist/read:org), so
+repo and release edits no longer need the web UI.
+
+**SUBJECT CHANGE, 2026-09-10, the operator going to sleep:** *"I want to try to get the
+cpu ms to be able to do 120 fps on my cpu that's the goal if possible ... do an overnight
+plan"*, then *"we'll start this in a fresh conversation"*. **PERFORMANCE IS LIVE AGAIN
+AND `docs/perf-plan-part109.md` IS THE PLAN** — its §4 is the execution record and the
+next session starts at its §4.2. `docs/part109-kickoff.md` does not exist; the plan is
+the hand-off.
+
+Two things from its baseline that belong here because they change how any future
+measurement on this box is read:
+
+* **The frame is CPU-bound at the operator's OWN 3440x1440.** 1080p reads 10.9 ms and
+  3440x1440 reads 11.2 ms across 2.4x the pixels. Every "GPU-bound at native" assumption
+  from part 106 onward was a 1080p-era reading of a lighter build; re-derive from
+  perf-plan-part109 §4.1.
+* **The profiler costs +4.2 to +5.0 ms here, about 40%** (14.9-16.0 profiled against
+  10.7-11.0 unprofiled, same route, same res). Gotcha 454 stands; mechanism from profiled
+  runs, wall from unprofiled ones, never mixed.
+
 ## §2 Instruments and arms this part added
 
 `CZ_FENCE_PARK`, `CZ_FENCE_PARK_SPIN_US`, `CZ_FENCE_PARK_TRACE`, `CZ_KBM_SCAN_LEGACY`,
