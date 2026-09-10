@@ -4776,7 +4776,17 @@ static uint32_t XamInputSetState_x(uint32_t userIndex, uint32_t unk,
     if (vibration)
     {
         const uint16_t l = vibration->leftMotor.get(), r = vibration->rightMotor.get();
-        KLOG("XamInputSetState(user=%u, motors %u/%u)\n", userIndex, l, r);
+        // The title calls this EVERY controller tick, with the same pair almost every
+        // time (65,034 of a 131,516-line operator log were this line before v1.0.2 —
+        // an fprintf per poll into the log file on the frame path). The witness is
+        // CZ_RUMBLE_TRACE and it names CHANGES only; host/window.cpp prints the SDL
+        // outcome of each change under the same arm.
+        static const bool trace = getenv("CZ_RUMBLE_TRACE") != nullptr;
+        static uint64_t last[kLocalPadCount] = {};      // 0 = never seen; bit 32 marks a value
+        const uint64_t pair = (1ull << 32) | (uint64_t(l) << 16) | r;
+        if (trace && last[userIndex] != pair)
+            KLOG("XamInputSetState(user=%u, motors %u/%u)\n", userIndex, l, r);
+        last[userIndex] = pair;
         Host_PadRumble(userIndex, l, r);
     }
     return 0;
