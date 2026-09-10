@@ -21977,9 +21977,68 @@ bool Publish(uint8_t* shared)
 // The register file and shader bindings are PARAMETERS, not globals: the PM4 feed
 // passes pm4.cpp's, the D3D feed (phase C) passes the private file its walker built
 // from the title's own flush output. Everything below is feed-agnostic.
+// ---- CZ_VK_NO_DODRAW=1 — THE SERIAL-FLOOR CEILING PROBE (part 110 §3.1) ------------
+//
+// THE QUESTION IT EXISTS TO ANSWER, and it is a decision point rather than an item.
+// Part 109 measured the pump thread at 97.7% of a core and 25% of all the CPU this
+// process uses while the machine ran 3.91 of 8 physical cores. Its decomposition says
+// ~2.3 ms of the pump is the PM4 walk — a register state machine, inherently serial,
+// because draw ORDER is semantic — and the remaining ~8 ms is per-draw work that could
+// in principle move to the four idle cores. **That is a thesis, not a measurement**, and
+// designing a threading scheme on top of it before testing it is exactly what part 79
+// was charged for (gotcha 470: sizing a fix from arithmetic nobody did).
+//
+// So: run the walk with the per-draw work removed and read what is left. `F` is the
+// SERIAL FLOOR — everything the pump must do whatever else moves — and `M = 10.5 - F` is
+// the movable half. The best three budgeted workers could ever do is `F + M/3`, before
+// dispatch, snapshot, merge or contention costs, all of which are additive and none of
+// which is zero. If that number is above ~8.0 ms the item cannot reach 120 fps even
+// implemented perfectly, and the honest move is to say so and not write threading code.
+//
+// WHAT IT SKIPS AND WHAT IT KEEPS. Every packet still executes, every register write
+// still lands, every state change still happens, the resolve path still runs (so frames
+// still present and the route still reaches the crowd), and the draw COUNT is still
+// incremented — without which `[fps] draws med` reads 0 and the crowd band this is
+// supposed to be measured in cannot be identified at all. What is skipped is DoDraw's
+// body: the decode, the constants, the streams, the textures and the recording.
+//
+// IT IS DESTRUCTIVE, LIKE `CZ_VK_NO_DRIVER_RECORD` ABOVE, AND IN ONE EXTRA WAY.
+// Nothing is drawn, so no picture claim can come from it — and, unlike that arm, the
+// GPU has no work at all, so the WALL time is meaningless twice over: the frame is not
+// waiting on anything and the present has nothing in it. **The only admissible reading
+// is the PUMP THREAD's own CPU per presented frame**, from `tools/part109_probe.sh`'s
+// `perf` capture or the profiler's `pump thread:` line. An arm that renders less is
+// inadmissible for wall by this project's own A/B rule; this one is admissible for the
+// pump's CPU and for nothing else.
+bool NoDoDraw()
+{
+    static const bool off = [] {
+        const bool v = EnvOn("CZ_VK_NO_DODRAW");
+        if (v)
+            fprintf(stderr,
+                    "[vk] CZ_VK_NO_DODRAW=1 — DESTRUCTIVE CEILING PROBE (part 110 "
+                    "§3.1). The PM4 walk runs in full; DoDraw's body does not. NOTHING "
+                    "WILL BE DRAWN. Read the PUMP THREAD's CPU per frame and nothing "
+                    "else — wall time here is meaningless because the GPU is empty.\n");
+        return v;
+    }();
+    return off;
+}
+uint64_t g_noDoDrawSkipped = 0;
+
 void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
             const Pm4ShaderBinding& vsBind, const Pm4ShaderBinding& psBind)
 {
+    // THE CEILING PROBE'S CUT (part 110 §3.1), first thing and above every scope: a
+    // `ProfScope` opened here would charge the arm's own clock reads to `other` and make
+    // the serial floor read high (see ProfScope's residual note). The draw count is
+    // still incremented because the crowd band is identified by it.
+    if (NoDoDraw())
+    {
+        ++R->drawsThisFrame;
+        ++g_noDoDrawSkipped;
+        return;
+    }
     // DoDraw's OWN work, exclusive of the named phases nested inside it. Without a
     // scope here the profile's unaccounted column would mix this function's untimed
     // work (register decode, the pipeline-key build and lookup, the fetch-constant
@@ -28259,6 +28318,17 @@ void DoSwapImpl(uint8_t* base, uint32_t frontBuffer, uint32_t width, uint32_t he
                 // exit. Bytes NOT written, and the share of the 2,192 a draw used to
                 // cost unconditionally — an arm that says "on" without saying "reached"
                 // is how a null gets quoted as a saving.
+                // THE CEILING PROBE'S ENGAGEMENT (part 110 §3.1), per window and
+                // not only at exit (gotcha 543: two of part 109's runs ended without
+                // the SIGTERM handler printing anything at all). Its control arm —
+                // every other run — prints nothing, because the counter never moves.
+                if (g_noDoDrawSkipped)
+                    fprintf(stderr,
+                            "[nododraw] DESTRUCTIVE: %llu draws skipped in total, "
+                            "%u this frame — the walk ran, the draws did not. Read the "
+                            "pump thread's CPU, never this run's wall time.\n",
+                            (unsigned long long)g_noDoDrawSkipped,
+                            unsigned(R->lastFrameDraws));
                 if (g_sharedZeroDraws)
                     fprintf(stderr,
                             "[sharedzero] %llu draws, %.0f bytes/draw not written "
