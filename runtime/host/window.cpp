@@ -1744,9 +1744,21 @@ namespace
 // 16:10 sizes (part 108: the Steam Deck's 1280x800 and the desktop 16:10 modes),
 // filtered by the same validity rule the settings system enforces. The display's own
 // size is appended when it is not already present, so "native" is always reachable.
+// Ordered by HEIGHT then width, so pressing right walks steadily up and the two
+// entries that share a height sit together. The 21:9 rungs (2560x1080, 3440x1440,
+// 3840x1600) were missing until part 108: an ultrawide owner saw exactly one 21:9
+// option, their desktop's own size, appended at the END of the list by the rule below —
+// and only while the desktop happened to be at it. Wide mode has shipped since part 60
+// and the aspect is derived from the resolution, so a 21:9 row IS how a player turns it
+// on; the launcher was hiding the feature. The in-game panel never had this problem
+// because it enumerates the display's real modes instead of a fixed table.
 const uint32_t kLauncherRes[][2] = {
-    { 1280, 720 },  { 1280, 800 },  { 1600, 900 },  { 1920, 1080 }, { 1920, 1200 },
-    { 2560, 1440 }, { 2560, 1600 }, { 3840, 2160 },
+    { 1280, 720 },  { 1280, 800 },  { 1600, 900 },
+    { 1920, 1080 }, { 2560, 1080 },
+    { 1920, 1200 },
+    { 2560, 1440 }, { 3440, 1440 },
+    { 2560, 1600 }, { 3840, 1600 },
+    { 3840, 2160 },
 };
 
 void LauncherText(SDL_Renderer* r, int tx, int ty, const std::string& str, int scale,
