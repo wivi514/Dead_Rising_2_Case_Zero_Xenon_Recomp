@@ -221,6 +221,11 @@ uint64_t Pm4_RegisterWriteCount();
 // const-watch window. CZ_PM4_NO_BULK_REGS=1 forces everything down the fallback and is
 // the same-binary control arm.
 uint64_t Pm4_RegRunBulkDwords();
+// CZ_PM4_REGRUN_CENSUS=1 — the bulk register runs bucketed by LENGTH, printed on the
+// run's own exit path. Free when off; see the comment at its definition.
+void Pm4_RegRunCensusReport();
+// Which byte-swap path the run dwords actually took; see its definition.
+void Pm4_SwapPathReport();
 uint64_t Pm4_RegRunSlowDwords();
 // Dwords the bulk path wrote that the per-dword path disagrees with, under
 // CZ_PM4_VERIFY_BULK_REGS=1. Must be 0.

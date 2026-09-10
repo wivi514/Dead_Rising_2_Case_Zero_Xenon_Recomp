@@ -1,4 +1,5 @@
 #include "pm4.h"
+#include <immintrin.h>
 
 #include <algorithm>
 #include <atomic>
@@ -854,6 +855,59 @@ void BindShader(uint32_t type, uint32_t ucodeVa, const uint8_t* code, uint32_t s
     DumpShader(type, hash, code, sizeDwords);
 }
 
+// --- the byte-swapping run copy's vector path -------------------------------------
+//
+// One `vpshufb` swaps eight dwords, so a 32-byte load, a shuffle and a 32-byte store do
+// what eight load/bswap/store triples did. Unaligned on purpose: the packet stream has no
+// alignment guarantee (that is why the scalar path uses `memcpy` rather than a cast), and
+// `loadu`/`storeu` on any CPU that has AVX2 costs nothing extra for it.
+//
+// Returns how many dwords it consumed, so the caller's scalar loop is the tail and the
+// two cannot disagree about where the boundary was.
+__attribute__((target("avx2")))
+static uint32_t SwapRunAvx2Impl(const uint8_t* p, uint32_t count, uint32_t* dst)
+{
+    // Reverse the four bytes of each dword, in both 128-bit lanes. `vpshufb` indexes
+    // within its own lane, which is exactly what a per-dword swap wants.
+    const __m256i kSwap = _mm256_setr_epi8(3, 2, 1, 0, 7, 6, 5, 4, 11, 10, 9, 8,
+                                           15, 14, 13, 12,
+                                           3, 2, 1, 0, 7, 6, 5, 4, 11, 10, 9, 8,
+                                           15, 14, 13, 12);
+    uint32_t k = 0;
+    for (; k + 8 <= count; k += 8)
+    {
+        const __m256i v =
+            _mm256_loadu_si256(reinterpret_cast<const __m256i*>(p + size_t(k) * 4));
+        _mm256_storeu_si256(reinterpret_cast<__m256i*>(dst + k),
+                            _mm256_shuffle_epi8(v, kSwap));
+    }
+    return k;
+}
+
+// Resolved ONCE. `__builtin_cpu_supports` compiles to a load from a resolved global after
+// the first call, but a `static const bool` makes the "once" explicit and puts the env
+// arm in the same place: part 76 had to take a `getenv` back off a per-draw path, and
+// this is per-RUN, which is 35,500 times a frame (gotcha 453).
+uint64_t g_simdSwapDwords = 0;   // dwords the vector path actually took (pump-only)
+uint64_t g_scalarSwapDwords = 0;  // ...and dwords left to the scalar tail
+const bool g_simdSwap = [] {
+    const bool avx2 = __builtin_cpu_supports("avx2");
+    const bool off = getenv("CZ_PM4_NO_SIMD_SWAP") != nullptr;
+    // SAY WHICH PATH THIS RUN IS ON, in the log, on every boot. An arm whose engagement
+    // has to be inferred from a frame time is an arm that will one day be quoted having
+    // never run (gotcha 408) — and this one has two independent ways to be off (an old
+    // CPU and the control variable), which a single "enabled" line would conflate.
+    fprintf(stderr, "[pm4] register-run byte swap: %s (avx2 %s, CZ_PM4_NO_SIMD_SWAP %s)\n",
+            (avx2 && !off) ? "AVX2, 8 dwords a shuffle" : "scalar bswap",
+            avx2 ? "yes" : "NO", off ? "set" : "unset");
+    return avx2 && !off;
+}();
+
+static inline uint32_t SwapRunAvx2(const uint8_t* p, uint32_t count, uint32_t* dst)
+{
+    return SwapRunAvx2Impl(p, count, dst);
+}
+
 // --- packet source ----------------------------------------------------------------
 // One indirection covering both ways a packet stream reaches us: the ring (a wrapping
 // window into guest memory) and an indirect buffer (a linear one). A struct rather
@@ -879,6 +933,34 @@ struct Source
     // dwords at ~17.8 ns each**, i.e. 50-70 cycles for what should be a load, a bswap
     // and a store, and a per-dword `i % wrapDwords` on a runtime divisor is 20-26 cycles
     // of that on its own. `docs/perf-plan-part47.md` §2.1.
+    //
+    // PART 109: AND THE LOOP THAT WAS LEFT IS THE SINGLE HOTTEST LINE ON THE PUMP THREAD.
+    // A flat `perf` profile of the operator's own crowd puts it at 69.9% of
+    // `WriteRegisterRun` = 7.25% of the pump = ~0.78 ms of a 10.8 ms frame, and the
+    // disassembly says why the ceiling was never reached: clang emitted scalar `bswap`
+    // with a 4x unroll and not one vector instruction, because a 4-byte `memcpy` in a
+    // loop it cannot prove non-aliasing for does not vectorise.
+    //
+    // THE CENSUS CAME FIRST (CZ_PM4_REGRUN_CENSUS=1), because a 32-byte-wide swap is
+    // worth nothing on a run of three and this title averages 9 register dwords a PACKET.
+    // Over the operator's crowd route: 710 M bulk runs, 13.7 G dwords, **mean 19.3
+    // dwords a run, and 90.3% of all dwords in runs of 16 or more** — while 64.6% of the
+    // CALLS are runs of 1-7 dwords carrying only 8.8% of the dwords. So the width is
+    // worth having and the short-run path must not be made slower to get it: the vector
+    // loop is entered only when there are 8 dwords left to do, and everything else falls
+    // straight through to the scalar tail it always had.
+    //
+    // RUNTIME-DISPATCHED, not compiled in. This runtime ships to strangers and is built
+    // for the x86-64 baseline (no -march), so `__AVX2__` is not defined and the intrinsic
+    // needs `target("avx2")` on its own function plus a `__builtin_cpu_supports` test
+    // resolved once. glibc's own `__memset_avx2_unaligned_erms` shows up in the same
+    // profile doing exactly this.
+    //
+    // `CZ_PM4_NO_SIMD_SWAP=1` is the same-binary control arm, and the correctness gate
+    // already existed: `CZ_PM4_VERIFY_BULK_REGS=1` compares every dword against
+    // `operator()`, which has been the definition of "read a dword of the packet stream"
+    // for 47 parts and is therefore an oracle that is not this code, and
+    // `CZ_PM4_VERIFY_POISON=1` is its positive control.
     void Read(uint32_t i, uint32_t count, uint32_t* dst) const
     {
         if (wrapDwords)
@@ -888,7 +970,12 @@ struct Source
             return;
         }
         const uint8_t* p = base + va + size_t(i) * 4;
-        for (uint32_t k = 0; k < count; k++)
+        uint32_t k = 0;
+        if (g_simdSwap && count >= 8)
+            k = SwapRunAvx2(p, count, dst);
+        g_simdSwapDwords += k;
+        g_scalarSwapDwords += count - k;
+        for (; k < count; k++)
         {
             uint32_t raw;
             memcpy(&raw, p + size_t(k) * 4, 4);   // memcpy, not a cast: the packet
@@ -1412,6 +1499,42 @@ void WriteRegister(uint8_t* base, uint32_t index, uint32_t value)
 // are incremented once per RUN, not per dword, so a relaxed add costs nothing measurable.
 std::atomic<uint64_t> g_regRunBulk{ 0 };   // dwords taken by the bulk copy
 std::atomic<uint64_t> g_regRunSlow{ 0 };   // ...and by the per-dword fallback
+// CZ_PM4_REGRUN_CENSUS=1 — HOW LONG IS A REGISTER RUN? ASK BEFORE VECTORISING IT.
+//
+// Part 109's symbol profile put `Source::Read`'s scalar byte-swap loop (pm4.cpp, the
+// `dst[k] = __builtin_bswap32(raw)` line) at **69.9% of `WriteRegisterRun` = 7.25% of
+// the pump thread = ~0.78 ms of a 10.8 ms crowd frame**, in one line, and the
+// disassembly confirms the compiler emitted plain scalar `bswap` with a 4x unroll and no
+// vector instruction anywhere. That reads like an obvious AVX2 item — and it is only
+// obvious if the runs are LONG. A `vpshufb` path 8 dwords wide is worth nothing on a run
+// of 3, and this title's own arithmetic is not encouraging: ~815,000 register dwords a
+// frame against ~90,000 packets is 9 dwords a packet on average, and an average is not a
+// distribution. So count the distribution first. Building the SIMD path and then
+// measuring it would have cost a build and three runs an arm to learn what one run
+// answers (this project's own rule; §6eb §3 refuted a whole item by measuring the
+// quantity underneath it instead of quoting a share).
+//
+// A plain non-atomic pair of counters behind an env bool: the walk is single-threaded on
+// the pump, `g_regRunBulk` is already an atomic add on this exact path, so this costs
+// strictly less than what is already there and nothing at all when off.
+const bool g_regRunCensus = getenv("CZ_PM4_REGRUN_CENSUS") != nullptr;
+uint64_t g_regRunCalls = 0;
+uint64_t g_regRunHist[10] = {};   // 1, 2-3, 4-7, 8-15, 16-31, 32-63, 64-127, 128-255,
+uint64_t g_regRunDwords[10] = {}; // 256-1023, 1024+ — and the DWORDS in each bucket,
+                                  // which is the number that decides, not the call count
+inline uint32_t RegRunBucket(uint32_t count)
+{
+    if (count <= 1) return 0;
+    if (count <= 3) return 1;
+    if (count <= 7) return 2;
+    if (count <= 15) return 3;
+    if (count <= 31) return 4;
+    if (count <= 63) return 5;
+    if (count <= 127) return 6;
+    if (count <= 255) return 7;
+    if (count <= 1023) return 8;
+    return 9;
+}
 // Dwords the bulk path got WRONG, as judged by the per-dword path it replaced. Only
 // counted under CZ_PM4_VERIFY_BULK_REGS; it must be 0, and the check must be shown able
 // to report a positive before a 0 from it means anything (gotcha 30).
@@ -1455,6 +1578,13 @@ void WriteRegisterRun(uint8_t* base, const Source& fetch, uint32_t srcPos,
         return;
     }
     g_regRunBulk.fetch_add(count, std::memory_order_relaxed);
+    if (g_regRunCensus)
+    {
+        const uint32_t b = RegRunBucket(count);
+        ++g_regRunCalls;
+        ++g_regRunHist[b];
+        g_regRunDwords[b] += count;
+    }
     // One overlap test per RUN, not per dword — this path exists precisely because the
     // per-dword path was too slow, and a per-dword check here would give that back.
     if (index < kAluHi && index + count > kAluLo)
@@ -2745,6 +2875,48 @@ uint64_t Pm4_RegisterWriteCount()
 // destination range touched the scratch mirror or the const-watch window. The share is
 // what says whether the bulk path is worth what it is estimated at (perf-plan-part47
 // §2.1); a fallback share near 100% would mean it is worth nothing.
+// THE CENSUS'S REPORT, ON THE RUN'S OWN EXIT PATH. Every recipe here ends on a `timeout`
+// SIGTERM and `VkRenderer_DumpStats()` is what that handler calls; a counter reported
+// anywhere else is a counter nobody reads (gotcha 543, which cost part 109 a whole route).
+// WHICH SWAP PATH THIS RUN ACTUALLY TOOK, in dwords rather than in a boolean. The boot
+// line says what was ENABLED; this says what RAN, which is the difference between an arm
+// that is on and an arm that is reached. Unconditional and one line per FPS window: two
+// plain adds on a path that already carries an atomic, and every run in the archive then
+// carries its own proof.
+void Pm4_SwapPathReport()
+{
+    const uint64_t tot = g_simdSwapDwords + g_scalarSwapDwords;
+    if (!tot)
+        return;
+    fprintf(stderr, "[pm4] swap path: %.1f%% of %llu run dwords vectorised\n",
+            100.0 * double(g_simdSwapDwords) / double(tot), (unsigned long long)tot);
+}
+
+void Pm4_RegRunCensusReport()
+{
+    if (!g_regRunCensus || !g_regRunCalls)
+        return;
+    static const char* kNames[10] = { "1", "2-3", "4-7", "8-15", "16-31", "32-63",
+                                      "64-127", "128-255", "256-1023", "1024+" };
+    uint64_t totalD = 0;
+    for (uint64_t d : g_regRunDwords)
+        totalD += d;
+    fprintf(stderr, "[regrun] %llu bulk runs, %llu dwords, mean %.1f dwords/run\n",
+            (unsigned long long)g_regRunCalls, (unsigned long long)totalD,
+            g_regRunCalls ? double(totalD) / double(g_regRunCalls) : 0.0);
+    for (uint32_t i = 0; i < 10; i++)
+    {
+        if (!g_regRunHist[i])
+            continue;
+        fprintf(stderr, "[regrun]   %8s dwords: %10llu runs (%5.1f%%)  %12llu dwords "
+                        "(%5.1f%% of all dwords)\n",
+                kNames[i], (unsigned long long)g_regRunHist[i],
+                100.0 * double(g_regRunHist[i]) / double(g_regRunCalls),
+                (unsigned long long)g_regRunDwords[i],
+                totalD ? 100.0 * double(g_regRunDwords[i]) / double(totalD) : 0.0);
+    }
+}
+
 uint64_t Pm4_RegRunBulkDwords() { return g_regRunBulk.load(); }
 uint64_t Pm4_RegRunSlowDwords() { return g_regRunSlow.load(); }
 uint64_t Pm4_RegRunMismatches() { return g_regRunMismatch.load(); }

@@ -28126,6 +28126,15 @@ void DoSwapImpl(uint8_t* base, uint32_t frontBuffer, uint32_t width, uint32_t he
                         double(p99Us) / 1000.0, double(worstUs) / 1000.0,
                         n > 1 ? 100.0 * double(overTwice) / double(n - 1) : 0.0,
                         (unsigned long long)frames, elapsed, dMed, dMin, dMax);
+                // ...and the register-run census beside it when armed, PER WINDOW rather
+                // than only at exit. The exit path is the right home for a summary
+                // (gotcha 543) but it is not a reliable one: two runs tonight ended
+                // without the SIGTERM handler printing anything at all, and a census that
+                // only speaks on the way out is a census that some runs simply do not
+                // have. A windowed print costs ten lines every FPS window on a
+                // diagnostic-only arm and cannot be lost.
+                Pm4_SwapPathReport();
+                Pm4_RegRunCensusReport();
                 // Part 107 item 2: the Draw Thread's fence wait, per window, beside
                 // the frame rate it is meant to move — so a plain crowd run (no phase
                 // profiler) still says whether the park ENGAGED and how each episode
@@ -30907,6 +30916,7 @@ void VkRenderer_DumpStats()
     // "0 disagreements" and "the instrument never spoke" were the same output. Every
     // recipe in this project ends on a `timeout` SIGTERM, and this function is what that
     // handler calls; a counter reported anywhere else is a counter nobody reads.
+    Pm4_RegRunCensusReport();
     if (g_texMemoHits || g_texMemoMiss)
         fprintf(stderr, "[texmemo] %llu hits, %llu misses (%.1f%% served), %llu "
                         "disagreements, final gen %llu\n",
