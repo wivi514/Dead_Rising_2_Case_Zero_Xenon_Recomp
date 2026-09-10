@@ -316,3 +316,59 @@ session. The phase table's shares are a map of the scopes someone thought to ope
   bytes into write-combined arena memory on every one of ~9,300 draws = 20 MB a frame.
   The vertex-fetch table is 1,536 of those 2,192 bytes and is written only for the
   handful of slots a dependent fetch uses.
+
+### 4.5 Item 4's concentrated core — BUILT, GATED, ENGAGED, and REFUTED (2026-09-10)
+
+§4.4 named `pm4.cpp:895` — the scalar byte-swap loop in `Source::Read` — as **69.9% of
+`WriteRegisterRun`, 7.25% of the pump, ~0.76 ms of the frame, in one line**. Everything
+that could be checked before building it said it was buyable:
+
+* the **disassembly**: plain `bswap`, 4x-unrolled, not one vector instruction, because a
+  4-byte `memcpy` in a loop clang cannot prove non-aliasing for does not vectorise;
+* the **census** (`CZ_PM4_REGRUN_CENSUS=1`, written for this): 710 M bulk runs, 13.7 G
+  dwords, **mean 19.3 dwords a run and 90.3% of all dwords in runs of 16 or more**, so a
+  32-byte-wide swap covers essentially the whole population rather than a corner of it.
+
+Built as a runtime-dispatched AVX2 path (`target("avx2")` + `__builtin_cpu_supports`,
+unaligned loads and stores, entered only with 8 dwords left, scalar tail otherwise), with
+`CZ_PM4_NO_SIMD_SWAP=1` the same-binary control.
+
+**Every gate passed.** `CZ_PM4_VERIFY_BULK_REGS=1` — which compares every dword against
+`Source::operator()`, the incumbent definition of "read a dword of the packet stream" for
+47 parts, and is therefore an oracle that is not this code — read **0 mismatches** over a
+whole crowd route, and `CZ_PM4_VERIFY_POISON=1` made it fire (16, its report cap). And it
+**proved it engaged**: the arm reported **90.3-90.9% of run dwords vectorised** in all
+three runs against **0.0%** in all three controls, matching the census's 90.3% prediction.
+
+**And it is worth nothing.** Three runs an arm, alternated, profiler OFF, 3440x1440,
+matched draw bands:
+
+| band (draws) | scalar | AVX2 | delta |
+|---|---|---|---|
+| 8500-8749 | 10.64 | 10.48 | −0.15 |
+| 8750-8999 | 10.80 | 10.84 | +0.04 |
+| 9000-9249 | 10.93 | 11.13 | +0.20 |
+| 9250-9499 | 11.19 | 11.29 | +0.10 |
+| 9500-9749 | 11.55 | 11.63 | +0.08 |
+| **weighted** | **10.92** | **11.06** | **+0.14 ms (+1.3%)** |
+
+**The re-profile says why, and it is the part worth keeping.** With the vector path in,
+`SwapRunAvx2Impl` (6.06% of the pump) plus what was left of `WriteRegisterRun` (3.75%)
+came to **9.81% against the scalar loop's 10.37%**. The work did not move. **It was never
+the byte swap** — the samples were piling on the instruction that CONSUMES the load,
+which is what an out-of-order core does, so a line can read as 70% of its symbol while
+being 70% *waiting*: for the packet stream to arrive from memory, and for the `g_regs`
+stores to retire. Gotcha 545.
+
+**VERDICT: REVERTED.** The kill rule was 0.4 ms and this is a null with a slightly
+adverse sign, and it would have added AVX2 dispatch to a binary that ships to strangers
+for nothing. The census stays — it is the instrument that would have made the item look
+even better, and the next reader deserves to see that it did.
+
+**What this changes about the remaining items.** Three of the five largest things on the
+pump are now known or strongly suspected to be **memory-latency bound, not compute**:
+this loop, `UploadStream`'s four dependent-load lines (§4.4), and the 20 MB/frame
+`memset` into write-combined memory. On this critical path the lever is **doing fewer
+memory touches**, not doing the same touches faster. That is an argument for the stream
+DEDUP (fewer lookups) over any faster hash, and against any further "make this loop
+wider" item.

@@ -6255,3 +6255,24 @@ From phase C part 18 (the frame rate — and none of it was work):
     than averaging across a difference it cannot see. Same conclusion part 26 reached
     for pictures (gotcha 254) and part 76 for frame stats — the [fps]-window form of it.
     (part 109)
+
+545. **A hot LINE in a flat profile is not a hot OPERATION — the sample lands on the
+    instruction that CONSUMES a slow load, not on the one that was slow.** Part 109's
+    symbol profile put the scalar byte-swap loop in `Source::Read` at 69.9% of
+    `WriteRegisterRun`, 7.25% of the pump thread, ~0.76 ms of a 10.8 ms crowd frame — one
+    line — and everything else agreed it was buyable: the disassembly showed plain
+    4x-unrolled `bswap` with no vector instruction (a 4-byte `memcpy` in a loop the
+    compiler cannot prove non-aliasing for does not vectorise), and a run-length census
+    said the mean run is 19.3 dwords with **90.3% of all dwords in runs of 16 or more**,
+    so a 32-byte-wide `vpshufb` covers the whole population. It was built with runtime
+    AVX2 dispatch, gated against the incumbent per-dword reader (0 mismatches, poison
+    control firing) and it PROVED IT ENGAGED — 90.6% of run dwords vectorised against a
+    control at 0.0%. **It measured +0.14 ms: a null, or slightly worse.** The re-profile
+    is the finding: `SwapRunAvx2Impl` 6.06% plus what remained of `WriteRegisterRun`
+    3.75% came to **9.81% of the pump against the scalar loop's 10.37%**. The work never
+    moved, because it was never the byte swap — it was waiting for the packet stream to
+    arrive from memory and for the `g_regs` stores to retire. Before vectorising a hot
+    line, ask what it is waiting FOR; the fix for a latency-bound line is to fetch less
+    or fetch it earlier, and no width of instruction is that. The census stays
+    (`CZ_PM4_REGRUN_CENSUS=1`) because it is the thing that would have made the item look
+    even better, and the vector path is reverted. (part 109)

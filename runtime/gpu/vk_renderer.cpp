@@ -28133,7 +28133,6 @@ void DoSwapImpl(uint8_t* base, uint32_t frontBuffer, uint32_t width, uint32_t he
                 // only speaks on the way out is a census that some runs simply do not
                 // have. A windowed print costs ten lines every FPS window on a
                 // diagnostic-only arm and cannot be lost.
-                Pm4_SwapPathReport();
                 Pm4_RegRunCensusReport();
                 // Part 107 item 2: the Draw Thread's fence wait, per window, beside
                 // the frame rate it is meant to move — so a plain crowd run (no phase
