@@ -128,5 +128,9 @@ IN
 echo
 echo "==> NEXT"
 echo "    tools/release_package_appimage.sh                     # wrap dist/CaseZeroRecomp"
+echo "    # AT THE FLOOR (ubuntu:22.04 = glibc 2.35, the base): both must print GATE PASSED"
+echo "    tools/release_gate_clean_container.sh dist/CaseZeroRecomp docker.io/library/ubuntu:22.04"
+echo "    tools/release_gate_clean_container.sh dist/CaseZeroRecomp-linux-x86_64.AppImage docker.io/library/ubuntu:22.04"
+echo "    # BELOW the floor (Rocky 9 = glibc 2.34): expected to REFUSE with 'GLIBC_2.35 not found'"
+echo "    # (libavutil needs 2.35) — a demonstration of the documented floor, not a passing gate"
 echo "    tools/release_gate_clean_container.sh dist/CaseZeroRecomp quay.io/rockylinux/rockylinux:9-minimal"
-echo "    tools/release_gate_clean_container.sh dist/CaseZeroRecomp-linux-x86_64.AppImage quay.io/rockylinux/rockylinux:9-minimal"
