@@ -5117,6 +5117,143 @@ static uint32_t DispatchAppMessage(uint32_t app, uint32_t message, void* buffer,
         return 0;
     }
 
+    // XGI 0x000B0025 — XSessionWriteStats, the leaderboard write.
+    //
+    // The layouts are the guest's, cross-checked against Xenia's SDK-derived
+    // structs; every size below matches the length this title passes at its own
+    // call site (see fake_xbox_live/proto/xgi_messages.md, which records the
+    // agreement):
+    //
+    //   XGI_STATS_WRITE          0x18   +0 session, +8 xuid, +16 count, +20 views
+    //   XSESSION_VIEW_PROPERTIES 0x0C   +0 view id, +4 count, +8 properties
+    //   XUSER_PROPERTY           0x18   +0 id, +8 type, +16 value
+    //
+    // The value is an 8-byte union at +16, so a 32-bit member sits in the FIRST
+    // four bytes of it, not the last — the union's members all start at its
+    // base, and reading a big-endian int32 from +20 would return zero for every
+    // score this title has ever written.
+    //
+    // RETURNING 0 HERE IS IMPLEMENTING, NOT FAKING, on the same reasoning as
+    // 000B0008: the stats are recorded, durably, before this returns. What this
+    // runtime cannot do is rank them locally, and nothing in guest code can
+    // observe that.
+    if (app == kAppXgi && message == 0x000B0025)
+    {
+        if (!buffer || bufferLength < 24)
+            return E_FAIL;
+        const auto* msg = static_cast<const be<uint32_t>*>(buffer);
+        const uint32_t viewCount = msg[4].get();   // +16
+        const uint32_t viewsVa = msg[5].get();     // +20
+
+        // Guest-supplied count and pointer: bound both before walking
+        // (gotcha 73). 64 is the console's own X_STATS_MAX_VIEWS.
+        if (!viewsVa || viewCount > 64)
+        {
+            KLOG("XSessionWriteStats: implausible request (views=%u array=%08X)\n",
+                 viewCount, viewsVa);
+            return E_FAIL;
+        }
+
+        std::vector<CzXliveStatView> views;
+        views.reserve(viewCount);
+        for (uint32_t i = 0; i < viewCount; i++)
+        {
+            const auto* view = reinterpret_cast<const be<uint32_t>*>(
+                g_memory.Translate(viewsVa + i * 12));
+            CzXliveStatView out;
+            out.viewId = view[0].get();
+            const uint32_t propertyCount = view[1].get();
+            const uint32_t propertiesVa = view[2].get();
+            if (!propertiesVa || propertyCount > 64)
+            {
+                KLOG("XSessionWriteStats: view %u has an implausible property list"
+                     " (count=%u array=%08X)\n", out.viewId, propertyCount, propertiesVa);
+                return E_FAIL;
+            }
+
+            out.properties.reserve(propertyCount);
+            for (uint32_t j = 0; j < propertyCount; j++)
+            {
+                const uint32_t propertyVa = propertiesVa + j * 24;
+                const auto* words = reinterpret_cast<const be<uint32_t>*>(
+                    g_memory.Translate(propertyVa));
+                CzXliveStatProperty property;
+                property.id = words[0].get();
+                property.type = *reinterpret_cast<const uint8_t*>(
+                    g_memory.Translate(propertyVa + 8));
+
+                switch (property.type)
+                {
+                case 0: // context
+                case 1: // int32
+                    property.integer = int32_t(words[4].get());
+                    break;
+                case 2: // int64
+                case 7: // datetime (FILETIME, kept as its raw 64 bits)
+                    property.integer = int64_t(
+                        reinterpret_cast<const be<uint64_t>*>(
+                            g_memory.Translate(propertyVa + 16))->get());
+                    break;
+                case 3: { // double
+                    const uint64_t bits =
+                        reinterpret_cast<const be<uint64_t>*>(
+                            g_memory.Translate(propertyVa + 16))->get();
+                    memcpy(&property.real, &bits, sizeof(double));
+                    break;
+                }
+                case 5: { // float
+                    const uint32_t bits = words[4].get();
+                    float value;
+                    memcpy(&value, &bits, sizeof(float));
+                    property.real = value;
+                    break;
+                }
+                case 4:   // unicode
+                case 6: { // binary
+                    const uint32_t size = words[4].get();
+                    const uint32_t dataVa = words[5].get();
+                    // A string long enough to be a mistake is a mistake.
+                    if (dataVa && size && size <= 4096)
+                    {
+                        const char* data = reinterpret_cast<const char*>(
+                            g_memory.Translate(dataVa));
+                        if (property.type == 6)
+                        {
+                            property.text.assign(data, size);
+                        }
+                        else
+                        {
+                            // The guest counts UTF-16 code units; narrow the
+                            // ASCII range and drop the rest rather than hand a
+                            // half-decoded string to a server.
+                            const auto* units = reinterpret_cast<const be<uint16_t>*>(data);
+                            for (uint32_t k = 0; k < size && units[k].get(); k++)
+                            {
+                                const uint16_t unit = units[k].get();
+                                if (unit < 0x80)
+                                    property.text.push_back(char(unit));
+                            }
+                        }
+                    }
+                    break;
+                }
+                default:
+                    KLOG("XSessionWriteStats: property %08X has unknown type %u\n",
+                         property.id, property.type);
+                    continue;
+                }
+                out.properties.push_back(std::move(property));
+            }
+
+            KLOG("stats: view %u, %zu propert%s\n", out.viewId, out.properties.size(),
+                 out.properties.size() == 1 ? "y" : "ies");
+            views.push_back(std::move(out));
+        }
+
+        CzXlive_RecordStats(views);
+        return 0;
+    }
+
     // The content layer owns (0xFE, 0x0002000E), the enumeration step. It lives in
     // content.cpp because the protocol behind it is a page of derivation from the
     // guest's own XamEnumerate wrapper, not because it is a different kind of message.

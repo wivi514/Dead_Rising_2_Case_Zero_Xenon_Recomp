@@ -178,6 +178,33 @@ void CzXlive_RecordAchievements(const std::vector<uint16_t>& achievementIds)
     xlive::Client::Instance().Unlock(achievementIds);
 }
 
+void CzXlive_RecordStats(const std::vector<CzXliveStatView>& views)
+{
+    if (!g_started || views.empty())
+        return;
+
+    std::vector<xlive::Client::StatView> out;
+    out.reserve(views.size());
+    for (const auto& view : views)
+    {
+        xlive::Client::StatView converted;
+        converted.view_id = view.viewId;
+        converted.properties.reserve(view.properties.size());
+        for (const auto& property : view.properties)
+        {
+            xlive::Client::StatProperty p;
+            p.id = property.id;
+            p.type = static_cast<xlive::Client::StatProperty::Type>(property.type);
+            p.integer = property.integer;
+            p.real = property.real;
+            p.text = property.text;
+            converted.properties.push_back(std::move(p));
+        }
+        out.push_back(std::move(converted));
+    }
+    xlive::Client::Instance().WriteStats(out);
+}
+
 void CzXlive_Shutdown(int timeoutMs)
 {
     if (!g_started)

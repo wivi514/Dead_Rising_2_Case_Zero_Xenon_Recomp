@@ -29,6 +29,7 @@
 #pragma once
 
 #include <cstdint>
+#include <string>
 #include <vector>
 
 // Starts the client. titleId comes from XexTitleId(), so this must run after
@@ -49,6 +50,32 @@ const char* CzXlive_Gamertag(const char* fallback);
 // record is updated before the call returns and the server write is queued, so
 // this is safe to call from the guest thread that is in the middle of a save.
 void CzXlive_RecordAchievements(const std::vector<uint16_t>& achievementIds);
+
+// One statistic the title wrote, mirroring the guest's XUSER_PROPERTY. The
+// types are the guest's own X_USER_DATA_TYPE values.
+struct CzXliveStatProperty
+{
+    uint32_t id = 0;
+    uint8_t type = 2;      // 0 context, 1 int32, 2 int64, 3 double,
+                           // 4 unicode, 5 float, 6 binary, 7 datetime
+    int64_t integer = 0;   // context, int32, int64, datetime
+    double real = 0;       // double, float
+    std::string text;      // unicode as UTF-8, binary as raw bytes
+};
+
+struct CzXliveStatView
+{
+    uint32_t viewId = 0;
+    std::vector<CzXliveStatProperty> properties;
+};
+
+// Records an XSessionWriteStats call. Returns immediately, like the achievement
+// path: the title writes stats at the end of a run and must not wait for a
+// server. Which property ranks a board, and how repeated writes combine, are
+// NOT decided here — they come from the title's own SPA by way of the server,
+// because a client that chose its own placement on a leaderboard would not be
+// one worth trusting.
+void CzXlive_RecordStats(const std::vector<CzXliveStatView>& views);
 
 // Gives queued writes a bounded chance to reach the server before the process
 // goes away. Durability does not depend on this — every achievement is on disk
