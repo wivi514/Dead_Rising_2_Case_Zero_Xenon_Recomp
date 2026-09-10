@@ -3577,6 +3577,40 @@ CZ_VK_FETCH_MEMO_CENSUS=1  would a vertex-fetch decode memo be served? Two keys 
 CZ_VK_STREAM_DEDUP_CENSUS=1  does one draw look the same stream key up twice? ANSWERED
                   §6ec §4: 4.96 lookups/draw, 47.9% repeats, ~0.27 ms — below the crowd
                   route's 2.9% floor. A per-draw dedup cache would be pure loss.
+                  RE-RUN A THIRD TIME IN PART 109 (4.92 / 47.1%, reproducing it to 1%)
+                  BECAUSE THIS ENTRY WAS NOT READ FIRST. It is dead three times over.
+                  And part 109 added the reason as well as the number: the repeats are
+                  the CHEAP lookups — the first touch pays the cache miss and the repeat
+                  hits the same flat-cache slot while it is still in L1, so a dedup
+                  removes only the lookups that were already free.
+CZ_PM4_REGRUN_CENSUS=1  how long is a bulk register run? (part 109) Buckets every run
+                  `WriteRegisterRun` takes by dword count and prints per FPS window —
+                  runs AND dwords per bucket, because the dwords are what decides.
+                  ANSWERED on the crowd route: 710 M runs, 13.7 G dwords, mean 19.3
+                  dwords/run, 90.3% of all dwords in runs of >= 16 while 64.6% of the
+                  CALLS are runs of 1-7 carrying 8.8% of the dwords. It said a wide
+                  vector swap would cover the whole population, and it was right about
+                  that and the item still measured +0.14 ms — gotcha 545.
+CZ_VK_SCOPED_SHARED_ZERO=1  **an ARM, off by default (part 109).** Zero only the vfetch
+                  table entries the vertex shader DECLARES instead of the whole
+                  2,192-byte shared block: 1,530 of 1,536 table bytes go unwritten on the
+                  average draw, 69.8% of the block, ~14 MB a frame of write-combined
+                  stores removed. Worth **-0.21 ms** at the crowd, which missed part
+                  109's 0.4 ms kill rule, so it ships OFF and the default is one line
+                  away. `CZ_VK_FULL_SHARED_ZERO=1` is a no-op now (the default IS the
+                  full zero) and is kept so an older recipe still parses.
+CZ_VK_SHARED_ZERO_POISON=1  **the positive control for the above, and the thing that
+                  makes it safe rather than plausible.** Writes 0xFF over exactly the
+                  bytes the scoped zero skips, so a shader reading one gets a colossal
+                  device address and size 0xFFFFFFFF instead of a quiet zero. "The
+                  picture looks the same" cannot tell a safe skip from an arena that
+                  happened to hold zeros; this can. Measured INSIDE the picture null on
+                  all three era statistics.
+CZ_VK_TEXMEMO=1   **an ARM, off by default (part 109).** A 32-entry per-fetch-slot memo
+                  in `UploadTexture`: a hit is a 24-byte memcmp and skips the hash, the
+                  decode and the map. 74% served; worth **-0.33 ms**, which missed the
+                  same 0.4 ms kill rule. `CZ_VK_TEXMEMO_VERIFY=1` computes both answers
+                  and counts disagreements — 0 over 718 million served lookups.
 ```
 
 ```

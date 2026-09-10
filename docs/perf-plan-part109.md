@@ -310,8 +310,8 @@ session. The phase table's shares are a map of the scopes someone thought to ope
   of them the first touch of a line. A perfect hash (this plan's §2 item 2 design) would
   not move any of them. What would is **fewer lookups**: the profiler counts ~9.46 stream
   lookups a draw against the two-to-five streams a draw actually has, and
-  `CZ_VK_STREAM_DEDUP_CENSUS=1` — written in part 87 to ask exactly this and **never
-  run** — is the measurement that decides. Item 2 is redirected, not dead.
+  `CZ_VK_STREAM_DEDUP_CENSUS=1` is the measurement that decides. (**It had already been
+  run — twice, in parts 80 and 87 — and §4.6 records that retraction and what it cost.**)
 * **`__memset_avx2` at 0.44 ms** is the per-draw `memset(shared, 0, kSharedSize)`: 2,192
   bytes into write-combined arena memory on every one of ~9,300 draws = 20 MB a frame.
   The vertex-fetch table is 1,536 of those 2,192 bytes and is written only for the
@@ -375,10 +375,19 @@ wider" item.
 
 ### 4.6 Item 2 — REDIRECTED, then measured small (2026-09-10)
 
-`CZ_VK_STREAM_DEDUP_CENSUS=1`, written in part 87 to ask exactly this question and never
-run until tonight, on the crowd route: **4.92 stream lookups a draw, 47.1% of them
-REPEATING a key the same draw already looked up** (319,547,476 of 678,019,642), and **0
-draws exceeded the 16-key window**, so nothing is under-reported.
+`CZ_VK_STREAM_DEDUP_CENSUS=1` on the crowd route: **4.92 stream lookups a draw, 47.1% of
+them REPEATING a key the same draw already looked up** (319,547,476 of 678,019,642), and
+**0 draws exceeded the 16-key window**, so nothing is under-reported.
+
+**RETRACTION: §4.4 called this census "written in part 87 and never run". It was run, in
+part 80, and part 87 re-ran it to kill Case West's version of the same lead
+(`phase5-notes.md` §6ef §1 and §6ec §4): 4.96 lookups a draw, 47.9% repeats, ~0.27 ms,
+"a per-draw dedup cache would be pure loss".** Tonight's numbers reproduce that to within
+1% three parts later, which is worth something — but the item was already dead and this
+plan spent a run re-buying a census `instruments.md` records the answer to. §6ef's
+closing note says exactly why that keeps happening ("a lead this dead came back across
+the sibling-port channel looking fresh") and the fix is the one this project already
+wrote down: **read `instruments.md`'s entry for an arm before running it** (gotcha 13).
 
 47% sounds like an item and it is not, for the same reason §4.5's byte swap was not: **a
 repeat within one draw is the CHEAP kind of lookup.** The first touch misses and pays the
@@ -455,7 +464,7 @@ remains, rather than keep buying items.
 | 1 — `UploadTexture` memo | correct (0 disagreements / 718 M served), **under kill** | **−0.33** |
 | 0 — the decomposition | **done**, and it retracted a phase-profiler reading | — |
 | 4's core — the PM4 byte swap | built, gated, engaged, **REFUTED and reverted** | +0.14 |
-| 2 — the stream path | **redirected then measured small**; the repeats are the cheap lookups | — |
+| 2 — the stream path | **redirected, then found already dead since part 80** (§4.6) | — |
 | 3's memset half | correct (poison inside the null), **under kill** | **−0.21** |
 | 5 — the p99 | **not a hitch class**: same work, 35% longer | — |
 
