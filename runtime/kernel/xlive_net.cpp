@@ -8,6 +8,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <deque>
 #include <map>
 #include <mutex>
 #include <string>
@@ -133,6 +134,15 @@ static_assert(offsetof(GuestQos, info) == 8, "XNQOS entries start at +8");
 
 xlive::Client& Live() { return xlive::Client::Instance(); }
 
+// One datagram, as the guest sees it: who sent it, from which of THEIR
+// ports, and the bytes.
+struct GuestDatagram
+{
+    uint64_t fromXuid = 0;
+    uint16_t fromPort = 0;
+    std::string payload;
+};
+
 struct GuestSocket
 {
     uint32_t type = 0;
@@ -142,7 +152,22 @@ struct GuestSocket
     // connect() on a datagram socket names a default peer for send()/recv().
     uint32_t connectedAddr = 0;
     uint16_t connectedPort = 0;
+    // Datagrams addressed to this socket's port that another socket's
+    // recvfrom pulled off the path first. See Receive().
+    std::deque<GuestDatagram> inbox;
 };
+
+// THE PORTS TRAVEL WITH THE BYTES. The path is one UDP socket per machine
+// and the peer wire names only the sender; the guest's own ports are its
+// business. And it has more than one: Case Zero's host LISTENS on one port,
+// then on accept opens a second socket on another and tells the joiner to
+// rebind to it (the reliable layer's RBD flag). Two guest sockets, one
+// path — so every datagram carries the guest's source and destination port
+// in front of the payload, and recvfrom hands each socket only what was
+// sent to its port. Without this the listener ate the connection's packets
+// and the connection died of a missed heartbeat, on both machines, the
+// first time two people played.
+constexpr size_t kPortHeader = 4; // be16 source port, be16 destination port
 
 std::mutex g_mutex;
 std::map<uint32_t, GuestSocket> g_sockets;
@@ -157,6 +182,21 @@ uint32_t Fail(uint32_t error)
 {
     t_lastError = error;
     return kSocketError;
+}
+
+// Per-packet trace, off unless CZ_NET_LOG=1. What the first two-machine
+// session needed to see: which guest port a datagram left from, which it was
+// addressed to, the peer, and every datagram dropped because no socket owned
+// its destination port.
+bool NetLogOn()
+{
+    static int on = -1;
+    if (on < 0)
+    {
+        const char* env = std::getenv("CZ_NET_LOG");
+        on = (env && *env && *env != '0') ? 1 : 0;
+    }
+    return on == 1;
 }
 
 template <typename T>
@@ -249,7 +289,9 @@ uint32_t IoctlSocket(uint32_t handle, uint32_t command, be<uint32_t>* argument)
     case FIONREAD_:
         // Bytes readable without blocking. The path does not peek sizes, so
         // this is the largest a waiting datagram can be, or nothing.
-        *argument = Live().PendingDatagrams() > 0 ? uint32_t(xlive::Client::kMaxDatagram) : 0u;
+        *argument = (!sock->inbox.empty() || Live().PendingDatagrams() > 0)
+                        ? uint32_t(xlive::Client::kMaxDatagram)
+                        : 0u;
         return 0;
     default:
         return Fail(kWsaEOPNOTSUPP);
@@ -288,10 +330,9 @@ uint32_t Connect(uint32_t handle, const GuestSockAddrIn* name, uint32_t nameLeng
 // The one translation every send makes: the stand-in address the title was
 // given, to the peer it stands for, to the path. Returns 0 on success, or
 // the Winsock error to report.
-uint32_t SendToAddress(const GuestSocket& sock, uint32_t addr, const void* data, uint32_t length,
-                       uint32_t* sent)
+uint32_t SendToAddress(const GuestSocket& sock, uint32_t addr, uint16_t port, const void* data,
+                       uint32_t length, uint32_t* sent)
 {
-    (void)sock;
     *sent = 0;
     if (IsBroadcast(addr))
     {
@@ -303,13 +344,25 @@ uint32_t SendToAddress(const GuestSocket& sock, uint32_t addr, const void* data,
     const uint64_t xuid = XliveSession_PeerForInAddr(addr);
     if (xuid == 0)
         return kWsaEHOSTUNREACH;
-    if (length > xlive::Client::kMaxDatagram)
+    if (length + kPortHeader > xlive::Client::kMaxDatagram)
         return kWsaEMSGSIZE;
 
-    const int n = Live().SendTo(xuid, data, length);
+    std::string framed;
+    framed.resize(kPortHeader + length);
+    framed[0] = char(sock.boundPort >> 8);
+    framed[1] = char(sock.boundPort & 0xFF);
+    framed[2] = char(port >> 8);
+    framed[3] = char(port & 0xFF);
+    if (length)
+        std::memcpy(&framed[kPortHeader], data, length);
+
+    const int n = Live().SendTo(xuid, framed.data(), framed.size());
+    if (NetLogOn())
+        KLOG("[net] send %u->%u peer %016llX %uB -> %d\n", sock.boundPort, port,
+             (unsigned long long)xuid, length, n);
     if (n >= 0)
     {
-        *sent = uint32_t(n);
+        *sent = length;
         return 0;
     }
     // No path. While the punch is still running that is a moment's
@@ -341,7 +394,7 @@ uint32_t SendTo(uint32_t handle, const void* data, uint32_t length, uint32_t fla
     if (!data || !to || toLength < sizeof(GuestSockAddrIn))
         return Fail(kWsaEINVAL);
     uint32_t sent = 0;
-    const uint32_t error = SendToAddress(sock, to->addr.get(), data, length, &sent);
+    const uint32_t error = SendToAddress(sock, to->addr.get(), to->port.get(), data, length, &sent);
     if (error)
         return Fail(error);
     return sent;
@@ -363,10 +416,84 @@ uint32_t Send(uint32_t handle, const void* data, uint32_t length, uint32_t flags
     if (sock.connectedAddr == 0)
         return Fail(kWsaENOTCONN);
     uint32_t sent = 0;
-    const uint32_t error = SendToAddress(sock, sock.connectedAddr, data, length, &sent);
+    const uint32_t error =
+        SendToAddress(sock, sock.connectedAddr, sock.connectedPort, data, length, &sent);
     if (error)
         return Fail(error);
     return sent;
+}
+
+// Pulls one datagram off the path and files it by destination port: into
+// `out` if it is this socket's, into the inbox of whichever socket is bound
+// to that port otherwise, dropped if none is. Under g_mutex.
+bool PullOne(uint32_t handle, const GuestSocket& sock, GuestDatagram& out)
+{
+    char raw[xlive::Client::kMaxDatagram];
+    uint64_t xuid = 0;
+    const int n = Live().RecvFrom(xuid, raw, sizeof raw);
+    if (n < int(kPortHeader))
+        return false; // nothing, or a runt: neither is ours to deliver
+    const uint16_t fromPort = uint16_t((uint8_t(raw[0]) << 8) | uint8_t(raw[1]));
+    const uint16_t toPort = uint16_t((uint8_t(raw[2]) << 8) | uint8_t(raw[3]));
+    GuestDatagram datagram;
+    datagram.fromXuid = xuid;
+    datagram.fromPort = fromPort;
+    datagram.payload.assign(raw + kPortHeader, size_t(n) - kPortHeader);
+    if (toPort == sock.boundPort)
+    {
+        if (NetLogOn())
+            KLOG("[net] recv %u<-%u peer %016llX %zuB -> sock %08X (mine)\n", toPort, fromPort,
+                 (unsigned long long)xuid, datagram.payload.size(), handle);
+        out = std::move(datagram);
+        return true;
+    }
+    for (auto& [other, target] : g_sockets)
+    {
+        if (other != handle && target.boundPort == toPort)
+        {
+            if (NetLogOn())
+                KLOG("[net] recv %u<-%u peer %016llX %zuB -> sock %08X inbox (%zu)\n", toPort,
+                     fromPort, (unsigned long long)xuid, datagram.payload.size(), other,
+                     target.inbox.size() + 1);
+            // A reliable game stream must not be silently thinned by our own
+            // buffering: one guest socket (the host's listener) drains the
+            // shared path far more often than the other (the connection), so
+            // it files the connection's packets here and the cap has to be
+            // deep enough that the connection reads them before it fills. The
+            // first two-machine session overflowed a 256 cap and the reliable
+            // layer retransmit-stormed to death. The drop is a last resort
+            // against a peer nobody reads at all, not backpressure on a live
+            // connection.
+            if (target.inbox.size() >= 8192)
+                target.inbox.pop_front();
+            target.inbox.push_back(std::move(datagram));
+            return false;
+        }
+    }
+    if (NetLogOn())
+        KLOG("[net] DROP recv to port %u<-%u peer %016llX %zuB: no socket bound to %u\n", toPort,
+             fromPort, (unsigned long long)xuid, datagram.payload.size(), toPort);
+    return false; // a port nobody is bound to
+}
+
+// One datagram for this socket, or false. Under g_mutex.
+bool NextFor(uint32_t handle, GuestSocket& sock, GuestDatagram& out)
+{
+    if (!sock.inbox.empty())
+    {
+        out = std::move(sock.inbox.front());
+        sock.inbox.pop_front();
+        return true;
+    }
+    // Drain the path until something for us turns up or it runs dry.
+    for (int i = 0; i < 64; i++)
+    {
+        if (Live().PendingDatagrams() <= 0)
+            return false;
+        if (PullOne(handle, sock, out))
+            return true;
+    }
+    return false;
 }
 
 // One receive, honouring the socket's blocking mode. A blocking socket waits
@@ -376,50 +503,42 @@ uint32_t Send(uint32_t handle, const void* data, uint32_t length, uint32_t flags
 uint32_t Receive(uint32_t handle, void* data, uint32_t capacity, GuestSockAddrIn* from,
                  be<int32_t>* fromLength)
 {
-    GuestSocket sock;
-    {
-        std::lock_guard<std::mutex> lock(g_mutex);
-        GuestSocket* found = Find(handle);
-        if (!found)
-            return Fail(kWsaENOTSOCK);
-        sock = *found;
-    }
     if (!data || capacity == 0)
         return Fail(kWsaEINVAL);
 
-    uint64_t xuid = 0;
-    int n = Live().RecvFrom(xuid, data, capacity);
-    if (n <= 0 && !sock.nonblocking)
+    GuestDatagram datagram;
+    for (;;)
     {
-        // Blocking: wait for one, giving up only if the socket is closed
-        // under us.
-        while (n <= 0)
+        bool nonblocking = true;
         {
-            std::this_thread::sleep_for(std::chrono::milliseconds(1));
-            {
-                std::lock_guard<std::mutex> lock(g_mutex);
-                if (!Find(handle))
-                    return Fail(kWsaENOTSOCK);
-            }
-            n = Live().RecvFrom(xuid, data, capacity);
+            std::lock_guard<std::mutex> lock(g_mutex);
+            GuestSocket* sock = Find(handle);
+            if (!sock)
+                return Fail(kWsaENOTSOCK);
+            nonblocking = sock->nonblocking;
+            if (NextFor(handle, *sock, datagram))
+                break;
         }
+        if (nonblocking)
+            return Fail(kWsaEWOULDBLOCK);
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
-    if (n <= 0)
-        return Fail(kWsaEWOULDBLOCK);
 
+    const size_t copied = std::min<size_t>(capacity, datagram.payload.size());
+    if (copied)
+        std::memcpy(data, datagram.payload.data(), copied);
     if (from)
     {
-        // The sender, as the stand-in address the title knows it by, and the
-        // port it bound itself — both sides of a session bind the same one,
-        // and it is the only port there is.
+        // The sender, as the stand-in address the title knows it by, and
+        // the port on THEIR side the bytes left from.
         std::memset(from, 0, sizeof(*from));
         from->family = AF_INET_;
-        from->port = sock.boundPort;
-        from->addr = XliveSession_InAddrForPeer(xuid);
+        from->port = datagram.fromPort;
+        from->addr = XliveSession_InAddrForPeer(datagram.fromXuid);
         if (fromLength)
             *fromLength = int32_t(sizeof(GuestSockAddrIn));
     }
-    return uint32_t(n);
+    return uint32_t(copied);
 }
 
 // select(). Readable is "a datagram is waiting", writable is always, and
@@ -457,11 +576,17 @@ uint32_t Select(GuestFdSet* readSet, GuestFdSet* writeSet, GuestFdSet* exceptSet
     {
         // Evaluate without modifying, so a wait can re-evaluate the same sets.
         bool readable = false;
-        if (readSet && Live().PendingDatagrams() > 0)
+        if (readSet)
         {
+            const bool pathHasSome = Live().PendingDatagrams() > 0;
             const uint32_t count = std::min(readSet->count.get(), kFdSetSize);
+            std::lock_guard<std::mutex> lock(g_mutex);
             for (uint32_t i = 0; i < count && !readable; i++)
-                readable = ours(readSet->sockets[i].get());
+            {
+                GuestSocket* sock = Find(readSet->sockets[i].get());
+                if (sock && (!sock->inbox.empty() || pathHasSome))
+                    readable = true;
+            }
         }
         bool writable = false;
         if (writeSet)
