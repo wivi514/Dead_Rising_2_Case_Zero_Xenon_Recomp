@@ -3971,59 +3971,6 @@ static uint32_t XNotifyGetNext_x(uint32_t handle, uint32_t matchId, be<uint32_t>
 }
 
 GUEST_FUNCTION_HOOK(__imp__XamNotifyCreateListener, XamNotifyCreateListener_x)
-
-// -- the session handle ----------------------------------------------------
-//
-// The first thing every XSession* wrapper does, before it sends its XGI
-// message: XSessionCreate (its XSessionCreate wrapper) calls XamSessionCreateHandle(&h) and
-// then XamSessionRefObjByHandle(h, &obj), and puts `obj` at +0 of the message;
-// every later wrapper — join, start, end, delete, modify, migrate — calls
-// RefObjByHandle on the handle it was given and sends the same `obj`. With
-// the two stubbed, XSessionCreate returned STATUS_NOT_IMPLEMENTED before any
-// message existed, and the title's co-op lobby reported "an error occurred
-// while connecting to the other player" — found the first time two people
-// sat down to play (2026-09-11), not by any test, because the self-test
-// built the messages directly.
-//
-// The object is a kernel object with nothing in it: a handle IS a guest
-// pointer here, and the session layer (kernel/xlive_session.cpp) keys its
-// bookkeeping on the object pointer in the message, so the pointer is the
-// handle itself and stays stable for the session's life. The title closes
-// the handle when it is done (CloseHandle), which is when the
-// object goes.
-struct SessionHandle final : KernelObject
-{
-};
-
-static uint32_t XamSessionCreateHandle_x(be<uint32_t>* handleOut)
-{
-    if (!handleOut)
-        return STATUS_INVALID_PARAMETER;
-    *handleOut = 0;
-    SessionHandle* obj = CreateKernelObject<SessionHandle>();
-    if (!obj)
-        return STATUS_NO_MEMORY;
-    *handleOut = GetKernelHandle(obj);
-    KLOG("[xlive] XamSessionCreateHandle -> %08X\n", handleOut->get());
-    return STATUS_SUCCESS;
-}
-
-static uint32_t XamSessionRefObjByHandle_x(uint32_t handle, be<uint32_t>* objectOut)
-{
-    if (!objectOut)
-        return STATUS_INVALID_PARAMETER;
-    *objectOut = 0;
-    if (!IsKernelObject(handle) || !IsLiveKernelHandle(handle))
-        return STATUS_INVALID_HANDLE;
-    KernelObject* obj = GetKernelObject(handle);
-    if (!KernelObjectIsIntact(obj) || !dynamic_cast<SessionHandle*>(obj))
-        return STATUS_INVALID_HANDLE;
-    *objectOut = handle;
-    return STATUS_SUCCESS;
-}
-
-GUEST_FUNCTION_HOOK(__imp__XamSessionCreateHandle, XamSessionCreateHandle_x)
-GUEST_FUNCTION_HOOK(__imp__XamSessionRefObjByHandle, XamSessionRefObjByHandle_x)
 GUEST_FUNCTION_HOOK(__imp__XNotifyGetNext, XNotifyGetNext_x)
 
 // ---------------------------------------------------------------------------
