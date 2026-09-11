@@ -206,6 +206,28 @@ struct GuestSearchResultHeader
 };
 static_assert(sizeof(GuestSearchResultHeader) == 0x08, "the header is 8 bytes");
 
+// XUSER_CONTEXT and XUSER_PROPERTY, as a search result points at them. The
+// property is the same 24-byte shape XSessionWriteStats sends (id, the
+// X_USER_DATA type byte at +8, the 8-byte value union at +16), and the title's
+// matchmaking walks them by 24 (sub_82599D80: `addi r11,r11,24`, looking for
+// 0x20000002 and reading its value with `ld r27,16(r11)`).
+struct GuestUserContext
+{
+    be<uint32_t> id;
+    be<uint32_t> value;
+};
+static_assert(sizeof(GuestUserContext) == 0x08, "XUSER_CONTEXT is 8");
+
+struct GuestUserProperty
+{
+    be<uint32_t> id;      // +0x00
+    uint8_t pad0[4];
+    uint8_t type;         // +0x08
+    uint8_t pad1[7];
+    uint8_t value[8];     // +0x10
+};
+static_assert(sizeof(GuestUserProperty) == 0x18, "XUSER_PROPERTY is 0x18");
+
 struct GuestLocalDetails
 {
     be<uint32_t> userIndexHost;          // +0x00
@@ -448,14 +470,50 @@ void Remember(uint32_t objectPtr, const xlive::Client::SessionInfo& session)
 
 // Writes a search answer into the buffer the guest allocated. Returns the
 // status the overlapped should carry.
+// The 8-byte X_USER_DATA union by type. A 32-bit member sits in the FIRST
+// four bytes; a string has nowhere to live in a search result and is written
+// as an empty one — every property these titles advertise is an int64.
+void WritePropertyValue(uint8_t (&out)[8], const xlive::Client::StatProperty& property)
+{
+    using Type = xlive::Client::StatProperty::Type;
+    std::memset(out, 0, 8);
+    switch (property.type)
+    {
+    case Type::Int32:
+    case Type::Context:
+        *reinterpret_cast<be<uint32_t>*>(out) = uint32_t(int32_t(property.integer));
+        break;
+    case Type::Double:
+        *reinterpret_cast<be<double>*>(out) = property.real;
+        break;
+    case Type::Float:
+        *reinterpret_cast<be<float>*>(out) = float(property.real);
+        break;
+    case Type::Unicode:
+    case Type::Binary:
+        break;
+    default: // Int64, DateTime
+        *reinterpret_cast<be<int64_t>*>(out) = property.integer;
+        break;
+    }
+}
+
 uint32_t WriteSearchResults(const Pending& pending,
                             const std::vector<xlive::Client::SessionInfo>& results)
 {
     if (pending.resultsPtr == 0)
         return kErrorInvalidParameter;
 
-    const uint32_t needed =
+    // The header, the array, and then every result's contexts and properties
+    // — the title's matchmaking reads those off the result (sub_82599D80
+    // refuses a session whose property 0x20000002 it cannot see, which is
+    // how the first two-machine session found "an error occurred while
+    // connecting" with a search that had found the host).
+    uint32_t needed =
         uint32_t(sizeof(GuestSearchResultHeader) + results.size() * sizeof(GuestSearchResult));
+    for (const auto& result : results)
+        needed += uint32_t(result.contexts.size() * sizeof(GuestUserContext) +
+                           result.properties.size() * sizeof(GuestUserProperty));
 
     if (pending.resultsSize < needed)
     {
@@ -478,6 +536,9 @@ uint32_t WriteSearchResults(const Pending& pending,
     const uint32_t arrayVa = pending.resultsPtr + uint32_t(sizeof(GuestSearchResultHeader));
     header->resultsPtr = results.empty() ? 0 : arrayVa;
 
+    // The contexts and properties go after the array, each result's pointers
+    // into its own allocation.
+    uint32_t tailVa = arrayVa + uint32_t(results.size() * sizeof(GuestSearchResult));
     for (size_t i = 0; i < results.size(); i++)
     {
         auto* entry = GuestPtr<GuestSearchResult>(arrayVa + uint32_t(i * sizeof(GuestSearchResult)));
@@ -489,13 +550,27 @@ uint32_t WriteSearchResults(const Pending& pending,
         entry->openPrivate = uint32_t(results[i].open_private_slots);
         entry->filledPublic = uint32_t(results[i].filled_public_slots);
         entry->filledPrivate = uint32_t(results[i].filled_private_slots);
-        // No properties or contexts are returned yet. Zero counts with null
-        // pointers is a well-formed empty list, which is a different thing
-        // from a pointer into memory nobody allocated.
-        entry->propertyCount = 0;
-        entry->contextCount = 0;
-        entry->propertiesPtr = 0;
-        entry->contextsPtr = 0;
+
+        entry->contextCount = uint32_t(results[i].contexts.size());
+        entry->contextsPtr = results[i].contexts.empty() ? 0 : tailVa;
+        for (const auto& context : results[i].contexts)
+        {
+            auto* out = GuestPtr<GuestUserContext>(tailVa);
+            out->id = context.id;
+            out->value = context.value;
+            tailVa += uint32_t(sizeof(GuestUserContext));
+        }
+        entry->propertyCount = uint32_t(results[i].properties.size());
+        entry->propertiesPtr = results[i].properties.empty() ? 0 : tailVa;
+        for (const auto& property : results[i].properties)
+        {
+            auto* out = GuestPtr<GuestUserProperty>(tailVa);
+            std::memset(out, 0, sizeof(*out));
+            out->id = property.id;
+            out->type = uint8_t(property.type);
+            WritePropertyValue(out->value, property);
+            tailVa += uint32_t(sizeof(GuestUserProperty));
+        }
     }
     return kErrorSuccess;
 }
@@ -1605,6 +1680,62 @@ void TestSearchResultBuffer()
         const auto* header = GuestPtr<GuestSearchResultHeader>(scratch.va);
         XLIVE_EXPECT(header->count.get() == 0);
         XLIVE_EXPECT(header->resultsPtr.get() == 0);
+    }
+
+    // A host that advertised what Case Zero's lobby advertises: two contexts
+    // and three int64 properties. They follow the array, the size the guest
+    // is told to allocate covers them, and the title's own walk — 24 bytes a
+    // property, the value at +16 — finds 0x20000002.
+    {
+        xlive::Client::SessionInfo advertised = session;
+        advertised.contexts = {{0x800A, 1}, {0x800B, 0}};
+        for (uint32_t id : {0x20000001u, 0x20000002u, 0x20000003u})
+        {
+            xlive::Client::StatProperty property;
+            property.id = id;
+            property.type = xlive::Client::StatProperty::Type::Int64;
+            property.integer = int64_t(id & 0xF) * 1000;
+            advertised.properties.push_back(property);
+        }
+        const std::vector<xlive::Client::SessionInfo> one{advertised};
+        const uint32_t withTail = needed + 2 * 8 + 3 * 24;
+        GuestScratch small(withTail);
+        GuestScratch scratch(withTail);
+        if (!small.va || !scratch.va)
+            return;
+        Pending pending;
+        pending.resultsPtr = small.va;
+        pending.resultsSize = needed; // the old size, without the tail
+        XLIVE_EXPECT(WriteSearchResults(pending, one) == kErrorInsufficientBuffer);
+        XLIVE_EXPECT(GuestPtr<GuestSearchResultHeader>(small.va)->count.get() == withTail);
+
+        pending.resultsPtr = scratch.va;
+        pending.resultsSize = withTail;
+        XLIVE_EXPECT(WriteSearchResults(pending, one) == kErrorSuccess);
+        const auto* header = GuestPtr<GuestSearchResultHeader>(scratch.va);
+        const auto* entry = GuestPtr<GuestSearchResult>(header->resultsPtr.get());
+        XLIVE_EXPECT(entry->contextCount.get() == 2);
+        XLIVE_EXPECT(entry->propertyCount.get() == 3);
+        const auto* contexts = GuestPtr<GuestUserContext>(entry->contextsPtr.get());
+        XLIVE_EXPECT(contexts && contexts[0].id.get() == 0x800A && contexts[0].value.get() == 1);
+        const auto* properties = GuestPtr<GuestUserProperty>(entry->propertiesPtr.get());
+        XLIVE_EXPECT(properties != nullptr);
+        if (properties)
+        {
+            // sub_82599D80's walk.
+            bool found = false;
+            for (uint32_t i = 0; i < entry->propertyCount.get(); i++)
+            {
+                if (properties[i].id.get() != 0x20000002)
+                    continue;
+                found = true;
+                XLIVE_EXPECT(properties[i].type == 2); // INT64
+                XLIVE_EXPECT(reinterpret_cast<const be<int64_t>*>(properties[i].value)->get() == 2000);
+            }
+            XLIVE_EXPECT(found);
+            // Everything landed inside the buffer the guest gave.
+            XLIVE_EXPECT(entry->propertiesPtr.get() + 3 * 24 <= scratch.va + withTail);
+        }
     }
 }
 
