@@ -242,10 +242,18 @@ const char* WhyNotJoining(PPCContext& ctx, uint8_t* base, const Objects& o, char
     {
         return "cooling down after an attempt that came back to IDLE";
     }
-    // No game-state gate: the main menu after START reads state 3 here, and
-    // GameSelect's own ctor only conditions its listener registration on the
-    // state (5/7 at 0x824C8958), not the join call. sub_824BDD10 is the
-    // title's gate; the state is printed with the attempt.
+    // The SCREEN form fires only from the main menu (game state 3 after
+    // START): the first two-machine session re-opened GameSelect on a joiner
+    // that was still in gameplay (state 5) after the host dropped it, and the
+    // title faulted at guest 0x14. The call form has no state gate —
+    // GameSelect's own ctor conditions only its listener registration on the
+    // state (5/7 at 0x824C8958), not the call — and sub_824BDD10 is the
+    // title's gate for both.
+    if (g_joinMode == 1 && GameState(base) != 3)
+    {
+        snprintf(detail, cap, "state %u", GameState(base));
+        return "not at the main menu (game state 3)";
+    }
     PPCContext call = ctx;
     call.r3.u64 = o.gameSession;
     GuestCall(call, base, kFnOnlineReady, "online-ready");

@@ -1,5 +1,7 @@
 #include "xlive_glue.h"
 
+#include <atomic>
+#include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -44,6 +46,40 @@ bool g_started = false;
 
 // CZ_XLIVE_ONLINE=1, read once. See CzXlive_SignedInToLive.
 bool g_onlineAllowed = false;
+
+// A GATEWAY DROP IS NOT A SIGN-OUT UNTIL IT HAS LASTED. libxlive's access
+// token expires hourly; the gateway websocket is closed on the expiry,
+// refused once with 401, and reopened a few seconds later once the token is
+// refreshed. The first co-op session ended exactly there: the runtime posted
+// XN_SYS_SIGNINCHANGED on the close, the title re-read XamUserGetSigninState,
+// got 1, logged "HW MM session found account: 0 is not signed in to xbox
+// live!" and closed the session on both machines — every ~60-90 s of play,
+// which had read as a 120 s join timeout in the headless runs. On the
+// console a Live blip that short never reached the title either.
+//
+// So a drop is held for kSigninGraceMs: the title keeps reading 2 and hears
+// nothing; if the gateway is back inside the grace the drop never happened
+// from its point of view; only a drop that outlasts the grace is announced,
+// by the first sign-in read after it expires (a guest thread, like the
+// worker thread the immediate post used). CZ_XLIVE_SIGNIN_GRACE_MS=N sets
+// it; 0 restores the immediate post as the control arm.
+std::atomic<long long> g_dropSinceMs{-1};   // -1: no drop pending
+std::atomic<bool> g_dropAnnounced{false};
+
+long long NowMs()
+{
+    using namespace std::chrono;
+    return duration_cast<milliseconds>(steady_clock::now().time_since_epoch()).count();
+}
+
+long long SigninGraceMs()
+{
+    static const long long v = [] {
+        const char* e = std::getenv("CZ_XLIVE_SIGNIN_GRACE_MS");
+        return e && *e ? std::strtoll(e, nullptr, 10) : 30000LL;
+    }();
+    return v;
+}
 
 void PublishGamertag(const std::string& tag)
 {
@@ -114,8 +150,32 @@ void OnEvent(const xlive::Event& event)
         // Live one its own listener handles beside the invite.
         if (g_onlineAllowed)
         {
-            PostGuestNotification(XN_SYS_SIGNINCHANGED, 1);
-            XliveSocial_OnConnectionChanged(xlive::Client::Instance().online());
+            const bool online = xlive::Client::Instance().online();
+            const long long grace = SigninGraceMs();
+            if (grace <= 0)
+            {
+                PostGuestNotification(XN_SYS_SIGNINCHANGED, 1);
+            }
+            else if (!online)
+            {
+                // Hold it. CzXlive_SignedIn keeps answering true meanwhile,
+                // and XamUserGetSigninState announces the drop if it lasts.
+                g_dropAnnounced.store(false);
+                g_dropSinceMs.store(NowMs());
+                KLOG("[xlive] gateway dropped; the title is not told for %lld ms "
+                     "(CZ_XLIVE_SIGNIN_GRACE_MS)\n", grace);
+            }
+            else
+            {
+                const long long since = g_dropSinceMs.exchange(-1);
+                const bool announced = g_dropAnnounced.exchange(false);
+                if (since >= 0 && !announced)
+                    KLOG("[xlive] gateway back after %lld ms; inside the grace, the title "
+                         "never heard it drop\n", NowMs() - since);
+                else
+                    PostGuestNotification(XN_SYS_SIGNINCHANGED, 1);
+            }
+            XliveSocial_OnConnectionChanged(online);
         }
         break;
 
@@ -221,7 +281,24 @@ void CzXlive_Start(uint32_t titleId)
 
 bool CzXlive_SignedIn()
 {
-    return g_started && xlive::Client::Instance().online();
+    if (!g_started)
+        return false;
+    if (xlive::Client::Instance().online())
+        return true;
+    // Inside a held gateway drop the answer is still yes; past it, the first
+    // reader announces the sign-out the immediate post would have made.
+    const long long since = g_dropSinceMs.load();
+    if (since < 0)
+        return false;
+    if (NowMs() - since < SigninGraceMs())
+        return true;
+    if (!g_dropAnnounced.exchange(true))
+    {
+        KLOG("[xlive] gateway drop outlasted the grace; telling the title it is signed out\n");
+        if (g_onlineAllowed)
+            PostGuestNotification(XN_SYS_SIGNINCHANGED, 1);
+    }
+    return false;
 }
 
 bool CzXlive_SignedInToLive()
