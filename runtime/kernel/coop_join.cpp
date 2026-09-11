@@ -30,11 +30,19 @@
 // the reliable-layer handshake, and whatever the client flow does next —
 // which is the question part 3 exists to answer.
 //
-// It does NOT open the GameSelect screen. The screen is UI over the same
-// call, and opening a frontend screen from a hook means owning its lifetime
-// against the menu that is actually showing; the call is enough to learn
-// whether the client flow works, and a row in the panel belongs with the
-// privacy setting once part 4 says co-op is worth shipping.
+// TWO FORMS, because the first two-machine session showed the call alone is
+// not enough. CZ_XLIVE_JOIN=call makes the call directly: the joiner searched,
+// found the host, took its seat, opened the reliable layer and reached
+// LOGIN_STATE_CONNECTED — and then sat at the main menu, because the thing
+// that would have moved it into the host's level is the GameSelect screen's
+// own reaction to the connection, and no screen was open; 120 s later the
+// host dropped it (TYPE_EVENT_PLAYER, then "Lost connection with server").
+// CZ_XLIVE_JOIN=1 (the default form) opens the GameSelect screen in mode 1
+// through the frontend transition manager, exactly as the JoinGame row does
+// (sub_824DAA10: sub_827F6D40(manager, hash("GameSelect"), {1, 1})), and lets
+// the screen make the call and own what follows. The screen's Update fires
+// the call when its "tv_45" UI event has set the pending byte (+0x548), and
+// its listener registration (ctor, event type 4) is what hears the result.
 //
 // CZ_XLIVE_JOIN_AFTER_MS=N   do not fire before N ms of uptime (default 15000:
 //                            the title screen and the sign-in have to be up)
@@ -52,12 +60,16 @@
 
 extern "C" PPC_FUNC(__imp__sub_824C2268);
 extern "C" PPC_FUNC(__imp__sub_825CB2A8);
+extern "C" PPC_FUNC(__imp__sub_8276E398);   // (name, length) -> the frontend's name hash
+extern "C" PPC_FUNC(__imp__sub_827F6D40);   // (manager, screen hash, params)
+uint32_t DebugTunables_FrontendManager();
 
 using namespace coop;
 
 namespace
 {
-int g_joinMode = -1; // -1 unread; 0 off; 1 on
+int g_joinMode = -1; // -1 unread; 0 off; 1 open the GameSelect screen; 2 make the call
+constexpr uint32_t kStrGameSelect = 0x82071A60; // "GameSelect", 10 chars
 long g_afterMs = 15000;
 long g_retryMs = 12000;
 long g_maxTries = 0;
@@ -76,18 +88,20 @@ bool JoinRequested()
     if (g_joinMode < 0)
     {
         const char* env = std::getenv("CZ_XLIVE_JOIN");
-        g_joinMode = (env && *env && *env != '0') ? 1 : 0;
+        g_joinMode = (env && *env && *env != '0') ? (std::strcmp(env, "call") == 0 ? 2 : 1) : 0;
         if (g_joinMode)
         {
             g_afterMs = EnvLong("CZ_XLIVE_JOIN_AFTER_MS", g_afterMs);
             g_retryMs = EnvLong("CZ_XLIVE_JOIN_RETRY_MS", g_retryMs);
             g_maxTries = EnvLong("CZ_XLIVE_JOIN_TRIES", 0);
             fprintf(stderr, "[coop] CZ_XLIVE_JOIN: this build will search for and join a "
-                            "co-op session (after %ld ms, retry every %ld ms, %s)\n",
+                            "co-op session %s (after %ld ms, retry every %ld ms, %s)\n",
+                    g_joinMode == 1 ? "through the title's GameSelect screen"
+                                    : "by calling sub_824BD960 directly",
                     g_afterMs, g_retryMs, g_maxTries ? "limited tries" : "until it connects");
         }
     }
-    return g_joinMode == 1;
+    return g_joinMode > 0;
 }
 
 long NowMs()
@@ -152,6 +166,39 @@ void FireJoin(PPCContext& ctx, uint8_t* base, const Objects& o)
                     "COOP}) at %ld ms (game state %u, login state %d)\n",
             g_tries, o.gameSession, g_lastAttemptMs, GameState(base), LoginState(base, o));
     GuestCall(call, base, kFnStartSession, "start-session");
+}
+
+// The JoinGame row's form: open GameSelect in mode 1 through the frontend
+// transition manager (captured by the title's own first screen change), with
+// the {1, 1} params the row passes. The screen then makes the call above
+// itself and reacts to what follows.
+void FireJoinScreen(PPCContext& ctx, uint8_t* base, const Objects& o)
+{
+    const uint32_t manager = DebugTunables_FrontendManager();
+    if (!manager)
+    {
+        fprintf(stderr, "[coop] join: no frontend transition manager captured yet\n");
+        return;
+    }
+    PPCContext call = ctx;
+    const uint32_t params = (ctx.r1.u32 - 0x20) & ~0xFu;
+    call.r1.u64 = params - 0x100;
+    PPC_STORE_U32(params, 1);
+    PPC_STORE_U32(params + 4, 1);   // mode 1: join a co-op game
+    call.r3.u64 = kStrGameSelect;
+    call.r4.u64 = 10;
+    __imp__sub_8276E398(call, base);
+    const uint32_t hash = call.r3.u32;
+    g_tries++;
+    g_lastAttemptMs = NowMs();
+    fprintf(stderr, "[coop] JOIN attempt %ld: GameSelect (hash %08X) mode 1 through frontend "
+                    "manager %08X at %ld ms (game session %08X, game state %u, login state %d)\n",
+            g_tries, hash, manager, g_lastAttemptMs, o.gameSession, GameState(base),
+            LoginState(base, o));
+    call.r3.u64 = manager;
+    call.r4.u64 = hash;
+    call.r5.u64 = params;
+    __imp__sub_827F6D40(call, base);
 }
 
 // Why the join is not fired this frame, or nullptr to fire. Printed only when
@@ -235,7 +282,10 @@ PPC_FUNC(sub_824C2268)
         return;
     }
     g_lastWhy[0] = '\0';
-    FireJoin(ctx, base, o);
+    if (g_joinMode == 1)
+        FireJoinScreen(ctx, base, o);
+    else
+        FireJoin(ctx, base, o);
 }
 
 // The LIVE_STATE setter: its `this` is the HW MM session object whose +0x118

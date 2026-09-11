@@ -1533,6 +1533,14 @@ bool DebugTunables_WantAutoBack()
     return now >= g_autoBackFromMs.load(std::memory_order_acquire);
 }
 
+// The frontend transition manager the title's own first screen change captured, or
+// 0 before that. The co-op joiner (kernel/coop_join.cpp) opens the title's GameSelect
+// screen through it, the way the JoinGame screen's XboxLive row does.
+uint32_t DebugTunables_FrontendManager()
+{
+    return g_frontendTransitionManager;
+}
+
 // The barrier's predicate. Read from the synthetic-input arm on a guest thread.
 uint32_t DebugTunables_ScreenRequestsServiced()
 {
