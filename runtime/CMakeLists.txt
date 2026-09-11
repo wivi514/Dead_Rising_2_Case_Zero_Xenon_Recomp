@@ -321,6 +321,7 @@ add_executable(cz_runtime
     kernel/online_log.cpp            # the title's online logger, printed with CZ_ONLINE_LOG=N
     kernel/coop_host.cpp             # CZ_XLIVE_HOST=1: host a co-op session via the title's own recreate path
     kernel/coop_join.cpp             # CZ_XLIVE_JOIN=1: search for and join a co-op session via the title's own join path
+    kernel/coop_transport.cpp        # the connection-listener site Case Zero's release byte NULLs
     kernel/xlive_overlay_glue.cpp    # the in-game overlay's seam; no-ops without CZ_XLIVE_OVERLAY
     gpu/vd.cpp
     gpu/pm4.cpp
