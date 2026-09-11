@@ -199,6 +199,12 @@ void FireJoinScreen(PPCContext& ctx, uint8_t* base, const Objects& o)
     call.r4.u64 = hash;
     call.r5.u64 = params;
     __imp__sub_827F6D40(call, base);
+    // 1 = queued (+0x17C hash, +0x180 params); 0 = the current screen (manager+0x120,
+    // its vt[5]) refused the transition or one is already pending.
+    fprintf(stderr, "[coop] join: transition request returned %u (current screen %08X, "
+                    "pending hash %08X, state %u/%u)\n", call.r3.u32,
+            LoadU32(base, manager + 0x120), LoadU32(base, manager + 0x17C),
+            LoadU8(base, manager + 0x16C), LoadU8(base, manager + 0x16D));
 }
 
 // Why the join is not fired this frame, or nullptr to fire. Printed only when
