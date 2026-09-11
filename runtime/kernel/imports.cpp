@@ -3355,11 +3355,26 @@ static uint32_t NetDll_WSACleanup_x(uint32_t caller)
 // `mr. r31,r3; beq ...` at 0x8280D7FC sends the title back to ask again — a poll with
 // no exit. XNET_GET_XNADDR_NONE (0x0001) says "the answer is final, and there is no
 // address", which is both true here and terminating.
+//
+// With XenonLive co-op on and an account signed in, the answer is this machine's
+// stand-in XNADDR (xlive_session.cpp) and the bits say ONLINE over DHCP Ethernet.
+// That address is what the title calls its own IP: cMsNetConfig::Init refuses to
+// go "online" without the ONLINE bit, and the online layer stamps every network
+// event it sends with the `ina` — the receiving side's link manager matches the
+// stamp against the address it recorded for the link and drops the packet
+// silently when they differ. Case West's first two-machine co-op session hung on
+// exactly that: this returned NONE and zeros, so the guest introduced itself
+// as 0.0.0.0 and the host never seated it.
 constexpr uint32_t XNET_GET_XNADDR_NONE = 0x00000001;
+constexpr uint32_t XNET_GET_XNADDR_ETHERNET = 0x00000002;
+constexpr uint32_t XNET_GET_XNADDR_DHCP = 0x00000008;
+constexpr uint32_t XNET_GET_XNADDR_ONLINE = 0x00000080;
 
 static uint32_t NetDll_XNetGetTitleXnAddr_x(uint32_t caller, be<uint32_t>* xnaddr)
 {
     (void)caller;
+    if (xnaddr && XliveSession_LocalXnAddr(xnaddr))
+        return XNET_GET_XNADDR_ONLINE | XNET_GET_XNADDR_DHCP | XNET_GET_XNADDR_ETHERNET;
     // XNADDR is 36 bytes: ina, inaOnline, wPortOnline, abEnet[6], abOnline[20]. With
     // no address to report every field is genuinely zero, but it has to be WRITTEN —
     // the title reads abEnet out of it regardless of the status bits.
