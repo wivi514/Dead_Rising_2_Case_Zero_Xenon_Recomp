@@ -1701,6 +1701,24 @@ bool g_d3dMode = false;
 const char* Env(const char* n) { return getenv(n); }
 bool EnvOn(const char* n) { return getenv(n) != nullptr; }
 
+// Take one from a "print only the first N of these" countdown, STOPPING at zero.
+//
+// The obvious spelling -- decrementing inside the comparison -- is a bug, and it shipped
+// in v1.0.2 on the hottest path in the project (pm4.cpp's [pm4draw] trace): it decrements
+// on EVERY call whether it prints or not, so the counter runs past zero and, at 2^31, wraps
+// to INT_MAX — at which point a trace NOBODY ARMED turns itself on and never stops. On a
+// per-draw path that took about 80 minutes of play: the frame rate roughly halved and
+// cz_runtime.log reached 98 GB. Every countdown in this file had the same shape; none of
+// the others could reach 2^31 because they only tick on rare or defect paths, which is
+// luck rather than design. This makes the safe form the easy one to write.
+bool TakeOne(int& left)
+{
+    if (left <= 0)
+        return false;
+    --left;
+    return true;
+}
+
 // ===================================================================================
 // PART 81 §1.1: THE DEVICE COMMAND TABLE — one indirection off every vkCmd* call
 // ===================================================================================
@@ -11049,7 +11067,7 @@ uint32_t UploadTextureUncached(uint8_t* base, const uint32_t* regs, uint32_t con
         {
             Count("texture: units left BLACK — tiled offset outside the footprint");
             static int left = 20;
-            if (left-- > 0)
+            if (TakeOne(left))
                 fprintf(stderr,
                         "[vk] untile %08X %ux%u fmt=%u bpu=%u pitchUnits=%u "
                         "srcRows=%u srcBytes=%llu: %llu of %llu units (%.1f%%) fell "
@@ -11385,7 +11403,7 @@ uint32_t UploadTextureUncached(uint8_t* base, const uint32_t* regs, uint32_t con
                     // below are declined like any other packed tail.
                     Count("mip: level REJECTED — diverges from the level above");
                     static int left = 8;
-                    if (left-- > 0)
+                    if (TakeOne(left))
                         fprintf(stderr,
                                 "[vk] mip %08X %ux%u fmt=%u level %u: endpoint luma "
                                 "%.1f vs %.1f one level up — this level is probably not "
@@ -11900,7 +11918,7 @@ uint32_t UploadTextureUncached(uint8_t* base, const uint32_t* regs, uint32_t con
         {
             Count("texture: uploaded a SINGLE REPEATED BLOCK — one flat colour");
             static int left = 12;
-            if (left-- > 0)
+            if (TakeOne(left))
                 fprintf(stderr,
                         "[vk] texture %08X %ux%u fmt=%u uploaded UNIFORM: every block is "
                         "%02X%02X%02X%02X%02X%02X%02X%02X — this surface can only render "
@@ -12031,7 +12049,7 @@ uint32_t UploadTextureUncached(uint8_t* base, const uint32_t* regs, uint32_t con
     {
         Count("texture: CUBE MAP uploaded (six faces)");
         static int left = 8;
-        if (left-- > 0)
+        if (TakeOne(left))
             fprintf(stderr,
                     "[vk] cube %08X %ux%u fmt=%u tiled=%u pitchBlk=%u faceBytes=%llu "
                     "-> set 2 slot %u\n",
@@ -25580,7 +25598,7 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
     if (fetchProbe && !vs.attributes.empty())
     {
         static int left = 4;
-        if (left-- > 0)
+        if (TakeOne(left))
         {
             fprintf(stderr, "[vkfetch] draw vs=%016llx populated vertex fetch slots:\n",
                     (unsigned long long)vsBind.hash);
@@ -26126,7 +26144,7 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
                               ? atoi(Env("CZ_VK_DRAW_PROBE_COUNT"))
                               : 3;
         if (vsBind.hash == strtoull(probe, nullptr, 16) && draw.indexCount >= minVerts &&
-            R->frame >= minFrame && left-- > 0)
+            R->frame >= minFrame && TakeOne(left))
         {
             const uint32_t* c = regs + xenos::kAluConstantBase;
             // The bound texture belongs on the header line. Two draws through one shader
@@ -29474,7 +29492,7 @@ void DoSwapImpl(uint8_t* base, uint32_t frontBuffer, uint32_t width, uint32_t he
         {
             Count("PRESENT PIXELS ARE FROM A DIFFERENT FRAME — a stale readback slot");
             static int left = 8;
-            if (left-- > 0)
+            if (TakeOne(left))
                 fprintf(stderr,
                         "[vk] !! present slot describes frame %llu but holds frame %llu's "
                         "pixels — every picture instrument reading this frame is looking "
