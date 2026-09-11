@@ -75,6 +75,9 @@
 #include "memory.h"
 #include "xex_imports.h"
 #include "xlive_glue.h"  // XenonLive: the account, and where achievements go
+#include "xlive_social.h" // XenonLive: the XLiveBase messages (friends, invites)
+#include "xlive_session.h"  // the XGI session surface (co-op), off by default
+#include "xlive_stats.h"    // the leaderboard read path, on with CZ_XLIVE_ONLINE
 
 // ---------------------------------------------------------------------------
 // Stub helpers
@@ -3422,9 +3425,17 @@ constexpr const char* kLocalUserName = "Player";
 
 // XamUserGetSigninState returns the state itself, not a status: 0 = not signed in,
 // 1 = signed in locally, 2 = signed in to Live.
+//
+// THE 2 IS BEHIND CZ_XLIVE_ONLINE=1, and it is the riskiest line in the XenonLive
+// integration: it is what sends the title down XOnlineStartup, the friends list
+// and the invite state machine — every path kernel/xlive_social.cpp exists for
+// and nothing before it had exercised. Without the flag this is the 1 it has
+// always been, and the A1/A5 call sequence is untouched.
 static uint32_t XamUserGetSigninState_x(uint32_t userIndex)
 {
-    return userIndex == kLocalUserIndex ? 1u : 0u;
+    if (userIndex != kLocalUserIndex)
+        return 0;
+    return CzXlive_SignedInToLive() ? 2u : 1u;
 }
 
 // XamUserGetName(userIndex, buffer, bufferLen) -> 0 on success. A1 always asks for
@@ -3470,7 +3481,13 @@ static uint32_t XamUserGetSigninInfo_x(uint32_t userIndex, uint32_t flags, be<ui
         *out = 0;
         return ERROR_NO_SUCH_USER;
     }
-    *out = (flags & 1) ? 0ull : kLocalOfflineXuid;
+    // flags=1 asks for the ONLINE xuid. There is one exactly when the title
+    // is being told it is signed in to Live (see XamUserGetSigninState); the
+    // rest of the time the answer stays the zero A1's call sequence depends on.
+    if (flags & 1)
+        *out = CzXlive_SignedInToLive() ? CzXlive_Xuid(0) : 0ull;
+    else
+        *out = CzXlive_Xuid(kLocalOfflineXuid);
     return 0;
 }
 
@@ -3500,6 +3517,11 @@ static uint32_t XamUserGetXUID_x(uint32_t userIndex, uint32_t type, be<uint64_t>
 // A1 asks for privilege 0x000000FC = XPRIVILEGE_COMMUNICATIONS. With no Live identity
 // (see the XUID above) the truthful answer is "not granted", and saying otherwise
 // would invite the title into an online path this runtime cannot follow.
+//
+// Signed in to Live (CZ_XLIVE_ONLINE=1 and a gateway up), every privilege is
+// granted: the account is an adult one with nothing to restrict, and the title
+// asks about communications and multiplayer sessions before it will show a
+// co-op lobby or a friends list.
 static uint32_t XamUserCheckPrivilege_x(uint32_t userIndex, uint32_t privilege,
                                         be<uint32_t>* result)
 {
@@ -3507,10 +3529,33 @@ static uint32_t XamUserCheckPrivilege_x(uint32_t userIndex, uint32_t privilege,
     if (!result)
         return ERROR_NO_SUCH_USER;
     *result = 0;
-    return userIndex == kLocalUserIndex ? 0u : ERROR_NO_SUCH_USER;
+    if (userIndex != kLocalUserIndex)
+        return ERROR_NO_SUCH_USER;
+    *result = CzXlive_SignedInToLive() ? 1u : 0u;
+    return 0;
 }
 
 GUEST_FUNCTION_HOOK(__imp__XamUserGetSigninState, XamUserGetSigninState_x)
+
+// XamUserCreateStatsEnumerator(titleId, kind, pivot, rows, specCount, specs,
+// &size, &handle) — the import behind XUserCreateStatsEnumeratorByRank
+// (sub_825AA998: `li r4,1` and the rank zero-extended into r5, which is a
+// 64-bit argument and arrives as one). See kernel/xlive_stats.h.
+static uint32_t XamUserCreateStatsEnumerator_x(uint32_t titleId, uint32_t kind, uint64_t pivot,
+                                               uint32_t rows, uint32_t specCount,
+                                               const void* specs, be<uint32_t>* sizeOut,
+                                               be<uint32_t>* handleOut)
+{
+    if (!XliveStats_Enabled())
+    {
+        // Exactly the generated stub's answer, so a boot without
+        // CZ_XLIVE_ONLINE stays byte-for-byte what it was.
+        return 0xC0000002u;
+    }
+    return XliveStats_CreateEnumerator(titleId, kind, pivot, rows, specCount, specs, sizeOut,
+                                       handleOut);
+}
+GUEST_FUNCTION_HOOK(__imp__XamUserCreateStatsEnumerator, XamUserCreateStatsEnumerator_x)
 GUEST_FUNCTION_HOOK(__imp__XamUserGetName, XamUserGetName_x)
 GUEST_FUNCTION_HOOK(__imp__XamUserGetSigninInfo, XamUserGetSigninInfo_x)
 GUEST_FUNCTION_HOOK(__imp__XamUserGetXUID, XamUserGetXUID_x)
@@ -3838,32 +3883,41 @@ struct NotifyListener final : KernelObject
     explicit NotifyListener(uint64_t areaMask) : mask(areaMask) {}
 };
 
-// The notification area is the id's high halfword; the listener mask has one bit per
-// area. Every id this title tests for is in area 0 (the system area), so in practice
-// this only ever asks "did you subscribe to bit 0" — but the shift is written out
-// because a listener created with mask 0x20 (A1 shows one) is subscribing to
-// something else entirely, and silently delivering system events to it would be
-// wrong in a way nothing would report.
+// The notification area is bits 25..30 of the id; the listener mask has one bit per
+// area. Read off the title now that it tests ids outside area 0: sub_8259DC38 polls
+// the listener created with mask 3 and handles 0x02000001 and 0x02000002
+// (XN_LIVE_CONNECTIONCHANGED, XN_LIVE_INVITE_ACCEPTED — area 1, mask bit 1) beside
+// 10 and 14; sub_825F8EB8 polls a mask-5 listener for 0x04000002/3 (the friends
+// area, 2); and the mask-0x20 listener A1 shows is area 5, the media player, which
+// sub_827F6D98 polls for 0x0A000001. Xenia agrees (kXNotificationAreaMask =
+// 0x7E000000). The earlier `id >> 16` was only ever exercised on area-0 ids, where
+// both encodings give bit 0.
 static bool ListenerWants(const NotifyListener* l, uint32_t id)
 {
-    return (l->mask & (1ull << (id >> 16))) != 0;
+    return (l->mask & (1ull << ((id >> 25) & 0x3F))) != 0;
 }
 
 static std::vector<NotifyListener*> g_notifyListeners;
 
-// The seam for a future input/storage/UI layer: post an event to every listener
-// subscribed to its area. Unused today, and deliberately kept rather than deferred —
-// the queue is only testable if something can fill it.
-void PostGuestNotification(uint32_t id, uint32_t param)
+// The seam the Live layer posts through (kernel/xlive_glue.cpp, xlive_social.cpp):
+// an event to every listener subscribed to its area. Returns whether ANY listener
+// took it, because a notification posted before the title has created a listener
+// for that area is simply gone — and at boot, libxlive connects and learns of an
+// invitation the process was launched into well before the title's listeners
+// exist. A caller that must not lose one holds it and posts again later.
+bool PostGuestNotification(uint32_t id, uint32_t param)
 {
     std::lock_guard guard(g_kernelLock);
+    bool delivered = false;
     for (NotifyListener* l : g_notifyListeners)
     {
         if (!ListenerWants(l, id))
             continue;
         std::lock_guard q(l->m);
         l->queue.emplace_back(id, param);
+        delivered = true;
     }
+    return delivered;
 }
 
 // A1: XamNotifyCreateListener(0000000000000001, 00000005) and four more with masks
@@ -5061,8 +5115,23 @@ static std::map<uint64_t, uint32_t> g_userContexts;
 // perform, so failing it is the honest answer rather than a gap. A1 only ever
 // sends 000B0006 during boot.
 static uint32_t DispatchAppMessage(uint32_t app, uint32_t message, void* buffer,
-                                   uint32_t bufferLength)
+                                   uint32_t bufferLength, uint32_t overlappedVa = 0)
 {
+    // The session surface, when co-op is on. It takes the overlapped because
+    // every one of its messages is answered by a server and none of them may
+    // block a guest thread; see kernel/xlive_session.h. With co-op off this
+    // never claims a message and everything below is exactly as it was.
+    if (app == kAppXgi)
+    {
+        uint32_t sessionResult = 0;
+        if (XliveSession_Dispatch(message, buffer, bufferLength, overlappedVa, &sessionResult))
+            return sessionResult;
+        // And the leaderboard read, which is answered the same way: by a
+        // server, through the overlapped, from a thread of its own.
+        if (XliveStats_Dispatch(message, buffer, bufferLength, overlappedVa, &sessionResult))
+            return sessionResult;
+    }
+
     if (app == kAppXgi && message == 0x000B0006)
     {
         if (!buffer || bufferLength < sizeof(GuestXgiUserContext))
@@ -5071,6 +5140,14 @@ static uint32_t DispatchAppMessage(uint32_t app, uint32_t message, void* buffer,
         const uint32_t user = msg->userIndex.get();
         const uint32_t id = msg->contextId.get();
         g_userContexts[(uint64_t(user) << 32) | id] = msg->contextValue.get();
+        // And to the session layer, which advertises them when a lobby is
+        // created — the create message does not carry them.
+        XliveSession_SetContext(id, msg->contextValue.get());
+        // X_CONTEXT_PRESENCE is the one context that is FOR other people: on
+        // the console it was the line under the gamertag in a friend's list.
+        // libxlive publishes it to accepted friends and never blocks here.
+        if (id == 0x8001)
+            CzXlive_SetPresence(msg->contextValue.get());
         KLOG("XGI user %u context %04X = %u\n", user, id, msg->contextValue.get());
         return 0;
     }
@@ -5281,19 +5358,41 @@ static uint32_t DispatchAppMessage(uint32_t app, uint32_t message, void* buffer,
 static uint32_t XMsgStartIORequest_x(uint32_t app, uint32_t message, uint32_t overlapped,
                                      void* buffer, uint32_t bufferLength)
 {
-    const uint32_t result = DispatchAppMessage(app, message, buffer, bufferLength);
+    const uint32_t result = DispatchAppMessage(app, message, buffer, bufferLength, overlapped);
     if (!overlapped)
         return result;
+    // A session or leaderboard message that was accepted completes ITSELF,
+    // later, from its own thread — the handler marked the overlapped pending
+    // (the only thing in this runtime that writes 997 there), and completing
+    // it here would tell the title the answer had arrived when the request
+    // has not even left the machine.
+    if (app == kAppXgi && result == 0 &&
+        reinterpret_cast<GuestOverlapped*>(g_memory.Translate(overlapped))->result.get() == 997)
+    {
+        return 0;
+    }
     CompleteOverlapped(reinterpret_cast<GuestOverlapped*>(g_memory.Translate(overlapped)),
                        result, bufferLength);
     return 0;
 }
 
 // The synchronous form: no overlapped, the status is the return value.
+//
+// THE FOURTH PARAMETER IS NOT A LENGTH. For XLiveBase it is a pointer — to the
+// marshalled argument list for XFriendsCreateEnumerator and
+// XInviteGetAcceptedInfo, to the caller's BOOL for XUserMuteListQuery — and
+// the recovery tool was right to refuse to fold it to a constant. It is passed
+// through raw and each message interprets it (kernel/xlive_social.cpp); the
+// XGI and content messages that come this way still see a length of 0.
 static uint32_t XMsgInProcessCall_x(uint32_t app, uint32_t message, void* buffer,
-                                    uint32_t unused)
+                                    uint32_t argumentsVa)
 {
-    (void)unused;
+    if (app == kAppXLiveBase)
+    {
+        uint32_t result = 0;
+        if (XliveSocial_Dispatch(message, buffer, argumentsVa, &result))
+            return result;
+    }
     return DispatchAppMessage(app, message, buffer, 0);
 }
 

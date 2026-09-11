@@ -314,6 +314,10 @@ add_executable(cz_runtime
     kernel/content.cpp
     kernel/xex_imports.cpp
     kernel/xlive_glue.cpp            # XenonLive: the account and achievements
+    kernel/xlive_session.cpp         # the XGI session surface; off unless CZ_XLIVE_COOP=1
+    kernel/xlive_social.cpp          # the XLiveBase surface: friends, invites, mutes
+    kernel/xlive_stats.cpp           # the leaderboard read path
+    kernel/xlive_net.cpp             # the socket family over the punched path, and QoS
     gpu/vd.cpp
     gpu/pm4.cpp
     gpu/vk_renderer.cpp              # phase 5; inert unless CZ_VKDRAW=1
