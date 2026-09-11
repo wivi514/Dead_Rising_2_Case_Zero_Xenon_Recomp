@@ -4193,3 +4193,28 @@ CZ_LAUNCHER_PAD_TEST=IN,IN,...  **the launcher pad's positive control (part 108)
                    cases a physical pad delivers, so a wrong mapping here is wrong on a
                    Deck. Settings are only SAVED when the run reaches PLAY, so a test
                    ending in `B` leaves cz_settings.txt untouched.
+
+## Co-op (the `xlive-integration` branch; `docs/coop-plan.md`)
+
+```
+CZ_XLIVE_ONLINE=1  the title is told it is signed in to Live (XamUserGetSigninState 2)
+CZ_XLIVE_COOP=1    the XGI session messages are handled (kernel/xlive_session.cpp)
+CZ_NET_LOG=1       every datagram over the punched path
+CZ_ONLINE_LOG=N    the title's OWN online logger (part 1). 1 = levels 1..3; N = up to N.
+                   [title:N] lines. The HW MM session state machine narrates itself here
+CZ_XLIVE_HOST=1    HOST A CO-OP SESSION (part 2, runtime/kernel/coop_host.cpp). Three
+                   things, all printed as [coop]: (1) the session's IS-COOP byte is set
+                   before GameplayFlow::Enter — measured redundant, the title already
+                   holds it at 1, kept as the belt to the title's braces; (2) every
+                   refusal of the per-frame create path sub_824C0668 is NAMED, once per
+                   distinct reason, by evaluating its ten predicates through the same
+                   guest getters; (3) the host's XSession flags are rewritten from Case
+                   Zero's 0x706 (no HOST bit, joins and invites disabled — THE one place
+                   this build disabled co-op) to Case West's value for the same privacy
+                   (0x42F everyone / 0x827 friends / 0x227 invite). Proof of engagement is
+                   `[coop] host session flags: Case Zero's 706 -> Case West's 42F` followed
+                   by `HW MM XSessionCreate with session flag: 1071` and the kernel's
+                   `hosting session <XNKID>`. Also prints `SetActiveUser(N)`, which is the
+                   pad that pressed START and the user the matchmaking object asks
+                   XamUserGetSigninState about — N must be 0
+```

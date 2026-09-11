@@ -41,6 +41,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <mutex>
 
 #include <ppc_config.h>
 #include <ppc_context.h>
@@ -70,6 +71,15 @@ int OnlineLogLevel()
     return g_onlineLogLevel;
 }
 
+// A line identical to the one before it is counted, not printed: with no
+// voice engine the session reports "User 0 cannot be added to the chat" every
+// frame (23,781 times in one 3-minute host run, part 2), and a log that is
+// 78% one line hides the state machine it exists to show. The count is
+// printed when the next different line arrives, so nothing is lost.
+std::mutex g_lineMutex;   // the online layer logs from more than one guest thread
+char g_lastLine[1024];
+unsigned g_lastRepeats = 0;
+
 void OnlineLogLine(PPCContext& ctx, uint8_t* base, int level, const char* mark)
 {
     if (OnlineLogLevel() >= level && ctx.r5.u32 != 0)
@@ -78,6 +88,17 @@ void OnlineLogLine(PPCContext& ctx, uint8_t* base, int level, const char* mark)
         const char* fmt = reinterpret_cast<const char*>(base + ctx.r5.u32);
         GuestFormat(buf, sizeof buf, fmt, ctx, base, 3);
         const size_t n = std::strlen(buf);
+        std::lock_guard<std::mutex> lock(g_lineMutex);
+        if (std::strcmp(buf, g_lastLine) == 0)
+        {
+            g_lastRepeats++;
+            return;
+        }
+        if (g_lastRepeats)
+            fprintf(stderr, "[title] (previous line repeated %u more time%s)\n", g_lastRepeats,
+                    g_lastRepeats == 1 ? "" : "s");
+        g_lastRepeats = 0;
+        std::strncpy(g_lastLine, buf, sizeof g_lastLine - 1);
         fprintf(stderr, "[title:%d%s] %s%s", level, mark, buf,
                 (n && buf[n - 1] == '\n') ? "" : "\n");
     }
