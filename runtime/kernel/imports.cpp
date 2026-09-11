@@ -2253,7 +2253,7 @@ GUEST_FUNCTION_HOOK(__imp__RtlNtStatusToDosError, RtlNtStatusToDosError_x)
 // the argument cursor for the rest of the string.
 //
 // Cheap, and it is what makes a guest assert readable instead of a bare address.
-static size_t GuestFormat(char* out, size_t cap, const char* fmt, PPCContext& ctx,
+size_t GuestFormat(char* out, size_t cap, const char* fmt, PPCContext& ctx,
                           uint8_t* base, size_t firstArg)
 {
     size_t o = 0, argIdx = firstArg;

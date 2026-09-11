@@ -318,6 +318,7 @@ add_executable(cz_runtime
     kernel/xlive_social.cpp          # the XLiveBase surface: friends, invites, mutes
     kernel/xlive_stats.cpp           # the leaderboard read path
     kernel/xlive_net.cpp             # the socket family over the punched path, and QoS
+    kernel/online_log.cpp            # the title's online logger, printed with CZ_ONLINE_LOG=N
     kernel/xlive_overlay_glue.cpp    # the in-game overlay's seam; no-ops without CZ_XLIVE_OVERLAY
     gpu/vd.cpp
     gpu/pm4.cpp
