@@ -37,8 +37,8 @@ constexpr uint32_t kErrorNoMoreFiles = 18;
 constexpr uint32_t kErrorInvalidParameter = 87;
 constexpr uint32_t kErrorNotLoggedOn = 1245; // sub_8259B178 tests the mute query for it
 
-constexpr uint32_t E_FAIL = 0x80004005;
-constexpr uint32_t E_INVALIDARG = 0x80070057;
+constexpr uint32_t kEFail = 0x80004005;
+constexpr uint32_t kEInvalidArg = 0x80070057;
 // XONLINE_E_LOGON_NOT_LOGGED_ON. What XOnlineGetLogonID answers on a console
 // with no Live connection, and the guest's own error mapper (sub_825ACC28)
 // knows it.
@@ -326,7 +326,7 @@ uint32_t GetLogonId(void* buffer)
 {
     auto* out = static_cast<be<uint32_t>*>(buffer);
     if (!out)
-        return E_INVALIDARG;
+        return kEInvalidArg;
     if (!Live().online())
     {
         *out = 0;
@@ -346,7 +346,7 @@ uint32_t GetNatType(void* buffer)
 {
     auto* out = static_cast<be<uint32_t>*>(buffer);
     if (!out)
-        return E_INVALIDARG;
+        return kEInvalidArg;
     switch (Live().nat_type())
     {
     case xlive::Client::NatType::Open:     *out = 1; return kErrorSuccess;
@@ -355,7 +355,7 @@ uint32_t GetNatType(void* buffer)
     case xlive::Client::NatType::Unknown:  break;
     }
     *out = 0;
-    return E_FAIL;
+    return kEFail;
 }
 
 // 0x0005800E XUserMuteListQuery. Not an argument list: the struct is on the
@@ -365,12 +365,12 @@ uint32_t MuteListQuery(void* buffer, uint32_t mutedOutVa)
     auto* query = static_cast<GuestMuteQuery*>(buffer);
     auto* mutedOut = GuestPtr<be<uint32_t>>(mutedOutVa);
     if (!query || !mutedOut)
-        return E_INVALIDARG;
+        return kEInvalidArg;
     if (query->userIndex.get() != 0)
     {
         query->status = kErrorNotLoggedOn;
         *mutedOut = 0;
-        return E_INVALIDARG;
+        return kEInvalidArg;
     }
     if (!Live().online())
     {
@@ -400,31 +400,31 @@ uint32_t CreateFriendsEnumerator(uint32_t argumentsVa)
 {
     const auto* args = Arguments(argumentsVa, 5, "XFriendsCreateEnumerator");
     if (!args)
-        return E_INVALIDARG;
+        return kEInvalidArg;
 
     uint32_t userIndex = 0, start = 0, count = 0;
     if (!ReadArgument(args->entry[0], &userIndex) || !ReadArgument(args->entry[1], &start) ||
         !ReadArgument(args->entry[2], &count))
-        return E_INVALIDARG;
+        return kEInvalidArg;
     auto* sizeOut = GuestPtr<be<uint32_t>>(ArgumentAddress(args->entry[3]));
     auto* handleOut = GuestPtr<be<uint32_t>>(ArgumentAddress(args->entry[4]));
     if (!handleOut)
-        return E_INVALIDARG;
+        return kEInvalidArg;
     // Out-parameters first, failure included: the title tests the handle
     // against 0, not against the return.
     *handleOut = 0;
     if (!sizeOut)
-        return E_INVALIDARG;
+        return kEInvalidArg;
     *sizeOut = 0;
 
     if (userIndex != 0 || start >= kMaxFriends || count == 0 || count > kMaxFriends)
-        return E_INVALIDARG;
+        return kEInvalidArg;
     if (!Live().online())
         return XONLINE_E_LOGON_NOT_LOGGED_ON;
 
     auto* obj = CreateKernelObject<FriendsEnumerator>();
     if (!obj)
-        return E_FAIL;
+        return kEFail;
     const std::vector<xlive::Client::Friend> all = Live().friends();
     for (size_t i = start; i < all.size() && obj->items.size() < count; i++)
         obj->items.push_back(all[i]);
@@ -445,16 +445,16 @@ uint32_t InviteGetAcceptedInfo(uint32_t argumentsVa)
 {
     const auto* args = Arguments(argumentsVa, 2, "XInviteGetAcceptedInfo");
     if (!args)
-        return E_INVALIDARG;
+        return kEInvalidArg;
     uint32_t userIndex = 0;
     if (!ReadArgument(args->entry[0], &userIndex))
-        return E_INVALIDARG;
+        return kEInvalidArg;
     auto* info = GuestPtr<GuestInviteInfo>(ArgumentAddress(args->entry[1]));
     if (!info)
-        return E_INVALIDARG;
+        return kEInvalidArg;
     std::memset(info, 0, sizeof(*info));
     if (userIndex != 0)
-        return E_INVALIDARG;
+        return kEInvalidArg;
 
     PendingInvite invite;
     {
@@ -791,7 +791,7 @@ void TestArgumentListDecode()
     // The wrong count is refused, not read past.
     Append(args, value.va);
     XLIVE_EXPECT(XliveSocial_Dispatch(0x00058023, nullptr, list.va, &result));
-    XLIVE_EXPECT(result == E_INVALIDARG);
+    XLIVE_EXPECT(result == kEInvalidArg);
 }
 
 void TestOfflineAnswers()
