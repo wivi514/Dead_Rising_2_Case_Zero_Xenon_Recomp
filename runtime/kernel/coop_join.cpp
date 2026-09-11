@@ -97,11 +97,20 @@ long NowMs()
     return long(duration_cast<milliseconds>(steady_clock::now() - t0).count());
 }
 
-// The LIVE_STATE the matchmaking machine last entered, by name, so a refusal
-// can be read against it without CZ_ONLINE_LOG. The setter is sub_825CB2A8
-// (this, newState); the name table is at 0x829DFD40.
+// The LIVE_STATE of the HW MM session object, read from the object itself
+// (+0x118, the field sub_825CB2A8 stores to) rather than remembered from the
+// setter: the machine's own reset writes IDLE without going through the
+// setter ("entering LIVE_STATE_IDLE" with no "state transition to"), and a
+// remembered value stayed at DELETING_SESSION for a whole run. The setter is
+// hooked only to learn the object's address; the name table is at 0x829DFD40.
 constexpr uint32_t kLiveStateNames = 0x829DFD40;
-int g_lastLiveState = -1;
+constexpr uint32_t kHwSessionLiveState = 0x118;
+uint32_t g_hwSession = 0;
+
+int LiveState(uint8_t* base)
+{
+    return g_hwSession ? int(LoadU32(base, g_hwSession + kHwSessionLiveState)) : -1;
+}
 
 const char* LiveStateName(uint8_t* base, int state)
 {
@@ -166,10 +175,11 @@ const char* WhyNotJoining(PPCContext& ctx, uint8_t* base, const Objects& o, char
     const int login = LoginState(base, o);
     if (login == 3)
         return "LOGIN_STATE_CONNECTED — in a session";
-    if (login > 0 || g_lastLiveState > 0)
+    const int live = LiveState(base);
+    if (login > 0 || live > 0)
     {
         snprintf(detail, cap, "login state %d, live state %s", login,
-                 LiveStateName(base, g_lastLiveState));
+                 LiveStateName(base, live));
         return "a walk is in progress";
     }
     const long now = NowMs();
@@ -177,7 +187,6 @@ const char* WhyNotJoining(PPCContext& ctx, uint8_t* base, const Objects& o, char
         return "before CZ_XLIVE_JOIN_AFTER_MS";
     if (g_lastAttemptMs >= 0 && now - g_lastAttemptMs < g_retryMs)
     {
-        snprintf(detail, cap, "last live state %s", LiveStateName(base, g_lastLiveState));
         return "cooling down after an attempt that came back to IDLE";
     }
     // No game-state gate: the main menu after START reads state 3 here, and
@@ -229,10 +238,10 @@ PPC_FUNC(sub_824C2268)
     FireJoin(ctx, base, o);
 }
 
-// The LIVE_STATE setter, recorded so the refusal lines above can name the
-// state the walk is in. Both arms of the co-op work read it.
+// The LIVE_STATE setter: its `this` is the HW MM session object whose +0x118
+// the predicate above reads.
 PPC_FUNC(sub_825CB2A8)
 {
-    g_lastLiveState = int(ctx.r4.u32);
+    g_hwSession = ctx.r3.u32;
     __imp__sub_825CB2A8(ctx, base);
 }
