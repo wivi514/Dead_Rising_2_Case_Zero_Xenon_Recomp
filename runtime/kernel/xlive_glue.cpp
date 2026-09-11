@@ -9,6 +9,7 @@
 #include <xlive/client.h>
 
 #include "klog.h"
+#include "xlive_overlay_glue.h"
 #include "xlive_session.h"
 #include "xlive_social.h"
 #include "xlive_net.h"
@@ -78,6 +79,8 @@ void OnLog(xlive::LogLevel level, const std::string& line)
 
 void OnEvent(const xlive::Event& event)
 {
+    // The overlay draws its own notifications from the same events.
+    CwOverlay_OnEvent(event);
     switch (event.kind)
     {
     case xlive::EventKind::AchievementUnlocked:
@@ -127,9 +130,17 @@ void OnEvent(const xlive::Event& event)
         // Delivered only when no launcher is connected to ask the player.
         KLOG("[xlive] invite from %s to session %016llX\n", event.gamertag.c_str(),
              (unsigned long long)event.session_id);
+#if CZ_HAVE_XLIVE_OVERLAY
+        // With the overlay built there IS a place to ask: it has toasted the
+        // invitation, and Accept there tells the server, which answers with
+        // invite_taken — the InviteAccepted path below. Nothing is taken on
+        // the player's behalf.
+        break;
+#else
         XliveSocial_OnInviteReceived(event.invite_id, event.xuid, event.title_id,
                                      event.session_id, /*accept=*/true);
         break;
+#endif
 
     case xlive::EventKind::InviteAccepted:
         // The player said yes in the launcher; this is the title's cue.
@@ -182,6 +193,7 @@ void CzXlive_Start(uint32_t titleId)
         return;
     }
     g_started = true;
+    CwOverlay_SetClient(&xlive::Client::Instance());
 
     // A cached identity is already loaded by Start, so a player who has signed
     // in before sees their own gamertag from the first frame rather than after

@@ -9,6 +9,7 @@
 #include "rt_factor_spv.h"
 #include "rt_shadow_spv.h"
 #include "xenos.h"
+#include "../kernel/xlive_overlay_glue.h"
 #include "pit_gravel_tex.h"
 #include "../host/host_paths.h"
 #include "../host/settings.h"
@@ -15156,6 +15157,23 @@ void RecordSwapchainBlit(Image& source, uint32_t width, uint32_t height)
         }
         else
             R->swap.bgValid = false;
+    }
+
+    // THE XENONLIVE OVERLAY (kernel/xlive_overlay_glue.cpp): friends, invitations and
+    // notifications, drawn by Dear ImGui through its Vulkan backend straight onto the
+    // swapchain image, with dynamic rendering — no render pass, no pipeline of ours.
+    // It takes the image in TRANSFER_DST and hands it back in TRANSFER_DST, so the
+    // dump below and the present transition see exactly what they always saw. Placed
+    // after the debug panel (so it draws over it) and before the dump (so the dump
+    // captures it), for the reason the paragraph below gives. The common frame —
+    // overlay closed, nothing to say — returns without recording a thing.
+    {
+        const CwOverlayVulkan vk{ R->instance, R->physical, R->device, R->queueFamily,
+                                  R->queue, uint32_t(R->swap.images.size()),
+                                  R->swap.format };
+        if (CwOverlay_Render(vk, R->cmd, R->swap.images[index], R->swap.width,
+                             R->swap.height, R->swap.rebuilds))
+            Count("swap: xenonlive overlay drawn");
     }
 
     // The dump copy goes here, AFTER the frame blit and AFTER the overlay, while the
