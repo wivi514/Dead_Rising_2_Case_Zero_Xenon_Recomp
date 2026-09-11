@@ -41,16 +41,16 @@ constexpr uint32_t kUnimplemented = 0xC0000002u;
 constexpr uint32_t kSocketError = 0xFFFFFFFFu; // SOCKET_ERROR / INVALID_SOCKET
 
 // Winsock, as the title tests them.
-constexpr uint32_t WSAEINVAL = 10022;
-constexpr uint32_t WSAEWOULDBLOCK = 10035;
-constexpr uint32_t WSAEMSGSIZE = 10040;
-constexpr uint32_t WSAEPROTONOSUPPORT = 10043;
-constexpr uint32_t WSAEOPNOTSUPP = 10045;
-constexpr uint32_t WSAEAFNOSUPPORT = 10047;
-constexpr uint32_t WSAENETDOWN = 10050;
-constexpr uint32_t WSAENOTCONN = 10057;
-constexpr uint32_t WSAEHOSTUNREACH = 10065;
-constexpr uint32_t WSAENOTSOCK = 10038;
+constexpr uint32_t kWsaEINVAL = 10022;
+constexpr uint32_t kWsaEWOULDBLOCK = 10035;
+constexpr uint32_t kWsaEMSGSIZE = 10040;
+constexpr uint32_t kWsaEPROTONOSUPPORT = 10043;
+constexpr uint32_t kWsaEOPNOTSUPP = 10045;
+constexpr uint32_t kWsaEAFNOSUPPORT = 10047;
+constexpr uint32_t kWsaENETDOWN = 10050;
+constexpr uint32_t kWsaENOTCONN = 10057;
+constexpr uint32_t kWsaEHOSTUNREACH = 10065;
+constexpr uint32_t kWsaENOTSOCK = 10038;
 
 constexpr uint32_t AF_INET_ = 2;
 constexpr uint32_t SOCK_STREAM_ = 1;
@@ -189,18 +189,18 @@ bool IsBroadcast(uint32_t addr)
 uint32_t Socket(uint32_t family, uint32_t type, uint32_t protocol)
 {
     if (family != AF_INET_)
-        return Fail(WSAEAFNOSUPPORT);
+        return Fail(kWsaEAFNOSUPPORT);
     if (type == SOCK_STREAM_)
     {
         KLOG("[xlive] socket(SOCK_STREAM) refused: no stream transport over the punched path\n");
-        return Fail(WSAEPROTONOSUPPORT);
+        return Fail(kWsaEPROTONOSUPPORT);
     }
     if (type != SOCK_DGRAM_)
-        return Fail(WSAEPROTONOSUPPORT);
+        return Fail(kWsaEPROTONOSUPPORT);
 
     std::lock_guard<std::mutex> lock(g_mutex);
     if (g_sockets.size() >= kMaxSockets)
-        return Fail(WSAENETDOWN);
+        return Fail(kWsaENETDOWN);
     const uint32_t handle = g_nextSocket++;
     GuestSocket& sock = g_sockets[handle];
     sock.type = type;
@@ -213,7 +213,7 @@ uint32_t CloseSocket(uint32_t handle)
 {
     std::lock_guard<std::mutex> lock(g_mutex);
     if (!Find(handle))
-        return Fail(WSAENOTSOCK);
+        return Fail(kWsaENOTSOCK);
     g_sockets.erase(handle);
     KLOG("[xlive] closesocket(%08X)\n", handle);
     return 0;
@@ -224,9 +224,9 @@ uint32_t Bind(uint32_t handle, const GuestSockAddrIn* name, uint32_t nameLength)
     std::lock_guard<std::mutex> lock(g_mutex);
     GuestSocket* sock = Find(handle);
     if (!sock)
-        return Fail(WSAENOTSOCK);
+        return Fail(kWsaENOTSOCK);
     if (!name || nameLength < sizeof(GuestSockAddrIn) || name->family.get() != AF_INET_)
-        return Fail(WSAEINVAL);
+        return Fail(kWsaEINVAL);
     sock->boundPort = name->port.get();
     KLOG("[xlive] bind(%08X, port %u)\n", handle, sock->boundPort);
     return 0;
@@ -237,9 +237,9 @@ uint32_t IoctlSocket(uint32_t handle, uint32_t command, be<uint32_t>* argument)
     std::lock_guard<std::mutex> lock(g_mutex);
     GuestSocket* sock = Find(handle);
     if (!sock)
-        return Fail(WSAENOTSOCK);
+        return Fail(kWsaENOTSOCK);
     if (!argument)
-        return Fail(WSAEINVAL);
+        return Fail(kWsaEINVAL);
     switch (command)
     {
     case FIONBIO_:
@@ -252,7 +252,7 @@ uint32_t IoctlSocket(uint32_t handle, uint32_t command, be<uint32_t>* argument)
         *argument = Live().PendingDatagrams() > 0 ? uint32_t(xlive::Client::kMaxDatagram) : 0u;
         return 0;
     default:
-        return Fail(WSAEOPNOTSUPP);
+        return Fail(kWsaEOPNOTSUPP);
     }
 }
 
@@ -263,7 +263,7 @@ uint32_t SetSockOpt(uint32_t handle, uint32_t level, uint32_t option, const void
     (void)valueLength;
     std::lock_guard<std::mutex> lock(g_mutex);
     if (!Find(handle))
-        return Fail(WSAENOTSOCK);
+        return Fail(kWsaENOTSOCK);
     // Every option the title sets — SO_REUSEADDR, buffer sizes, the 360's own
     // 0x5801 family — describes a socket this is not. Accepted, so the title's
     // setup path completes; nothing here has the property being set.
@@ -276,9 +276,9 @@ uint32_t Connect(uint32_t handle, const GuestSockAddrIn* name, uint32_t nameLeng
     std::lock_guard<std::mutex> lock(g_mutex);
     GuestSocket* sock = Find(handle);
     if (!sock)
-        return Fail(WSAENOTSOCK);
+        return Fail(kWsaENOTSOCK);
     if (!name || nameLength < sizeof(GuestSockAddrIn))
-        return Fail(WSAEINVAL);
+        return Fail(kWsaEINVAL);
     // On a datagram socket connect() only names the default peer.
     sock->connectedAddr = name->addr.get();
     sock->connectedPort = name->port.get();
@@ -302,9 +302,9 @@ uint32_t SendToAddress(const GuestSocket& sock, uint32_t addr, const void* data,
     }
     const uint64_t xuid = XliveSession_PeerForInAddr(addr);
     if (xuid == 0)
-        return WSAEHOSTUNREACH;
+        return kWsaEHOSTUNREACH;
     if (length > xlive::Client::kMaxDatagram)
-        return WSAEMSGSIZE;
+        return kWsaEMSGSIZE;
 
     const int n = Live().SendTo(xuid, data, length);
     if (n >= 0)
@@ -320,9 +320,9 @@ uint32_t SendToAddress(const GuestSocket& sock, uint32_t addr, const void* data,
     {
     case xlive::Client::PeerState::Unknown:
     case xlive::Client::PeerState::Punching:
-        return WSAEWOULDBLOCK;
+        return kWsaEWOULDBLOCK;
     default:
-        return WSAEHOSTUNREACH;
+        return kWsaEHOSTUNREACH;
     }
 }
 
@@ -335,11 +335,11 @@ uint32_t SendTo(uint32_t handle, const void* data, uint32_t length, uint32_t fla
         std::lock_guard<std::mutex> lock(g_mutex);
         GuestSocket* found = Find(handle);
         if (!found)
-            return Fail(WSAENOTSOCK);
+            return Fail(kWsaENOTSOCK);
         sock = *found;
     }
     if (!data || !to || toLength < sizeof(GuestSockAddrIn))
-        return Fail(WSAEINVAL);
+        return Fail(kWsaEINVAL);
     uint32_t sent = 0;
     const uint32_t error = SendToAddress(sock, to->addr.get(), data, length, &sent);
     if (error)
@@ -355,13 +355,13 @@ uint32_t Send(uint32_t handle, const void* data, uint32_t length, uint32_t flags
         std::lock_guard<std::mutex> lock(g_mutex);
         GuestSocket* found = Find(handle);
         if (!found)
-            return Fail(WSAENOTSOCK);
+            return Fail(kWsaENOTSOCK);
         sock = *found;
     }
     if (!data)
-        return Fail(WSAEINVAL);
+        return Fail(kWsaEINVAL);
     if (sock.connectedAddr == 0)
-        return Fail(WSAENOTCONN);
+        return Fail(kWsaENOTCONN);
     uint32_t sent = 0;
     const uint32_t error = SendToAddress(sock, sock.connectedAddr, data, length, &sent);
     if (error)
@@ -381,11 +381,11 @@ uint32_t Receive(uint32_t handle, void* data, uint32_t capacity, GuestSockAddrIn
         std::lock_guard<std::mutex> lock(g_mutex);
         GuestSocket* found = Find(handle);
         if (!found)
-            return Fail(WSAENOTSOCK);
+            return Fail(kWsaENOTSOCK);
         sock = *found;
     }
     if (!data || capacity == 0)
-        return Fail(WSAEINVAL);
+        return Fail(kWsaEINVAL);
 
     uint64_t xuid = 0;
     int n = Live().RecvFrom(xuid, data, capacity);
@@ -399,13 +399,13 @@ uint32_t Receive(uint32_t handle, void* data, uint32_t capacity, GuestSockAddrIn
             {
                 std::lock_guard<std::mutex> lock(g_mutex);
                 if (!Find(handle))
-                    return Fail(WSAENOTSOCK);
+                    return Fail(kWsaENOTSOCK);
             }
             n = Live().RecvFrom(xuid, data, capacity);
         }
     }
     if (n <= 0)
-        return Fail(WSAEWOULDBLOCK);
+        return Fail(kWsaEWOULDBLOCK);
 
     if (from)
     {
@@ -552,17 +552,17 @@ uint32_t QosLookup(uint32_t count, const be<uint32_t>* xnaddrs, const be<uint32_
     (void)xnkeys;
     (void)probes;
     if (!qosOut)
-        return WSAEINVAL;
+        return kWsaEINVAL;
     *qosOut = 0;
     if (count == 0 || count > 64 || !xnaddrs || hostCount != 0)
-        return WSAEINVAL;
+        return kWsaEINVAL;
     if (!Live().online())
-        return WSAENETDOWN;
+        return kWsaENETDOWN;
 
     const uint32_t qosVa = AllocateQos(count);
     auto* qos = GuestPtr<GuestQos>(qosVa);
     if (!qos)
-        return WSAENETDOWN;
+        return kWsaENETDOWN;
 
     for (uint32_t i = 0; i < count; i++)
     {
@@ -587,14 +587,14 @@ uint32_t QosLookup(uint32_t count, const be<uint32_t>* xnaddrs, const be<uint32_
 uint32_t QosServiceLookup(uint32_t eventHandle, be<uint32_t>* qosOut)
 {
     if (!qosOut)
-        return WSAEINVAL;
+        return kWsaEINVAL;
     *qosOut = 0;
     if (!Live().online())
-        return WSAENETDOWN;
+        return kWsaENETDOWN;
     const uint32_t qosVa = AllocateQos(1);
     auto* qos = GuestPtr<GuestQos>(qosVa);
     if (!qos)
-        return WSAENETDOWN;
+        return kWsaENETDOWN;
     // "The service", contacted: the gateway is up, which is what the question
     // means here. sub_825969E0 reads bit 1 of the flags and nothing else.
     FillQosInfo(&qos->info[0], 0, true);
@@ -607,7 +607,7 @@ uint32_t QosRelease(uint32_t qosVa)
 {
     void* host = GuestPtr<void>(qosVa);
     if (!host)
-        return WSAEINVAL;
+        return kWsaEINVAL;
     g_heap.Free(host);
     return 0;
 }
@@ -656,7 +656,7 @@ static uint32_t NetDll_shutdown_x(uint32_t caller, uint32_t handle, uint32_t how
     (void)how;
     XLIVE_NET_GATE();
     std::lock_guard<std::mutex> lock(g_mutex);
-    return Find(handle) ? 0 : Fail(WSAENOTSOCK);
+    return Find(handle) ? 0 : Fail(kWsaENOTSOCK);
 }
 
 static uint32_t NetDll_ioctlsocket_x(uint32_t caller, uint32_t handle, uint32_t command,
@@ -697,7 +697,7 @@ static uint32_t NetDll_listen_x(uint32_t caller, uint32_t handle, uint32_t backl
     (void)backlog;
     XLIVE_NET_GATE();
     std::lock_guard<std::mutex> lock(g_mutex);
-    return Find(handle) ? Fail(WSAEOPNOTSUPP) : Fail(WSAENOTSOCK);
+    return Find(handle) ? Fail(kWsaEOPNOTSUPP) : Fail(kWsaENOTSOCK);
 }
 
 static uint32_t NetDll_accept_x(uint32_t caller, uint32_t handle, void* address,
@@ -708,7 +708,7 @@ static uint32_t NetDll_accept_x(uint32_t caller, uint32_t handle, void* address,
     (void)addressLength;
     XLIVE_NET_GATE();
     std::lock_guard<std::mutex> lock(g_mutex);
-    return Find(handle) ? Fail(WSAEOPNOTSUPP) : Fail(WSAENOTSOCK);
+    return Find(handle) ? Fail(kWsaEOPNOTSUPP) : Fail(kWsaENOTSOCK);
 }
 
 static uint32_t NetDll_select_x(uint32_t caller, uint32_t nfds, GuestFdSet* readSet,
@@ -782,10 +782,10 @@ static uint32_t NetDll_XNetXnAddrToInAddr_x(uint32_t caller, const void* xnaddr,
     (void)xnkid;
     XLIVE_NET_GATE();
     if (!inAddrOut)
-        return WSAEINVAL;
+        return kWsaEINVAL;
     const uint32_t inAddr = XliveSession_XnAddrToInAddr(xnaddr);
     *inAddrOut = inAddr;
-    return inAddr ? 0 : WSAEINVAL;
+    return inAddr ? 0 : kWsaEINVAL;
 }
 
 static uint32_t NetDll_XNetInAddrToXnAddr_x(uint32_t caller, uint32_t inAddr, void* xnaddrOut,
@@ -794,7 +794,7 @@ static uint32_t NetDll_XNetInAddrToXnAddr_x(uint32_t caller, uint32_t inAddr, vo
     (void)caller;
     XLIVE_NET_GATE();
     if (!XliveSession_InAddrToXnAddr(inAddr, xnaddrOut))
-        return WSAEINVAL;
+        return kWsaEINVAL;
     // The session the address belongs to is the one being peered; there is
     // never more than one.
     if (xnkidOut)
@@ -941,17 +941,17 @@ void TestSocketLifecycle()
     GuestScratch payload(16);
     addr->addr = 0xC6120001u; // 198.18.0.1, never handed out in this boot
     XLIVE_EXPECT(NetDll_sendto_x(1, s, GuestPtr<void>(payload.va), 16, 0, addr, 16) == kSocketError);
-    XLIVE_EXPECT(NetDll_WSAGetLastError_x() == WSAEHOSTUNREACH);
+    XLIVE_EXPECT(NetDll_WSAGetLastError_x() == kWsaEHOSTUNREACH);
     addr->addr = 0xFFFFFFFFu;
     XLIVE_EXPECT(NetDll_sendto_x(1, s, GuestPtr<void>(payload.va), 16, 0, addr, 16) == 16);
 
-    // Nothing waiting on a non-blocking socket is WSAEWOULDBLOCK, which is
+    // Nothing waiting on a non-blocking socket is kWsaEWOULDBLOCK, which is
     // what sub_8259EAC0 tests for and treats as "fine".
     GuestScratch fromLength(4);
     *GuestPtr<be<int32_t>>(fromLength.va) = 16;
     XLIVE_EXPECT(NetDll_recvfrom_x(1, s, GuestPtr<void>(payload.va), 16, 0, addr,
                                    GuestPtr<be<int32_t>>(fromLength.va)) == kSocketError);
-    XLIVE_EXPECT(NetDll_WSAGetLastError_x() == WSAEWOULDBLOCK);
+    XLIVE_EXPECT(NetDll_WSAGetLastError_x() == kWsaEWOULDBLOCK);
 
     // select() with a zero timeout: not readable, but writable, and the set
     // is rewritten to say which.
@@ -972,10 +972,10 @@ void TestSocketLifecycle()
     // A stream socket is refused, with the error the title's telemetry client
     // handles; a closed handle is not a socket.
     XLIVE_EXPECT(NetDll_socket_x(1, AF_INET_, SOCK_STREAM_, 6) == kSocketError);
-    XLIVE_EXPECT(NetDll_WSAGetLastError_x() == WSAEPROTONOSUPPORT);
+    XLIVE_EXPECT(NetDll_WSAGetLastError_x() == kWsaEPROTONOSUPPORT);
     XLIVE_EXPECT(NetDll_closesocket_x(1, s) == 0);
     XLIVE_EXPECT(NetDll_closesocket_x(1, s) == kSocketError);
-    XLIVE_EXPECT(NetDll_WSAGetLastError_x() == WSAENOTSOCK);
+    XLIVE_EXPECT(NetDll_WSAGetLastError_x() == kWsaENOTSOCK);
 }
 
 void TestQosShape()
@@ -987,10 +987,10 @@ void TestQosShape()
     GuestScratch addrs(4);
     XLIVE_EXPECT(NetDll_XNetQosLookup_x(1, 1, GuestPtr<be<uint32_t>>(addrs.va), nullptr, nullptr,
                                         0, nullptr, nullptr, 8, 0, 0, 0,
-                                        GuestPtr<be<uint32_t>>(out.va)) == WSAENETDOWN);
+                                        GuestPtr<be<uint32_t>>(out.va)) == kWsaENETDOWN);
     XLIVE_EXPECT(GuestPtr<be<uint32_t>>(out.va)->get() == 0);
     XLIVE_EXPECT(NetDll_XNetQosServiceLookup_x(1, 0, 0, GuestPtr<be<uint32_t>>(out.va)) ==
-                 WSAENETDOWN);
+                 kWsaENETDOWN);
     // The block itself, allocated and released, with its counts where
     // sub_825A2E00 reads them.
     const uint32_t qosVa = AllocateQos(3);
@@ -1018,7 +1018,7 @@ void TestAddresses()
     // An address nobody was given is not translated to an XNADDR.
     GuestScratch xnaddr(0x24 + 8);
     XLIVE_EXPECT(NetDll_XNetInAddrToXnAddr_x(1, 0xC6120001u, GuestPtr<void>(xnaddr.va),
-                                             GuestPtr<be<uint64_t>>(xnaddr.va + 0x24)) == WSAEINVAL);
+                                             GuestPtr<be<uint64_t>>(xnaddr.va + 0x24)) == kWsaEINVAL);
     // And a peer that is named gets one, whose translation back is itself.
     const uint32_t mine = XliveSession_InAddrForPeer(0x0009000000000123ull);
     XLIVE_EXPECT((mine & 0xFFFE0000u) == 0xC6120000u);
