@@ -68,9 +68,38 @@ void WriteAll(int fd, const char* p, int n)
     }
 }
 
+// THE FILE COPY IS CAPPED. The console copy never is.
+//
+// Why: a shipped v1.0.2 session wrote a 98 GB cz_runtime.log and a 68 GB .log.1 beside
+// it — 166 GB — because a per-draw trace re-armed itself through an integer underflow
+// (pm4.cpp's [pm4draw]; fixed separately). That bug is fixed, but an unbounded log is a
+// hazard on its own: the NEXT thing that logs per frame should cost a bounded file and a
+// line saying so, not the player's disk. A log nobody can attach to a bug report is also
+// no longer doing the job it was added for (part 105).
+//
+// The HEAD is what is kept, not the tail. The first thousand lines carry the paths, the
+// defaults, the device, the settings and the first divergence — the diagnostic part. A
+// tail-keeping rotation would throw exactly that away and keep the repetition.
+//
+// CZ_LOG_MAX_MB overrides it; 0 means no cap, for a deliberate long capture.
+constexpr unsigned long long kDefaultLogCapBytes = 256ull * 1024 * 1024;
+
+unsigned long long LogCapBytes()
+{
+    if (const char* m = getenv("CZ_LOG_MAX_MB"))
+    {
+        const unsigned long long mb = strtoull(m, nullptr, 10);
+        return mb * 1024ull * 1024ull; // 0 = uncapped, on purpose
+    }
+    return kDefaultLogCapBytes;
+}
+
 void TeeLoop()
 {
     char buf[65536];
+    const unsigned long long cap = LogCapBytes();
+    unsigned long long toFile = 0;
+    bool capped = false;
     for (;;)
     {
         const int n = SysRead(g_pipeRead, buf, sizeof buf);
@@ -81,8 +110,27 @@ void TeeLoop()
         g_read += unsigned(n);
         if (g_origErr >= 0)
             WriteAll(g_origErr, buf, n);
-        if (g_file >= 0)
+        if (g_file >= 0 && !capped)
+        {
             WriteAll(g_file, buf, n);
+            toFile += unsigned(n);
+            if (cap && toFile >= cap)
+            {
+                // Said IN the file, because the file is what reaches a bug report, and
+                // "the log just stops" would otherwise read as a crash at that point.
+                char note[320];
+                const int k = snprintf(note, sizeof note,
+                        "\n[log] SIZE CAP REACHED (%llu MB) — nothing further is written to "
+                        "this file; the console copy continues. This is not a crash. If you "
+                        "are reporting a bug, SAY SO: reaching this cap means something is "
+                        "logging per frame or per draw, which is itself the defect worth "
+                        "reporting. CZ_LOG_MAX_MB=N raises it, CZ_LOG_MAX_MB=0 removes it.\n",
+                        cap / (1024ull * 1024ull));
+                if (k > 0)
+                    WriteAll(g_file, note, k);
+                capped = true;
+            }
+        }
         g_written += unsigned(n);
     }
 }
