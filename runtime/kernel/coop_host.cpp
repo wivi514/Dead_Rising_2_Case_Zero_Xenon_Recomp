@@ -59,38 +59,10 @@ extern "C" PPC_FUNC(__imp__sub_824C0668);
 extern "C" PPC_FUNC(__imp__sub_825C2E20);
 extern "C" PPC_FUNC(__imp__sub_825C61B0);
 
-namespace
+#include "coop_objects.h"
+
+namespace coop
 {
-constexpr uint32_t kOnlineManager = 0x82AD6E90;   // the online object (sub_8258D310 creates it)
-constexpr uint32_t kGameSessionOwner = 0x82A58C64; // +0x14 = the game session object
-constexpr uint32_t kGameStateOwner = 0x82A57428;   // +0x24 -> +0x2C = current game state
-constexpr uint32_t kFnMatchmakingOf = 0x82546A80;  // (online) -> matchmaking object, or 0
-constexpr uint32_t kFnSessionIsLive = 0x8254AF30;  // (session) -> +0x94 state == 3
-constexpr uint32_t kFnSessionIsCoop = 0x82547920;  // (session) -> +0x98
-constexpr uint32_t kFnOnlineReady = 0x824BDD10;    // (game session) -> bool
-
-constexpr uint32_t kSessionIsCoopByte = 0x98;
-constexpr uint32_t kGameSessionHostRequested = 0x90;
-constexpr uint32_t kMatchmakingVtSession = 0x78;   // vt[30]: the session object
-constexpr uint32_t kMatchmakingVtSessionInfo = 0x88; // vt[34]: holds mm_info at +0x1C
-constexpr uint32_t kMatchmakingVtSignedIn = 0x18;  // vt[6]
-constexpr uint32_t kMatchmakingVtService = 0x54;   // vt[21](kind) -> state, 2 = ready
-
-int g_hostMode = -1; // -1 unread; 0 off; 1 on
-
-bool HostRequested()
-{
-    if (g_hostMode < 0)
-    {
-        const char* env = std::getenv("CZ_XLIVE_HOST");
-        g_hostMode = (env && *env && *env != '0') ? 1 : 0;
-        if (g_hostMode)
-            fprintf(stderr, "[coop] CZ_XLIVE_HOST: this build will host a co-op session "
-                            "when the game flow enters gameplay\n");
-    }
-    return g_hostMode == 1;
-}
-
 uint32_t LoadU32(uint8_t* base, uint32_t addr)
 {
     return addr ? PPC_LOAD_U32(addr) : 0;
@@ -129,12 +101,6 @@ uint32_t VCall(PPCContext& call, uint8_t* base, uint32_t obj, uint32_t slotOff,
     return call.r3.u32;
 }
 
-// online -> matchmaking -> session, the walk every routine above begins with.
-struct Objects
-{
-    uint32_t online{}, matchmaking{}, session{}, sessionInfo{}, gameSession{};
-};
-
 Objects Resolve(PPCContext& ctx, uint8_t* base)
 {
     Objects o;
@@ -153,6 +119,37 @@ Objects Resolve(PPCContext& ctx, uint8_t* base)
     o.sessionInfo = VCall(call, base, o.matchmaking, kMatchmakingVtSessionInfo, 0,
                           "session-info");
     return o;
+}
+
+int LoginState(uint8_t* base, const Objects& o)
+{
+    const uint32_t login = LoadU32(base, o.session + kSessionLoginObject);
+    return login ? int(LoadU32(base, login + 0xC)) : -1;
+}
+
+uint32_t GameState(uint8_t* base)
+{
+    return LoadU32(base, LoadU32(base, LoadU32(base, kGameStateOwner) + 0x24) + 0x2C);
+}
+} // namespace coop
+
+using namespace coop;
+
+namespace
+{
+int g_hostMode = -1; // -1 unread; 0 off; 1 on
+
+bool HostRequested()
+{
+    if (g_hostMode < 0)
+    {
+        const char* env = std::getenv("CZ_XLIVE_HOST");
+        g_hostMode = (env && *env && *env != '0') ? 1 : 0;
+        if (g_hostMode)
+            fprintf(stderr, "[coop] CZ_XLIVE_HOST: this build will host a co-op session "
+                            "when the game flow enters gameplay\n");
+    }
+    return g_hostMode == 1;
 }
 
 // The predicate chain of sub_824C0668, in its order, each read the way the title
@@ -207,7 +204,7 @@ const char* WhyNotHosting(PPCContext& ctx, uint8_t* base, const Objects& o, char
         return "session IS-COOP byte (+0x98) is 0";
     if (LoadU8(base, o.session + 0x90))
         return "session +0x90 busy byte set";
-    const uint32_t gs = LoadU32(base, LoadU32(base, LoadU32(base, kGameStateOwner) + 0x24) + 0x2C);
+    const uint32_t gs = GameState(base);
     if (gs != 4 && gs != 5)
     {
         snprintf(detail, cap, "state %u", gs);
