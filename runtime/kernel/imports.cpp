@@ -3215,12 +3215,37 @@ GUEST_FUNCTION_STUB(__imp__XexUnloadImage)
 //
 // If a later phase implements a real XAM export table, raising this is the right
 // move — but it must be raised WITH those exports, never before them.
-static uint32_t XamGetSystemVersion_x()
-{
-    return 0;
-}
+//
+// TWO OF THE SITES ARE THE OTHER WAY ROUND (mirrored from Case West's 5e14cdb,
+// found again here in co-op part 2). sub_825F2078 (XSessionGetDetails) and
+// sub_825F21F0 (XSessionMigrateHost) do not resolve anything dynamically above
+// 0x200CE900: below it they REFUSE, with ERROR_FUNCTION_FAILED (1627), before
+// sending their XGI message — those two messages arrived with a dashboard
+// update and the wrapper will not send them to a kernel it believes is too old.
+// This runtime handles both (kernel/xlive_session.cpp), and the first hosted
+// session here showed the cost: the HW MM state machine asks for the session's
+// details right after creating it (LIVE_STATE_GETTING_SESSION_DETAILS), takes
+// the 1627 as a failure, and deletes the session it just made.
+//
+// So the answer depends on who is asking, which the link register says: the
+// two wrappers that ask "may I send this message" hear a version that lets
+// them (only with co-op on), everything that asks "may I resolve a newer entry
+// point" hears the 0 that keeps it on the static path.
+constexpr uint32_t kSessionDetailsWrapperBegin = 0x825F2078; // sub_825F2078
+constexpr uint32_t kSessionDetailsWrapperEnd   = 0x825F21A8;
+constexpr uint32_t kSessionMigrateWrapperBegin = 0x825F21F0; // sub_825F21F0
+constexpr uint32_t kSessionMigrateWrapperEnd   = 0x825F22E8;
+constexpr uint32_t kSessionMessagesVersion     = 0x200CE900; // the wrappers' own threshold
 
-GUEST_FUNCTION_HOOK(__imp__XamGetSystemVersion, XamGetSystemVersion_x)
+PPC_FUNC(__imp__XamGetSystemVersion)
+{
+    KCALL("XamGetSystemVersion");
+    const uint32_t caller = uint32_t(ctx.lr);
+    const bool sessionWrapper =
+        (caller >= kSessionDetailsWrapperBegin && caller < kSessionDetailsWrapperEnd) ||
+        (caller >= kSessionMigrateWrapperBegin && caller < kSessionMigrateWrapperEnd);
+    ctx.r3.u64 = (sessionWrapper && XliveSession_Enabled()) ? kSessionMessagesVersion : 0u;
+}
 
 // RtlCompareStringN(s1, len1, s2, len2, caseInsensitive) — memcmp semantics over the
 // shorter length, then by length; 0 means equal.
@@ -4261,6 +4286,21 @@ static uint32_t XamInputGetState_x(uint32_t userIndex, uint32_t flags,
     // forever. The packet number is then a constant because the state genuinely never
     // changes — which is the contract, not a shortcut.
     if (fakeStartMs <= 0)
+    {
+        state->packetNumber = 1;
+        return 0;
+    }
+
+    // SYNTHETIC INPUT IS PAD 0 ONLY. Until co-op part 2 (2026-09-11) the arm below
+    // answered every pad index, so one synthetic START was four controllers pressing
+    // START at once, and the title's title-screen handler fired ProfileChange for pad
+    // 0 and then pad 1 — making PAD 1 the active profile, whose matchmaking object
+    // asks XamUserGetSigninState(1), which is 0 (no such user). Every co-op predicate
+    // downstream refused on it, and no windowed run could have shown it: a real
+    // player presses on one pad. Pads 1-3 report the same connected-idle state the
+    // no-synthetic branch above reports, so the fake arm now differs from a human
+    // only in WHAT pad 0 presses.
+    if (userIndex != 0)
     {
         state->packetNumber = 1;
         return 0;
