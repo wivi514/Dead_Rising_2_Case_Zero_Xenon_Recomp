@@ -1989,14 +1989,28 @@ uint32_t ExecutePacket(uint8_t* base, const Source& fetch, uint32_t pos, uint32_
                 // (low two bits of the ADDRESS, as every other address in this stream
                 // does it, or the top two bits of the SIZE dword), and only the packet
                 // can answer it.
+                //
+                // AND THE COUNTDOWN MUST NOT RUN PAST ZERO. `if (left-- > 0)` decrements
+                // on EVERY call whether it prints or not, so with the trace off `left`
+                // starts at 0 and counts DOWN forever — and at 2^31 calls it wraps to
+                // INT_MAX and the trace turns itself ON, permanently, in a build nobody
+                // armed. That shipped in v1.0.2. This is the hottest path in the
+                // renderer (one DRAW_INDX per draw, ~4,900 draws a frame here), so it
+                // took about 80 minutes of play to get there: the operator's session
+                // reached it at vblank #4,832,000, after which the frame rate roughly
+                // halved and cz_runtime.log grew to 98 GB. A disabled trace has to cost
+                // nothing forever, not for the first two billion calls.
                 static int left = getenv("CZ_PM4_DRAW_TRACE") ? 24 : 0;
-                if (left-- > 0)
+                if (left > 0)
+                {
+                    --left;
                     fprintf(stderr,
                             "[pm4draw] init=%08X prim=%u count=%u i32=%u addr=%08X "
                             "size=%08X  addr&3=%u  size>>30=%u  size&0xFFFFFF=%u\n",
                             init, d.primType, d.indexCount, d.index32 ? 1u : 0u,
                             addrDword, sizeDword, addrDword & 3, sizeDword >> 30,
                             sizeDword & 0xFFFFFF);
+                }
             }
             else if (d.indexed)
             {

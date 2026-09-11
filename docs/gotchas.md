@@ -6373,3 +6373,40 @@ From phase C part 18 (the frame rate — and none of it was work):
     read +0.4905 unpinned; the same part-111 binary read **+0.8621 pinned**. Pin every
     input a gate does not intend to vary. (part 111)
 
+
+553. **A DISABLED countdown that decrements inside its own gate re-arms itself, and on
+    a per-draw path that takes about an hour.** `static int left = getenv("X") ? 24 : 0;
+    if (left-- > 0) fprintf(...)` decrements on EVERY call whether it prints or not, so
+    with the trace off `left` starts at 0 and counts DOWN forever — and at 2^31 calls it
+    wraps to INT_MAX and the trace turns ON, permanently, in a build nobody armed. This
+    shipped in v1.0.2 on `[pm4draw]`, one DRAW_INDX per draw. The operator's session
+    reached it at `[kernel] vblank #4832000` — with `fps_cap=0`'s 1 ms vblank period,
+    ~80 minutes of play — after which the frame rate went 90 -> 33-39 fps, steady and
+    never recovering, and `cz_runtime.log` reached 98 GB with 68 GB more in `.log.1`.
+    Three transferable parts. (a) **The bug is invisible to every short run and every
+    gate**, because it is a function of elapsed calls, not of state; no headless recipe
+    here runs long enough. (b) **Reproducing it needs an OPTIMISER-OPAQUE start value.**
+    A literal `INT_MIN + 8` lets clang prove the branch dead — signed overflow is UB, so
+    a counter that only decreases from a negative constant can never be positive — and
+    delete it outright; the first control measured ZERO and looked like a refutation.
+    Reading the start from the environment, exactly as the real `getenv` one is,
+    reproduces it (8,633 lines against the fixed guard's 0). The shipped bug is real
+    precisely BECAUSE `getenv` is opaque. (c) **Fix the class, not the instance**: all
+    seven `left-- > 0` sites in `vk_renderer.cpp` had the same shape and were saved only
+    by ticking on rare or defect paths, which is luck; they now go through a `TakeOne()`
+    helper that stops at zero. (part 113)
+
+554. **An unbounded log is a performance bug waiting for a partner.** The gotcha-553
+    trace wrote 166 GB across two files in ONE session, and the log layer — added in
+    part 105 so a player could attach something to a bug report — had no size cap at
+    all, so it amplified a per-draw `fprintf` into filling the disk. `cz_runtime.log` is
+    capped at 256 MB now (console copy never capped; `CZ_LOG_MAX_MB` overrides, 0
+    removes). Two design points worth copying. **Keep the HEAD, not the tail**: the
+    first thousand lines carry the paths, defaults, device, settings and first
+    divergence, and a tail-keeping rotation throws exactly that away to keep the
+    repetition. **Say it IN the file** — "the log just stops" otherwise reads as a crash
+    at that point, and reaching the cap is itself the thing worth reporting, because it
+    means something is logging per frame. And note how nearly this went untested: two
+    honest attempts to make the cap fire, with every chatty trace armed, reached only
+    268 KB — those runs were NULLS, not passes, and only a throwaway near-wrap build
+    produced the flood that proved the cap works (gotcha 30 again). (part 113)
