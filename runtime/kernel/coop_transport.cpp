@@ -48,6 +48,7 @@
 #include <ppc_context.h>
 
 #include "coop_objects.h"
+#include "xlive_session.h"
 
 extern "C" PPC_FUNC(__imp__sub_8256E6E8);
 
@@ -70,7 +71,16 @@ bool CaseWestForm()
     if (g_mode < 0)
     {
         auto on = [](const char* n) { const char* e = std::getenv(n); return e && *e && *e != '0'; };
-        g_mode = (on("CZ_XLIVE_HOST") || on("CZ_XLIVE_JOIN")) && !on("CZ_COOP_LISTENER_STOCK") ? 1 : 0;
+        // Engaged whenever a session can exist at all: CZ_XLIVE_COOP (part 5 made hosting
+        // implied by it, and the joiner's menu row needs no CZ_XLIVE_JOIN either) or the
+        // explicit pre-part-5 arms. The first gate read only CZ_XLIVE_HOST/CZ_XLIVE_JOIN,
+        // so a host launched the part-5 way (CZ_XLIVE_COOP=1 alone) ran the title's own
+        // listener and died at 0x80 the moment the joiner's endpoint opened — co-op plan
+        // part 6's first host session, the crash this file exists for.
+        g_mode = (XliveSession_Enabled() || on("CZ_XLIVE_HOST") || on("CZ_XLIVE_JOIN")) &&
+                         !on("CZ_COOP_LISTENER_STOCK")
+                     ? 1
+                     : 0;
         if (g_mode)
             fprintf(stderr, "[coop] connection listener (sub_8256E6E8): running the Case West "
                             "form — the endpoint list is read, not NULLed by the release byte\n");
