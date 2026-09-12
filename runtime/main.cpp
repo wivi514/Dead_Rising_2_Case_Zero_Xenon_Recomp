@@ -45,8 +45,13 @@
 #include "cpu/timebase.h"
 
 // The LLVM profiling runtime's flush, resolved only in a -fprofile-instr-generate build
-// (see the SIGTERM handler). Weak, so a normal link leaves it null.
+// (see the SIGTERM handler). Weak, so a normal link leaves it null. GNU-only: the
+// codegen arms are Linux measurements and COFF weak externals are a different mechanism.
+#if !defined(_WIN32)
 extern "C" int __llvm_profile_write_file(void) __attribute__((weak));
+#else
+static int (*const __llvm_profile_write_file)(void) = nullptr;
+#endif
 #include "gpu/shader_prebuild.h"
 #include "gpu/shader_translator.h"
 #include "gpu/vk_renderer.h"
