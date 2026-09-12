@@ -52,9 +52,10 @@ measured in part 60 with a truncated nested archive).
 
 Run AFTER tools/gen_pc_options.py (which writes the overlay's fecmn.big,
 bootskip copy and layout.bin this reads) and beside tools/patch_coop_outfit.py.
-Idempotent for fecmn.big; mainmenu.big is regenerated each run. Not yet ported to
-runtime/host/overlay_gen.cpp — a release with co-op needs that; a solo release
-does not.
+Idempotent for fecmn.big; mainmenu.big is regenerated each run. Ported to
+runtime/host/overlay_gen.cpp (RewriteTitle, RewritePathFe) for the release,
+byte-identical (`cz_runtime --gen-overlays` + `diff -r` is the gate); this file
+stays the reference. Change both, and bump kGeneratorVersion, in the same commit.
 
 The player's route afterwards: main menu → JOIN CO-OP GAME → JOIN XBOX LIVE
 GAME → the "unsaved progress" dialog → a save slot → the search, the QoS probe

@@ -1,7 +1,8 @@
 // See overlay_gen.h for why this exists. This file is a LINE-FOR-LINE port of the
-// two Python generators — tools/gen_pc_options.py and tools/gen_kbm_icons.py — and
-// its contract is BYTE IDENTITY with them: same inputs, same output files, same
-// bytes. Where a choice looks arbitrary (an iteration order, a tie-break in the
+// four Python generators — tools/gen_pc_options.py, tools/gen_kbm_icons.py and,
+// since co-op, tools/patch_coop_outfit.py and tools/patch_coop_menu.py — and
+// its contract is BYTE IDENTITY with them, run in that order: same inputs, same
+// output files, same bytes. Where a choice looks arbitrary (an iteration order, a tie-break in the
 // Huffman package-merge, a %.5f) it is the Python's choice, kept so the identity
 // gate stays exact. Read the Python first for the WHY of every transform: each
 // carries the part-60/part-92 ladder that established it (the guest decoder's
@@ -30,6 +31,7 @@
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
+#include <functional>
 #include <map>
 #include <set>
 #include <unordered_map>
@@ -1286,6 +1288,245 @@ std::vector<std::string> StrBankNames(const fs::path& frontend)
     return names;
 }
 
+// --- the co-op data (tools/patch_coop_outfit.py, tools/patch_coop_menu.py) --
+//
+// Co-op (docs/coop-plan.md, parts 2-5) needs three DATA edits beside the C++
+// levers, and all three are the Python tools' transforms ported line for line:
+//
+//   outfits.csv   (datafile.big AND preload4.big, both carry it) — the two
+//                 co-op outfit rows become copies of the default rows. Case
+//                 Zero's csv has NO OUTFIT_COOP_DEFAULT_UNDER row, and the
+//                 load requester's chest-only substitution for the second
+//                 player asked for `chest_NONE`: the joining Chuck had no torso
+//                 (part 4). Both rows = the default rows: the partner spawns in
+//                 what player one spawns in.
+//   title.txt     (mainmenu.big) — a JOIN CO-OP GAME row under START GAME,
+//                 cloned from it, onSelect="FWD:JoinGame" (part 5).
+//   path_fe.txt   (fecmn.big, both overlays) — TitleScreen gains the
+//                 JoinGame=">Normal" edge the transition graph needs.
+//
+// A solo game never reads a co-op row and never opens the JoinGame screen, so
+// for a player who never joins anything these are inert bytes.
+
+// One entry of an archive: decode, transform, re-encode. Returns false when
+// the transform had nothing to do (the Python returns None).
+bool RewriteEntry(BigArchive& a, const char* name,
+                  const std::function<bool(std::string&)>& transform)
+{
+    BigEntry* entry = nullptr;
+    for (BigEntry& e : a.entries)
+        if (e.name == name)
+            entry = &e;
+    if (!entry)
+        Refuse(std::string("no ") + name + " entry to rewrite");
+    const Bytes original = LzxDecodeEntry(entry->stored, name);
+    std::string text(original.begin(), original.end());
+    if (!transform(text))
+        return false;
+    const Bytes data(text.begin(), text.end());
+    entry->stored = LzxEncodeStream(data);
+    VerifyEncodedStream(entry->stored, data, name);
+    entry->size2 = uint32_t(data.size());
+    return true;
+}
+
+// The repack gate every archive write here runs: parse the written file back
+// and every entry must hold exactly the bytes intended.
+void VerifyRepack(const fs::path& written, const BigArchive& intended, const char* what)
+{
+    BigArchive check = ReadBig(written);
+    if (check.entries.size() != intended.entries.size())
+        Refuse(std::string(what) + ": repack changed the entry count");
+    for (const BigEntry& ie : intended.entries)
+    {
+        bool found = false;
+        for (const BigEntry& ce : check.entries)
+            if (ce.name == ie.name)
+            {
+                if (ce.stored != ie.stored)
+                    Refuse(std::string(what) + ": repack failed on " + ie.name);
+                found = true;
+            }
+        if (!found)
+            Refuse(std::string(what) + ": repack lost " + ie.name);
+    }
+}
+
+size_t ReplaceAll(std::string& text, const std::string& from, const std::string& to)
+{
+    size_t n = 0, pos = 0;
+    while ((pos = text.find(from, pos)) != std::string::npos)
+    {
+        text.replace(pos, from.size(), to);
+        pos += to.size();
+        ++n;
+    }
+    return n;
+}
+
+// outfits.csv: the three shapes of the OUTFIT_COOP_DEFAULT row this may find
+// (stock, the part-3 patch, the final form) and the rows it mirrors.
+const char* kCoopStock = "OUTFIT_COOP_DEFAULT,base,naked,NONE,champions_jacket2,Banana_Hammock,default,Default_Riding_Boots_under,";
+const char* kCoopV1 = "OUTFIT_COOP_DEFAULT,base,naked,NONE,default,Banana_Hammock,default,Default_Riding_Boots_under,";
+const char* kDefaultRow = "OUTFIT_DEFAULT,young_chuck,young_chuck,NONE,young_chuck,naked,young_chuck,young_chuck_over,";
+const char* kDefaultUnderRow = "OUTFIT_DEFAULT_UNDER,young_chuck,young_chuck,NONE,young_chuck,naked,young_chuck,young_chuck_under,";
+const char* kCoopRow = "OUTFIT_COOP_DEFAULT,young_chuck,young_chuck,NONE,young_chuck,naked,young_chuck,young_chuck_over,";
+const char* kCoopUnderRow = "OUTFIT_COOP_DEFAULT_UNDER,young_chuck,young_chuck,NONE,young_chuck,naked,young_chuck,young_chuck_under,";
+
+bool RewriteOutfits(std::string& text)
+{
+    if (text.find(kCoopRow) != std::string::npos && text.find(kCoopUnderRow) != std::string::npos)
+        return false;
+    ReplaceAll(text, kCoopStock, kCoopRow);
+    ReplaceAll(text, kCoopV1, kCoopRow);
+    if (text.find(kCoopRow) == std::string::npos)
+        Refuse("outfits.csv: the OUTFIT_COOP_DEFAULT row is not any shape this expects");
+    if (text.find(kDefaultUnderRow) == std::string::npos)
+        Refuse("outfits.csv: the OUTFIT_DEFAULT_UNDER row is not what this expects");
+    if (text.find(kCoopUnderRow) == std::string::npos)
+        // The loader places a row by NAME, so position is free; next to the
+        // row it mirrors is where a reader would look for it.
+        ReplaceAll(text, kDefaultUnderRow,
+                   std::string(kDefaultUnderRow) + "\n" + kCoopUnderRow);
+    return true;
+}
+
+// title.txt: the layout's own row rhythm, top to bottom, and the slot after
+// the last — copied, not computed, so a diff reads as a one-slot shift.
+const char* kSlotY[] = {"0.47222", "0.54167", "0.59722", "0.65278", "0.70833",
+                        "0.76389", "0.81944", "0.87500"};
+
+// Line index of `key=` at depth 1 of the block (its own field, not a child's).
+size_t BlockField(const std::vector<std::string>& lines, size_t open, size_t close,
+                  const char* key)
+{
+    int depth = 0;
+    const std::string k = std::string(key) + "=";
+    for (size_t i = open; i <= close; ++i)
+    {
+        const std::string s = Strip(lines[i]);
+        if (s == "{")
+            ++depth;
+        else if (s == "}")
+            --depth;
+        else if (depth == 1 && StartsWith(s, k.c_str()))
+            return i;
+    }
+    Refuse(std::string("title.txt: no ") + key + "= at depth 1 in block at line " +
+           std::to_string(open));
+    return 0;
+}
+
+bool RewriteTitle(std::string& text)
+{
+    if (text.find("cFEButton JoinCoop") != std::string::npos)
+        return false;
+    std::vector<std::string> lines = SplitLines(text);
+    auto isButton = [](const char* name) {
+        return [name](const std::string& l) { return Strip(l) == std::string("cFEButton ") + name; };
+    };
+    BlockSpan sp;
+    if (!FindBlock(lines, isButton("StartPrologue"), 0, &sp))
+        Refuse("title.txt: no StartPrologue row");
+    std::vector<std::string> start(lines.begin() + sp.header, lines.begin() + sp.close + 1);
+    const size_t last = start.size() - 1;
+    if (Strip(start[BlockField(start, 1, last, "onDown")]) != "onDown=\"FOC:Leaderboard\"")
+        Refuse("title.txt: StartPrologue's onDown is not the shipped one");
+    if (Strip(start[BlockField(start, 1, last, "Y")]) != std::string("Y=") + kSlotY[1])
+        Refuse("title.txt: StartPrologue is not in slot 1");
+
+    // The clone: same widget tree, new name, verbs, slot and label.
+    std::vector<std::string> row = start;
+    row[0] = "cFEButton JoinCoop";
+    row[BlockField(row, 1, last, "onUp")] = "onUp=\"FOC:StartPrologue\"";
+    row[BlockField(row, 1, last, "onDown")] = "onDown=\"FOC:Leaderboard\"";
+    row[BlockField(row, 1, last, "onSelect")] = "onSelect=\"FWD:JoinGame\"";
+    row[BlockField(row, 1, last, "Y")] = std::string("Y=") + kSlotY[2];
+    size_t labels = 0, labelAt = 0;
+    for (size_t i = 0; i < row.size(); ++i)
+        if (StartsWith(row[i], "Text="))
+        {
+            if (row[i] != "Text=\"107 IDS_START_GAME\"")
+                Refuse("title.txt: StartPrologue carries a label other than START GAME");
+            ++labels;
+            labelAt = i;
+        }
+    if (labels != 1)
+        Refuse("title.txt: StartPrologue does not carry exactly one label");
+    row[labelAt] = "Text=\"108 IDS_JOIN_COOP_GAME\"";
+
+    // Re-link the chain around it and shift every row below down one slot.
+    lines[sp.header + BlockField(start, 1, last, "onDown")] = "onDown=\"FOC:JoinCoop\"";
+    lines.insert(lines.begin() + sp.close + 1, row.begin(), row.end());
+    const std::pair<const char*, int> shift[] = {{"Leaderboard", 3}, {"Achievements", 4},
+                                                 {"OptionsPrologue", 5}, {"TrialUnlock", 6},
+                                                 {"ExitToArcade", 7}};
+    for (const auto& [name, slot] : shift)
+    {
+        BlockSpan b;
+        if (!FindBlock(lines, isButton(name), 0, &b))
+            Refuse(std::string("title.txt: no ") + name + " row");
+        const size_t yi = BlockField(lines, b.open, b.close, "Y");
+        if (lines[yi] != std::string("Y=") + kSlotY[slot - 1])
+            Refuse(std::string("title.txt: ") + name + ": " + lines[yi] + " is not slot " +
+                   std::to_string(slot - 1));
+        lines[yi] = std::string("Y=") + kSlotY[slot];
+    }
+    BlockSpan lb;
+    if (!FindBlock(lines, isButton("Leaderboard"), 0, &lb))
+        Refuse("title.txt: no Leaderboard row");
+    const size_t ui = BlockField(lines, lb.open, lb.close, "onUp");
+    if (lines[ui] != "onUp=\"FOC:StartPrologue\"")
+        Refuse("title.txt: Leaderboard's onUp is not the shipped one");
+    lines[ui] = "onUp=\"FOC:JoinCoop\"";
+    text = JoinLines(lines);
+    return true;
+}
+
+bool RewritePathFe(std::string& text)
+{
+    std::vector<std::string> lines = SplitLines(text);
+    BlockSpan sp;
+    if (!FindBlock(lines, [](const std::string& l) { return Strip(l) == "TitleScreen"; }, 0, &sp))
+        Refuse("path_fe.txt: no TitleScreen block");
+    size_t gameSelect = 0;
+    bool hasJoin = false, hasGameSelect = false;
+    for (size_t i = sp.open + 1; i < sp.close; ++i)
+    {
+        if (lines[i] == "JoinGame=\">Normal\"")
+            hasJoin = true;
+        if (lines[i] == "GameSelect=\">Normal\"" && !hasGameSelect)
+        {
+            hasGameSelect = true;
+            gameSelect = i;
+        }
+    }
+    if (hasJoin)
+        return false;
+    if (!hasGameSelect)
+        Refuse("path_fe.txt: TitleScreen manifest block is not the shipped shape");
+    lines.insert(lines.begin() + gameSelect + 1, "JoinGame=\">Normal\"");
+    text = JoinLines(lines);
+    return true;
+}
+
+// outfits.csv in one archive: the overlay's copy when it exists (preload4.big
+// has the part-60 eviction applied first), else the package's; written back
+// 0x800-aligned, the shipped placement granularity.
+void PatchOutfitsArchive(const fs::path& src, const fs::path& dst)
+{
+    BigArchive a = ReadBig(src);
+    if (!RewriteEntry(a, "outfits.csv", RewriteOutfits))
+    {
+        if (src != dst)
+            WriteFileBytes(dst, ReadFileBytes(src));
+        return;
+    }
+    const BigArchive intended = a;
+    WriteBig(dst, a, 0x800);
+    VerifyRepack(dst, intended, "outfits.csv archive");
+}
+
 // --- layer 1: assets/game_patched (gen_pc_options.py main) -----------------
 
 void GeneratePatchedLayer(const Paths& p,
@@ -1313,28 +1554,30 @@ void GeneratePatchedLayer(const Paths& p,
     VerifyEncodedStream(entry->stored, data, "options_pc.txt");
     entry->size2 = uint32_t(data.size());
 
-    // Keep the originals for the repack gate before WriteBig mutates offsets.
-    const BigArchive orig = ReadBig(frontend / "fecmn.big");
+    // path_fe.txt: the TitleScreen -> JoinGame edge (co-op part 5).
+    if (!RewriteEntry(fecmn, "path_fe.txt", RewritePathFe))
+        Refuse("path_fe.txt: the shipped manifest already has TitleScreen -> JoinGame");
+
+    // Keep the intended bytes for the repack gate before WriteBig mutates offsets.
+    const BigArchive intended = fecmn;
     WriteBig(outFrontend / "fecmn.big", fecmn, 4);
 
     // Verify the repack: parse it back; every entry byte-identical to what we
     // intended, including the ones we did not touch.
-    BigArchive check = ReadBig(outFrontend / "fecmn.big");
-    if (check.entries.size() != orig.entries.size())
-        Refuse("fecmn.big repack changed the entry count");
-    for (const BigEntry& oe : orig.entries)
+    VerifyRepack(outFrontend / "fecmn.big", intended, "fecmn.big");
+
+    if (progress)
+        progress("PREPARING MENUS - MAIN MENU", 0.15f);
+
+    // mainmenu.big: the JOIN CO-OP GAME row (co-op part 5). Always from the
+    // package's copy; nothing else patches this archive.
     {
-        const Bytes& want = (oe.name == "options_pc.txt") ? entry->stored : oe.stored;
-        bool found = false;
-        for (const BigEntry& ce : check.entries)
-            if (ce.name == oe.name)
-            {
-                if (ce.stored != want)
-                    Refuse("fecmn.big repack verification failed on " + oe.name);
-                found = true;
-            }
-        if (!found)
-            Refuse("fecmn.big repack lost " + oe.name);
+        BigArchive mm = ReadBig(frontend / "mainmenu.big");
+        if (!RewriteEntry(mm, "title.txt", RewriteTitle))
+            Refuse("title.txt: the shipped main menu already has a JoinCoop row");
+        const BigArchive intendedMm = mm;
+        WriteBig(outFrontend / "mainmenu.big", mm, 4);
+        VerifyRepack(outFrontend / "mainmenu.big", intendedMm, "mainmenu.big");
     }
 
     if (progress)
@@ -1378,6 +1621,14 @@ void GeneratePatchedLayer(const Paths& p,
         WriteFileBytes(p.patched / "data" / "preload4.big", raw);
     }
 
+    if (progress)
+        progress("PREPARING MENUS - CO-OP OUTFITS", 0.28f);
+
+    // outfits.csv, in both archives that carry it (co-op part 4): preload4's
+    // copy is the evicted one just written, datafile's the package's.
+    PatchOutfitsArchive(p.patched / "data" / "preload4.big", p.patched / "data" / "preload4.big");
+    PatchOutfitsArchive(p.game / "data" / "datafile.big", p.patched / "data" / "datafile.big");
+
     // Every language bank, with the added value strings.
     const std::vector<std::string> banks = StrBankNames(frontend);
     size_t done = 0;
@@ -1400,7 +1651,9 @@ void GeneratePatchedLayer(const Paths& p,
     {
         Bytes layout = ReadFileBytes(p.game / "layout.bin");
         std::vector<std::string> overridden = {"data/preload4.big",
-                                               "data/frontend/fecmn.big"};
+                                               "data/frontend/fecmn.big",
+                                               "data/frontend/mainmenu.big",
+                                               "data/datafile.big"};
         for (const std::string& f : banks)
             overridden.push_back("data/frontend/" + f);
         size_t patchedRecords = 0;
@@ -1694,7 +1947,9 @@ void GenerateKbmLayer(const Paths& p,
 // art change (re-export tools/release/kbm_chips with gen_kbm_icons.py
 // --export-chips in the same commit): a shipped update must not keep serving a
 // player's stale banks (the gotcha-13 shape, on disk).
-constexpr int kGeneratorVersion = 4;   // 4: the bootskip layer (part 99);
+constexpr int kGeneratorVersion = 5;   // 5: co-op — outfits.csv rows, the JOIN CO-OP
+                                       //    GAME row, the TitleScreen -> JoinGame edge;
+                                       // 4: the bootskip layer (part 99);
                                        // 3: id-4049 MASH in all six banks;
                                        // 2: y_button_ig legended Q
 
@@ -1727,6 +1982,8 @@ bool OutputsCurrent(const Paths& p)
     std::vector<fs::path> wanted = {
         p.patched / "data" / "frontend" / "fecmn.big",
         p.patched / "data" / "preload4.big",
+        p.patched / "data" / "datafile.big",
+        p.patched / "data" / "frontend" / "mainmenu.big",
         p.patched / "layout.bin",
         p.bootskip / "data" / "frontend" / "fecmn.big",
     };

@@ -47,9 +47,10 @@ re-encoding already-compressed data, not to LZX).
 
 Run after tools/gen_pc_options.py, which writes game_patched/data/preload4.big
 first; this reads the overlay's copy when it exists so both edits survive.
-Not yet ported to runtime/host/overlay_gen.cpp: a release with co-op needs
-that (release A.1's first-run overlay generation), and a solo release does
-not, because a solo game never dresses a partner.
+Ported to runtime/host/overlay_gen.cpp (PatchOutfitsArchive) for the release:
+the C++ runs this transform at a player's first run and is byte-identical to
+it (`cz_runtime --gen-overlays` + `diff -r` is the gate); this file stays the
+reference. Change both, and bump kGeneratorVersion, in the same commit.
 """
 import os
 import sys
