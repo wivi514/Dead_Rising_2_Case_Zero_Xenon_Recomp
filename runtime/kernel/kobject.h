@@ -40,6 +40,8 @@
 #define STATUS_NOT_IMPLEMENTED        0xC0000002
 #define WAIT_TIMEOUT_INFINITE         0xFFFFFFFFu
 
+struct WaitAnyBlock; // wait-any wake-ups, kobject.h bottom
+
 struct KernelObject
 {
     // NtDuplicateObject shares one host object across handles; NtClose destroys at 0.
@@ -52,6 +54,11 @@ struct KernelObject
         assert(false && "Wait not implemented for this kernel object.");
         return STATUS_TIMEOUT;
     }
+
+    // Wait-any registration (kobject.h, bottom). Default: not supported, so a
+    // wait-any that includes this object falls back to the bounded poll.
+    virtual void AddAnyWaiter(WaitAnyBlock*) {}
+    virtual void RemoveAnyWaiter(WaitAnyBlock*) {}
 };
 
 extern std::recursive_mutex g_kernelLock;
@@ -135,7 +142,7 @@ T* QueryKernelObject(XDISPATCHER_HEADER& header)
 }
 
 // ---------------------------------------------------------------------------
-// THE ANY-SIGNAL GENERATION (part 116 item 4)
+// WAIT-ANY WAKE-UPS (part 116 item 4)
 //
 // A wait-ANY over several objects has no single condition variable to park on, so
 // WaitAnyPoll polled the objects and slept 1 ms between polls — "simple and safe;
@@ -145,18 +152,14 @@ T* QueryKernelObject(XDISPATCHER_HEADER& header)
 // signalled, because the sleep quantum is the wake-up resolution. That latency is
 // serial on the guest's critical path.
 //
-// This is the cheapest correct replacement: a process-wide generation counter that
-// every signal bumps (Event::Set, Semaphore::Release, thread exit, timer fire) under
-// one mutex with one condition variable. A wait-any reads the generation, polls, and
-// if nothing is ready waits for the generation to CHANGE — bounded by the old 1 ms so
-// an object kind that does not bump it (a file handle, a content enumerator) still
-// completes as before. Spurious wake-ups only cost a re-poll. With no waiter parked,
-// the broadcast is a load and a compare (glibc's cond_broadcast fast path — no
-// syscall), which is why every signal can afford it.
+// The first version was a process-wide generation counter bumped by every signal —
+// and it measured WORSE (+0.9 ms on the wall, the pump +0.8): every Set in the process
+// woke every parked wait-any, which re-polled all its objects and parked again, a
+// thundering herd whose cache traffic the pump paid for. So the wake is PER OBJECT: a
+// wait-any registers a WaitAnyBlock on each object it waits on, and only a signal on
+// one of THOSE objects bumps that block's generation and notifies its condvar. An
+// object with no registered wait-any waiter pays one empty-vector check under a mutex
+// it already holds. Object kinds that do not register (a file handle, a content
+// enumerator) keep the old 1 ms poll through the bounded wait.
 //
 // CZ_WAITANY_POLL=1 restores the 1 ms sleep — the same-binary control arm.
-uint64_t KobjSignal_Generation();
-void KobjSignal_Broadcast();
-// Blocks until the generation differs from `seen` or `ms` elapse; returns the
-// generation observed on the way out.
-uint64_t KobjSignal_WaitForChange(uint64_t seen, unsigned ms);

@@ -107,35 +107,3 @@ void DestroyKernelObject(uint32_t handle)
         // the cheap correct answer.
     }
 }
-
-// The any-signal generation (kobject.h). One mutex, one condvar, one counter; the
-// counter is read under the mutex by waiters and written under it by signallers so a
-// signal between "read generation" and "wait" cannot be lost.
-namespace
-{
-std::mutex g_sigMx;
-std::condition_variable g_sigCv;
-uint64_t g_sigGen = 0;
-} // namespace
-
-uint64_t KobjSignal_Generation()
-{
-    std::lock_guard lk(g_sigMx);
-    return g_sigGen;
-}
-
-void KobjSignal_Broadcast()
-{
-    {
-        std::lock_guard lk(g_sigMx);
-        ++g_sigGen;
-    }
-    g_sigCv.notify_all();
-}
-
-uint64_t KobjSignal_WaitForChange(uint64_t seen, unsigned ms)
-{
-    std::unique_lock lk(g_sigMx);
-    g_sigCv.wait_for(lk, std::chrono::milliseconds(ms), [&] { return g_sigGen != seen; });
-    return g_sigGen;
-}

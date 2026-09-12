@@ -835,6 +835,43 @@ struct KobjActivity
     std::atomic<uint64_t> signalCalls{ 0 };
 };
 
+// One parked wait-any: the objects it registered on notify THIS block (kobject.h).
+struct WaitAnyBlock
+{
+    std::mutex m;
+    std::condition_variable cv;
+    uint64_t gen = 0; // under m
+    void Signal()
+    {
+        {
+            std::lock_guard lk(m);
+            ++gen;
+        }
+        cv.notify_all();
+    }
+    // Wait until the generation differs from `seen` or `ms` elapse; returns the
+    // generation observed on the way out.
+    uint64_t WaitForChange(uint64_t seen, unsigned ms)
+    {
+        std::unique_lock lk(m);
+        cv.wait_for(lk, std::chrono::milliseconds(ms), [&] { return gen != seen; });
+        return gen;
+    }
+    uint64_t Generation()
+    {
+        std::lock_guard lk(m);
+        return gen;
+    }
+};
+
+// The per-object list of parked wait-anys, guarded by the object's own mutex. A
+// vector because it is almost always empty and rarely holds more than two.
+static inline void NotifyAnyWaiters(std::vector<WaitAnyBlock*>& waiters)
+{
+    for (WaitAnyBlock* w : waiters)
+        w->Signal();
+}
+
 struct Event final : KernelObject
 {
     std::mutex m;
@@ -842,6 +879,7 @@ struct Event final : KernelObject
     bool manualReset;
     bool signaled;
     KobjActivity act;
+    std::vector<WaitAnyBlock*> anyWaiters; // under m
 
     Event(XKEVENT* header) : manualReset(header->Type == 0), signaled(header->SignalState != 0) {}
     Event(bool manualReset, bool initialState) : manualReset(manualReset), signaled(initialState) {}
@@ -867,17 +905,26 @@ struct Event final : KernelObject
     {
         act.lastSignalTid = CurrentGuestThreadId();
         act.signalCalls++;
-        {
-            std::lock_guard lock(m);
-            signaled = true;
-            // notify_all even for auto-reset events. Exactly-one-release is still
-            // guaranteed by the mutex plus the `signaled` flip inside Wait, and
-            // notify_one starves a waiter when other threads re-wait on the same object
-            // every frame — Fable 2's finding 44 livelock, where the render workers kept
-            // eating the wakeup meant for the init thread.
-            cv.notify_all();
-        }
-        KobjSignal_Broadcast(); // wake any wait-ANY that includes this event
+        std::lock_guard lock(m);
+        signaled = true;
+        // notify_all even for auto-reset events. Exactly-one-release is still
+        // guaranteed by the mutex plus the `signaled` flip inside Wait, and
+        // notify_one starves a waiter when other threads re-wait on the same object
+        // every frame — Fable 2's finding 44 livelock, where the render workers kept
+        // eating the wakeup meant for the init thread.
+        cv.notify_all();
+        NotifyAnyWaiters(anyWaiters); // and every wait-ANY parked on this event
+    }
+
+    void AddAnyWaiter(WaitAnyBlock* w) override
+    {
+        std::lock_guard lock(m);
+        anyWaiters.push_back(w);
+    }
+    void RemoveAnyWaiter(WaitAnyBlock* w) override
+    {
+        std::lock_guard lock(m);
+        anyWaiters.erase(std::remove(anyWaiters.begin(), anyWaiters.end(), w), anyWaiters.end());
     }
 
     void Reset()
@@ -894,6 +941,7 @@ struct Semaphore final : KernelObject
     uint32_t count;
     uint32_t maximum;
     KobjActivity act;
+    std::vector<WaitAnyBlock*> anyWaiters; // under m
 
     Semaphore(XKSEMAPHORE* sem) : count(sem->Header.SignalState), maximum(sem->Limit) {}
     Semaphore(uint32_t count, uint32_t maximum) : count(count), maximum(maximum) {}
@@ -927,17 +975,26 @@ struct Semaphore final : KernelObject
     {
         act.lastSignalTid = CurrentGuestThreadId();
         act.signalCalls++;
-        {
-            std::lock_guard lock(m);
-            if (maximum && count + releaseCount > maximum)
-                return STATUS_SEMAPHORE_LIMIT_EXCEEDED;
-            if (previous)
-                *previous = count;
-            count += releaseCount;
-            cv.notify_all();
-        }
-        KobjSignal_Broadcast(); // wake any wait-ANY that includes this semaphore
+        std::lock_guard lock(m);
+        if (maximum && count + releaseCount > maximum)
+            return STATUS_SEMAPHORE_LIMIT_EXCEEDED;
+        if (previous)
+            *previous = count;
+        count += releaseCount;
+        cv.notify_all();
+        NotifyAnyWaiters(anyWaiters); // and every wait-ANY parked on this semaphore
         return STATUS_SUCCESS;
+    }
+
+    void AddAnyWaiter(WaitAnyBlock* w) override
+    {
+        std::lock_guard lock(m);
+        anyWaiters.push_back(w);
+    }
+    void RemoveAnyWaiter(WaitAnyBlock* w) override
+    {
+        std::lock_guard lock(m);
+        anyWaiters.erase(std::remove(anyWaiters.begin(), anyWaiters.end(), w), anyWaiters.end());
     }
 };
 
@@ -1375,15 +1432,34 @@ static uint32_t NtWaitForSingleObjectEx_x(uint32_t handle, uint32_t mode, uint32
 //
 // Turn it on with CZ_MULTIWAIT_APC=1. If a real APC-starvation bug ever turns up,
 // promote it then — with the gate numbers taken from both binaries on the same day.
-template <typename Poll, typename Id>
+template <typename Poll, typename Id, typename Obj>
 static uint32_t WaitAnyPoll(uint32_t count, uint32_t timeoutMs, uint32_t alertable, Poll poll,
-                            Id id)
+                            Id id, Obj obj)
 {
     GuestThread::WaitScope ws(GuestThread::kWaitMulti);
     static const bool drainApcs = getenv("CZ_MULTIWAIT_APC") != nullptr;
     static const bool pollOnly = getenv("CZ_WAITANY_POLL") != nullptr;
     const auto start = std::chrono::steady_clock::now();
-    uint64_t gen = pollOnly ? 0 : KobjSignal_Generation();
+    // Register this wait on every object that supports it (kobject.h, wait-any
+    // wake-ups) BEFORE the first poll, so a signal between poll and park bumps the
+    // block's generation and the park returns at once. Unregistered on every exit.
+    WaitAnyBlock block;
+    struct Reg
+    {
+        WaitAnyBlock* b; Obj& obj; uint32_t n; bool on;
+        ~Reg()
+        {
+            if (!on) return;
+            for (uint32_t i = 0; i < n; i++)
+                if (KernelObject* o = obj(i))
+                    o->RemoveAnyWaiter(b);
+        }
+    } reg{ &block, obj, count, !pollOnly };
+    if (!pollOnly)
+        for (uint32_t i = 0; i < count; i++)
+            if (KernelObject* o = obj(i))
+                o->AddAnyWaiter(&block);
+    uint64_t gen = pollOnly ? 0 : block.Generation();
     for (uint64_t tick = 0;; tick++)
     {
         if (((alertable && drainApcs) || ApcAlways()) && (DrainThreadApcs() | (int)FireDueTimerApcs()))
@@ -1415,14 +1491,14 @@ static uint32_t WaitAnyPoll(uint32_t count, uint32_t timeoutMs, uint32_t alertab
                 ids[i] = id(i);
             ReportStuckMultiWait(n, ids, int(tick / 1000));
         }
-        // Park until SOMETHING is signalled, bounded by the old 1 ms quantum; the
-        // generation was read BEFORE the poll above, so a signal that landed during
-        // the poll returns immediately (kobject.h, the any-signal generation).
+        // Park until one of OUR objects is signalled, bounded by the old 1 ms
+        // quantum; the generation was read BEFORE the poll above, so a signal that
+        // landed during the poll returns immediately (kobject.h, wait-any wake-ups).
         // CZ_WAITANY_POLL=1 is the pre-part-116 behaviour, the control arm.
         if (pollOnly)
             std::this_thread::sleep_for(std::chrono::milliseconds(1));
         else
-            gen = KobjSignal_WaitForChange(gen, 1);
+            gen = block.WaitForChange(gen, 1);
     }
 }
 
@@ -1465,11 +1541,21 @@ static uint32_t KeWaitForMultipleObjects_x(uint32_t count, xpointer<XDISPATCHER_
             WaitDispatcher(objects[i], timeoutMs);
         return STATUS_SUCCESS;
     }
-    // wait-any: poll. Simple and safe; revisit if it shows up hot in a profile.
+    // wait-any: poll, parked on the objects' own wake-ups (kobject.h). It showed up
+    // in the part-116 wait census at 2.2 ms/frame on the Main Thread.
     return WaitAnyPoll(
         count, timeoutMs, alertable,
         [&](uint32_t i) { return WaitDispatcher(objects[i], 0) == STATUS_SUCCESS; },
-        [&](uint32_t i) { return g_memory.MapVirtual(static_cast<void*>(objects[i])); });
+        [&](uint32_t i) { return g_memory.MapVirtual(static_cast<void*>(objects[i])); },
+        [&](uint32_t i) -> KernelObject* {
+            XDISPATCHER_HEADER* h = objects[i];
+            switch (h->Type)
+            {
+                case 0: case 1: return QueryKernelObject<Event>(*h);
+                case 5: return QueryKernelObject<Semaphore>(*h);
+                default: return nullptr;
+            }
+        });
 }
 
 static uint32_t NtWaitForMultipleObjectsEx_x(uint32_t count, be<uint32_t>* handles,
@@ -1491,7 +1577,12 @@ static uint32_t NtWaitForMultipleObjectsEx_x(uint32_t count, be<uint32_t>* handl
             return IsKernelObject(handles[i]) && IsLiveKernelHandle(handles[i]) &&
                    GetKernelObject(handles[i])->Wait(0) == STATUS_SUCCESS;
         },
-        [&](uint32_t i) { return uint32_t(handles[i]); });
+        [&](uint32_t i) { return uint32_t(handles[i]); },
+        [&](uint32_t i) -> KernelObject* {
+            return IsKernelObject(handles[i]) && IsLiveKernelHandle(handles[i])
+                       ? GetKernelObject(handles[i])
+                       : nullptr;
+        });
 }
 
 static uint32_t NtClose_x(uint32_t handle)

@@ -242,6 +242,38 @@ CRT `memcpy` (r3 = dst, r4 = src, r5 = n; byte head to 8-alignment, `ld/std` bod
 point and the specification.
 
 
+### 4.3 Item 3 — codegen on the recompiled TUs
+
+Three arms, each its own build directory on the same source, each compiled in ~100 s
+(`runtime/build-{pgouse,lto,o3}`; the CMake knobs are `CZ_PPC_PGO`, `CZ_PPC_LTO`,
+`CZ_PPC_OPT`, on `ppc_image` only). Kill per arm, pre-registered: < 0.3 ms median.
+
+**PGO** — profile from one instrumented crowd-route run (`-fprofile-instr-generate`,
+60,117 functions, 273 G counts; the instrumented guest runs at 45 fps and still reaches the
+crowd; **the profile is written from our SIGTERM handler**, because `_Exit` skips the
+atexit flush and the first run produced a 0-byte `.profraw`). Three runs a side,
+alternated, both kinds:
+
+| kind | band | nA | nB | wall | pump | Main | Draw |
+|---|---|---|---|---|---|---|---|
+| normal | 8,000 | 15 | 3 | −0.19 | −0.49 | −0.34 | −0.46 |
+| normal | 8,250 | 6 | 7 | −0.03 | +0.01 | −0.31 | +0.01 |
+| normal | 8,500 | 14 | 17 | −0.24 | −0.15 | −0.20 | −0.12 |
+| normal | 8,750 | 8 | 23 | −0.11 | −0.13 | −0.13 | −0.17 |
+| NO_DODRAW | 8,000 | 4 | 14 | −0.11 | +0.14 | +0.15 | +0.29 |
+| NO_DODRAW | 8,250 | 8 | 31 | −0.37 | −0.02 | −0.24 | −0.23 |
+| NO_DODRAW | 8,500 | 25 | 5 | +0.30 | +0.02 | +0.03 | −0.10 |
+
+**Main Thread −0.25 ms (monotone, normal arm); the guest-floor wall −0.11 ms and NOT
+monotone. KILLED at the 0.3 ms bar.** The "single most likely large mover" is worth a
+quarter of a millisecond on the busier thread and nothing reliable on the floor. The
+reading generalises: the recompiled code is memory-shaped (every guest register is a
+field of a context struct in memory, every guest load/store a byte-swapped host one),
+and a profile that lets the compiler lay out branches better does not change how many
+bytes move. Retained as an arm (`-DCZ_PPC_PGO=<profdata>`), not a default; the profile is
+`~/DR2CZ-troubleshooting/part116/pgo/crowd.profdata` and a release recipe that wanted it
+would check it in beside `config/`.
+
 ### 4.4 Item 4 — the critical path, and a defect of OURS in it (pre-registered before the run)
 
 `[guestwait]` (on every `[fps]` line now) at the crowd, normal arm, 10.4 ms frames:
@@ -276,3 +308,17 @@ median falls by **0.5-1.5 ms** in every band (the quantum latency of ~5 waits x 
 minus the dependency time that is real). Kill: **< 0.3 ms** on the NO_DODRAW wall, or any
 band moving the other way — then it ships OFF as an arm. On the normal arm the wall is
 predicted NOT to move (pump-bound) and the Main Thread's `multi` column to shrink.
+
+**v1 — the process-wide broadcast — measured WORSE and was replaced before its A/B
+finished** (one pair a kind, so an observation, not a result): normal arm wall **+0.88 ms**,
+pump **+0.80**, Draw Thread CPU **+0.58**, monotone in three bands. Mechanism: every
+`Event::Set` in the process (the job threads', Havok's, the audio thread's) woke EVERY
+parked wait-any, which re-polled all its objects under their mutexes and parked again — a
+thundering herd whose CPU shows up on the Draw Thread's column and whose cache traffic
+the pump paid for on another core (gotcha 551 again: bytes are machine-wide). **v2
+registers the wait on each object it waits on** (`WaitAnyBlock`, `KernelObject::
+AddAnyWaiter`), so a signal wakes only the wait-anys that include that object; an object
+with no registered waiter pays an empty-vector check under a mutex it already holds. The
+prediction and kill above stand unchanged for v2. (And a rule was broken to get here:
+`runtime/build` was rebuilt while campaign 2 was running; the one run that raced the
+binary is quarantined as `*_v1_binary_race.rejected` and campaign 3 is the clean A/B.)
