@@ -4231,4 +4231,17 @@ CZ_OUTFIT_TRACE=1  THE CLOTHING PIPELINE, STEP BY STEP (co-op part 4,
                    Per-part, not per-frame; inert without the variable. The register
                    readings on TexCreate/ModelCreate/LoadDone are approximate (the size
                    fields print a string length) — the names and the results are right
+CZ_COOP_JOIN_PROMPT=0  THE CONTROL ARM for the host's "<player> wants to join your game"
+                   prompt (co-op part 5, runtime/kernel/coop_call.cpp). By default a
+                   joining player is ASKED ABOUT with the title's own dialog
+                   (DlgOnHostConfirmCOOPJoin, string 11533; Yes / No / SetToPrivate);
+                   =0 restores the shipped behaviour, where the session-details handler
+                   posts a synthetic "Yes" in game states 5/6 and the join goes through
+                   unasked. Inert until a session has a pending client
+CZ_COOP_CALL_TRACE=1  every step of both host-side routes from "a client is pending"
+                   to the confirm: the details handler's state word and branch, the
+                   synthetic Yes arriving at the game session's event handler, the
+                   walkie-talkie route (EnablePendingStartOnlineCall, the call element
+                   starting and being answered), the dialog being raised, and every
+                   confirm/decline with its caller. Per-event; inert without the variable
 ```
