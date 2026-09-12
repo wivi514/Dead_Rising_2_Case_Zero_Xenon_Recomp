@@ -90,7 +90,10 @@ item alone can take the frame under ~8.5 ms at this crowd any more.
 shader` 0 · **synchronization validation 0 hazards** at 6,173 draws on the outdoor route,
 **the poison producing 30** · `truncated=0` across every crowd log of the part · a
 10-minute `CZ_AUTOCHUCK=EXPLORER` soak with `CZ_WAIT_TRACE=1` (the map closed twice,
-no fault, no corrupt stream, 143 fps median at 2,400-3,200 draws).
+no fault, no corrupt stream, 143 fps median at 2,400-3,200 draws) · **a second,
+25-minute explorer soak at 3440x1440 on the final default (11:38-12:03)**: no fault, no
+corrupt stream, `no translated shader` 0, 24 fps windows, ended on its timeout with the
+pipeline cache written.
 
 ## §4. Rules this part paid for
 
