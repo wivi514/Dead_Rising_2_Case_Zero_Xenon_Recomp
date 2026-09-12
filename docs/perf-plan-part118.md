@@ -178,6 +178,19 @@ Draw −0.6, p99 −1.9 — the same shape as campaign 2's matched bands, and th
 overstates it by perhaps 0.2; the campaign-2 matched-band numbers (§4) are the ones to
 quote.
 
+## §4c. The operator's 3440x1440, one run each (14:50-15:00) — a check, not a claim
+
+| run | draws | wall mean / median | p99 | `cz-draw` | Main | Draw | Main single waits |
+|---|---|---|---|---|---|---|---|
+| no pin | 9,040-9,070 | 9.94-9.99 / 10.00 | 12.0 | 9.41-9.50 | 8.42-8.48 | 6.80-6.85 | 0.79 / 5.7 |
+| **pin (default)** | 9,510-9,555 | 10.02 / 10.00 | **11.0** | 9.29-9.33 | **7.96-8.03** | **6.30-6.32** | 1.30 / 5.8 |
+| pin + Havok 3 | 9,230-9,380 | 9.80-10.03 / 9.97-10.00 | 11.0-11.9 | 9.18-9.37 | 8.10-8.20 | 6.28-6.32 | 1.24 / 7.8 |
+
+The pinned run landed 5% heavier and still reads Main −0.45, Draw −0.5, p99 −1.0; the
+wall is at the 10 ms quantum on both (at this resolution the GPU is the other bound —
+part 117 §4.5). Havok 3 shows the same tail-wait shape as 4 (two more single waits a
+frame, Main CPU no lower than the default at fewer draws): stock stays.
+
 ## §5. The honest answer
 
 The Main Thread's CPU at the operator's crowd is **8.3 -> 7.9 ms** (mode 2), and that

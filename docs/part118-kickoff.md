@@ -54,8 +54,8 @@ all three.
   finer than its median; the CPU columns are the instrument. And PRINT THE CLOCK once a
   window — today's runs drifted ~6% ninety minutes in (`amd-pstate-epp`,
   `balance_performance`).
-* **Havok at 3 workers** was not measured (4 was the arm); the wait census says the
-  loss is the tail-wait, which 3 would halve.
+* ~~Havok at 3 workers was not measured~~ — one run at 3440x1440 (plan §4c): the same
+  tail-wait shape as 4 (+2 single waits a frame), Main CPU no lower. Stock stays.
 * The Main Thread's remaining 7.9 ms is the title's own pointer-chasing (31k demand
   DRAM fills a frame, flat); the next lever is architectural (the D3D pivot removes the
   Draw Thread's interpreter half and the PM4 walk, not the Main Thread's simulation).
