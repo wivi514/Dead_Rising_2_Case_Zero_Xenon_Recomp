@@ -192,7 +192,12 @@ mask; trust the microcode's own swizzles.
     read `phase5-notes.md` §6ba before following anything in it.
   - **THE LIVE HAND-OFF IS ALWAYS THE HIGHEST-NUMBERED `partNN-kickoff.md`**, and it
     supersedes every earlier kickoff on "where the port is". **IT IS
-    `part115-kickoff.md` — CO-OP IS ON MASTER AND THE RELEASE CARRIES IT (co-op plan
+    `part115-kickoff.md`, AND THE LIVE WORK AS OF 2026-09-12 IS
+    `docs/perf-plan-part116.md` — the operator's 12-hour unattended order: profile the
+    GUEST's 8.8 ms floor for the first time, native CRT hooks, PGO/LTO on the ppc TUs,
+    and the honest 120 fps answer. v1.1.0 (co-op, overlay, launcher-only online,
+    per-profile saves) is BUILT, GATED and a DRAFT release awaiting the operator's
+    publish. — CO-OP IS ON MASTER AND THE RELEASE CARRIES IT (co-op plan
     part 5, late evening of 2026-09-11): JOIN CO-OP GAME on the main menu (one cloned
     button in `title.txt` + one manifest edge — the whole JoinGame front end had
     shipped, only the row was cut), the host's *"<name> wants to join your game"*
