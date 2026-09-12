@@ -138,6 +138,9 @@ three runs a side, alternated.
   frame a player sees, the Main Thread costs 7.7-8.0 ms.
 * The Main Thread's CPU (6.4-6.7) is 1.4-2.0 ms SHORT of the NO_DODRAW wall (7.8-8.7):
   the floor is a dependency chain with a wait in it, not one thread's work. Item 4.
+* GPU, one `CZ_VK_GPU_PASSES=1` run on the route (run mean, 31,653 frames): **3.23
+  ms/frame**, residual 1.5%, fence wait 0.01 ms — the >=256-draw passes 1.33, resolve
+  copies 0.70, 1-draw passes 0.42, shadow cascade 0.31. The GPU is a third of the pump.
 
 ### 4.1 Item 1 — the guest profiled (b1: flat `perf -F 999` 30 s + DWARF 5 s at the crowd, 1920x1080, 8,934 draws peak)
 
@@ -432,3 +435,16 @@ CPU-side, not 113 — which is the one input to that decision this part changed.
 largest remaining term after the pump is the Draw Thread's display-list interpreter →
 D3D layer (81% of that thread), and the only thing that removes it is the
 D3D-translation pivot, which removes the pump's PM4 walk with it.
+
+### 4.8 The +0.24 on the normal arm — one perf pair (05:30), owed item partly answered
+
+Two probe runs, poll vs wake, flat `perf` on the pump: **the pump's user-space symbol
+table is unchanged** (DoDraw 20.5 -> 21.0%, WriteRegisterRun 10.4 -> 9.9, UploadStream
+9.6 -> 9.5, memset 4.2 -> 3.7 ...) and the one row that grows is `[unknown]` — kernel
+samples, unreadable at `perf_event_paranoid=2` — **6.8 -> 7.8%**, i.e. ~1 point of the
+pump ≈ 0.1 ms in the kernel. The rest is diffuse. Consistent with the fence-store wake
+path and cross-core contention; not proven, and not provable without root for kernel
+symbols. Also seen: the UNNAMED guest thread created right after the Draw Thread
+(`sub_8286A148` / `sub_8286FAD0` — Havok MOPP strings, a worker) goes 12.1 -> 16.8% of a
+core under the wake; it is on a spare core and its extra time reads as a spin that now
+starts sooner. Left as the owed item's remaining half.

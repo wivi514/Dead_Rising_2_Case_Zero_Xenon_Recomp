@@ -15,7 +15,7 @@ operator's crowd (8,000-9,000 draws, 1920x1080, Ryzen 7 5700 at 4654 MHz):
 | **the guest floor** (`CZ_VK_NO_DODRAW=1` wall) | **8.1** (part 110 said 8.8 at 1440p) | **7.0** | the NO_DODRAW wall, 3 runs a side |
 | — of which the Main Thread's CPU | 6.4-6.7 | unchanged | `guest main` column |
 | — of which waits (dependency chain) | 1.4-2.0 | **0.3-0.9** | `[guestwait]` |
-| GPU | ~4 ms at 1080p | unchanged | part 106 |
+| GPU | 3.23 ms at 1080p (one `CZ_VK_GPU_PASSES=1` run) | unchanged | plan §4.0 |
 | the shipped wall | 10.2-10.7 | 10.4-10.9 | median |
 | the target | 8.33 | 8.33 | 120 fps |
 
@@ -67,13 +67,23 @@ PM4 walk. That is the architectural answer to both floors and it is a phase, not
   picture gates are in §3, but the wait-any wake changes WHEN guest threads run, and the
   only test of "does it feel the same" is theirs. If anything is off, `CZ_WAITANY_POLL=1`
   first.
-* **The +0.24 ms on the normal arm has a candidate mechanism, not a proven one** (§4.4).
-  One run with `CZ_PM4_TICK_US` raised, or a `perf` pair on the pump under both arms,
-  would name it. Not done: the night's budget went to the three codegen arms the plan
-  ordered.
-* Windows: `pthread_setname_np` / `pthread_getcpuclockid` are Linux; the Windows build
-  compiles (the calls are guarded) but prints `guest main -1.00` and no `[guestwait]`.
-  `SetThreadDescription` + `GetThreadTimes` is a 20-line port when someone is on czwin.
+* **The +0.24 ms on the normal arm has a candidate mechanism, not a proven one** (§4.4,
+  §4.8). A `perf` pair on the pump shows its user-space table unchanged and `[unknown]`
+  (kernel) +1 point; naming it needs kernel samples (`perf_event_paranoid` < 2, i.e. the
+  operator's sudo) — `perf record -g` on the pump under both arms with kernel symbols is
+  the one-run answer.
+* Windows: `pthread_setname_np` / `pthread_getcpuclockid` are Linux; every new call is
+  behind `!defined(_WIN32)` so the Windows build SHOULD compile (prints `guest main
+  -1.00`, no `[guestwait]`; the wait-any wake itself is portable std::), **but czwin was
+  unreachable at 05:20 (ssh timed out) so it is NOT verified** — the first Windows build
+  after this part is a gate, not a formality. `SetThreadDescription` + `GetThreadTimes`
+  is the 20-line port of the two instruments.
+* **A history rewrite happened tonight, before the push**: the first commit's `git add
+  -A runtime/` swept two untracked release build trees (~600 MB, two 150 MB archives)
+  into 8308d11; GitHub's pre-receive rejected the push; the eight local commits were
+  rewritten with `git filter-repo` (hashes changed) and `.gitignore` now covers
+  `runtime/build-*/`. Nothing of the operator's history was touched (origin was at
+  59a03b5 throughout).
 
 ## §3. Gates on the shipped binary (plan §4.6)
 
