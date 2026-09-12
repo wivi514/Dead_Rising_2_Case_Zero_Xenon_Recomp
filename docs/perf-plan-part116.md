@@ -93,6 +93,186 @@ ceiling and the largest remaining term.
 - No threading of the pump (B1 null, B2 predicted dead, B3 refuted).
 - No item without its kill rule written here first. No means. No single runs.
 
-## §4. Results (filled during the session)
+## §4. Results (filled during the session, 2026-09-11/12)
 
-(empty — the profile table goes here first)
+All runs: `tools/part116_probe.sh` = `tools/part80_crowdroute.sh` at **1920x1080**, windowed,
+`CZ_FPS_LOG=10`, 120 s soak; the crowd gate (>= 8,000 draws median, two consecutive windows)
+passed on every run quoted. Machine: the operator's 8c/16t Ryzen 7 5700 at its stock
+4654 MHz (verified: `scaling_max_freq 4654000`), GPU clock unpinned. A 22-hour-old co-op
+test stand-in (`launcher_ws.py`, spinning at 94% of a core since the previous session) was
+killed before the first run — it would have been a fifth busy core in every number below.
+Artifacts: `~/DR2CZ-troubleshooting/part116/` (`<tag>.bin` is the executable that ran,
+`<tag>.symfs` makes its `perf.data` readable after the tree moves on).
+
+**The measurement a guest-side change is read by — pre-registered here, before any arm
+ran.** The wall on the normal arm is the pump (10.1 of 10.3 ms), so a guest saving cannot
+show in it (part 110). Two quantities can show it: (i) the `guest main N.NN draw N.NN
+ms/frame` columns the `[fps]` line now carries, and (ii) the WALL under `CZ_VK_NO_DODRAW=1`,
+where the per-draw renderer is deleted and the wall IS the guest floor. Kills in §2 are
+read on (ii)'s wall median across matched 250-draw bands (`tools/part116_guestcpu.py`),
+three runs a side, alternated.
+
+### 4.0 Item 0 — the re-baseline (base1-3 / nodd1-3, alternated, 50 + 51 crowd windows)
+
+| band (draws) | n | wall | pump cpu | guest Main | guest Draw |
+|---|---|---|---|---|---|
+| normal 8,250 | 15 | 10.21 | 10.09 | 7.67 | 5.73 |
+| normal 8,500 | 15 | 10.22 | 10.07 | 7.70 | 5.73 |
+| normal 8,750 | 16 | 10.67 | 10.50 | 7.96 | 6.07 |
+| **NO_DODRAW 8,250** | 18 | **7.79** | 2.33 | **6.42** | **4.97** |
+| NO_DODRAW 8,500 | 14 | 8.32 | 2.39 | 6.59 | 5.12 |
+| NO_DODRAW 8,750 | 6 | 8.69 | 2.44 | 6.72 | 5.19 |
+
+(ms/frame, band medians.) Three things the part-110 number did not say:
+
+* **At 1080p the guest floor is 7.8-8.7 ms, not 8.8** — and the frame it sits under is
+  10.2-10.7 ms with the pump at 10.1-10.5. So `wall - guest floor` is 2.0-2.4 ms: **that is
+  the whole prize on this machine for ANY guest-side work, and it only converts to frame
+  rate once the pump is also below it** — which it is not, by ~2.3 ms.
+* **The guest's own CPU per frame FALLS by 1.24 ms (Main) and 0.78 ms (Draw) when our
+  renderer is deleted** (monotone in all five bands). Same guest code, same draws; the
+  only thing removed is the pump's per-draw work on another core. That is gotcha 551 seen
+  from the other side: the pump's bytes slow the guest's memory accesses (and/or its SMT
+  sibling). **Part 110's "8.8 ms of guest work" was measured with the pump idle and is
+  therefore the FLOOR of the guest's cost, not its cost in the shipped frame** — in the
+  frame a player sees, the Main Thread costs 7.7-8.0 ms.
+* The Main Thread's CPU (6.4-6.7) is 1.4-2.0 ms SHORT of the NO_DODRAW wall (7.8-8.7):
+  the floor is a dependency chain with a wait in it, not one thread's work. Item 4.
+
+### 4.1 Item 1 — the guest profiled (b1: flat `perf -F 999` 30 s + DWARF 5 s at the crowd, 1920x1080, 8,934 draws peak)
+
+**The two threads have names now.** The title names its threads from the MAIN thread by
+id (`SetThreadName(dwThreadID)` — never -1), so the binding goes through a guest-tid ->
+host-thread registry filled at spawn; every host thread we spawn inherits its creator's
+comm, which is why the first attempt reported EVERY thread as `Main Thread`. Census at
+the crowd (15 s, % of one core):
+
+| thread | % core | what it is |
+|---|---|---|
+| `cz-pump` | 97.5 | our PM4 walk + per-draw renderer |
+| **`Main Thread`** | **74.3** | the game: update + render SUBMISSION |
+| **`Draw Thread`** | **54.3** | the title's display-list interpreter -> its D3D layer -> the ring |
+| `cz-guard0..2` | 29.2 each | our content-guard pool |
+| unnamed (created by Main, 800738) | 10.4 | — |
+| `JobThread0..5` | 0.9-6.1 | the title's job pool, nearly idle |
+| `HavokWorkerThread` x2 | 5.4 | Havok's own workers |
+| `Audio Thread` | 4.3 | |
+
+**Both guest threads are 100% recompiled code** (DSO split: 20.43 of 20.48% and 14.92 of
+14.99% in `cz_runtime_crowd`; libc 0.03%, kernel ~0). There is no libc, no syscall, no
+spin on our side in either — the wait on our fence is parked (`sub_8283C6C8` 2.3% of the
+Draw Thread, the hook's own spin phase).
+
+**MAIN THREAD — flat.** Top self symbol 4.77% (`sub_827C6E28`, `cTransModel::Render`),
+then 3.28, 2.78, 1.94 ... the top 45 self symbols sum to ~48%. It is NOT a function; it is
+a tree. The DWARF chains, folded by the title's OWN profiler markers (every subtree pushes a
+`"<class>::Update(ms)"` / `"::Render(ms)"` string before `submit` — `tools/func_strings.py`
+prints them), give the frame's shape at this crowd (inclusive % of the thread):
+
+```
+sub_825D2610  game loop                                        99.8
+├─ sub_824A1EC8  UPDATE                                          50.5
+│  └─ sub_82496810                                               46.4
+│     ├─ cZombieManager::Update   (sub_8243F010)                 14.9   [crowd]
+│     │   └─ cZombieInfo::Update  (sub_82438470) 10.8, sub_8243D428 4.1
+│     ├─ cAIManager::Update       (sub_82230170)                 11.8   [crowd]
+│     ├─ cLibPhysics::Update      (sub_827E2178)                 10.9   [Havok: hkJobQueue sub_828AD798 8.1]
+│     └─ cActorManager::Update    (sub_82493CD8)                  4.8
+└─ sub_8249AAA8  RENDER (submission: cull + build the draw cache)  47.4
+   ├─ cLevel::Render              (sub_8248EB00)                 36.2
+   │  ├─ static props: sub_824358D8 -> "Static Props Rendered(num)" sub_82203DB0 16.3  [world]
+   │  ├─ cZombieManager::Render   (sub_82437408, "Zombies Rendered CSM0..3") 8.4  [crowd, x4 cascades]
+   │  ├─ cEnvironmentManager::Render (sub_8225AE88)               7.4
+   │  └─ cActorManager::Render    (sub_82484A30)                  3.2
+   └─ cTransModel::Render         (sub_827C8048/sub_827C6E28)    15.1
+```
+
+So the Main Thread's frame is **half simulation (zombies + AI + Havok) and half render
+submission** (culling and building the display list the Draw Thread will play). The
+crowd-scaled part is at least 14.9 + 11.8 + 8.4 = 35% and probably the physics too.
+
+**DRAW THREAD — one tree.** `sub_827D3898` ("Draw(ms)") -> `sub_827BFEE8`
+("cDrawRender--RenderDrawCache") -> `sub_827A00B8` ("DrawNodes") -> **`sub_827D5B18`, 81.3%
+inclusive**: a 0x49-opcode DISPLAY-LIST INTERPRETER (dword = 8-bit opcode + 24-bit payload,
+jump table, recursive; its own assert string names `renderlib\xbox360\drawrender.cpp`).
+Below it:
+
+| callee of the interpreter | incl % | what |
+|---|---|---|
+| `sub_827C0A40` (cmndrawrender pass) -> `sub_827D4CD8` (bind shaders: "bound_vertex_shader_handle") -> `sub_827CC9E0` 10.8 + `sub_827CCC30` 8.1 | 22.3 | shader/state binding per draw |
+| `sub_82842E78` = **D3D DrawIndexedVerticesUP** (d3d-translation-plan recon) -> `sub_8284F300` the draw flush | 15.0 | the D3D layer building PM4 |
+| interpreter self | 9.2 | dispatch |
+| `sub_827CBB40` -> `sub_82839830` = **D3D SetTexture** (16-byte fetch-constant copy) | 5.7 | |
+| `sub_827CD548` | 4.8 | |
+| `sub_82845160`/`sub_8283C6C8` fence wait (parked) | 2.6 | |
+
+**Classification against the plan's (a)-(e):**
+
+| class | Main Thread | Draw Thread |
+|---|---|---|
+| (a) CRT-shaped | **memcpy `sub_8280F950` 0.87%**, memset `sub_82810270` 0.10%, double transcendentals (`sub_8280F5D0` 0.23, `sub_8280F380` 0.20, `sub_8280F4F0` 0.18) | memcpy 0.49% |
+| (b) Havok | ~11% (`cLibPhysics::Update`, `hkJobQueue` 8.1) | 0 |
+| (c) CrowdEngine / animation | ~35% (`cZombieManager::Update` 14.9, `cAIManager::Update` 11.8, `cZombieManager::Render` 8.4) | 0 |
+| (d) the title's D3D submission side | ~47% (render submission: cull + display-list build) | **~81%** (the interpreter and everything under it, incl. D3D 15% + 5.7%) |
+| (e) spin / wait | 0 | 2.6% (the parked fence wait's spin phase) |
+| register save/restore ladders (`__savegprlr_N`/`__restgprlr_N`, out-of-line calls in the recompiled code) | ~4% | **~10%** |
+
+The last row is the one thing in the table that is about the RECOMPILER rather than the
+title: every prologue/epilogue is a call into a 5-15-store ladder function in another TU,
+and on the Draw Thread — small functions, deep call chains — that is a tenth of the
+thread. It is what item 3's LTO arm can reach and the PGO arm can partly reach (inlining
+across TUs; the ladders are `weak` aliases, see 4.3).
+
+
+### 4.2 Item 2 — native CRT replacements: REFUTED BY THE CENSUS, not built
+
+The plan's threshold is "every (a)-class function above 0.3% of a guest thread". The
+census (4.1) finds exactly one: **memcpy, `sub_8280F950`, 0.87% of the Main Thread and
+0.49% of the Draw Thread** (memset is 0.10%; the three double transcendentals are 0.18-0.23%
+each and are NOT bit-exact candidates). Its ceiling — the whole function's cost, as if the
+native form were free — is 0.87% x 7.7 ms + 0.49% x 5.7 ms = **0.095 ms/frame**, a third of
+the pre-registered 0.3 ms kill before a line is written, and a real hook keeps at least the
+byte-copy itself. So the bundle cannot survive its own kill and was not built; the time
+went to item 3, which the same census says is where the recompiled code's cost actually
+is (the ladders, the flat engine tree). The disassembly of `sub_8280F950` is the Xbox 360
+CRT `memcpy` (r3 = dst, r4 = src, r5 = n; byte head to 8-alignment, `ld/std` body,
+128-byte `dcbt` prefetch loop for >= 0x80) and its callers at the crowd are
+`sub_827ADD40` (55%, the Main Thread's render-submission) and `sub_8284EF28` /
+`sub_8284E628` (the D3D layer) — recorded so a later part that wants it has the entry
+point and the specification.
+
+
+### 4.4 Item 4 — the critical path, and a defect of OURS in it (pre-registered before the run)
+
+`[guestwait]` (on every `[fps]` line now) at the crowd, normal arm, 10.4 ms frames:
+
+| thread | CPU ms/frame | waits ms/frame (calls/frame) | sum |
+|---|---|---|---|
+| Main | 7.9-8.1 | single 0.25 (5.7) + **multi 2.2 (5.0)** + fence 0.00 (1.0) | 10.4 |
+| Draw | 5.7 | **multi 2.7 (2.0)** + **fence 2.1-2.3 (6-8)** | 10.5 |
+
+Each thread's CPU plus its waits IS the frame, to 0.1 ms — the census is complete. The
+Draw Thread waits on the fence (our pump/GPU: 2.2 ms) and on two multi-object waits
+(its draw cache from the Main Thread: 2.7 ms); the Main Thread makes FIVE multi-object
+waits a frame and spends 2.2 ms in them. Under `CZ_VK_NO_DODRAW=1` the Main Thread's CPU
+is 6.4-6.7 and the wall 7.8-8.7, so 1.4-2.0 ms of the guest FLOOR is that thread waiting.
+
+**And the multi-object wait is a 1 ms POLL.** `WaitAnyPoll` (imports.cpp) polls the
+objects and `sleep_for(1ms)` between polls — the comment says *"simple and safe; revisit
+if it shows up hot in a profile"*, and a per-thread wait census is the profile it needed.
+Every wait-any therefore ends up to 1 ms AFTER its object was signalled, five times a
+frame on the guest's critical path. No single-object wait has this (they park on the
+object's own condition variable).
+
+**The fix (built, not yet measured as this is written):** a process-wide signal
+generation — every `Event::Set`, `Semaphore::Release` and thread exit bumps it under one
+mutex/condvar; a wait-any reads it, polls, and parks until it CHANGES, bounded by the old
+1 ms so object kinds that do not bump it behave as before. `CZ_WAITANY_POLL=1` is the
+same-binary control (the old sleep). With no waiter parked a broadcast is glibc's no-syscall
+fast path.
+
+**Pre-registered prediction and kill:** on the NO_DODRAW arm (wall = guest floor) the wall
+median falls by **0.5-1.5 ms** in every band (the quantum latency of ~5 waits x up to 1 ms,
+minus the dependency time that is real). Kill: **< 0.3 ms** on the NO_DODRAW wall, or any
+band moving the other way — then it ships OFF as an arm. On the normal arm the wall is
+predicted NOT to move (pump-bound) and the Main Thread's `multi` column to shrink.

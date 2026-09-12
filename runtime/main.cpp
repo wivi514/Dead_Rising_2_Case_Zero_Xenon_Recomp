@@ -43,6 +43,10 @@
 #include "cpu/crash_report.h"
 #include "cpu/guest_thread.h"
 #include "cpu/timebase.h"
+
+// The LLVM profiling runtime's flush, resolved only in a -fprofile-instr-generate build
+// (see the SIGTERM handler). Weak, so a normal link leaves it null.
+extern "C" int __llvm_profile_write_file(void) __attribute__((weak));
 #include "gpu/shader_prebuild.h"
 #include "gpu/shader_translator.h"
 #include "gpu/vk_renderer.h"
@@ -546,6 +550,12 @@ int main(int argc, char** argv)
                     s);
             ::VkRenderer_DumpStats();
             ::VkRenderer_SavePipelineCache();
+            // A PGO-instrumented build (-DCZ_PPC_PGO=generate, part 116) writes its
+            // profile from an atexit hook, and _Exit skips those — so the first
+            // profiling run produced a 0-byte .profraw. The symbol is weak: absent in
+            // every ordinary build, present only when the profiling runtime is linked.
+            if (__llvm_profile_write_file)
+                __llvm_profile_write_file();
             fflush(nullptr);
             LogFile::Flush(2000);
             std::_Exit(128 + s);

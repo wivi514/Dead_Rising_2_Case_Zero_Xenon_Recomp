@@ -16,6 +16,7 @@
 #endif
 
 #include "../kernel/guestcall.h"
+#include "../kernel/kobject.h"
 #include "../kernel/heap.h"
 #include "../kernel/memory.h"
 
@@ -369,6 +370,7 @@ void GuestThread::MarkSelfExited()
 {
     if (t_self)
         t_self->exited.store(true, std::memory_order_release);
+    KobjSignal_Broadcast(); // a wait-ANY on this thread's handle wakes now, not in 1 ms
 }
 
 // Polled rather than joined, because this object can outlive its thread and because

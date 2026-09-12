@@ -867,14 +867,17 @@ struct Event final : KernelObject
     {
         act.lastSignalTid = CurrentGuestThreadId();
         act.signalCalls++;
-        std::lock_guard lock(m);
-        signaled = true;
-        // notify_all even for auto-reset events. Exactly-one-release is still
-        // guaranteed by the mutex plus the `signaled` flip inside Wait, and
-        // notify_one starves a waiter when other threads re-wait on the same object
-        // every frame — Fable 2's finding 44 livelock, where the render workers kept
-        // eating the wakeup meant for the init thread.
-        cv.notify_all();
+        {
+            std::lock_guard lock(m);
+            signaled = true;
+            // notify_all even for auto-reset events. Exactly-one-release is still
+            // guaranteed by the mutex plus the `signaled` flip inside Wait, and
+            // notify_one starves a waiter when other threads re-wait on the same object
+            // every frame — Fable 2's finding 44 livelock, where the render workers kept
+            // eating the wakeup meant for the init thread.
+            cv.notify_all();
+        }
+        KobjSignal_Broadcast(); // wake any wait-ANY that includes this event
     }
 
     void Reset()
@@ -924,13 +927,16 @@ struct Semaphore final : KernelObject
     {
         act.lastSignalTid = CurrentGuestThreadId();
         act.signalCalls++;
-        std::lock_guard lock(m);
-        if (maximum && count + releaseCount > maximum)
-            return STATUS_SEMAPHORE_LIMIT_EXCEEDED;
-        if (previous)
-            *previous = count;
-        count += releaseCount;
-        cv.notify_all();
+        {
+            std::lock_guard lock(m);
+            if (maximum && count + releaseCount > maximum)
+                return STATUS_SEMAPHORE_LIMIT_EXCEEDED;
+            if (previous)
+                *previous = count;
+            count += releaseCount;
+            cv.notify_all();
+        }
+        KobjSignal_Broadcast(); // wake any wait-ANY that includes this semaphore
         return STATUS_SUCCESS;
     }
 };
@@ -1375,7 +1381,9 @@ static uint32_t WaitAnyPoll(uint32_t count, uint32_t timeoutMs, uint32_t alertab
 {
     GuestThread::WaitScope ws(GuestThread::kWaitMulti);
     static const bool drainApcs = getenv("CZ_MULTIWAIT_APC") != nullptr;
+    static const bool pollOnly = getenv("CZ_WAITANY_POLL") != nullptr;
     const auto start = std::chrono::steady_clock::now();
+    uint64_t gen = pollOnly ? 0 : KobjSignal_Generation();
     for (uint64_t tick = 0;; tick++)
     {
         if (((alertable && drainApcs) || ApcAlways()) && (DrainThreadApcs() | (int)FireDueTimerApcs()))
@@ -1407,7 +1415,14 @@ static uint32_t WaitAnyPoll(uint32_t count, uint32_t timeoutMs, uint32_t alertab
                 ids[i] = id(i);
             ReportStuckMultiWait(n, ids, int(tick / 1000));
         }
-        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        // Park until SOMETHING is signalled, bounded by the old 1 ms quantum; the
+        // generation was read BEFORE the poll above, so a signal that landed during
+        // the poll returns immediately (kobject.h, the any-signal generation).
+        // CZ_WAITANY_POLL=1 is the pre-part-116 behaviour, the control arm.
+        if (pollOnly)
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        else
+            gen = KobjSignal_WaitForChange(gen, 1);
     }
 }
 

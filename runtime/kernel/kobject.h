@@ -133,3 +133,30 @@ T* QueryKernelObject(XDISPATCHER_HEADER& header)
     }
     return static_cast<T*>(g_memory.Translate(header.WaitListHead.Blink.get()));
 }
+
+// ---------------------------------------------------------------------------
+// THE ANY-SIGNAL GENERATION (part 116 item 4)
+//
+// A wait-ANY over several objects has no single condition variable to park on, so
+// WaitAnyPoll polled the objects and slept 1 ms between polls — "simple and safe;
+// revisit if it shows up hot in a profile". It did: the title's Main Thread makes ~5
+// multi-object waits a frame and spends 1.6-2.6 ms/frame in them ([guestwait]), and
+// every one of them ends up to a millisecond AFTER the object it waited for was
+// signalled, because the sleep quantum is the wake-up resolution. That latency is
+// serial on the guest's critical path.
+//
+// This is the cheapest correct replacement: a process-wide generation counter that
+// every signal bumps (Event::Set, Semaphore::Release, thread exit, timer fire) under
+// one mutex with one condition variable. A wait-any reads the generation, polls, and
+// if nothing is ready waits for the generation to CHANGE — bounded by the old 1 ms so
+// an object kind that does not bump it (a file handle, a content enumerator) still
+// completes as before. Spurious wake-ups only cost a re-poll. With no waiter parked,
+// the broadcast is a load and a compare (glibc's cond_broadcast fast path — no
+// syscall), which is why every signal can afford it.
+//
+// CZ_WAITANY_POLL=1 restores the 1 ms sleep — the same-binary control arm.
+uint64_t KobjSignal_Generation();
+void KobjSignal_Broadcast();
+// Blocks until the generation differs from `seen` or `ms` elapse; returns the
+// generation observed on the way out.
+uint64_t KobjSignal_WaitForChange(uint64_t seen, unsigned ms);
