@@ -279,8 +279,8 @@ double GuestThread::CpuSecondsOf(const char* name)
     FILETIME c, e, k, u;
     if (!GetThreadTimes(HANDLE(h), &c, &e, &k, &u))
         return -1.0;
-    const unsigned long long kt = (unsigned long long(k.dwHighDateTime) << 32) | k.dwLowDateTime;
-    const unsigned long long ut = (unsigned long long(u.dwHighDateTime) << 32) | u.dwLowDateTime;
+    const uint64_t kt = (uint64_t(k.dwHighDateTime) << 32) | k.dwLowDateTime;
+    const uint64_t ut = (uint64_t(u.dwHighDateTime) << 32) | u.dwLowDateTime;
     return double(kt + ut) * 1e-7;
 #elif defined(__linux__)
     clockid_t cid;
