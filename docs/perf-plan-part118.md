@@ -214,6 +214,10 @@ is the whole of what this part could take off it in three and a half hours, beca
    Thread + our fence, `cz-draw` — so no single stage's saving moves the wall alone; mode
    2 is the first change since part 117 that moves all three at once.
 
+**The operator played it (15:10-15:40, their settings): *"feels smoother, above 100 fps
+almost all the time"* — 101-111 fps at 8,900-9,100 draws, Main 7.9-8.4 / Draw 5.3-5.7 ms
+CPU, p99 11-13.**
+
 What is owed: the Windows spelling of the pin (SetThreadAffinityMask + a process mask;
 `thread_budget.cpp` has the seam), the operator's session on the default (does the
 confinement change how it feels — the p99 says better), the six-core and no-SMT shapes,

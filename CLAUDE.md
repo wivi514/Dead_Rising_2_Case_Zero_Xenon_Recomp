@@ -1274,7 +1274,9 @@ HAND-OFF; gotchas 570-573):
   shipped binary reads the wall mean −0.6.** THE WALL MEDIAN CANNOT READ IT: the 1 ms
   vblank (`CZ_FPS_CAP=500`) quantises every presented frame to whole milliseconds, so
   every median today read 9.0x or 10.0x (gotcha 572) — read the CPU per stage.
-* Owed: the Windows spelling of the pin, the operator's session on the default, the
+* **Operator-verified the same evening**: *"feels smoother, above 100 fps almost all the
+  time"* (101-111 fps at their 8,900-9,100-draw crowd, p99 11-13).
+* Owed: the Windows spelling of the pin, the
   six-core/no-SMT shapes, the clock printed once a window (`amd-pstate-epp` drifted the
   machine ~6% ninety minutes into today's runs).
 

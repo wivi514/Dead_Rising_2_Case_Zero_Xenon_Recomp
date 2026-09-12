@@ -46,8 +46,12 @@ all three.
 * **Windows**: `ThreadBudget_PinProcessAway/PinNamedThread/PinSweep` are no-ops there;
   the spelling is SetProcessAffinityMask + SetThreadAffinityMask + a Toolhelp32 thread
   walk. The Windows leg of the release ships without the −0.5 until then.
-* **The operator's session on the default** — the confinement changes which cores the
-  guard pool and the audio pump get; the p99 says it should feel better, not worse.
+* ~~**The operator's session on the default**~~ — **DONE, 15:10-15:40, two sittings on
+  `tools/play_session.sh` at their own settings: *"feels smoother, above 100 fps almost
+  all the time."*** Their log (`~/DR2CZ-troubleshooting/play/part118_play{1,2}.log`): at
+  their crowd, 8,900-9,100 draws, 101-111 fps with the Main Thread at 7.9-8.4 and the Draw
+  Thread at 5.3-5.7 ms CPU, p99 11-13 ms; 117-128 fps at 6,800-8,100 draws. No sound
+  glitch, no load stutter reported. The verdict the instruments could not give.
 * **The six-core and no-SMT shapes** (the default is OFF there, unmeasured).
 * **A finer wall**: the vblank quantum hides any change under 1 ms on the wall column
   (gotcha 572). `CZ_VBLANK_MS` cannot go under 1 ms; the mean of the [fps] line is
