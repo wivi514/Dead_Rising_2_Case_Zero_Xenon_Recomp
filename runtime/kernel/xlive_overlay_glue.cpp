@@ -14,9 +14,9 @@ void CwOverlay_SetWindowSize(int w, int h)
     xlive_overlay::Overlay::Instance().SetWindowSize(w, h);
 }
 bool CwOverlay_Open() { return xlive_overlay::Overlay::Instance().open(); }
-void CwOverlay_SetClient(xlive::Client* client)
+void CwOverlay_SetClient(xlive::Client* client, uint32_t titleId)
 {
-    xlive_overlay::Overlay::Instance().SetClient(client);
+    xlive_overlay::Overlay::Instance().SetClient(client, titleId);
     // CZ_XLIVE_OVERLAY_OPEN=1: start with the overlay open, so a headless run
     // with CW_VK_SWAPCHAIN_DUMP can photograph it without anyone pressing
     // Shift+Tab. A test arm, like every other switch in this runtime.
@@ -57,7 +57,7 @@ void CwOverlay_Shutdown() { xlive_overlay::Overlay::Instance().Shutdown(); }
 bool CwOverlay_QueueSdlEvent(const SDL_Event&) { return false; }
 void CwOverlay_SetWindowSize(int, int) {}
 bool CwOverlay_Open() { return false; }
-void CwOverlay_SetClient(xlive::Client*) {}
+void CwOverlay_SetClient(xlive::Client*, uint32_t) {}
 void CwOverlay_OnEvent(const xlive::Event&) {}
 bool CwOverlay_Render(const CwOverlayVulkan&, VkCommandBuffer, VkImage, uint32_t, uint32_t, uint64_t)
 {

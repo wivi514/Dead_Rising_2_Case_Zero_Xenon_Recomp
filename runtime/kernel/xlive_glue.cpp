@@ -268,7 +268,7 @@ void CzXlive_Start(uint32_t titleId)
         return;
     }
     g_started = true;
-    CwOverlay_SetClient(&xlive::Client::Instance());
+    CwOverlay_SetClient(&xlive::Client::Instance(), titleId);
 
     // A cached identity is already loaded by Start, so a player who has signed
     // in before sees their own gamertag from the first frame rather than after

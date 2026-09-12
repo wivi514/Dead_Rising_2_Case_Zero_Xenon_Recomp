@@ -23,7 +23,7 @@ void CwOverlay_SetWindowSize(int w, int h);
 bool CwOverlay_Open();
 
 // -- the library's worker ----------------------------------------------------
-void CwOverlay_SetClient(xlive::Client* client);
+void CwOverlay_SetClient(xlive::Client* client, uint32_t titleId);
 void CwOverlay_OnEvent(const xlive::Event& event);
 
 // -- the render thread ---------------------------------------------------------
