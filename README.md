@@ -69,6 +69,11 @@ game folder at any time without losing progress.
 
 - The **whole game**: Still Creek, combo weapons, cinematics, save/load —
   completable start to finish.
+- **Two-player online co-op** (v1.1.0), the mode the Xbox build carried in its
+  code and never showed: JOIN CO-OP GAME on the main menu, a friends list to
+  join from, and the host asked before anyone comes in — over
+  [XenonLive](https://github.com/wivi514/XenonLive), through its
+  [launcher](https://github.com/wivi514/XenonLive_Launcher).
 - **Level cap raised to 50** (the original XBLA release stopped Chuck at
   level 5) with all fifteen skills unlockable — Case Zero as a full game,
   not a demo-sized one.
