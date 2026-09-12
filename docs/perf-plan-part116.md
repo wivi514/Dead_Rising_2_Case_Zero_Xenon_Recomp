@@ -322,3 +322,35 @@ with no registered waiter pays an empty-vector check under a mutex it already ho
 prediction and kill above stand unchanged for v2. (And a rule was broken to get here:
 `runtime/build` was rebuilt while campaign 2 was running; the one run that raced the
 binary is quarantined as `*_v1_binary_race.rejected` and campaign 3 is the clean A/B.)
+
+**v2 RESULT — the wait-any wake vs the 1 ms poll, same binary, `CZ_WAITANY_POLL=1` the
+control, alternated, at 02:12-02:24** (campaign 3 + one extra NO_DODRAW run for the wake
+arm after one of its runs missed the crowd gate and was rejected):
+
+| kind | band | nA | nB | wall | pump | Main CPU | Draw CPU |
+|---|---|---|---|---|---|---|---|
+| **NO_DODRAW** | 8,000 | 18 | 12 | **−1.11** | −0.00 | −0.16 | +0.13 |
+| **NO_DODRAW** | 8,250 | 5 | 9 | **−1.12** | −0.04 | −0.03 | −0.04 |
+| **NO_DODRAW** | 8,500 | 12 | 30 | **−0.97** | +0.01 | +0.06 | +0.06 |
+| normal | 8,000 | 8 | 4 | +0.16 | −0.50 | −0.09 | +0.08 |
+| normal | 8,250 | 2 | 15 | +0.25 | +0.33 | +0.11 | +0.53 |
+| normal | 8,500 | 12 | 21 | +0.47 | +0.40 | +0.19 | +0.45 |
+| normal | 8,750 | 10 | 10 | +0.22 | +0.15 | +0.02 | +0.22 |
+
+**The guest floor falls 1.11 ms — 8.1 -> 7.0 ms at 1080p — monotone in three bands, three
+runs a side, with the CPU columns unmoved (−0.03 / +0.06).** That is the prediction's shape
+exactly: latency removed, no work removed. The kill does not fire. The wait census on the
+floor arm says where it went: Main `multi` 1.53 -> 0.65 ms/frame, Draw `multi` 3.29 ->
+2.08, same call counts.
+
+**On the normal arm the wall is +0.24 (monotone, four bands) and the Draw Thread's CPU
++0.33** — within the route's ±0.3 ms floor but monotone, so it is treated as real. The
+wait census names the mechanism: the guest threads now reach their NEXT dependency
+sooner, and on a pump-bound frame that dependency is our fence — Draw `fence` 2.2 -> 4.4
+ms/frame and `[fencewait]` parks **3.1 -> 5.1 a frame**, each with its 50 µs pause-spin
+before the park, on whichever core (or SMT sibling of the pump) the thread lands on.
+5.1 x 50 µs = 0.26 ms of spin, which is the Draw Thread's +0.33 to within noise. The arm
+that tests this is `CZ_FENCE_PARK_SPIN_US=0` with the wake (campaign 4, below). **Ships ON
+either way**: −1.1 ms on the floor that decides the 120 fps question, against +0.24 on a
+frame whose bound is the pump and which item B's own arithmetic says the pump will stop
+being first; the spin arm decides whether the +0.24 is also recoverable.

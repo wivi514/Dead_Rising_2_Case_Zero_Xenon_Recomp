@@ -4249,3 +4249,61 @@ CZ_COOP_CALL_TRACE=1  every step of both host-side routes from "a client is pend
                    starting and being answered), the dialog being raised, and every
                    confirm/decline with its caller. Per-event; inert without the variable
 ```
+
+## Part 116 — the guest's own 8.8 ms, profiled (docs/perf-plan-part116.md §4)
+
+```
+[fps] ... | guest main N.NN draw N.NN ms/frame   THE GUEST'S CPU PER FRAME, on every
+                   [fps] line, no variable. The title's Main Thread and Draw Thread are
+                   the other floor of `wall ~ max(pump, guest, GPU)`; each column is that
+                   thread's CPU clock (pthread_getcpuclockid) read once a window, so a
+                   guest-side change is measured on the same line, over the same window,
+                   as the pump's. The threads are found by the NAME the title gave them —
+                   the SetThreadName exception now binds it to the host thread, so
+                   `perf`, `top -H` and tools/part50_thread_cpu.py read `Main Thread`,
+                   `Draw Thread`, `JobThread0..5`, `HavokWorkerThread`; ours are `cz-*`
+                   (cz-pump, cz-guard0..2, cz-pipeline, cz-shaderjit, cz-kbm-scan).
+                   -1.00 until the title has named its threads. Reader:
+                   tools/part116_guestcpu.py (banded, matched, B-A)
+[guestwait] ms/frame / calls/frame: main: single A/n multi B/n sleep C/n fence D/n | draw: ...
+                   WHERE EACH GUEST THREAD'S NON-CPU TIME WENT, same window: wall time
+                   inside our kernel's waits by kind — a single-object wait, a wait-any/
+                   wait-all, KeDelayExecutionThread, the fence park (cpu/fence_wait.cpp)
+                   — and how many a frame. CPU + waits = the frame, to 0.1 ms, on both
+                   threads (§4.4). It is the census that found the 1 ms wait-any poll.
+                   Printed after every [fps] line, no variable
+CZ_WAITANY_POLL=1  **THE CONTROL ARM for the wait-any wake-up (item 4).** By default a
+                   wait-any (KeWaitForMultipleObjects / NtWaitForMultipleObjectsEx,
+                   wait-any type) registers on each Event/Semaphore it waits on and parks
+                   until one of THEM is signalled, bounded by 1 ms. =1 restores the
+                   pre-part-116 loop: poll, sleep 1 ms, poll — where every wait ended up to
+                   a millisecond after its object was signalled, five times a frame on the
+                   Main Thread. Measured: the guest floor (the NO_DODRAW wall) −1.11 ms,
+                   monotone in three bands, CPU columns unmoved; the normal wall +0.24
+                   (the Draw Thread reaches the fence sooner and spins there — see
+                   CZ_FENCE_PARK_SPIN_US). v1 of the fix was a process-wide broadcast and
+                   measured +0.9 ms (thundering herd) — retracted in place in §4.4
+CZ_VK_NO_DODRAW=1 (part 110) is the arm a GUEST-side change is read on: with the per-draw
+                   renderer deleted the wall IS the guest floor. Read its wall; on the
+                   normal arm the wall is the pump and a guest saving cannot show in it
+-DCZ_PPC_OPT=-O3 / -DCZ_PPC_PGO=generate|<x.profdata> / -DCZ_PPC_LTO=ON   CMake ARMS on
+                   the recompiled TUs only (runtime/CMakeLists.txt, item 3). Each is its
+                   own build directory; none is a default. PGO: LLVM_PROFILE_FILE names
+                   the .profraw, the SIGTERM handler flushes it (an _Exit skips the atexit
+                   hook — the first profiling run wrote 0 bytes), llvm-profdata merge ->
+                   .profdata. Measured: PGO Main Thread −0.25 ms (monotone), floor −0.11
+                   not monotone — KILLED at 0.3 ms. LTO and -O3: §4.3
+tools/part116_probe.sh <tag> [ENV=..]   the route + thread census + flat perf + (CG=1) a
+                   5 s DWARF window, at 1920x1080; ARCHIVES the binary as <tag>.bin and
+                   writes <tag>.symfs, which is what makes the perf.data readable after
+                   the tree moves on — perf's build-id cache does NOT do that (it reads
+                   the file at the recorded path, sees the mismatch, prints addresses).
+                   tools/part116_callers.py reads the DWARF chains (inclusive shares,
+                   --below <fn> the direct-callee split, --callers-of <fn>);
+                   tools/func_strings.py <addr> prints the strings a guest function
+                   references — the title's own "<class>::Update(ms)" profiler markers
+                   name every subtree of a flat profile
+tools/part116_ab.sh <tagA> <binA> <tagB> <binB>   three runs a side, alternated, on the
+                   normal AND the NO_DODRAW kinds (KINDS=normal to skip one; ENVA/ENVB
+                   for env arms on the same binary)
+```
