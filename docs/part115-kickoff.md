@@ -38,7 +38,16 @@ The two test accounts: the host for the friends tests ran as **Chuck Greene**
 default account here (**wivi514**) has no friends, so a friends-only search from the
 laptop against a wivi514 host finds nothing — that is the feature, not a defect.
 
-## §2. The release (the operator's instruction: *"push this to master and we'll do the release build"*)
+## §2. The release (the operator's instruction: *"push this to master and we'll do the release build"*) — BUILT AND GATED, DRAFT ON GITHUB
+
+Done on 2026-09-11, late: all three artifacts built from `aaf3d1f` (Linux on the old
+base with the static curl, `.text` identity OK, floor 2.35; Windows through
+`build_cz_xlive.ps1` + the packaging script, `libcurl-x64.dll` beside the exe), both
+clean-container gates at the floor **GATE PASSED**, the Windows staged-exe gate OK,
+`docs/release-notes-v1.1.0.md` carries the hashes, tag `v1.1.0` pushed, and a
+**DRAFT** release holds the six files — pulled back over the internet and
+byte-identical. **Publishing the draft is the operator's click.** The steps as they
+were planned:
 
 1. Linux old base: `CZ_OLDBASE_SKIP_DEPS=1 tools/release_build_oldbase.sh` (the image is
    rebuilt with `libssl-dev zlib1g-dev`; the static curl lands in
