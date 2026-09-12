@@ -1279,8 +1279,13 @@ HAND-OFF; gotchas 570-573):
 * **The Windows spelling shipped the same evening, and on czwin's hybrid 12700H it is
   −38% ON THE WALL (22-24 -> 13-15 ms at the crowd, 42 -> 70 fps, one 3.5-min run a
   side): Windows had been scheduling the guest's threads onto E-cores/siblings.**
+* **AND THE WINDOWS TIMER: `timeBeginPeriod(1)` (main.cpp, `CZ_NO_TIMER_PERIOD=1` the
+  control). czamd read a FLAT 46.8 ms a frame — 3 x 15.6 — at every load with nobody
+  holding the Windows timer at 1 ms; with the call, 13.0 ms at 8,000 draws (21 -> 77
+  fps). Every Windows measurement before tonight was taken with a browser holding the
+  timer for us. Release-worthy on its own; the next Windows leg carries it.**
 * Owed: the Windows guest thread clocks (read ~0), the
-  six-core/no-SMT shapes, the clock printed once a window (`amd-pstate-epp` drifted the
+  six-core (mode 1 measured a small win on czamd, default still OFF)/no-SMT shapes, the clock printed once a window (`amd-pstate-epp` drifted the
   machine ~6% ninety minutes into today's runs).
 
 Where the port was, as of 2026-09-12, afternoon (**PART 117 — THE PUMP RUNS ON TWO CORES

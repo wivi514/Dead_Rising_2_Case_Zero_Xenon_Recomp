@@ -41,6 +41,15 @@ all three.
 5. `tools/part118_guestprobe.sh` (PMU on the guest's Main Thread + the cpu-placement
    census), `tools/part118_campaign.sh`, `tools/part118_campaign2.sh`.
 
+## §1b. The Windows evening (plan §4d, §4e)
+
+* **The pin on Windows shipped**: czwin's hybrid 12700H −38% on the wall (E-cores).
+* **`timeBeginPeriod(1)` shipped**: czamd read a flat 46.8 ms a frame (3 x 15.6) with
+  nobody holding the Windows timer; **21 -> 77 fps at the crowd from one call.** The
+  Windows release leg has shipped without it since v1.0.0. `CZ_NO_TIMER_PERIOD=1` is the
+  control. **This goes in the next Windows release before anything else.**
+* The six-core shape: mode 1 on czamd is a small win (p99 −2 ms), default still OFF there.
+
 ## §2. What is owed
 
 * ~~**Windows**: no-ops there~~ — **DONE the same evening (plan §4d): on czwin's

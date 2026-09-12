@@ -7,6 +7,14 @@ NOT the cause is what stops the next session re-buying it.
 
 Next, in order:
 
+0z. **REBUILD THE WINDOWS RELEASE LEG WITH `timeBeginPeriod(1)` (part 118).** The
+    shipped Windows binary never asks for the 1 ms timer; on a machine where nothing
+    else holds it (czamd tonight, and any Windows 11 game behind another window) every
+    1 ms sleep in the frame path is 15.6 ms and the frame reads a flat 46.8 ms at any
+    load (plan §4e: 21 -> 77 fps at the crowd from the one call). The public Windows
+    stutter reports have a new first candidate. `CZ_NO_TIMER_PERIOD=1` is the control.
+    Ship with the pin (0y) in the same leg.
+
 0y. ~~**THE WINDOWS SPELLING OF THREAD PLACEMENT (part 118).**~~ **DONE the same
     evening — and it is worth −38% on czwin's hybrid 12700H (plan §4d).** Still owed:
     the Windows guest thread clocks read ~0 on the [fps] line, and czamd's six-core

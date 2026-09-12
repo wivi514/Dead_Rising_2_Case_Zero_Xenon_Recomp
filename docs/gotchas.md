@@ -6581,3 +6581,12 @@ From phase C part 18 (the frame rate — and none of it was work):
     −0.21 of CPU (part 118 §3). Read the wait census next to the CPU column before
     calling a thread-count change a saving; the [guestwait] line exists for exactly
     this. (part 118)
+574. **A 1 ms sleep on Windows is a 15.6 ms sleep unless the process asked for the 1 ms
+    timer — and every measurement you took with a browser open was taken with the timer
+    held at 1 ms FOR you.** czamd read a flat 46.8 ms a frame (3 x 15.625) at 150 draws
+    and at 8,000, one call — `timeBeginPeriod(1)` — took it to 13.0 at the crowd, and
+    118 parts of Windows measurement had never seen it because the operator's browser
+    held the system timer whenever they were at the machine (part 118 §4e). On Windows
+    11 the resolution is per process unless the window is foreground, so a player's game
+    behind another window is in the state the headless box was in. Ask for the timer at
+    start-up; and a wall that is FLAT across loads is a quantum, not a workload. (part 118)

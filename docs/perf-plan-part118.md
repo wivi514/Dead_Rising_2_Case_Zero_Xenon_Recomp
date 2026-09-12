@@ -216,6 +216,35 @@ wall carried this comparison. czamd (Ryzen 5 5500, 6c/12t, the six-core shape) h
 build and the runner deployed and is unmeasured: the operator asked for short runs and a
 czamd boot alone is 90-130 s.
 
+## §4e. Windows — czamd (Ryzen 5 5500 6c/12t, RX 6600), and THE WINDOWS TIMER
+
+The first czamd run of the pin read a FLAT **46.8 ms a frame at 150 draws and at 8,000**
+(mode 1 and no pin alike, `a_pin1_short`/`a_nopin_short`, headless 1280x720) where part
+106 had read 9.9 ms at 2,490 draws on the same box. 46.8 = 3 x 15.625: **the runtime had
+never asked Windows for the 1 ms timer**, so every 1 ms sleep in the frame path (the
+pump's nap, the vblank tick, the fence park's bounded wait) ran at the system default
+granularity of 15.6 ms whenever nothing else on the machine held it at 1 ms — part 106's
+czamd numbers were taken with the operator's browser open; tonight the box had nobody on
+it. On Windows 11 the resolution is per process unless the window is in the foreground,
+so a player's game behind another window is in the same state. `timeBeginPeriod(1)` at
+start-up (`main.cpp`, `CZ_NO_TIMER_PERIOD=1` the control), one run each, same route:
+
+| czamd, 1280x720 | menu (2,470 draws) | crowd (7,900-8,100 draws) | crowd p99 |
+|---|---|---|---|
+| before (no timer) | 46.8-47.2 ms | **46.2-46.9** | 49-64 |
+| **timer, no pin** | 8.0 | **13.0** (mean 13.5) | 18.0 |
+| timer, `CZ_GUEST_PIN=1` (the six-core shape) | 7.0 | **13.0** (mean 13.3) | **16.0** |
+
+**21 -> 77 fps at the crowd from one call.** It is the largest Windows finding this port
+has had, it is release-worthy on its own (the public Windows stutter reports have a new
+candidate), and it was invisible for 118 parts because every Windows measurement was
+taken with the operator at the machine and a browser holding the timer.
+
+The six-core shape (mode 1, two cores reserved, four for everything else): no loss
+anywhere, the menu −1 ms, the crowd p99 −2 ms, the median at the 1 ms quantum either
+way (the box is GPU-bound there — part 103). One run; the default stays OFF under eight
+cores, and `CZ_GUEST_PIN=1` is safe to try on such a machine.
+
 ## §5. The honest answer
 
 The Main Thread's CPU at the operator's crowd is **8.3 -> 7.9 ms** (mode 2), and that
