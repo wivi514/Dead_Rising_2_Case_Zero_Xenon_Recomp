@@ -17,6 +17,12 @@ separate the pm4 pump on multiple core"*), what shipped, and what is owed.
 | the guest's Draw Thread | 5.7-5.9 CPU + 4.4 on our fence | 6.2-6.5 CPU + 2.4 on our fence | `guest draw` + `[guestwait]` |
 | GPU | 3.2 ms | unchanged | part 116 §4.0 |
 
+**The −1.19 decomposes as ~−0.3 from the two cores and ~−0.9 from the wait-any wake the
+two cores made worth having** (campaign 2, plan §4.3: split alone 10.0-10.1, split + wake
+9.06-9.13 at 8,000-8,500 draws, monotone). The part-109 bundle takes −0.56 off the
+renderer thread and −0.13 off the frame under the split — the thread is not the bound —
+so it stays the operator's call, OFF. The huge-page advice is not established either way.
+
 `wall ~ max(pump, guest floor, GPU)` is now `wall ~ guest Main Thread (+ the ping-pong
 with our renderer thread)`. **The next millisecond is the guest's, not ours**: its Main
 Thread is 8.1-8.4 ms of the title's own simulation and render submission (part 116 §4.1
@@ -41,7 +47,9 @@ item alone can take the frame under ~8.5 ms at this crowd any more.
    `CZ_WAITANY_WAKE=1`/`=0` force either.
 3. `MADV_HUGEPAGE` on the guest map at mapping time, with the kernel's THP policy printed
    (`[mem] MADV_HUGEPAGE ...`); the physical views need root's
-   `shmem_enabled=advise` to take it. `CZ_NO_HUGEPAGES=1` is the control. [measured: §4.3]
+   `shmem_enabled=advise` to take it. `CZ_NO_HUGEPAGES=1` is the control. Measured
+   (plan §4.3): +0.40 ms with it OFF, NOT monotone — not established; kept because it
+   costs nothing (43 MB of the private range promoted).
 4. `ProfScope`'s destructor tests the profiler flag inline (0.5% of the renderer thread
    with the profiler OFF).
 5. Instruments: `walk cpu` on the [fps] line; the `[split]` health lines (idle by cause,
@@ -72,9 +80,15 @@ item alone can take the frame under ~8.5 ms at this crowd any more.
   ~2,000 instructions a draw with no instruction above 1.6% — a flat profile that only a
   structural removal moves. The remaining small ones are in the plan's §3.
 
-## §3. Gates on the shipped binary (plan §4.4)
+## §3. Gates on the shipped binary (plan §4.4) — `tools/part117_gates.sh`, 08:54-09:24
 
-[filled from tools/part117_gates.sh]
+`--smoke` OK · unlowered switches 0 · shader dims clean · both PM4 oracles clean · E3
+**+0.8411** (4 of 5 agreeing on layout, pinned 1280x720; part 116 read +0.8472) · A5
+**exit 0** (5 permutation windows, 0 real — identical to part 116) · `no translated
+shader` 0 · **synchronization validation 0 hazards** at 6,173 draws on the outdoor route,
+**the poison producing 30** · `truncated=0` across every crowd log of the part · a
+10-minute `CZ_AUTOCHUCK=EXPLORER` soak with `CZ_WAIT_TRACE=1` (the map closed twice,
+no fault, no corrupt stream, 143 fps median at 2,400-3,200 draws).
 
 ## §4. Rules this part paid for
 

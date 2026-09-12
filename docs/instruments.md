@@ -4270,9 +4270,17 @@ CZ_PUMP_SPLIT=1    **THE TWO-CORE PUMP (item 1).** The pump thread (`cz-pump`) k
                    a WAIT_REG_MEM on a word one of OUR pending stores will write reads
                    the PENDING value as the truth (satisfied: the walk runs ahead of D at
                    the driver's drain blocks, ~10 a frame; unsatisfied: the walk holds as
-                   hardware's CP would). OFF by default. Measured (§4): [TBD]
+                   hardware's CP would). **ON BY DEFAULT from six physical cores**, OFF
+                   below (the 4c/8t stand-in would be oversubscribed); `=1`/`=0` force
+                   either — the same-binary control arm. Measured (§4.2, three runs a
+                   side, matched bands, 1920x1080): **wall −1.19 ms median, monotone**
+                   (10.3-10.6 -> 9.1-9.9 at 8,000-8,750 draws; ~96 -> ~110 fps), p99 14.0
+                   -> 12.1; cz-pump 3.3-3.7 ms/frame, cz-draw 8.6-9.1 with ~0.9 idle; the
+                   guest's Main/Draw Thread CPU +0.36/+0.53 (contention). Gates: part47
+                   ALL CLEAN, A5 exit 0, sync validation 0 / poison 30, a 10-min soak.
                    The [fps] line gains `walk cpu N.NN` (the pump thread's CPU/frame);
                    `pump cpu` is the thread that calls DoDraw — cz-draw under the split.
+                   The wait-any wake's default follows this arm (CZ_WAITANY_WAKE below).
 [split] per frame: ops N draws N stores N irq N logdw N (N runs + N merged) | wspace N
         dempty N irqwait N ms/frame (N us each) | didle N ms/frame | waits unmet N/frame
         of which on OUR store N, run-ahead N
@@ -4322,7 +4330,11 @@ tools/part117_memprobe.sh <tag> [ENV=..]   the crowd route + PMU counters on the
                    — and how many a frame. CPU + waits = the frame, to 0.1 ms, on both
                    threads (§4.4). It is the census that found the 1 ms wait-any poll.
                    Printed after every [fps] line, no variable
-CZ_WAITANY_WAKE=1  **THE WAIT-ANY WAKE-UP (item 4) — OFF BY DEFAULT, THE OPERATOR'S CALL.**
+CZ_WAITANY_WAKE=1  **THE WAIT-ANY WAKE-UP (item 4) — its DEFAULT FOLLOWS THE TWO-CORE PUMP
+                   as of part 117: ON under CZ_PUMP_SPLIT (its parked trigger, "the pump
+                   under ~8 ms", is met there and the pair measured −1.19 ms), the poll on
+                   the one-thread pump (the operator's call below stands there); `=1`/`=0`
+                   force either on either pump.** The part-116 record:
                    With it a wait-any (KeWaitForMultipleObjects / NtWaitForMultipleObjectsEx,
                    wait-any type) registers on each Event/Semaphore it waits on and parks
                    until one of THEM is signalled, bounded by 1 ms. The default is the

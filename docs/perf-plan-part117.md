@@ -154,3 +154,21 @@ guest's own threads cost +0.36/+0.53 ms more CPU under the split — cache and c
 contention from a fifth busy core (gotcha 562's mechanism again) — and that is now the
 frame's longest term: the Main Thread at 8.1-8.4 ms CPU plus ~1.2 ms of waits.
 
+### 4.3 Campaign 2 (09:25-10:17) — the split's share, the wake's, the bundle's, the huge pages'
+
+Four env arms on one binary (`tools/part117_campaign2.sh`), three runs each, alternated:
+A = split with the wake OFF, B = split + wake (the new default), C = B + the part-109
+bundle (`CZ_VK_SCOPED_SHARED_ZERO=1 CZ_VK_TEXMEMO=1`), D = B with `CZ_NO_HUGEPAGES=1`.
+
+| pair | wall (median over matched bands) | D's CPU | verdict |
+|---|---|---|---|
+| A -> B (the wake, under the split) | **−0.94 ms, monotone in 4 bands** (10.00-10.10 -> 9.06-9.13 at 8,000-8,500) | −0.38 | **the wake is most of the pair's −1.19**; the split alone is ~−0.3 (A against campaign 1's baseline) and is what UNLOCKS the wake — on the one-thread pump the same wake read +0.3 (part 116) |
+| B -> C (the bundle) | −0.13, monotone | **−0.56, monotone** | the bundle takes 0.56 ms off the renderer thread and 0.13 off the frame — the thread is not the bound. Below the 0.3 bar; stays the operator's call, OFF |
+| B -> D (huge pages OFF) | +0.40, NOT monotone (+0.03 / +0.76 / +0.86 / −0.00; one band n=1) | +0.06 | not established either way; the advice stays ON (harmless: 43 MB of the private range promoted, the views need root's shmem policy) |
+
+**So the decomposition of the shipped −1.19 is: ~−0.3 from the two cores, ~−0.9 from the
+wait-any wake that the two cores made worth having.** That is gotcha 569 in numbers: the
+parked item's trigger was "which term is longest", and the split changed the term. It is
+also the honest ceiling: with the wake on, D at 8.5-9.1 and the Main Thread at 8.1-8.4,
+the next term is the guest's.
+

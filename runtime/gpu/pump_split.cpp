@@ -53,8 +53,11 @@ namespace {
 // draws at 29 dwords). W blocks when it is full, and a blocked W delays the vblank ISR it
 // also delivers — but the guest cannot run more than ~2 frames ahead of the fences D
 // writes, so ~7 frames of capacity means "never"; `wSpaceWaits` says whether that held.
-constexpr uint32_t kLogDwords = 1u << 23;
-constexpr uint32_t kLogMask = kLogDwords - 1;
+// CZ_PUMP_SPLIT_MB=N (a power of two, 2..64) sizes the ring — the arm for "does a ring
+// that cycles fresh lines through L3 every frame cost the guest its +0.4 ms" (§2 of the
+// kickoff): a 4 MB ring wraps every ~1.1 crowd frames and stays L3-resident.
+uint32_t kLogDwords = 1u << 23;
+uint32_t kLogMask = kLogDwords - 1;
 
 // Record headers. A register run is `(index << 16) | count` with index < 0x8000; every
 // other kind has a top halfword no register index can reach.
@@ -388,6 +391,17 @@ bool Start(uint8_t* base, void (*deliverInterrupt)())
     }
     g_base = base;
     g_deliver = deliverInterrupt;
+    if (const char* mb = getenv("CZ_PUMP_SPLIT_MB"))
+    {
+        const unsigned m = unsigned(atoi(mb));
+        if (m >= 2 && m <= 64 && (m & (m - 1)) == 0)
+        {
+            kLogDwords = m * (1u << 18);
+            kLogMask = kLogDwords - 1;
+        }
+        else
+            fprintf(stderr, "[split] CZ_PUMP_SPLIT_MB=%s ignored (a power of two, 2..64)\n", mb);
+    }
     g_log = static_cast<uint32_t*>(calloc(kLogDwords, sizeof(uint32_t)));
     if (!g_log)
     {

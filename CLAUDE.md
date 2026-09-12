@@ -1256,6 +1256,10 @@ HAND-OFF; gotchas 565-569):
 * **The wait-any wake's default now follows the pump** — its parked trigger ("the pump
   under ~8 ms") is met under the split and the guest's Main Thread, with 2.2 ms in that
   poll, is the longest term; it is ON there and stays the poll on the one-thread pump.
+  **Campaign 2 decomposed the −1.19: ~−0.3 the two cores, ~−0.9 the wake they unlocked**
+  (−0.94 monotone under the split, where it had read +0.3 on the one-thread pump). The
+  part-109 bundle: −0.56 on the renderer thread, −0.13 on the frame — still OFF, the
+  operator's call. Huge pages: not established.
 * **The guest is the bound now**: Main Thread 8.1-8.4 ms CPU (+0.36 under the split —
   contention from a fifth busy core) + ~1.2 waits. No renderer-side item alone takes the
   frame under ~8.5 ms at this crowd; the next millisecond is the title's own simulation
@@ -1264,8 +1268,9 @@ HAND-OFF; gotchas 565-569):
   `CZ_NO_HUGEPAGES=1` the control); `ProfScope`'s off-check inlined.
 * Gates on the shipped binary (`tools/part117_gates.sh`): `--smoke` OK, unlowered switches
   0, shader dims clean, both PM4 oracles clean, E3 **+0.8411** (4 of 5, pinned), A5 **exit
-  0** (5 permutation, 0 real), `no translated shader` 0, [sync validation / soak: §3 of
-  the kickoff]. Owed: the operator's session, Windows, the 4-core stand-in.
+  0** (5 permutation, 0 real), `no translated shader` 0, **sync validation 0 hazards with
+  the poison at 30**, a 10-min explorer soak. Owed: the operator's session, Windows, the
+  4-core stand-in.
 
 Where the port was, as of 2026-09-12, morning (**PART 116 — THE GUEST'S 8.8 ms WAS PROFILED FOR THE
 FIRST TIME, AND 1.1 ms OF IT WAS OURS.** The operator's 12-hour unattended order
