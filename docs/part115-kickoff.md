@@ -40,9 +40,17 @@ laptop against a wivi514 host finds nothing — that is the feature, not a defec
 
 ## §2. The release (the operator's instruction: *"push this to master and we'll do the release build"*) — BUILT AND GATED, DRAFT ON GITHUB
 
-Done on 2026-09-11, late: all three artifacts built from `aaf3d1f` (Linux on the old
-base with the static curl, `.text` identity OK, floor 2.35; Windows through
-`build_cz_xlive.ps1` + the packaging script, `libcurl-x64.dll` beside the exe), both
+Done on 2026-09-11, late, TWICE: the first artifacts (`aaf3d1f`) had the overlay
+configured OFF on both legs without anyone noticing (the launcher checkout was not
+mounted in the container; the Windows script said OFF), and the operator then asked
+for three more things — the Shift+Tab overlay in, online ONLY through the launcher
+(no `CZ_XLIVE_ONLINE=1` → libxlive not started, the default profile, offline), and
+SAVES PER PROFILE (`ContentSetProfile`: `<SavedGames>/<gamertag>/`; `default/` stays
+the offline profile's). The final artifacts are `c23138a` (Linux on the old base with
+the static curl AND the mounted launcher checkout — configuring the overlay OFF now
+fails the build; `.text` identity OK, floor 2.35; Windows through `build_cz_xlive.ps1`
+with `-DCZ_XLIVE_OVERLAY=ON` against `C:\cw\XenonLive_Launcher`, pushed there from
+here, plus the `/FIintrin.h` fix for SDL_endian.h under clang-cl), both
 clean-container gates at the floor **GATE PASSED**, the Windows staged-exe gate OK,
 `docs/release-notes-v1.1.0.md` carries the hashes, tag `v1.1.0` pushed, and a
 **DRAFT** release holds the six files — pulled back over the internet and
