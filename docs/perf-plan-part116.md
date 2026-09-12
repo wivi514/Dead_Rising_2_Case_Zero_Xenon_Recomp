@@ -274,6 +274,31 @@ bytes move. Retained as an arm (`-DCZ_PPC_PGO=<profdata>`), not a default; the p
 `~/DR2CZ-troubleshooting/part116/pgo/crowd.profdata` and a release recipe that wanted it
 would check it in beside `config/`.
 
+**ThinLTO** (`-flto=thin` on the recompiled TUs, lld; built in 106 s, 1.4 GB peak): three
+runs a side, alternated, both kinds, on the v2 source (base4 vs lto; one NO_DODRAW base
+run rejected at the crowd gate):
+
+| kind | wall | pump | Main | Draw | bands |
+|---|---|---|---|---|---|
+| normal | +0.14 | +0.17 | +0.06 | +0.14 | 4, wall monotone |
+| NO_DODRAW | **−0.03** | −0.03 | −0.00 | −0.03 | 4, monotone |
+
+**A null. KILLED.** Predicted from the emitter: every guest call targets a `weak,noinline`
+alias (`PPC_WEAK_FUNC`, so a hook can replace it), and a weak definition is not inlinable
+across TUs however the link is done — the register save/restore ladders that are 10% of
+the Draw Thread (§4.1) stay out-of-line calls. LTO would only move the recompiled code if
+the recompiler emitted the ladders inline, which is a XenonRecomp change, not a flag.
+
+**-O3** on the recompiled TUs (base5 vs o3, three runs a side, both kinds): normal wall
++0.15 / Main −0.04 / Draw −0.04, NO_DODRAW wall **−0.02**, nothing monotone. **A null.
+KILLED.** The CMake comment that kept -O2 for six months ("a saving nobody has
+measured") is now a measurement: there is no saving. -O2 stays.
+
+**Item 3's verdict:** the recompiled code does not respond to codegen. PGO −0.25 ms on one
+thread, LTO and -O3 nulls, all three under the 0.3 ms bar. The reason is structural
+(§4.1's last row and the LTO paragraph): the cost is memory-shaped context-struct traffic
+and out-of-line ladders the emitter chose, not instruction selection.
+
 ### 4.4 Item 4 — the critical path, and a defect of OURS in it (pre-registered before the run)
 
 `[guestwait]` (on every `[fps]` line now) at the crowd, normal arm, 10.4 ms frames:
@@ -354,3 +379,15 @@ that tests this is `CZ_FENCE_PARK_SPIN_US=0` with the wake (campaign 4, below). 
 either way**: −1.1 ms on the floor that decides the 120 fps question, against +0.24 on a
 frame whose bound is the pump and which item B's own arithmetic says the pump will stop
 being first; the spin arm decides whether the +0.24 is also recoverable.
+
+**The spin arm (campaign 4, normal kind only, wake + `CZ_FENCE_PARK_SPIN_US=0` vs the poll
+control; one pair rejected at the crowd gate, two pairs read):** wall **+0.24** (two bands,
+monotone), pump +0.30, Draw CPU **+0.09 (not monotone)**. So the spin WAS the Draw
+Thread's +0.33 and removing it recovers that thread's CPU, but the wall's +0.24 is the
+PUMP's and it stays: `[fencewait]` parks 5.8 a frame, `stores seen` 557 (the executor's
+fence stores landing while a waiter is parked; wakes 4.0). The mechanism is not proven; the
+candidate consistent with everything else this part measured is that the Draw Thread, no
+longer staggered by a 1 ms quantum, builds the next packets while the pump is walking the
+last, and the two contend for the same bytes (gotcha 551). **Shipped ON with the +0.24
+stated**: the floor that decides 120 fps is −1.11, the shipped frame's bound is the pump,
+and the control is one variable. `CZ_FENCE_PARK_SPIN_US` stays at its part-107 default.
