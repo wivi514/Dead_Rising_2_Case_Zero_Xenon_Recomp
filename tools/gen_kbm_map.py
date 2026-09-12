@@ -52,6 +52,11 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parent.parent
 IMAGE = REPO / "assets/game/default_image.bin"
 OUT = REPO / "runtime/cpu/kbm_default_map.h"
+# THE HEADER HAS BEEN HAND-EDITED SINCE THIS GENERATOR LAST WROTE IT (parts 99 and 108:
+# the minigame face buttons follow our button art; two mousemap namespace notes) and
+# regenerating REVERTS those. Until the tables here are brought back in step, apply a
+# binding change to the header by hand and mirror it here; run this only to VALIDATE
+# (it still checks every line against the image) and diff its output before keeping it.
 
 BASE = 0x82000000
 CMD_TABLE = 0x829DC810
@@ -113,7 +118,10 @@ BINDINGS = [
     ("COMMAND_SKIP_SCRIPT",         "KEY_ENTER",    "PRESSED", "NONE", "NONE", "NONE"),
     ("COMMAND_SKIP_CINEMATIC",      "KEY_ESCAPE",   "PRESSED", "KEY_SPACE", "PRESSED", "OR"),
     ("COMMAND_AI_PAUSE_GAME",       "KEY_ESCAPE",   "PRESSED", "NONE", "NONE", "NONE"),
-    ("COMMAND_AI_INTERACT_WITH_PHONE", "KEY_C",     "PRESSED", "NONE", "NONE", "NONE"),
+    # KEY_C is DR2 PC's default; KEY_RIGHT is the operator's ask (co-op part 6): the
+    # walkie-talkie is answered with D-pad RIGHT on the pad, and "right on the keyboard"
+    # is what a player reaches for. Right Arrow is otherwise unbound in gameplay.
+    ("COMMAND_AI_INTERACT_WITH_PHONE", "KEY_RIGHT", "PRESSED", "KEY_C",     "PRESSED", "OR"),
     ("COMMAND_AI_INTERACT_WITH_WATCH", "KEY_T",     "PRESSED", "NONE", "NONE", "NONE"),
     # --- movement / camera (analog sources the runtime feeds host-side) ---
     ("COMMAND_PLAYER_X",            "LEFT_THUMBSTICK_X",   "NONE", "NONE", "NONE", "NONE"),

@@ -58,7 +58,13 @@ static const char kKbmDefaultMap[] =
     "COMMAND_SKIP_SCRIPT( KEY_ENTER, PRESSED, NONE, NONE, NONE)\n"
     "COMMAND_SKIP_CINEMATIC( KEY_ESCAPE, PRESSED, KEY_SPACE, PRESSED, OR)\n"
     "COMMAND_AI_PAUSE_GAME( KEY_ESCAPE, PRESSED, NONE, NONE, NONE)\n"
-    "COMMAND_AI_INTERACT_WITH_PHONE( KEY_C, PRESSED, NONE, NONE, NONE)\n"
+    // KEY_C is DR2 PC's default; KEY_RIGHT is the operator's ask (co-op part 6): the
+    // walkie-talkie is answered with D-pad RIGHT on the pad and "right on the keyboard"
+    // is what a player reaches for. Right Arrow is otherwise unbound in gameplay. The
+    // pad's own record for this command (DPAD_RIGHT PRESSED) has one free slot and the
+    // splice takes a line's FIRST key into it, so Right Arrow must come first; C rides
+    // only where the record is unbound (it is not), i.e. C no longer answers.
+    "COMMAND_AI_INTERACT_WITH_PHONE( KEY_RIGHT, PRESSED, KEY_C, PRESSED, OR)\n"
     "COMMAND_AI_INTERACT_WITH_WATCH( KEY_T, PRESSED, NONE, NONE, NONE)\n"
     "COMMAND_PLAYER_X( LEFT_THUMBSTICK_X, NONE, NONE, NONE, NONE)\n"
     "COMMAND_PLAYER_Y( LEFT_THUMBSTICK_Y, NONE, NONE, NONE, NONE)\n"
