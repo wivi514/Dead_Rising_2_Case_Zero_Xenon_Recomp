@@ -53,6 +53,7 @@
 #include <ppc_context.h>
 
 #include "memory.h"
+#include "xlive_session.h"
 
 extern "C" PPC_FUNC(__imp__sub_82537FA0);
 extern "C" PPC_FUNC(__imp__sub_824C0668);
@@ -139,15 +140,24 @@ namespace
 {
 int g_hostMode = -1; // -1 unread; 0 off; 1 on
 
+// ON whenever co-op is on (CZ_XLIVE_COOP=1, which the launcher sets): DR2
+// hosts implicitly on entering gameplay, and since part 5 the host is ASKED
+// before anyone joins (coop_call.cpp), so an open session costs the player
+// nothing they did not agree to. CZ_XLIVE_HOST=0 opts out; =1 forces it on
+// (the pre-part-5 form, when it had to be asked for).
 bool HostRequested()
 {
     if (g_hostMode < 0)
     {
         const char* env = std::getenv("CZ_XLIVE_HOST");
-        g_hostMode = (env && *env && *env != '0') ? 1 : 0;
+        if (env && *env)
+            g_hostMode = (*env != '0') ? 1 : 0;
+        else
+            g_hostMode = XliveSession_Enabled() ? 1 : 0;
         if (g_hostMode)
-            fprintf(stderr, "[coop] CZ_XLIVE_HOST: this build will host a co-op session "
-                            "when the game flow enters gameplay\n");
+            fprintf(stderr, "[coop] this build will host a co-op session when the game flow "
+                            "enters gameplay (%s; CZ_XLIVE_HOST=0 opts out)\n",
+                    env ? "CZ_XLIVE_HOST=1" : "CZ_XLIVE_COOP=1 implies hosting");
     }
     return g_hostMode == 1;
 }
