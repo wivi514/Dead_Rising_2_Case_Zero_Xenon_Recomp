@@ -9,6 +9,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <mutex>
 #include <set>
 #include <string>
 #include <thread>
@@ -352,12 +353,18 @@ void ThreadBudget_Report()
                 s.total, outside, s.physical);
 }
 
+#if defined(_WIN32)
+static void PinSelfByName(const char* name);
+#endif
 void ThreadBudget_NameSelf(const char* name)
 {
 #if defined(__linux__)
     char shortName[16];
     snprintf(shortName, sizeof shortName, "%s", name);
     pthread_setname_np(pthread_self(), shortName);
+#elif defined(_WIN32)
+    PinSelfByName(name);   // CZ_GUEST_PIN: the Windows sweep cannot read names, so the
+                           // threads that have one pin (or confine) themselves here
 #else
     (void)name;
 #endif
@@ -480,7 +487,13 @@ PinPlan& Plan()
             if (taken.count(core))
                 continue;
             taken.insert(core);
-            for (int s : SiblingsOf(cpu))
+            // Only a core WITH an SMT sibling qualifies: on a hybrid part (12700H) the
+            // E-cores have none, sit at the top of the index range, and are the last
+            // place to put the frame's longest thread.
+            const std::vector<int> sibs = SiblingsOf(cpu);
+            if (sibs.size() < 2)
+                continue;
+            for (int s : sibs)
                 p.reserved.push_back(s);
             picked.push_back(cpu);
         }
@@ -536,7 +549,7 @@ void ThreadBudget_PinProcessAway()
             rc == 0 ? "ok" : strerror(errno));
 }
 
-void ThreadBudget_PinRest(pthread_t h)
+void ThreadBudget_PinRest(std::thread::native_handle_type h)
 {
     PinPlan& p = Plan();
     if (!p.on)
@@ -655,7 +668,7 @@ void ThreadBudget_PinSweep()
         fprintf(stderr, "[pin] sweep moved %d thread(s) off the reserved cores\n", moved);
 }
 
-bool ThreadBudget_PinNamedThread(const char* name, pthread_t h)
+bool ThreadBudget_PinNamedThread(const char* name, std::thread::native_handle_type h)
 {
     PinPlan& p = Plan();
     if (!p.on)
@@ -675,9 +688,242 @@ bool ThreadBudget_PinNamedThread(const char* name, pthread_t h)
     ThreadBudget_PinSweep();
     return rc == 0;
 }
+#elif defined(_WIN32)
+// THE WINDOWS SPELLING. Three differences from the Linux one, each forced by the API:
+//   * a thread's affinity must be a SUBSET of the process mask, so the process mask is
+//     left whole and every non-pinned thread is set to the rest mask individually;
+//   * a new thread inherits the PROCESS mask, not its creator's, so the sweep (a
+//     Toolhelp32 walk) is what keeps spawns off the reserved cores — plus the explicit
+//     rest-mask at every spawn and NameSelf this runtime controls;
+//   * there is no "get affinity" for a thread: SetThreadAffinityMask returns the previous
+//     mask, so the sweep sets rather than compares.
+// Topology from GetLogicalProcessorInformationEx(RelationProcessorCore): one record per
+// physical core with its logical-processor mask and LTP_PC_SMT when it has a sibling.
+// One processor group only (KAFFINITY is 64 bits; every machine this port has seen is
+// under 64 logical processors).
+#include <tlhelp32.h>
+namespace
+{
+struct PinPlan
+{
+    bool on = false;
+    int mode = 0;
+    KAFFINITY reserved = 0;          // every reserved core's whole mask
+    KAFFINITY rest = 0;              // the process mask minus `reserved`
+    KAFFINITY mainMask = 0, drawMask = 0, pumpMask = 0, rendMask = 0;   // one bit each
+    std::set<DWORD> pinnedTids;      // Main, Draw, cz-pump, cz-draw once known
+};
+std::mutex g_pinMutex;
+
+int LowBit(KAFFINITY m)
+{
+    for (int i = 0; i < 64; ++i)
+        if (m & (KAFFINITY(1) << i))
+            return i;
+    return -1;
+}
+
+PinPlan& Plan()
+{
+    static PinPlan plan = [] {
+        PinPlan p;
+        DWORD_PTR procMask = 0, sysMask = 0;
+        if (!GetProcessAffinityMask(GetCurrentProcess(), &procMask, &sysMask))
+            return p;
+        const char* e = Env("CZ_GUEST_PIN");
+        if (e && strcmp(e, "0") == 0)
+            return p;
+        // Cores: (highest logical index, mask, smt), from the topology.
+        struct Core { int top; KAFFINITY mask; bool smt; };
+        std::vector<Core> cores;
+        DWORD bytes = 0;
+        GetLogicalProcessorInformationEx(RelationProcessorCore, nullptr, &bytes);
+        std::vector<uint8_t> buf(bytes ? bytes : 1);
+        auto* info = reinterpret_cast<SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX*>(buf.data());
+        if (!bytes || !GetLogicalProcessorInformationEx(RelationProcessorCore, info, &bytes))
+            return p;
+        for (DWORD off = 0; off < bytes;)
+        {
+            auto* rec = reinterpret_cast<SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX*>(buf.data() + off);
+            if (rec->Size == 0)
+                break;
+            if (rec->Relationship == RelationProcessorCore && rec->Processor.GroupCount >= 1 &&
+                rec->Processor.GroupMask[0].Group == 0)
+            {
+                const KAFFINITY m = rec->Processor.GroupMask[0].Mask & procMask;
+                if (m)
+                {
+                    int top = -1;
+                    for (int i = 63; i >= 0; --i)
+                        if (m & (KAFFINITY(1) << i)) { top = i; break; }
+                    cores.push_back({ top, m, (rec->Processor.Flags & LTP_PC_SMT) != 0 });
+                }
+            }
+            off += rec->Size;
+        }
+        bool anySmt = false;
+        for (const Core& c : cores)
+            anySmt = anySmt || c.smt;
+        if (e)
+            p.mode = atoi(e) >= 2 ? 2 : 1;
+        else if (cores.size() >= 8 && anySmt)
+            p.mode = 2;     // the same default as Linux: eight physical cores with SMT
+        else
+            return p;
+        // Cores with an SMT sibling only, highest index first (see the Linux note).
+        std::sort(cores.begin(), cores.end(), [](const Core& a, const Core& b) { return a.top > b.top; });
+        const int want = p.mode == 2 ? 4 : 2;
+        std::vector<KAFFINITY> picked;
+        for (const Core& c : cores)
+        {
+            if (int(picked.size()) >= want)
+                break;
+            if (!c.smt)
+                continue;
+            picked.push_back(c.mask);
+            p.reserved |= c.mask;
+        }
+        if (int(picked.size()) < want)
+            return p;
+        auto one = [](KAFFINITY coreMask) { return KAFFINITY(1) << LowBit(coreMask); };
+        p.mainMask = one(picked[0]);
+        p.drawMask = one(picked[1]);
+        if (p.mode == 2)
+        {
+            p.pumpMask = one(picked[2]);
+            p.rendMask = one(picked[3]);
+        }
+        p.rest = procMask & ~p.reserved;
+        int left = 0;
+        for (int i = 0; i < 64; ++i)
+            if (p.rest & (KAFFINITY(1) << i))
+                ++left;
+        if (left < 2)
+            return p;
+        p.on = true;
+        return p;
+    }();
+    return plan;
+}
+
+void SetMask(HANDLE h, KAFFINITY m)
+{
+    if (h && m)
+        SetThreadAffinityMask(h, DWORD_PTR(m));
+}
+}   // namespace
+
+void ThreadBudget_PinProcessAway()
+{
+    PinPlan& p = Plan();
+    if (!p.on)
+    {
+        if (Env("CZ_GUEST_PIN") && strcmp(Env("CZ_GUEST_PIN"), "0") != 0)
+            fprintf(stderr, "[pin] CZ_GUEST_PIN: refused (no SMT topology, too few cores, or no mask)\n");
+        else
+            fprintf(stderr, "[pin] thread placement OFF (%s; CZ_GUEST_PIN=1/2 forces it)\n",
+                    Env("CZ_GUEST_PIN") ? "CZ_GUEST_PIN=0" : "under eight physical cores or no SMT");
+        return;
+    }
+    // The process mask stays whole (a thread's mask must be a subset of it); this
+    // thread — and through NameSelf, PinRest and the sweep, every other — takes the rest.
+    SetMask(GetCurrentThread(), p.rest);
+    fprintf(stderr, "[pin] thread placement mode %d (%s; CZ_GUEST_PIN=0 is the control): threads "
+                    "confined to mask %llx; Main Thread -> cpu %d, Draw Thread -> cpu %d, "
+                    "cz-pump -> %d, cz-draw -> %d (Windows: per-thread masks, the process mask stays whole)\n",
+            p.mode, Env("CZ_GUEST_PIN") ? "CZ_GUEST_PIN" : "the default from 8 physical cores with SMT",
+            (unsigned long long)p.rest, LowBit(p.mainMask), LowBit(p.drawMask),
+            p.mode == 2 ? LowBit(p.pumpMask) : -1, p.mode == 2 ? LowBit(p.rendMask) : -1);
+}
+
+void ThreadBudget_PinRest(std::thread::native_handle_type h)
+{
+    PinPlan& p = Plan();
+    if (!p.on)
+        return;
+    SetMask(HANDLE(h), p.rest);
+}
+
+void ThreadBudget_PinSweep()
+{
+    PinPlan& p = Plan();
+    if (!p.on)
+        return;
+    std::set<DWORD> pinned;
+    {
+        std::lock_guard lk(g_pinMutex);
+        pinned = p.pinnedTids;
+    }
+    HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
+    if (snap == INVALID_HANDLE_VALUE)
+        return;
+    const DWORD pid = GetCurrentProcessId();
+    THREADENTRY32 te;
+    te.dwSize = sizeof te;
+    if (Thread32First(snap, &te))
+    {
+        do
+        {
+            if (te.th32OwnerProcessID != pid || pinned.count(te.th32ThreadID))
+                continue;
+            HANDLE h = OpenThread(THREAD_SET_INFORMATION | THREAD_QUERY_INFORMATION, FALSE,
+                                  te.th32ThreadID);
+            if (!h)
+                continue;
+            SetMask(h, p.rest);
+            CloseHandle(h);
+        } while (Thread32Next(snap, &te));
+    }
+    CloseHandle(snap);
+}
+
+bool ThreadBudget_PinNamedThread(const char* name, std::thread::native_handle_type h)
+{
+    PinPlan& p = Plan();
+    if (!p.on)
+        return false;
+    KAFFINITY m = 0;
+    if (strcmp(name, "Main Thread") == 0)
+        m = p.mainMask;
+    else if (strcmp(name, "Draw Thread") == 0)
+        m = p.drawMask;
+    if (!m)
+        return false;
+    SetMask(HANDLE(h), m);
+    {
+        std::lock_guard lk(g_pinMutex);
+        p.pinnedTids.insert(GetThreadId(HANDLE(h)));
+    }
+    fprintf(stderr, "[pin] '%s' -> cpu %d\n", name, LowBit(m));
+    ThreadBudget_PinSweep();
+    return true;
+}
+
+// Called from NameSelf: our own threads name themselves, so cz-pump and cz-draw pin
+// themselves here in mode 2 and every other named thread of ours takes the rest mask.
+static void PinSelfByName(const char* name)
+{
+    PinPlan& p = Plan();
+    if (!p.on)
+        return;
+    KAFFINITY m = 0;
+    if (p.mode == 2 && strcmp(name, "cz-pump") == 0)
+        m = p.pumpMask;
+    else if (p.mode == 2 && strcmp(name, "cz-draw") == 0)
+        m = p.rendMask;
+    if (m)
+    {
+        SetMask(GetCurrentThread(), m);
+        std::lock_guard lk(g_pinMutex);
+        p.pinnedTids.insert(GetCurrentThreadId());
+        fprintf(stderr, "[pin] '%s' -> cpu %d\n", name, LowBit(m));
+    }
+    else
+        SetMask(GetCurrentThread(), p.rest);
+}
 #else
 void ThreadBudget_PinProcessAway() {}
-bool ThreadBudget_PinNamedThread(const char*, unsigned long) { return false; }
-void ThreadBudget_PinRest(unsigned long) {}
+bool ThreadBudget_PinNamedThread(const char*, std::thread::native_handle_type) { return false; }
+void ThreadBudget_PinRest(std::thread::native_handle_type) {}
 void ThreadBudget_PinSweep() {}
 #endif

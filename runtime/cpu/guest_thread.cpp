@@ -16,6 +16,8 @@
 #if !defined(_WIN32)
 #include <pthread.h>
 #include <unistd.h>
+#else
+#include <windows.h>
 #endif
 
 #include "../kernel/guestcall.h"
@@ -108,7 +110,8 @@ static std::map<std::string, uint32_t> g_tidByName;                   // under g
 
 bool GuestThread::BindHostName(uint32_t threadId, const char* name)
 {
-#if !defined(_WIN32) && !defined(__APPLE__)
+    // The registry is kept on every platform (part 118: the Windows pin needs the
+    // handle); only the OS-visible naming is platform-specific.
     std::thread::native_handle_type h;
     {
         std::lock_guard lk(g_hostThreadMutex);
@@ -119,12 +122,12 @@ bool GuestThread::BindHostName(uint32_t threadId, const char* name)
         g_hostThreadByName.emplace(name, h);
         g_tidByName.emplace(name, threadId);
     }
+#if !defined(_WIN32) && !defined(__APPLE__)
     char shortName[16]; // the kernel keeps 15 characters
     snprintf(shortName, sizeof shortName, "%s", name);
     return pthread_setname_np(h, shortName) == 0;
 #else
-    (void)threadId; (void)name;
-    return false;
+    return true;
 #endif
 }
 
@@ -247,7 +250,6 @@ GuestThread::WaitScope::~WaitScope()
 
 void GuestThread::PinHostByName(const char* name)
 {
-#if defined(__linux__)
     std::thread::native_handle_type h;
     {
         std::lock_guard lk(g_hostThreadMutex);
@@ -257,14 +259,11 @@ void GuestThread::PinHostByName(const char* name)
         h = it->second;
     }
     ThreadBudget_PinNamedThread(name, h);
-#else
-    (void)name;
-#endif
 }
 
 double GuestThread::CpuSecondsOf(const char* name)
 {
-#if defined(__linux__)
+#if defined(__linux__) || defined(_WIN32)
     std::thread::native_handle_type h;
     {
         std::lock_guard lk(g_hostThreadMutex);
@@ -273,6 +272,17 @@ double GuestThread::CpuSecondsOf(const char* name)
             return -1.0;
         h = it->second;
     }
+#endif
+#if defined(_WIN32)
+    // The Windows spelling of the thread clock (owed since part 116): kernel + user
+    // time in 100 ns units.
+    FILETIME c, e, k, u;
+    if (!GetThreadTimes(HANDLE(h), &c, &e, &k, &u))
+        return -1.0;
+    const unsigned long long kt = (unsigned long long(k.dwHighDateTime) << 32) | k.dwLowDateTime;
+    const unsigned long long ut = (unsigned long long(u.dwHighDateTime) << 32) | u.dwLowDateTime;
+    return double(kt + ut) * 1e-7;
+#elif defined(__linux__)
     clockid_t cid;
     if (pthread_getcpuclockid(h, &cid) != 0)
         return -1.0;
@@ -391,13 +401,12 @@ GuestThreadHandle::GuestThreadHandle(const GuestThreadParams& params)
       thread(GuestThreadFunc, this)
 {
     RegisterHostThread(threadId, thread.native_handle());
-#if defined(__linux__)
-    // CZ_GUEST_PIN: a thread spawned by a PINNED thread inherits its one-CPU mask, and
-    // the Main Thread spawns everything (the Havok workers, the job pool, audio) after
-    // it is named — the first build of the arm ran all of them on the Main Thread's
-    // core and the frame went to 25 fps. Every spawn gets the process's "rest" mask.
+    // CZ_GUEST_PIN: a thread spawned by a PINNED thread inherits its one-CPU mask (Linux;
+    // on Windows the process's), and the Main Thread spawns everything (the Havok
+    // workers, the job pool, audio) after it is named — the first build of the arm ran
+    // all of them on the Main Thread's core and the frame went to 25 fps. Every spawn
+    // gets the "rest" mask.
     ThreadBudget_PinRest(thread.native_handle());
-#endif
 }
 
 GuestThreadHandle::~GuestThreadHandle()

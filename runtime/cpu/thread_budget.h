@@ -64,6 +64,7 @@
 // machine it was derived from and every share handed out are printed once at start-up.
 
 #include <cstdint>
+#include <thread>
 
 // The machine, counted rather than assumed. Both are cached after the first call.
 unsigned ThreadBudget_PhysicalCores();
@@ -127,13 +128,8 @@ void ThreadBudget_PinProcessAway();
 // Move every thread that is not one of the two pinned ones onto the rest mask; a no-op
 // unless the arm is on. Cheap; called after each pin and once per [fps] window.
 void ThreadBudget_PinSweep();
-#if defined(__linux__)
-#include <pthread.h>
-bool ThreadBudget_PinNamedThread(const char* name, pthread_t h);
-// A thread just spawned by any thread: give it the process's "rest" mask (a spawn
-// inherits its creator's, and the creator may be a pinned guest thread).
-void ThreadBudget_PinRest(pthread_t h);
-#else
-bool ThreadBudget_PinNamedThread(const char* name, unsigned long h);
-void ThreadBudget_PinRest(unsigned long h);
-#endif
+// The host thread the title just named (its std::thread handle: pthread_t on POSIX, a
+// HANDLE on Windows), and a thread just spawned by anyone — the latter gets the rest
+// mask, because a spawn inherits its creator's (Linux) or the process's (Windows).
+bool ThreadBudget_PinNamedThread(const char* name, std::thread::native_handle_type h);
+void ThreadBudget_PinRest(std::thread::native_handle_type h);
