@@ -1,5 +1,6 @@
 #include "memory.h"
 
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 
@@ -214,6 +215,47 @@ void Memory::Init()
     fprintf(stderr, "[mem] physical aliasing OK: %08zX/%08zX/%08zX are one 512 MB "
                     "region (CZ_MEM_POISON_ALIAS=1 is the positive control)\n",
             kPhysicalViews[0], kPhysicalViews[1], kPhysicalViews[2]);
+
+#if !defined(_WIN32)
+    // HUGE PAGES FOR THE GUEST MAP (perf plan part 117, item 2). The pump thread takes
+    // ~34,000 4K page walks a frame at the crowd (the PMU: `ls_l1_d_tlb_miss.
+    // tlb_reload_4k_l2_miss`), and the guest threads walk the same map. Transparent
+    // huge pages are policy `madvise` on the dev box, so nothing here was ever backed
+    // by one. Advising is free and harmless where the policy refuses it:
+    //   * the private anonymous range (the title's heap, code, stacks) takes the advice
+    //     under the default policy;
+    //   * the three PHYSICAL views are shmem (memfd), governed by
+    //     /sys/kernel/mm/transparent_hugepage/shmem_enabled, which is `never` on stock
+    //     Fedora — root can set it to `advise` and this advice then applies to the
+    //     memory the renderer actually streams (vertex data, textures, the ring).
+    // CZ_NO_HUGEPAGES=1 is the control arm. The policy is printed so a run's log says
+    // which of the two it got.
+    if (!getenv("CZ_NO_HUGEPAGES"))
+    {
+        const int a = madvise(base + 0x10000, kPhysicalViews[0] - 0x10000, MADV_HUGEPAGE);
+        int b = 0;
+        for (size_t viewBase : kPhysicalViews)
+            b |= madvise(base + viewBase, kPhysSize, MADV_HUGEPAGE);
+        char policy[64] = "?", shmem[64] = "?";
+        if (FILE* f = fopen("/sys/kernel/mm/transparent_hugepage/enabled", "r"))
+        {
+            if (!fgets(policy, sizeof policy, f)) policy[0] = 0;
+            fclose(f);
+        }
+        if (FILE* f = fopen("/sys/kernel/mm/transparent_hugepage/shmem_enabled", "r"))
+        {
+            if (!fgets(shmem, sizeof shmem, f)) shmem[0] = 0;
+            fclose(f);
+        }
+        policy[strcspn(policy, "\n")] = 0;
+        shmem[strcspn(shmem, "\n")] = 0;
+        fprintf(stderr, "[mem] MADV_HUGEPAGE: private range %s, physical views %s | THP "
+                        "policy: %s | shmem: %s (the views get huge pages only under "
+                        "[advise]/[always]; CZ_NO_HUGEPAGES=1 is the control)\n",
+                a == 0 ? "advised" : "refused", b == 0 ? "advised" : "refused", policy,
+                shmem);
+    }
+#endif
 
     // Page 0. No access during bring-up, so a guest null dereference faults AT the
     // dereference rather than reading plausible zeros and failing later.

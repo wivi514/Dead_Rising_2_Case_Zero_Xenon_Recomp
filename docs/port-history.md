@@ -7016,3 +7016,59 @@ than by the core that issues them):
 * Two rules part 110 paid for: **archive the executable beside every `perf` capture** —
   three of part 109's four are unreadable today (gotcha 550) — and **do not rebuild while a
   campaign is running**, because the route script copies `cz_runtime` at each run's start.
+
+## Part 111 status block (moved out of CLAUDE.md by part 117, per the rotation rule)
+
+Where the port was, as of 2026-09-10 (**PART 111 — ITEM B WAS BUILT ON ITS CLEANEST JOB AND
+THE PUMP TURNS OUT TO BE BOUND BY BYTES.** The operator decided to build item B knowing its
+~113 fps ceiling; part 111 ran the census, built B1, measured it, and STOPPED — which is
+exactly what B1's pre-registered kill was bought for. `docs/perf-plan-part111.md` §10 is the
+record, `phase5-notes.md` §6ez the narrative, `docs/part112-kickoff.md` was THE LIVE HAND-OFF for parts 112-115,
+gotchas 551-552):
+
+* **THE CENSUS (§3) ANSWERED MORE THAN IT WAS ASKED.** `CZ_VK_PARDRAW_CENSUS=1` counts the
+  high-frequency operations and TIMES the low-frequency mutations (a clock read is ~25 ns
+  against an arena bump that runs 2.4 times a draw). Stream cache **91.05% reads**, whole
+  mutating half **0.073 ms/frame** — a read-mostly table with a small serial insert queue is
+  enough and per-worker shards should not be built. **Descriptor writes 0/frame**, so B2's
+  workers would need no Vulkan calls at all. **Texture finds 10,376/frame and every one is a
+  read-modify-write** (the `lastUsedFrame` stamp) — §5's trap, quantified. **1.35 `g_regs`
+  const-window copies a draw refutes B3 by count.** `S` = 0.075 ms, so §3's kill does not
+  fire at 3.5 ms.
+* **B1 ENGAGES PERFECTLY AND RECOVERS NOTHING.** The shared-block pre-zero on the guard
+  pool's workers: 100% of draws served, **zero** fallbacks, **zero** drain, **zero**
+  busy-chunk waits. Two `perf` captures at matched draws show the work leaving and the frame
+  not moving: `__memset_avx2` on the pump **3.96% -> 0.04%** (0.43 -> 0.004 ms/frame), the
+  three guard workers **30.9% -> 35.3%** of a core each, the pump 97.7% -> 97.5% — and **the
+  pump's CPU per frame moves +0.00 ms** over three runs an arm and six matched draw bands.
+  Where it went is in the symbol table: every remaining pump symbol grew by about the 4% the
+  memset vacated. **Gotcha 238 demonstrated rather than suspected.**
+* **THE MECHANISM IS NAMED BY A CONTROLLED PAIR, NOT INFERRED.** The three-way A/B was not
+  optional, because pre-zeroing and the scoped item are ALTERNATIVES: the SCOPED arm writes
+  **70% fewer bytes on the same thread** and pays **−0.13 ms**; relocating the **same bytes**
+  pays nothing. **The pump is bound by BYTES, not by cycles, and bytes are a machine-wide
+  resource** (gotcha 551). §4.3's verdict stands and its stated REASON is retracted in place
+  — the dispatch overhead measured zero; what failed was the premise.
+* **SO B2 IS PREDICTED DEAD AND WAS NOT BUILT.** §5's design moves exactly the
+  bandwidth-bound half (`UploadStream` + `__memcmp_avx2` + `UploadTextureUncached` = **1.99
+  of B2's 2.68 ms is bytes**) and leaves the latency-bound 0.69 ms on the pump on purpose.
+  **The addressable class on this pump is FEWER BYTES and OVERLAPPED MISSES, not the same
+  bytes on another core**, and not compute (part 109's vectorised swap: +0.14 ms at 90.6%
+  engagement).
+* **B1 SHIPS OFF** (`CZ_VK_PREZERO=1` engages), kept as an arm for one dated reason: this box
+  is an 8-core 4654 MHz desktop whose memory pipe is the bound, and a slower core relative to
+  its memory — part 107's Ryzen 3 stand-in, a Steam Deck — may answer differently for one run.
+* **A GATE HAD BEEN BROKEN SINCE PART 47.** `tools/part47_gates.sh` took its resolution from
+  the DESKTOP, so on a 21:9 screen it correlated a 3440x1440 render against a 16:9 photograph
+  and FAILED an unmodified renderer at +0.48. Diagnosed with a control build at HEAD run the
+  same afternoon: **+0.4905 unpinned on HEAD, +0.8621 pinned on the part-111 binary.** Fixed.
+  **A skewed number is the mild failure of an environment-dependent gate; convicting an
+  innocent change is the severe one** (gotcha 552).
+* Gates: `--smoke` OK, A5 **exit 0** (5 permutation windows, 0 real), `truncated=0`,
+  `no translated shader` 0, unlowered switches / shader dims / both PM4 oracles clean, E3
+  **+0.8652** with 4 of 5 agreeing. **B1's poison positive control PASSES — the picture
+  breaks, +0.87 -> +0.27**, so the null is a real null and not an inert arm (gotcha 30).
+* The race argument per shared structure is §10.4, and **writing it before the run caught two
+  real defects with no debugging**: a worker that could zero constants the pump had already
+  written (a plain `ready` flag is not enough — ownership has to be a compare-exchange), and
+  a `CZ_VK_NO_PARALLEL_GUARD=1` arm in which the pump would have memset the whole region.

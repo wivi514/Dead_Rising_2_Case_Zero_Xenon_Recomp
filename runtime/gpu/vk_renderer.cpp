@@ -535,7 +535,14 @@ struct ProfScope
         sink = nullptr;
         ++g_prof.scopes;   // one add against this scope's two clock reads; see above
     }
-    ~ProfScope() { Close(); }
+    // The check inlined, the body not: with the profiler OFF — every shipped run — the
+    // destructor was still a call per scope, ~10 scopes a draw, 0.5% of the pump
+    // (part 117's profile). Now it is one hot-bool test.
+    ~ProfScope()
+    {
+        if (__builtin_expect(g_profileOn, 0))
+            Close();
+    }
 };
 thread_local ProfScope* ProfScope::current = nullptr;
 
@@ -29267,7 +29274,7 @@ void DoSwapImpl(uint8_t* base, uint32_t frontBuffer, uint32_t width, uint32_t he
                     const split::Stats st = split::GetStats();
                     fprintf(stderr,
                             "[split] per frame: ops %.0f draws %.0f stores %.0f irq %.1f "
-                            "logdw %.0f | wspace %llu dempty %llu irqwait %.2f ms/frame "
+                            "logdw %.0f (%.0f runs + %.0f merged) | wspace %llu dempty %llu irqwait %.2f ms/frame "
                             "(%.0f us each) | didle %.2f ms/frame | waits unmet %.1f/frame "
                             "of which on OUR store %.1f, run-ahead %.1f\n",
                             double(st.ops - last.ops) / double(frames),
@@ -29275,6 +29282,8 @@ void DoSwapImpl(uint8_t* base, uint32_t frontBuffer, uint32_t width, uint32_t he
                             double(st.stores - last.stores) / double(frames),
                             double(st.interrupts - last.interrupts) / double(frames),
                             double(st.logDwords - last.logDwords) / double(frames),
+                            double(st.runs - last.runs) / double(frames),
+                            double(st.runsMerged - last.runsMerged) / double(frames),
                             (unsigned long long)(st.wSpaceWaits - last.wSpaceWaits),
                             (unsigned long long)(st.dEmptyWaits - last.dEmptyWaits),
                             double(st.dIrqWaitNs - last.dIrqWaitNs) * 1e-6 / double(frames),
@@ -29286,6 +29295,19 @@ void DoSwapImpl(uint8_t* base, uint32_t frontBuffer, uint32_t width, uint32_t he
                             double(st.waitsUnmet - last.waitsUnmet) / double(frames),
                             double(st.waitsOnOurStore - last.waitsOnOurStore) / double(frames),
                             double(st.waitsByPending - last.waitsByPending) / double(frames));
+                    fprintf(stderr,
+                            "[split]   D idle after: draw %.2f store %.2f irq %.2f swap %.2f "
+                            "other %.2f ms/frame | unmet by word: %08X %.1f  %08X %.1f  "
+                            "%08X %.1f  %08X %.1f /frame\n",
+                            double(st.dIdleByKindNs[1] - last.dIdleByKindNs[1]) * 1e-6 / double(frames),
+                            double(st.dIdleByKindNs[2] - last.dIdleByKindNs[2]) * 1e-6 / double(frames),
+                            double(st.dIdleByKindNs[3] - last.dIdleByKindNs[3]) * 1e-6 / double(frames),
+                            double(st.dIdleByKindNs[4] - last.dIdleByKindNs[4]) * 1e-6 / double(frames),
+                            double(st.dIdleByKindNs[0] - last.dIdleByKindNs[0]) * 1e-6 / double(frames),
+                            st.waitVa[0], double(st.waitVaCount[0] - last.waitVaCount[0]) / double(frames),
+                            st.waitVa[1], double(st.waitVaCount[1] - last.waitVaCount[1]) / double(frames),
+                            st.waitVa[2], double(st.waitVaCount[2] - last.waitVaCount[2]) / double(frames),
+                            st.waitVa[3], double(st.waitVaCount[3] - last.waitVaCount[3]) / double(frames));
                     last = st;
                 }
                 // Part 107 item 2: the Draw Thread's fence wait, per window, beside

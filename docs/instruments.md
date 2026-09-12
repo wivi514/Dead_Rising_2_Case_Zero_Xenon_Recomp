@@ -4250,6 +4250,56 @@ CZ_COOP_CALL_TRACE=1  every step of both host-side routes from "a client is pend
                    confirm/decline with its caller. Per-event; inert without the variable
 ```
 
+## Part 117 — the pump on two cores (docs/perf-plan-part117.md)
+
+```
+CZ_PUMP_SPLIT=1    **THE TWO-CORE PUMP (item 1).** The pump thread (`cz-pump`) keeps the
+                   PM4 walk, the register file, the WAIT_REG_MEMs, the read-pointer
+                   publication and both ISRs; every effect the renderer or the guest can
+                   observe — draws, resolves, the swap, every store into guest memory,
+                   the INTERRUPT packets, first-sight shader binds — goes into ONE ordered
+                   stream (a 32 MB ring of dwords) that a second thread (`cz-draw`)
+                   executes in stream order against a REPLICA register file replayed from
+                   the same stream. DoDraw's code is untouched: it takes the replica where
+                   it took pm4's file. Three rules the design turns on (gpu/pump_split.h):
+                   stores are deferred behind the draws they follow (a fence before D has
+                   copied the streams would hand the guest the UP ring back early);
+                   interrupts are delivered by the PUMP THREAD at D's position (D waits
+                   for the delivery — the ISR runs on the pump's guest context, reads the
+                   scratch mirror D stored, and the poison after it is still after it);
+                   a WAIT_REG_MEM on a word one of OUR pending stores will write reads
+                   the PENDING value as the truth (satisfied: the walk runs ahead of D at
+                   the driver's drain blocks, ~10 a frame; unsatisfied: the walk holds as
+                   hardware's CP would). OFF by default. Measured (§4): [TBD]
+                   The [fps] line gains `walk cpu N.NN` (the pump thread's CPU/frame);
+                   `pump cpu` is the thread that calls DoDraw — cz-draw under the split.
+[split] per frame: ops N draws N stores N irq N logdw N (N runs + N merged) | wspace N
+        dempty N irqwait N ms/frame (N us each) | didle N ms/frame | waits unmet N/frame
+        of which on OUR store N, run-ahead N
+[split]   D idle after: draw/store/irq/swap/other ... | unmet by word: VA n ...
+                   THE STREAM'S HEALTH, after every [fps] line under the split. `wspace`
+                   must read 0 (the walk never blocked for room); `irqwait` is D's stall
+                   at INTERRUPT records (8 us each with the interruptible nap; 100 us
+                   before it); `didle` is D with nothing to consume — the bubble of the
+                   guest/D ping-pong, attributed to the record D ran dry after; the wait
+                   census says which polled words hold the walk and how many evaluations
+                   the pending value satisfied instead
+CZ_NO_HUGEPAGES=1  the control for item 2: the runtime advises MADV_HUGEPAGE on the
+                   private guest range and on the three physical views at map time and
+                   prints the kernel's THP policy beside it ("[mem] MADV_HUGEPAGE ...").
+                   The views are shmem (memfd) and take huge pages only under
+                   shmem_enabled=[advise]/[always] — `never` on stock Fedora; one root
+                   `echo advise > /sys/kernel/mm/transparent_hugepage/shmem_enabled`
+                   engages it for the memory the renderer streams. Priced by the PMU:
+                   ~34,000 4K page walks a frame on the pump
+tools/part117_memprobe.sh <tag> [ENV=..]   the crowd route + PMU counters on the pump
+                   (IPC, demand/prefetch fills from DRAM and L2, L1 DTLB reloads by page
+                   size), a flat cycles capture with a symfs, and an IBS op capture whose
+                   samples carry the data source (`perf report --mem-mode --sort=mem`).
+                   It is what settled the pump's bound: IPC 1.61, 717 MB/s from DRAM,
+                   0.47% of loads from RAM — instruction-bound, not bandwidth-bound
+```
+
 ## Part 116 — the guest's own 8.8 ms, profiled (docs/perf-plan-part116.md §4)
 
 ```

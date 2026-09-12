@@ -162,5 +162,9 @@ T* QueryKernelObject(XDISPATCHER_HEADER& header)
 // it already holds. Object kinds that do not register (a file handle, a content
 // enumerator) keep the old 1 ms poll through the bounded wait.
 //
-// CZ_WAITANY_WAKE=1 engages the wake; the 1 ms poll is the DEFAULT (the operator's call
-// after part 116: −1.1 ms on the game's floor, +0.3 on today's pump-bound frame).
+// The DEFAULT FOLLOWS THE PUMP (part 117): under the two-core pump (gpu/pump_split.h,
+// on by default from six physical cores) the wake is ON — the frame's longest term is
+// then the guest's Main Thread with 2.2 ms of it in this poll, and the pair measured
+// −1.19 ms; on the one-thread pump the 1 ms poll stays the default (the operator's call
+// after part 116: −1.1 ms on the game's floor, +0.3 on that pump-bound frame).
+// CZ_WAITANY_WAKE=1 / =0 force either, on either pump.

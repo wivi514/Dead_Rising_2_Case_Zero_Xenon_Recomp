@@ -115,7 +115,7 @@ uint32_t PaletteHighWater();
 double WalkCpuSeconds();
 struct Stats
 {
-    uint64_t ops, draws, stores, storesQueued, interrupts, swaps, logDwords;
+    uint64_t ops, draws, stores, storesQueued, interrupts, swaps, logDwords, runs, runsMerged;
     uint64_t wSpaceWaits;    // W stalled for queue space (must be ~0 at any load)
     uint64_t dEmptyWaits;    // D found the queue empty and parked
     uint64_t dIrqWaitNs;     // D's time waiting for W to deliver an interrupt
@@ -124,6 +124,9 @@ struct Stats
     uint64_t waitsUnmet;     // W: WAIT_REG_MEM evaluations that failed...
     uint64_t waitsOnOurStore;// ...of which the word is one D has a store pending to
     uint64_t waitsByPending; // ...and of THOSE, the ones the pending value satisfies (run-ahead)
+    uint64_t dIdleByKindNs[5];  // idle after: other, draw, store, irq, swap
+    uint32_t waitVa[4];         // the first four polled words seen unmet, and how often
+    uint64_t waitVaCount[4];
 };
 Stats GetStats();
 

@@ -6498,3 +6498,48 @@ From phase C part 18 (the frame rate — and none of it was work):
     `submit` — `tools/func_strings.py` prints a function's string references, and one pass
     over the DWARF chains' top frames classified 90% of the Main Thread. Look for the
     engine's own instrumentation strings before reading any disassembly. (part 116)
+
+565. **A controlled pair names a mechanism only if the rival mechanisms predict
+    differently for THAT pair.** Part 111 relocated the shared-block zero to a worker,
+    recovered nothing, and named the pump "bound by bytes, machine-wide" (gotcha 551).
+    A second mechanism — the zero was a prefetch for the constants the pump wrote into
+    the same lines a moment later, so the worker handed the misses back as coherence
+    misses — predicts the same null. The PMU chose in ten seconds: IPC 1.61, 0.7 GB/s
+    from DRAM, 0.47% of loads served from RAM. The pump was instruction-bound, and two
+    instruction streams on two cores DO overlap (−1.19 ms). Read the counters
+    (`perf stat -t`, IBS) before naming a bound; a share table cannot tell latency from
+    bandwidth from instructions. (part 117; gotcha 551's mechanism retracted in part —
+    its observation stands)
+
+566. **Two queues are two orders, and the seam between them is a race.** The first
+    two-core pump carried register runs and stores in a log and draws/swaps/interrupts
+    in an op ring, each op naming "replay the log to here". D's idle path replayed the
+    log as far as W had published — past an INTERRUPT op W had just queued — and landed
+    the scratch-mirror poison before the ISR read the callback: `ctr=0BADF00D`, the
+    exact crash a pre-phase-C guard had existed for. One record stream, consumed in
+    order, has no second position to disagree with. When two producers/consumers must
+    agree on an order, give them one. (part 117)
+
+567. **A store the walk has passed but not landed is the stream-order truth for a later
+    wait in the same stream.** Under the split a WAIT_REG_MEM polls memory that a
+    deferred EVENT_WRITE will write later; reading memory gives a stale answer, and
+    holding until D lands it drains the pipeline at every hand-off (46 of 52 unmet
+    evaluations a frame were on our own pending store). The pending value REPLACES the
+    memory read: satisfied, the walk runs ahead (the CP's pipeline-drain blocks, ~10 a
+    frame); unsatisfied, it holds as hardware's CP would. (part 117)
+
+568. **A pipelined pair is measured by its bubbles, not its throughput.** After the
+    split the wall was `D's work + D's idle`, and the idle (0.9-1.6 ms/frame) was
+    invisible until D counted its own dry spells and attributed each to the record it
+    ran dry after. The producer being the guest, the bubbles are the guest/renderer
+    ping-pong at the driver's fence blocks — not anything the consumer's profile shows.
+    Instrument the consumer's idle by cause on day one of any producer/consumer split.
+    (part 117)
+
+569. **When you move the frame's bound, re-check every parked item's trigger.** The
+    wait-any wake (part 116) was parked with a written condition — "flip when the pump
+    is under ~8 ms" — because the guest's floor was not the longest term. The split made
+    the renderer thread ~8.3 ms of work and the guest's Main Thread (8.1 ms CPU + 2.2 ms
+    in that very poll) the longest term; the wake then paid −0.1 to −0.9 ms on the same
+    frame it had cost +0.3 on. A parked item is a prediction about which term is
+    longest; the day that changes, its number changes with it. (part 117)

@@ -80,6 +80,12 @@ uint8_t* g_base = nullptr;
 void (*g_deliver)() = nullptr;
 
 uint64_t g_head = 0;                       // W-private write position
+// The trailing register run, if the last record is one and it is unpublished: a run
+// contiguous with it is appended to it rather than started as a new record. The guest
+// writes its constants in many adjacent runs (part 109's census: 64.6% of runs are 1-7
+// dwords), and every record costs D a dependent header load.
+uint64_t g_lastRunHdr = ~0ull;
+uint32_t g_lastRunEnd = 0;                 // index just past the trailing run
 std::atomic<uint64_t> g_pub{ 0 };          // W -> D: records complete up to here
 std::atomic<uint64_t> g_tail{ 0 };         // D -> W: consumed up to here
 uint64_t g_tailLocal = 0;                  // D-private
@@ -104,6 +110,10 @@ constexpr uint32_t kRegCount = 0x8000;
 alignas(64) uint32_t g_regsD[kRegCount];
 
 const DrawCtx* g_cur = nullptr;
+// D: the kind of the last record consumed (for attributing idle time — what did D run
+// dry AFTER: a swap, an interrupt, a store, a draw?). Index by g_lastKind: 0 run/other,
+// 1 draw, 2 store, 3 irq, 4 swap.
+uint32_t g_lastKind = 0;
 // The palette accumulator (see TakePalette).
 uint32_t g_palCover = 0, g_palPartial = 0, g_palCoverBursts = 0, g_palPartialBursts = 0;
 uint32_t g_palHigh = 0;
@@ -175,6 +185,7 @@ inline uint32_t* Reserve(uint64_t need)
 // the next such record, since nothing observes a run before the draw that follows it.
 inline void Publish()
 {
+    g_lastRunHdr = ~0ull;   // whatever follows is a new record
     g_pub.store(g_head, std::memory_order_seq_cst);
     WakeD();
 }
@@ -249,6 +260,7 @@ void Consume(uint64_t limit)
                 GuestStore32(g_base, va, value);
                 FenceWait_Stored(g_base, va);
                 ++g_stats.stores;
+                g_lastKind = 2;
                 t += 3;
                 break;
             }
@@ -257,6 +269,7 @@ void Consume(uint64_t limit)
                 g_tailLocal = t;
                 g_tail.store(t, std::memory_order_release);
                 RunInterrupt();
+                g_lastKind = 3;
                 break;
             case kSwap:
             {
@@ -268,6 +281,7 @@ void Consume(uint64_t limit)
                 Host_Present(front, w, hh);
                 cz_timebase::AdvanceFrame();
                 ++g_stats.swaps;
+                g_lastKind = 4;
                 break;
             }
             case kShader:
@@ -292,6 +306,7 @@ void Consume(uint64_t limit)
                     memcpy(&r, g_log + ((t + 1) & kLogMask), size_t(n) * 4);
                     t += n + 1;
                     RunDraw(r);
+                    g_lastKind = 1;
                     break;
                 }
                 // An unknown header is a corrupt stream; stop rather than guess.
@@ -340,7 +355,9 @@ void DrawThread()
             });
             g_dSleeping.store(false, std::memory_order_seq_cst);
         }
-        g_stats.dIdleNs += NowNs() - tIdle;
+        const uint64_t idle = NowNs() - tIdle;
+        g_stats.dIdleNs += idle;
+        g_stats.dIdleByKindNs[g_lastKind < 5 ? g_lastKind : 0] += idle;
     }
 }
 
@@ -348,9 +365,21 @@ void DrawThread()
 
 bool Start(uint8_t* base, void (*deliverInterrupt)())
 {
+    // THE DEFAULT (part 117 §4): ON where the machine has the cores for a fifth busy
+    // thread — six physical cores or more — and OFF below that, where W + D + the
+    // guest's two + the guard pool would oversubscribe the box (the part-107 Ryzen 3
+    // stand-in is 4c/8t). CZ_PUMP_SPLIT=1 forces it on anywhere, =0 forces the
+    // one-thread pump anywhere; either spelling is the same-binary control arm.
     const char* e = getenv("CZ_PUMP_SPLIT");
-    if (!e || !*e || *e == '0')
+    const unsigned physical = ThreadBudget_PhysicalCores();
+    const bool on = (e && *e) ? (*e != '0') : (physical >= 6);
+    if (!on)
+    {
+        if (!(e && *e))
+            fprintf(stderr, "[split] one-thread pump: %u physical cores (< 6); "
+                            "CZ_PUMP_SPLIT=1 forces the two-core pump\n", physical);
         return false;
+    }
     if (getenv("CZ_D3D_DRAW"))
     {
         fprintf(stderr, "[split] CZ_PUMP_SPLIT refused under CZ_D3D_DRAW: the split is the "
@@ -375,23 +404,53 @@ bool Start(uint8_t* base, void (*deliverInterrupt)())
                       "the walk, the register file, the waits and the ISRs");
     std::thread(DrawThread).detach();
     g_on = true;
-    fprintf(stderr, "[split] CZ_PUMP_SPLIT=1 — the PM4 walk stays on cz-pump; draws, "
-                    "stores, swaps and interrupts execute in stream order on cz-draw "
-                    "(one %u MB stream)\n",
+    fprintf(stderr, "[split] two-core pump %s (%u physical cores) — the PM4 walk stays on "
+                    "cz-pump; draws, stores, swaps and interrupts execute in stream order "
+                    "on cz-draw (one %u MB stream). CZ_PUMP_SPLIT=0 is the one-thread "
+                    "control\n",
+            (e && *e) ? "by CZ_PUMP_SPLIT=1" : "by default", physical,
             unsigned(kLogDwords * 4 / (1024 * 1024)));
     return true;
 }
 
 void LogRun(uint32_t index, uint32_t count, const uint32_t* src)
 {
+    // Extend the trailing run when this one continues it and fits before the lap's end.
+    if (g_lastRunHdr != ~0ull && index == g_lastRunEnd)
+    {
+        const uint32_t have = g_log[g_lastRunHdr & kLogMask] & 0xFFFFu;
+        const uint32_t off = uint32_t(g_head & kLogMask);
+        if (have + count <= 0xFFFFu && off + count <= kLogDwords)
+        {
+            for (;;)
+            {
+                const uint64_t tail = g_tail.load(std::memory_order_acquire);
+                if (g_head + count - tail <= kLogDwords)
+                    break;
+                ++g_stats.wSpaceWaits;
+                ServiceInterrupts();
+                std::this_thread::yield();
+            }
+            memcpy(g_log + off, src, size_t(count) * 4);
+            g_log[g_lastRunHdr & kLogMask] = (g_lastRunEnd - have) << 16 | (have + count);
+            g_head += count;
+            g_lastRunEnd += count;
+            g_stats.logDwords += count;
+            ++g_stats.runsMerged;
+            return;
+        }
+    }
     while (count)
     {
         const uint32_t n = count > 0xFFFFu ? 0xFFFFu : count;
         uint32_t* p = Reserve(uint64_t(n) + 1);
         p[0] = (index << 16) | n;
         memcpy(p + 1, src, size_t(n) * 4);
+        g_lastRunHdr = g_head;
+        g_lastRunEnd = index + n;
         g_head += uint64_t(n) + 1;
         g_stats.logDwords += n;
+        ++g_stats.runs;
         index += n;
         src += n;
         count -= n;
@@ -561,6 +620,15 @@ void NoteWaitUnmet(uint32_t va)
     if (!g_on)
         return;
     ++g_stats.waitsUnmet;
+    for (uint32_t i = 0; i < 4; ++i)
+    {
+        if (g_stats.waitVa[i] == va || g_stats.waitVa[i] == 0)
+        {
+            g_stats.waitVa[i] = va;
+            ++g_stats.waitVaCount[i];
+            break;
+        }
+    }
     for (uint32_t i = 0; i < g_storeTrackN; ++i)
         if (g_storeTrack[i].va == va)
         {

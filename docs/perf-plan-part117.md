@@ -104,4 +104,53 @@ a hot path. Each is ~0.03-0.06 ms; measured as ONE bundle against a 0.3 ms bar.
 
 ## §4. Execution record
 
-(filled in as the items run)
+### 4.0 Step 0 (07:15-07:25) — the table in §0. The pump is instruction-bound.
+
+One `tools/part117_memprobe.sh mem_base` run at the crowd. The numbers are in §0; the
+sentence they license is the one this part is built on: **two serial instruction streams
+on two cores overlap; the same bytes on two cores did not, and never could have.**
+
+### 4.1 Item 1, the build (07:25-08:25) — six crowd runs, one crash, one restructure
+
+The first build (07:32) booted, played the DebugJump route and held the crowd with the
+split on: wall 10.06 ms against 10.1-10.2, D 9.5 ms/frame, W 3.25 — the walk had moved
+and the frame had not, because D was idle 1.5 ms a frame and paying ~1.4 ms to replay
+the stream. What each of the next builds found, in order:
+
+| build | change | what the numbers said |
+|---|---|---|
+| split1 | op ring + run log, interrupts via W | `irqwait` 100 us per INTERRUPT (W asleep in its 100 us nap), 3.3 a frame |
+| split2p | prefetch the log two lines ahead; ~200 us spin before D parks; stores in the log | replay loop 9.4% -> ~3% of D; wall 10.01 |
+| split3 | idle + wait census | **D idle 1.5 ms/frame; 52 unmet wait evaluations a frame, 46 on OUR OWN pending store** — the walk drained the pipeline at every hand-off block |
+| split4 | run-ahead: a wait on a word a pending store satisfies proceeds | waits 0.1/frame, run-ahead 10/frame; wall unmoved; **the wake arm crashed with `ctr=0BADF00D`** |
+| split5 | **one ordered stream** (the crash: D's idle path replayed the log PAST an unexecuted INTERRUPT op, landing the scratch-mirror poison before the ISR read it); the pending value REPLACES the memory read at a wait (satisfied: run ahead; unsatisfied: hold, as hardware's CP would) | wall 10.03; D 9.3 (1.6 idle); **the guest's Main Thread is now the longest term: 8.1 ms CPU + 2.2 ms in the 1 ms wait-any poll** |
+| split5w | + `CZ_WAITANY_WAKE=1` (the parked part-116 item — its trigger, "the pump under ~8 ms", is met: D's work is ~8.3) | **9.91-9.96 median, p99 12.1** (was 14); Main Thread waits 2.2 -> 1.35; D idle 0.9 |
+| split6w | ProfScope's off-check inlined; contiguous runs merged on W (83 of 50,000 — the guest's runs are not adjacent; harmless) | 9.03-9.06 median at 8,450 draws |
+| split5wt | `taskset -c 0-7` (one hyperthread per core) | WORSE: 10.9-11.9, p99 22 — the scheduler does better than the pin |
+
+**The interrupt hand-off is the pipeline's clock.** Every INTERRUPT packet costs a drain:
+D reaches it and must wait for W to deliver the ISR (design point 2), and W's next
+WAIT_REG_MEM polls the ack the ISR writes, so W cannot run past it either. 3.3 a frame,
+~10 us each with the interruptible nap. The swap's rendezvous (the walker in the vblank
+ISR clears `mirror+4`) is the one hold that lasts: up to a vblank period.
+
+### 4.2 Item 1, the campaign (08:26-08:52) — `tools/part116_ab.sh`, 3 runs a side, alternated, one binary
+
+`c1base` (the one-thread pump, every release's default) vs `c1splitw`
+(`CZ_PUMP_SPLIT=1 CZ_WAITANY_WAKE=1`), 1920x1080, `tools/part116_guestcpu.py`:
+
+| band | n A / n B | wall A -> B | pump/D A -> B | Main A -> B | Draw A -> B |
+|---|---|---|---|---|---|
+| 8000 | 11 / 13 | 10.27 -> 9.08 (**−1.19**) | 10.06 -> 8.88 | 7.73 -> 8.09 | 5.67 -> 6.20 |
+| 8250 | 24 / 19 | 10.46 -> 9.07 (**−1.39**) | 10.28 -> 8.85 | 7.83 -> 8.18 | 5.88 -> 6.28 |
+| 8500 | 12 / 12 | 10.57 -> 9.92 (**−0.65**) | 10.36 -> 9.08 | 7.85 -> 8.41 | 5.84 -> 6.48 |
+| **median** | | **−1.19 ms, monotone** | −1.28 | +0.36 | +0.53 |
+
+**The pre-registered kill (−0.5) is cleared by a factor of two: ~96 -> ~110 fps at the
+operator's crowd.** The prediction was right about W (3.3-3.7 ms) and half right about D
+(8.6-9.1 ms/frame with 0.9 of it idle, against 8.0-8.8 predicted): the replay is ~0.7 ms
+where 0.3-0.6 was budgeted and the guest/D ping-pong leaves D idle ~0.9 ms a frame. The
+guest's own threads cost +0.36/+0.53 ms more CPU under the split — cache and core
+contention from a fifth busy core (gotcha 562's mechanism again) — and that is now the
+frame's longest term: the Main Thread at 8.1-8.4 ms CPU plus ~1.2 ms of waits.
+

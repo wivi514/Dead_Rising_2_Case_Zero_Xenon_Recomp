@@ -67,6 +67,7 @@
 // intrinsics headers are read) because timebase.h pulls <x86intrin.h> in itself
 // before shadowing, which sets the guard; nothing below re-declares __rdtsc.
 #include "../cpu/timebase.h"
+#include "../gpu/pump_split.h"   // part 117: the wait-any wake follows the two-core pump
 #include "../gpu/vk_renderer.h" // the exit paths save the pipeline cache (part 99)
 #include "../host/log_file.h"  // the exit paths drain the log file's tee (part 105)
 #include "../host/settings.h"
@@ -1438,12 +1439,19 @@ static uint32_t WaitAnyPoll(uint32_t count, uint32_t timeoutMs, uint32_t alertab
 {
     GuestThread::WaitScope ws(GuestThread::kWaitMulti);
     static const bool drainApcs = getenv("CZ_MULTIWAIT_APC") != nullptr;
-    // OFF BY DEFAULT — the operator's decision after part 116 measured both sides: the
-    // wake takes the game's own floor 8.1 -> 7.0 ms but the SHIPPED frame is our pump
-    // (10.1-10.4 ms), so today it reads +0.3 ms (~3 fps) with no visible upside. Flip
-    // the default when the pump is under ~8 ms (item B or the D3D pivot); the fix is
-    // built, gated and one line away. Do not re-measure it before then.
-    static const bool pollOnly = getenv("CZ_WAITANY_WAKE") == nullptr;
+    // THE DEFAULT FOLLOWS THE TWO-CORE PUMP (part 117). Part 116 measured the wake both
+    // ways — the game's own floor 8.1 -> 7.0 ms, the shipped frame +0.3 — and the
+    // operator parked it OFF until "the pump is under ~8 ms". CZ_PUMP_SPLIT (gpu/
+    // pump_split.h) is what got the renderer thread there (8.6-9.1 ms/frame with ~0.9 of
+    // it idle), and the frame's longest term became the guest's Main Thread with 2.2 ms
+    // of it in THIS poll — so under the split the wake is ON (part 117 §4.2: the pair
+    // measured −1.19 ms, monotone) and on the one-thread pump it stays the poll the
+    // operator chose. CZ_WAITANY_WAKE=1 / =0 force either, on either pump.
+    static const int wakeEnv = [] {
+        const char* e = getenv("CZ_WAITANY_WAKE");
+        return !e || !*e ? -1 : (*e == '0' ? 0 : 1);
+    }();
+    const bool pollOnly = wakeEnv == 0 || (wakeEnv < 0 && !split::g_on);
     const auto start = std::chrono::steady_clock::now();
     // Register this wait on every object that supports it (kobject.h, wait-any
     // wake-ups) BEFORE the first poll, so a signal between poll and park bumps the
