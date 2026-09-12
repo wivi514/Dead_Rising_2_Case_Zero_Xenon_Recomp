@@ -52,6 +52,11 @@ XLIVE_ROOT=${XLIVE_ROOT:-$HOME/GithubRepo/XenonLive}
 [ -f "$XLIVE_ROOT/client/CMakeLists.txt" ] || fail "no XenonLive checkout at $XLIVE_ROOT (set XLIVE_ROOT)"
 CURL_VERSION=8.14.1
 CURL_SHA256=f4619a1e2474c4bbfedc88a7c2191209c8334b48fa1f4e53fd584cc12e9120dd
+# The in-game overlay (Shift+Tab) comes from the launcher checkout's overlay/ and its
+# vendored Dear ImGui; without the mount the CMake default falls to OFF silently
+# (v1.1.0's first artifacts were built exactly so), hence REQUIRED here.
+XLIVE_LAUNCHER_ROOT=${XLIVE_LAUNCHER_ROOT:-$HOME/GithubRepo/XenonLive_Launcher}
+[ -f "$XLIVE_LAUNCHER_ROOT/overlay/CMakeLists.txt" ] || fail "no XenonLive_Launcher checkout at $XLIVE_LAUNCHER_ROOT (set XLIVE_LAUNCHER_ROOT) — the overlay comes from it"
 
 fail() { echo "FAIL: $*" >&2; exit 1; }
 command -v podman >/dev/null || fail "podman not installed"
@@ -90,7 +95,9 @@ RUN=(podman run --rm -i
      -v "$XENOS_ROOT:$XENOS_ROOT:ro,Z"
      -v "$XENON_ROOT:$XENON_ROOT:ro,Z"
      -v "$XLIVE_ROOT:$XLIVE_ROOT:ro,Z"
+     -v "$XLIVE_LAUNCHER_ROOT:$XLIVE_LAUNCHER_ROOT:ro,Z"
      -e XENOS_ROOT="$XENOS_ROOT" -e XENON_ROOT="$XENON_ROOT" -e XLIVE_ROOT="$XLIVE_ROOT"
+     -e XLIVE_LAUNCHER_ROOT="$XLIVE_LAUNCHER_ROOT"
      -e CURL_VERSION="$CURL_VERSION"
      -e HOME="$HOMEDIR" -e CZ_DXC_LIB=/opt/dxc/libdxcompiler.so
      -e CZ_SDL2_WORK="$OB/work/sdl2" -e CZ_FFMPEG_WORK="$OB/work/ffmpeg"
@@ -151,7 +158,9 @@ cfg() {
         -DCZ_FFMPEG_PREFIX="$OB/ffmpeg-lgpl" -DCZ_SDL2_PREFIX="$OB/sdl2" -DCZ_BUNDLE_RPATH=ON \
         -DXENOS_ROOT="$XENOS_ROOT" -DXENON_ROOT="$XENON_ROOT" -DXENON_BUILD="$XB" \
         -DXLIVE_ROOT="$XLIVE_ROOT" -DCMAKE_PREFIX_PATH="$OB/curl" -DOPENSSL_USE_STATIC_LIBS=ON \
+        -DXLIVE_LAUNCHER_ROOT="$XLIVE_LAUNCHER_ROOT" -DCZ_XLIVE_OVERLAY=ON \
         > "$1.configure.log" 2>&1 || { tail -30 "$1.configure.log"; exit 1; }
+    grep -q "XenonLive overlay: on" "$1.configure.log" || { echo "FAIL: the overlay did not configure ON"; exit 1; }
 }
 echo "==> configuring + building runtime/build-release-oldbase (Release)"
 cfg runtime/build-release-oldbase Release
