@@ -4270,9 +4270,11 @@ CZ_PUMP_SPLIT=1    **THE TWO-CORE PUMP (item 1).** The pump thread (`cz-pump`) k
                    a WAIT_REG_MEM on a word one of OUR pending stores will write reads
                    the PENDING value as the truth (satisfied: the walk runs ahead of D at
                    the driver's drain blocks, ~10 a frame; unsatisfied: the walk holds as
-                   hardware's CP would). **ON BY DEFAULT from six physical cores**, OFF
-                   below (the 4c/8t stand-in would be oversubscribed); `=1`/`=0` force
-                   either — the same-binary control arm. Measured (§4.2, three runs a
+                   hardware's CP would). **ON BY DEFAULT from six physical cores or
+                   eight logical CPUs** (the 4c/8t stand-in measured −1.3 ms with it),
+                   OFF on 4c/4t and below; `=1`/`=0` force either — the same-binary
+                   control arm. CZ_PUMP_SPLIT_MB=N sizes the stream ring (2..64, a
+                   power of two; default 32). Measured (§4.2, three runs a
                    side, matched bands, 1920x1080): **wall −1.19 ms median, monotone**
                    (10.3-10.6 -> 9.1-9.9 at 8,000-8,750 draws; ~96 -> ~110 fps), p99 14.0
                    -> 12.1; cz-pump 3.3-3.7 ms/frame, cz-draw 8.6-9.1 with ~0.9 idle; the

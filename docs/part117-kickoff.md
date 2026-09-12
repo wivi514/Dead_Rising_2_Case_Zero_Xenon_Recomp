@@ -38,8 +38,8 @@ item alone can take the frame under ~8.5 ms at this crowd any more.
    publication and both ISRs stay on `cz-pump`; draws, resolves, the swap, every store
    into guest memory, the INTERRUPT packets and first-sight shader binds execute in
    stream order on `cz-draw` from ONE ordered stream, against a replica register file
-   replayed from the same stream. **ON by default from six physical cores; OFF below
-   (`CZ_PUMP_SPLIT=1`/`=0` force either).** Three rules the design turns on are the
+   replayed from the same stream. **ON by default from six physical cores or eight
+   logical CPUs; OFF below (`CZ_PUMP_SPLIT=1`/`=0` force either).** Three rules the design turns on are the
    header comment of `pump_split.h`; the crash that taught the fourth (one stream, not
    two) is gotcha 566.
 2. **The wait-any wake follows the pump**: ON under the split (its parked trigger —
@@ -66,9 +66,9 @@ item alone can take the frame under ~8.5 ms at this crowd any more.
 * **Windows.** `pump_split.cpp` is portable (`pthread_getcpuclockid` guarded; `walk cpu`
   reads -1 there) but czwin was not reached this part either; the first Windows build is
   a gate.
-* **The 4-core stand-in.** The default is OFF below six physical cores by arithmetic, not
-  by measurement; one run each way on the part-107 stand-in (`CZ_PUMP_SPLIT=1` vs `=0`)
-  settles whether the threshold is right.
+* **The 4c/4t shape.** The default is ON from six physical cores or eight logical CPUs —
+  the 4c/8t stand-in measured −1.3 ms with it (plan §4.4, one run each way) — and OFF on
+  four cores without SMT, which nobody has measured.
 * **The guest's +0.36/+0.53 ms under the split** — cache or SMT contention from the fifth
   busy core. `taskset -c 0-7` made it worse (the scheduler beats the pin). A smaller
   stream ring (the 32 MB one cycles 3.5 MB of fresh lines through L3 every frame) is the

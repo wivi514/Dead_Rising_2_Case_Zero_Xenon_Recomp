@@ -1251,8 +1251,9 @@ HAND-OFF; gotchas 565-569):
   The first build had two queues and crashed on `ctr=0BADF00D` (gotcha 566).
   **Measured, three runs a side, matched bands: wall −1.19 ms median, monotone (10.3-10.6
   -> 9.1-9.9; ~96 -> ~110 fps at the crowd), p99 14.0 -> 12.1.** `cz-pump` 3.3-3.7 ms,
-  `cz-draw` 8.6-9.1 with ~0.9 idle. **ON BY DEFAULT from six physical cores**
-  (`CZ_PUMP_SPLIT=0` the control; OFF below six, `=1` forces it).
+  `cz-draw` 8.6-9.1 with ~0.9 idle. **ON BY DEFAULT from six physical cores or eight
+  logical CPUs** — the 4c/8t stand-in measured −1.3 ms with it (`CZ_PUMP_SPLIT=0` the
+  control; OFF on 4c/4t and below, `=1` forces it).
 * **The wait-any wake's default now follows the pump** — its parked trigger ("the pump
   under ~8 ms") is met under the split and the guest's Main Thread, with 2.2 ms in that
   poll, is the longest term; it is ON there and stays the poll on the one-thread pump.
@@ -1270,7 +1271,7 @@ HAND-OFF; gotchas 565-569):
   0, shader dims clean, both PM4 oracles clean, E3 **+0.8411** (4 of 5, pinned), A5 **exit
   0** (5 permutation, 0 real), `no translated shader` 0, **sync validation 0 hazards with
   the poison at 30**, a 10-min explorer soak. Owed: the operator's session, Windows, the
-  4-core stand-in.
+  4c/4t shape.
 
 Where the port was, as of 2026-09-12, morning (**PART 116 — THE GUEST'S 8.8 ms WAS PROFILED FOR THE
 FIRST TIME, AND 1.1 ms OF IT WAS OURS.** The operator's 12-hour unattended order

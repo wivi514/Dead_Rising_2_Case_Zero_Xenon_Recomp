@@ -368,19 +368,22 @@ void DrawThread()
 
 bool Start(uint8_t* base, void (*deliverInterrupt)())
 {
-    // THE DEFAULT (part 117 §4): ON where the machine has the cores for a fifth busy
-    // thread — six physical cores or more — and OFF below that, where W + D + the
-    // guest's two + the guard pool would oversubscribe the box (the part-107 Ryzen 3
-    // stand-in is 4c/8t). CZ_PUMP_SPLIT=1 forces it on anywhere, =0 forces the
-    // one-thread pump anywhere; either spelling is the same-binary control arm.
+    // THE DEFAULT (part 117 §4.4): ON from six physical cores, AND on a 4c/8t part —
+    // the part-107 stand-in shape, measured on this box under `taskset -c 0-3,8-11`:
+    // 12.37 -> 11.06 ms at 8,500 draws with the split forced on, one run each. OFF on a
+    // 4c/4t part (unmeasured: W + D + the guest's two + two guards on four threads) and
+    // below. CZ_PUMP_SPLIT=1 forces it on anywhere, =0 forces the one-thread pump
+    // anywhere; either spelling is the same-binary control arm.
     const char* e = getenv("CZ_PUMP_SPLIT");
     const unsigned physical = ThreadBudget_PhysicalCores();
-    const bool on = (e && *e) ? (*e != '0') : (physical >= 6);
+    const unsigned logical = ThreadBudget_LogicalCpus();
+    const bool on = (e && *e) ? (*e != '0') : (physical >= 6 || logical >= 8);
     if (!on)
     {
         if (!(e && *e))
-            fprintf(stderr, "[split] one-thread pump: %u physical cores (< 6); "
-                            "CZ_PUMP_SPLIT=1 forces the two-core pump\n", physical);
+            fprintf(stderr, "[split] one-thread pump: %u physical cores / %u logical "
+                            "(the default needs 6 physical or 8 logical); CZ_PUMP_SPLIT=1 "
+                            "forces the two-core pump\n", physical, logical);
         return false;
     }
     if (getenv("CZ_D3D_DRAW"))

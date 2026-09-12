@@ -166,6 +166,15 @@ bundle (`CZ_VK_SCOPED_SHARED_ZERO=1 CZ_VK_TEXMEMO=1`), D = B with `CZ_NO_HUGEPAG
 | B -> C (the bundle) | −0.13, monotone | **−0.56, monotone** | the bundle takes 0.56 ms off the renderer thread and 0.13 off the frame — the thread is not the bound. Below the 0.3 bar; stays the operator's call, OFF |
 | B -> D (huge pages OFF) | +0.40, NOT monotone (+0.03 / +0.76 / +0.86 / −0.00; one band n=1) | +0.06 | not established either way; the advice stays ON (harmless: 43 MB of the private range promoted, the views need root's shmem policy) |
 
+### 4.4 The 4-core stand-in (10:18-10:28) — the default's threshold, measured once each way
+
+`taskset -c 0-3,8-11` (four physical cores, eight threads — the part-107 Ryzen 3 shape at
+this box's clocks), one run each: **the one-thread pump 12.37 ms at 8,500 draws, the split
+forced on 11.06 (−1.3)**, with cz-draw at 94% of a core, the Main Thread 77%, the Draw
+Thread 64%, cz-pump 36%, three guards 34% each on eight hardware threads. So the default
+is ON from six physical cores OR eight logical CPUs; a 4c/4t part stays on the one-thread
+pump unmeasured.
+
 **So the decomposition of the shipped −1.19 is: ~−0.3 from the two cores, ~−0.9 from the
 wait-any wake that the two cores made worth having.** That is gotcha 569 in numbers: the
 parked item's trigger was "which term is longest", and the split changed the term. It is
