@@ -4202,6 +4202,10 @@ CZ_XLIVE_COOP=1    the XGI session messages are handled (kernel/xlive_session.cp
 CZ_NET_LOG=1       every datagram over the punched path
 CZ_ONLINE_LOG=N    the title's OWN online logger (part 1). 1 = levels 1..3; N = up to N.
                    [title:N] lines. The HW MM session state machine narrates itself here
+CZ_XLIVE_HOST=0    OPT OUT OF HOSTING. Since co-op part 5 hosting is IMPLIED by
+                   CZ_XLIVE_COOP=1 (the host is asked before anyone joins, so an open
+                   session costs nothing the player did not agree to); =1 forces it on
+                   as before, =0 plays online without ever hosting
 CZ_XLIVE_HOST=1    HOST A CO-OP SESSION (part 2, runtime/kernel/coop_host.cpp). Three
                    things, all printed as [coop]: (1) the session's IS-COOP byte is set
                    before GameplayFlow::Enter — measured redundant, the title already

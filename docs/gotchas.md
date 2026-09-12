@@ -6423,3 +6423,35 @@ From phase C part 18 (the frame rate — and none of it was work):
     every name without a row is a constructor default waiting for a reader; (b) an
     instrument that prints the string the code actually BUILT (`chest_NONE`) beats any
     amount of reasoning about which row it should have read. (co-op part 4)
+
+556. **A guarded load guards the ADDRESS you gave it, not the chain you meant.** An
+    instrument re-read a four-link pointer chain the title reads
+    (`owner→+0x78→+0xC→+0x30→+0x70`) through a `LoadU32` that returns 0 for a zero
+    address; the first link was null, so the second read asked for address 0xC — not
+    zero, so not guarded — and the HOST of the first same-box co-op pair faulted at
+    guest 0xC inside a trace line. Guard every link (`a ? Load(a + off) : 0`), or
+    better, read what the title's own code reads only where the title's own code has
+    already proved the chain non-null. And the shape is gotcha 7's cousin: an
+    instrument on the host crashed the very session it was measuring, and the first
+    reading of the crash blamed the feature. (co-op part 5)
+
+557. **When a title ships a bigger game's menus, the row is what was cut — the screen
+    behind it usually was not.** Case Zero's main menu lost DR2's "Join Game" row, and
+    its JoinGame screen, its friends screen, the GameSelect join mode and the
+    transition graph's edges for them were all still in the archives and the image.
+    Restoring co-op's front end was one cloned button in a layout script and one edge
+    in a manifest — no C++ — where the plan had budgeted panel rows and a menu built
+    from scratch. Before building any UI for a resurrected feature, list the shipped
+    screen files (`big_list.py` on the frontend archives) and the screen factory's
+    name table (a stack of string pointers, 0x824B9BE0 here) and diff them against what
+    the menus can reach. (co-op part 5)
+
+558. **A shipped title can contain BOTH the "ask the player" path and the "do not ask"
+    path, and pick by a state word nobody set.** The co-op join confirm here has a
+    synthetic-"Yes" branch (taken in game states 5/6, which never occurred) and a
+    walkie-talkie branch whose HUD was compiled out (taken always, then auto-declined
+    on a timer). Neither would ever have asked the player, and reading the dialog's
+    strings out of the image said nothing about which branch ran. Instrument the
+    ROUTE — every step from the trigger to the terminal call, with the caller address
+    on the terminal call — before deciding where to insert a prompt; the right seam
+    turned out to be the funnel both branches share, not either branch. (co-op part 5)

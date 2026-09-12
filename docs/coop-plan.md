@@ -307,6 +307,110 @@ prompt and the plan ranks it low. If it is ever wanted, the dialog path is the o
 drive (post 11533 from the confirm-pending site and feed the answer to
 `sub_82582188`), not the HUD text.
 
+## Part 5: the menus, the host's prompt, and a friend's game (DONE — and the branch is on master)
+
+**2026-09-11, late evening; three more two-machine joins, operator-played; every piece
+below was seen working by the operator on both screens.** The operator's instructions,
+in order: *"Do the start coop ui in the main menu and seeing the ui notification of
+player request of joining your game"*, then *"can you add the option to join a friend
+game in the start coop menu like case west"*, then *"instead of seeing a list of
+server of your friends that are playing and you can choose which one to play with"*,
+then *"push this to master and we'll do the release build"*.
+
+### JOIN CO-OP GAME on the main menu — data only (`tools/patch_coop_menu.py`)
+
+The main menu is `data/frontend/mainmenu.big`'s `title.txt`, a cFEScreen layout script
+(the grammar `gen_pc_options.py` cracked in part 60), and DR2's whole JoinGame screen
+SHIPS in the same archive (`joingame.txt`: "JOIN XBOX LIVE GAME" → `ACT:XboxLive`,
+whose handler `sub_824DAA10` opens GameSelect in mode 1 — the exact call
+`coop_join.cpp` makes). Only the ROW that leads to it was cut from `title.txt`, and the
+transition graph (`fecmn.big`'s `path_fe.txt`) lists JoinGame under GameSelect only.
+The tool clones the START GAME button as `JoinCoop` (string 108 "JOIN CO-OP GAME",
+shipped in every bank; `onSelect="FWD:JoinGame"`, the framework's own forward verb),
+shifts the rows below one slot and re-links the focus chain, and adds
+`JoinGame=">Normal"` to TitleScreen in both `fecmn.big` overlays (game_patched and the
+bootskip copy). Headless: `START,NONE,DOWN,A,NONE,A,NONE,A,NONE,A` walks title →
+JoinGame → GameSelect(1) → the dialog → a slot → `SEARCHING_FOR_HOST_SESSION`. The
+laptop's `play.bat` no longer sets `CZ_XLIVE_JOIN`; the player uses the row. All of it
+is now in `runtime/host/overlay_gen.cpp` too (generator v5), byte-identical.
+
+### The host's "wants to join" prompt (`runtime/kernel/coop_call.cpp`)
+
+Part 4 closed the walkie-talkie HUD as compiled out; part 5 read the two routes from
+"a client is pending" to the confirm, `sub_82582188(session, accept)`:
+
+1. `sub_82587228`, the session-details handler: when the joiner's member record
+   arrives it stores the pending client (session+0xDC) and, if a game-state word
+   (`0x82A57428→+0x78→+0xC→+0x30→+0x70`) is 5 or 6, posts **a synthetic "Yes"** —
+   `{7, hash("DlgOnHostConfirmCOOPJoin"), hash("Yes")}` — to the game session, whose
+   event handler (`sub_824C0958` at 0x824C10C0) turns it into the confirm. Otherwise
+   it enables the pending call (`sub_8256FC60`, session+0x93), which the session's
+   Update turns into `sub_8254B108` → `sub_82224DF0`, the walkie-talkie ring whose
+   "answered" handler (`sub_82224F30`, D-pad RIGHT) is what raises the dialog
+   (`sub_8254B300` fetches the pending gamertag, `sub_824BDBE8` formats 11533 and
+   raises `DlgOnHostConfirmCOOPJoin`; the answer comes back through the same
+   0x824C10C0 path — Yes / No / SetToPrivate, the last also sets privacy). An
+   unanswered ring is auto-declined by `sub_82224A38` on a timer.
+2. Measured on both a same-box pair and the two-machine sessions: **the state-word
+   chain is null here** (reads as 0xFFFFFFFF), so the walkie route is the one taken —
+   the ring nobody can see, then a timed decline. (`Pending client IS confirmed!` is
+   the transport-level confirm, `sub_825719E0` from the kind-13 client event, and
+   comes BEFORE either route; it is not the accept.)
+
+Both routes now ASK: the synthetic Yes is caught in the event handler and turned into
+the prompt (nothing else in that handler runs, so neither the confirm nor its
+"EXCHANGING_DATA" wait dialog does); `sub_8254B108` raises the prompt directly instead
+of ringing. The player's answer goes through the title's own path untouched. The
+operator saw it three times: *"Frank West wants to join your game. Let the player
+join?"*, Yes, and the laptop loaded in. `CZ_COOP_JOIN_PROMPT=0` is the control arm,
+`CZ_COOP_CALL_TRACE=1` the instrument. Hosting is now implied by `CZ_XLIVE_COOP=1`
+(`CZ_XLIVE_HOST=0` opts out) because the prompt is the gate.
+
+### JOIN FRIENDS — the title's own friends list, and X joins (`runtime/kernel/coop_friends.cpp`)
+
+The JoinGame screen's second row raises `ACT:Friends` → `LaunchFriends` on the game
+session → `DlgOnFriends`, DR2's FRIENDS screen (`fecmn.big`'s `on_friends.txt`; class
+around 0x824DBFxx-0x824DD2xx): a scrolling list from the friends enumerator
+(`xlive_social.cpp` serves it from libxlive, presence included) with A = send invite,
+X = `join_session_or_accept_invite`, Y = gamercard, B = back. Two things stood in the
+way: the LaunchFriends handler returns at once when `enable_prolog_experience`
+(0x82A57BFA, =1 here) is set — cleared for that one event — and the X button's join
+goes through the friends interface (matchmaking vt[31] → vt[25]/vt[27]) and matchmaking
+vt[38], a path this port has never run. So X is answered on the proven path instead:
+the friend under the cursor is resolved exactly as the handler resolves it (focused row
+→ "c0" → "text" → its record → `sub_825479E8` → the entry, xuid at +8), the session
+search is told to keep only that host (`XliveSession_SetSearchHostFilter` mode 2), the
+screen is closed as its own B does, and GameSelect mode 1 is requested for the next
+frame (`CoopJoin_RequestJoinScreen`; a transition asked from inside a dialog's handler
+is refused while the dialog is current). A friend not in a joinable session gets the
+title's own "Join Session Failed!" dialog. The first form of this row (a friends-only
+search with no picker) was built, seen working, and replaced the same evening on the
+operator's instruction. The laptop's log for the final form: `JOIN FRIENDS` →
+`LaunchFriends: raising DlgOnFriends (enable_prolog_experience was 1, cleared)` →
+`friends screen: joining 'Chuck Greene'` → `transition request returned 1` → `search
+found 1 session(s), 1 hosted by 0009000000000030` → the host's prompt.
+
+The two accounts must be FRIENDS on XenonLive for the row to find anything: the
+operator's default account here (wivi514) has none, so the hosts for these tests ran
+as Chuck Greene (`XLIVE_DATA_DIR=~/.config/XenonLive-host`), who is Frank West's
+friend. A friend's PRIVATE session (SetToPrivate) is not searchable; that needs the
+invite path (`xlive_social.cpp`), which is separate and not built into a menu.
+
+### Recorded on the way
+
+- A same-box headless pair (host by DebugJump, joiner by the menu row) reproduces the
+  whole join including the prompt; its first run faulted the host at guest 0xC inside
+  an INSTRUMENT — `LoadU32` guards only a zero address, and a null link two steps into
+  a pointer chain reads 0xC (gotcha 556).
+- `sub_824C0958` is reached only through a vtable, and a `PPC_FUNC` hook on it works
+  (the function table names the C++ symbol); a trace line inside the hook that never
+  printed for the dialog's answer is unexplained and unimportant — the answer path
+  was confirmed by the confirm's own caller address (0x824C1178).
+- `sub_82587228`'s "state word" was 5/6 in NO session; the synthetic-Yes route exists
+  in the image and is handled, but has not been seen to fire.
+- The "OnSLHosts" system-link host browser (`hosts.txt`) is registered in the screen
+  factory and untouched; DR2's LAN join path is still there for whoever wants it.
+
 ## Online tunables (dataflow-bound, gotcha 241)
 
 Loader `sub_824A2470`; bank based at 0x82A57xxx. The knobs we will want:
@@ -333,7 +437,12 @@ systemlink pair is the LAN path Case West dropped but Case Zero kept.
    setting once part 4 says co-op is worth shipping.
 3. **DONE — Joiner.** `CZ_XLIVE_JOIN=1`; see "The joiner, and the first two-machine
    sessions". Two machines, two Chucks in Still Creek, operator-played.
-4. **Content test — MOSTLY DONE (part 4).** Still Creek takes a second Chuck: he
+4. **Content test — MOSTLY DONE (part 4), and the SHIP items DONE (part 5).** The
+   menu row, the host's prompt and the friends list are in; hosting rides
+   `CZ_XLIVE_COOP=1`; the data patches are in `overlay_gen.cpp`; both release legs
+   carry libcurl. Still not exposed: the privacy setting (the prompt's SetToPrivate
+   button is the only way to go private mid-session).
+   **Content test — MOSTLY DONE (part 4).** Still Creek takes a second Chuck: he
    spawns dressed (the chest piece, part 4), walks, fights, sees the host's case and
    HUD. Tested by the operator on 2026-09-11: a cinematic, a save on the host, items
    picked up and dropped, one side quitting (host re-hosts and continues) — all normal;

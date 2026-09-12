@@ -42,7 +42,7 @@ the part a future Case West port will reuse verbatim:
 
 ## Transferable gotchas
 
-**THE FULL NUMBERED LEDGER IS `docs/gotchas.md` — 524 entries, and every "gotcha N"
+**THE FULL NUMBERED LEDGER IS `docs/gotchas.md` — 558 entries, and every "gotcha N"
 reference in this repo and in the docs resolves there.** It was split out of this file
 on 2026-08-08, when this file reached 308 KB and was being loaded into every session
 whole. Read it **before making a measurement claim, adding an instrument, believing a
@@ -192,14 +192,24 @@ mask; trust the microcode's own swizzles.
     read `phase5-notes.md` §6ba before following anything in it.
   - **THE LIVE HAND-OFF IS ALWAYS THE HIGHEST-NUMBERED `partNN-kickoff.md`**, and it
     supersedes every earlier kickoff on "where the port is". **IT IS
-    `part114-kickoff.md` — CO-OP WORKS AND THE PARTNER IS DRESSED (co-op plan part 4,
+    `part115-kickoff.md` — CO-OP IS ON MASTER AND THE RELEASE CARRIES IT (co-op plan
+    part 5, late evening of 2026-09-11): JOIN CO-OP GAME on the main menu (one cloned
+    button in `title.txt` + one manifest edge — the whole JoinGame front end had
+    shipped, only the row was cut), the host's *"<name> wants to join your game"*
+    prompt (`coop_call.cpp`: both of the title's routes to the confirm now ask), JOIN
+    FRIENDS opening the game's own friends screen with X joining the picked friend
+    (`coop_friends.cpp`), hosting implied by `CZ_XLIVE_COOP=1`, the three data patches
+    ported into `overlay_gen.cpp` (v5, byte-identical), both release legs carrying
+    libcurl. Operator-verified on two machines. OWED: the mission transition, the
+    crowd, a solo session on the shipped binary; the privacy setting is not exposed.**
+    ~~It was `part114-kickoff.md` — CO-OP WORKS AND THE PARTNER IS DRESSED (co-op plan part 4,
     evening of 2026-09-11, branch `xlive-integration`): the missing chest piece was
     `OUTFIT_COOP_DEFAULT_UNDER`, a name in the title's table with NO row in Case Zero's
     outfits.csv, so the chest-only substitution in the load requester asked for
     `chest_NONE` (found by `CZ_OUTFIT_TRACE=1`, fixed as data in
     `tools/patch_coop_outfit.py`); cinematic, host save, items and one side quitting
     all normal, 0 desyncs; the incoming-call HUD is compiled out of both XBLA builds.
-    OWED: a mission transition and a crowd, then the ship-or-not decision.** ~~It was
+    OWED: a mission transition and a crowd, then the ship-or-not decision.~~ ~~It was
     `part113-kickoff.md` — CO-OP WORKS ACROSS TWO MACHINES (co-op plan part 3,
     2026-09-11, branch `xlive-integration`): host here, joiner on the Windows laptop,
     two Chucks in Still Creek, operator-played. `docs/coop-plan.md` is the record and
