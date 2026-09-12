@@ -186,6 +186,26 @@ pump unmeasured.
   11.2-11.6 -> 10.0-10.1, −1.46 ms median, monotone in three bands (~87 -> ~100 fps);
   D −1.60; the guest's threads +0.42/+0.34.** The 1080p number transfers.
 
+### 4.6 Item 4 (new, 11:12) — a spin before the park, because the guest's waits are wake-latency-sized
+
+With the guest's Main Thread the longest term, its `[guestwait]` columns under the split
+read **~90 us per single-object wait (5.7 a frame) and ~150 us per wait-any (5 a frame)**
+— the size of a futex wake (syscall, IPI, scheduler), not of anything the game waits FOR.
+`CZ_WAIT_SPIN_US=N` spins that long on the waiter's own core before every park in
+`Event::Wait`, `Semaphore::Wait` and `WaitAnyBlock::WaitForChange` (a try_lock and a
+look, a breath of `pause`, until the bound), so a signal that lands within the bound is
+seen without a wake. Pre-registered: the shipped default vs `=100`, three runs a side;
+**kill: wall −0.2 ms or it ships OFF.**
+
+**KILLED (11:12-11:40, three runs a side): wall +0.06 (monotone null), the Main Thread's
+CPU +0.64 (the spin IS the CPU), and its wait columns unmoved — single 0.67 -> 0.62,
+multi 0.76 -> 0.71 ms/frame.** The waits are genuine: the object is signalled ~90-150
+us after the wait begins, and a thread that spins through that interval simply spends
+it awake. The knob stays (`CZ_WAIT_SPIN_US`, 0 = the park); the item is closed. Two
+things the campaign also shows: the shipped frame sits on two rungs — ~9.0-9.1 ms at
+8,000-8,250 draws and ~9.9-10.0 from 8,500 up, in both arms — which is the 1 ms vblank
+ladder (the cap's period) showing through the medians; read bands, never a run mean.
+
 **So the decomposition of the shipped −1.19 is: ~−0.3 from the two cores, ~−0.9 from the
 wait-any wake that the two cores made worth having.** That is gotcha 569 in numbers: the
 parked item's trigger was "which term is longest", and the split changed the term. It is

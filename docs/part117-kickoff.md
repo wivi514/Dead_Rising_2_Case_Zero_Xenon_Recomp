@@ -75,6 +75,9 @@ item alone can take the frame under ~8.5 ms at this crowd any more.
 * **D's ~0.9 ms idle a frame** is the guest/renderer ping-pong at the driver's fence
   blocks plus the swap rendezvous (the vblank walker clears `mirror+4` on the next tick).
   Both are the guest's timing; neither is a renderer item.
+* **A spin before the guest's parks is DEAD** (plan §4.6): the Main Thread's ~90-150 us
+  waits are genuine — `CZ_WAIT_SPIN_US=100` read wall +0.06 and Main CPU +0.64. Do not
+  re-buy it.
 * **Item 3 (the instruction diet)** is a list, not a result: `DoDraw` is 36 KB of code at
   ~2,000 instructions a draw with no instruction above 1.6% — a flat profile that only a
   structural removal moves. The remaining small ones are in the plan's §3.

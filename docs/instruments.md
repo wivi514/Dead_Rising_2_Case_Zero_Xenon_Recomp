@@ -4294,6 +4294,12 @@ CZ_PUMP_SPLIT=1    **THE TWO-CORE PUMP (item 1).** The pump thread (`cz-pump`) k
                    guest/D ping-pong, attributed to the record D ran dry after; the wait
                    census says which polled words hold the walk and how many evaluations
                    the pending value satisfied instead
+CZ_WAIT_SPIN_US=N  a bounded spin on the waiter's own core before every park in
+                   Event::Wait / Semaphore::Wait / the wait-any block (item 4 — the
+                   guest's Main Thread waits read ~90-150 us each, wake-latency-sized).
+                   KILLED: =100 measured wall +0.06, Main Thread CPU +0.64, the wait
+                   columns unmoved — the waits are genuine, the signal really arrives
+                   that much later. 0 (the default) is the plain park
 CZ_NO_HUGEPAGES=1  the control for item 2: the runtime advises MADV_HUGEPAGE on the
                    private guest range and on the three physical views at map time and
                    prints the kernel's THP policy beside it ("[mem] MADV_HUGEPAGE ...").

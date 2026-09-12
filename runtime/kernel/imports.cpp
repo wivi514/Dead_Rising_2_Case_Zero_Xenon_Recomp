@@ -827,6 +827,33 @@ static uint32_t GuestTimeoutToMs(be<int64_t>* timeout)
 // take a mutex, and gating them on the env var would make the instrument's own
 // numbers unreadable (a waiter counted only after the arm turns on undercounts
 // exactly the parked thread the dump exists to find).
+// THE SPIN BEFORE THE PARK (part 117 §4.6). Under the two-core pump the frame's longest
+// term is the guest's Main Thread, and its [guestwait] columns read ~90 us per
+// single-object wait and ~150 us per wait-any — wake-latency-sized, ~11 a frame. A
+// condvar wake on Linux is a futex syscall, an IPI and a scheduler decision, tens of
+// microseconds a time; a waiter that spins that long first sees the signal the moment
+// it lands. The spin is on the waiting thread's own core (the critical path — the time
+// was sleep, not work) and bounded, so an oversubscribed box pays at most the bound.
+// CZ_WAIT_SPIN_US=N sets it; 0 is the plain park.
+static inline unsigned WaitSpinUs()
+{
+    static const unsigned us = [] {
+        const char* e = getenv("CZ_WAIT_SPIN_US");
+        return e ? unsigned(atoi(e)) : 0u;
+    }();
+    return us;
+}
+static inline void WaitPause()
+{
+#if defined(__x86_64__) || defined(_M_X64)
+    __builtin_ia32_pause();
+#endif
+}
+static inline bool SpinDeadlinePassed(const std::chrono::steady_clock::time_point& until)
+{
+    return std::chrono::steady_clock::now() >= until;
+}
+
 struct KobjActivity
 {
     std::atomic<uint32_t> waiters{ 0 };
@@ -841,28 +868,39 @@ struct WaitAnyBlock
 {
     std::mutex m;
     std::condition_variable cv;
-    uint64_t gen = 0; // under m
+    std::atomic<uint64_t> gen{ 0 }; // bumped under m (the condvar handshake), read lock-free by the spin
     void Signal()
     {
         {
             std::lock_guard lk(m);
-            ++gen;
+            gen.fetch_add(1, std::memory_order_release);
         }
         cv.notify_all();
     }
     // Wait until the generation differs from `seen` or `ms` elapse; returns the
-    // generation observed on the way out.
+    // generation observed on the way out. Spins first (WaitSpinUs), then parks.
     uint64_t WaitForChange(uint64_t seen, unsigned ms)
     {
+        if (const unsigned spin = WaitSpinUs())
+        {
+            const auto until = std::chrono::steady_clock::now() + std::chrono::microseconds(spin);
+            for (;;)
+            {
+                const uint64_t g = gen.load(std::memory_order_acquire);
+                if (g != seen)
+                    return g;
+                for (int i = 0; i < 16; ++i)
+                    WaitPause();
+                if (SpinDeadlinePassed(until))
+                    break;
+            }
+        }
         std::unique_lock lk(m);
-        cv.wait_for(lk, std::chrono::milliseconds(ms), [&] { return gen != seen; });
-        return gen;
+        cv.wait_for(lk, std::chrono::milliseconds(ms),
+                    [&] { return gen.load(std::memory_order_acquire) != seen; });
+        return gen.load(std::memory_order_acquire);
     }
-    uint64_t Generation()
-    {
-        std::lock_guard lk(m);
-        return gen;
-    }
+    uint64_t Generation() { return gen.load(std::memory_order_acquire); }
 };
 
 // The per-object list of parked wait-anys, guarded by the object's own mutex. A
@@ -892,6 +930,27 @@ struct Event final : KernelObject
         act.waitCalls++;
         act.waiters++;
         struct Dec { std::atomic<uint32_t>& w; ~Dec() { w--; } } dec{ act.waiters };
+        if (const unsigned spin = WaitSpinUs(); spin && timeoutMs != 0)
+        {
+            // The spin: a try_lock and a look, then a breath, until the bound.
+            const auto until = std::chrono::steady_clock::now() + std::chrono::microseconds(spin);
+            for (;;)
+            {
+                {
+                    std::unique_lock lock(m, std::try_to_lock);
+                    if (lock.owns_lock() && signaled)
+                    {
+                        if (!manualReset)
+                            signaled = false;
+                        return STATUS_SUCCESS;
+                    }
+                }
+                for (int i = 0; i < 16; ++i)
+                    WaitPause();
+                if (SpinDeadlinePassed(until))
+                    break;
+            }
+        }
         std::unique_lock lock(m);
         if (timeoutMs == WAIT_TIMEOUT_INFINITE)
             cv.wait(lock, [&] { return signaled; });
@@ -954,6 +1013,25 @@ struct Semaphore final : KernelObject
         act.waitCalls++;
         act.waiters++;
         struct Dec { std::atomic<uint32_t>& w; ~Dec() { w--; } } dec{ act.waiters };
+        if (const unsigned spin = WaitSpinUs(); spin && timeoutMs != 0)
+        {
+            const auto until = std::chrono::steady_clock::now() + std::chrono::microseconds(spin);
+            for (;;)
+            {
+                {
+                    std::unique_lock lock(m, std::try_to_lock);
+                    if (lock.owns_lock() && count > 0)
+                    {
+                        count--;
+                        return STATUS_SUCCESS;
+                    }
+                }
+                for (int i = 0; i < 16; ++i)
+                    WaitPause();
+                if (SpinDeadlinePassed(until))
+                    break;
+            }
+        }
         std::unique_lock lock(m);
         auto ready = [&] { return count > 0; };
         if (timeoutMs == WAIT_TIMEOUT_INFINITE)
