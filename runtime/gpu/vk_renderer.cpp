@@ -29092,6 +29092,41 @@ void DoSwapImpl(uint8_t* base, uint32_t frontBuffer, uint32_t width, uint32_t he
                     lastMain = nowMain;
                     lastDraw = nowDraw;
                 }
+                // ...and where each thread's NON-CPU time went: ms/frame and calls/frame
+                // in our kernel's waits, by kind — single-object, wait-any/all, sleep,
+                // fence park (part 116 item 4). Same window, same denominator.
+                char waitLine[256] = "";
+                {
+                    static uint64_t lastNs[2][GuestThread::kWaitKinds] = {};
+                    static uint64_t lastCalls[2][GuestThread::kWaitKinds] = {};
+                    static bool haveWait = false;
+                    const char* names[2] = { "Main Thread", "Draw Thread" };
+                    const char* kinds[GuestThread::kWaitKinds] = { "single", "multi", "sleep", "fence" };
+                    size_t off = 0;
+                    bool any = false;
+                    for (int t = 0; t < 2; t++)
+                    {
+                        const GuestThread::WaitStats* w = GuestThread::WaitStatsOf(names[t]);
+                        if (!w)
+                            continue;
+                        any = true;
+                        off += snprintf(waitLine + off, sizeof waitLine - off, "%s%s:",
+                                        t ? " | " : "", t ? "draw" : "main");
+                        for (int k = 0; k < GuestThread::kWaitKinds; k++)
+                        {
+                            const uint64_t ns = w->ns[k].load(std::memory_order_relaxed);
+                            const uint64_t calls = w->calls[k].load(std::memory_order_relaxed);
+                            if (haveWait && frames && off < sizeof waitLine)
+                                off += snprintf(waitLine + off, sizeof waitLine - off,
+                                                " %s %.2f/%.1f", kinds[k],
+                                                double(ns - lastNs[t][k]) * 1e-6 / double(frames),
+                                                double(calls - lastCalls[t][k]) / double(frames));
+                            lastNs[t][k] = ns;
+                            lastCalls[t][k] = calls;
+                        }
+                    }
+                    haveWait = any;
+                }
                 fprintf(stderr,
                         "[fps] %.1f fps mean (%.2f ms) | %.1f fps median (%.2f ms) | "
                         "p99 %.2f ms | worst %.2f ms | >2x med %.1f%% | "
@@ -29104,6 +29139,8 @@ void DoSwapImpl(uint8_t* base, uint32_t frontBuffer, uint32_t width, uint32_t he
                         n > 1 ? 100.0 * double(overTwice) / double(n - 1) : 0.0,
                         (unsigned long long)frames, elapsed, dMed, dMin, dMax,
                         pumpCpuMs, pumpDuty, guestMainMs, guestDrawMs);
+                if (waitLine[0])
+                    fprintf(stderr, "[guestwait] ms/frame / calls/frame: %s\n", waitLine);
                 // ...and the register-run census beside it when armed, PER WINDOW rather
                 // than only at exit. The exit path is the right home for a summary
                 // (gotcha 543) but it is not a reliable one: two runs tonight ended

@@ -24,6 +24,7 @@
 #endif
 
 #include "ppc_recomp_shared.h"
+#include "guest_thread.h"
 
 // The recompiler emits every guest function as `__imp__sub_X` plus a weak `sub_X`, so a
 // strong `sub_X` here takes over every call site (gotcha 6; d3d_hooks.cpp is the worked
@@ -219,6 +220,10 @@ void fencewait::Wake(uint8_t* base, uint32_t va)
 // called from inside it (the r7 path), so the wait nests.
 PPC_FUNC(sub_82845160)
 {
+    // The whole fence wait — spin, park and the title's own loop — is one "fence"
+    // entry in the per-thread wait census the [fps] line prints (part 116 item 4),
+    // on both arms, so the Draw Thread's non-CPU time has a name.
+    GuestThread::WaitScope ws(GuestThread::kWaitFence);
     if (!FenceWait_Enabled())
     {
         __imp__sub_82845160(ctx, base);

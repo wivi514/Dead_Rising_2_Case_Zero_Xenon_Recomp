@@ -122,6 +122,32 @@ struct GuestThread
     // the pump's (part 116 — the quantity a guest-side change is measured by).
     static double CpuSecondsOf(const char* name);
 
+    // WHERE A GUEST THREAD'S NON-CPU TIME GOES (part 116 item 4). The Main Thread's
+    // CPU per frame is 6.5 ms and the wall under CZ_VK_NO_DODRAW is 8.1: the gap is
+    // time the thread is NOT running, and every blocking wait it can make goes
+    // through our kernel — a single-object wait, a wait-any poll, a sleep, or the
+    // fence park. Each thread accumulates wall nanoseconds and calls per KIND in a
+    // thread_local the [fps] line reads by thread NAME, once a window, so a run
+    // says "main waits 1.6 ms/frame in 3 multi-object waits" without a tracer.
+    enum WaitKind { kWaitSingle = 0, kWaitMulti, kWaitDelay, kWaitFence, kWaitKinds };
+    struct WaitStats
+    {
+        std::atomic<uint64_t> ns[kWaitKinds];
+        std::atomic<uint64_t> calls[kWaitKinds];
+    };
+    // The CALLING thread's accumulator (registered under its guest tid at Run()).
+    static WaitStats& MyWaitStats();
+    // The accumulator of the thread the title named `name`, or null.
+    static const WaitStats* WaitStatsOf(const char* name);
+    // RAII: one timed wait of `kind` on the calling thread.
+    struct WaitScope
+    {
+        WaitKind kind;
+        uint64_t t0;
+        explicit WaitScope(WaitKind k);
+        ~WaitScope();
+    };
+
     // The calling thread's own kernel object, minted on first use and cached for the
     // life of the thread. Null only if the guest heap cannot satisfy it.
     static GuestThreadSelf* Self();

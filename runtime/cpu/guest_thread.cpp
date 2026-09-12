@@ -99,6 +99,7 @@ static void RegisterHostThread(uint32_t threadId, std::thread::native_handle_typ
 // The named guest threads' host handles, for CpuSecondsOf. Keyed by the title's own
 // name; a name reused for two threads (HavokWorkerThread) keeps the first.
 static std::map<std::string, std::thread::native_handle_type> g_hostThreadByName;
+static std::map<std::string, uint32_t> g_tidByName;                   // under g_hostThreadMutex
 
 bool GuestThread::BindHostName(uint32_t threadId, const char* name)
 {
@@ -111,6 +112,7 @@ bool GuestThread::BindHostName(uint32_t threadId, const char* name)
             return false;
         h = it->second;
         g_hostThreadByName.emplace(name, h);
+        g_tidByName.emplace(name, threadId);
     }
     char shortName[16]; // the kernel keeps 15 characters
     snprintf(shortName, sizeof shortName, "%s", name);
@@ -119,6 +121,40 @@ bool GuestThread::BindHostName(uint32_t threadId, const char* name)
     (void)threadId; (void)name;
     return false;
 #endif
+}
+
+// Per-thread wait accumulators, registered under the guest tid at Run() (the thread
+// itself, so no wait can precede the registration) and looked up by the title's name
+// for the [fps] line. Never erased: a thread that ended keeps a stale-but-valid entry
+// (the thread_local's storage outlives nothing here — the map holds a copy pointer to
+// a thread_local, so ended threads are dropped by the same path that drops the PCR).
+static thread_local GuestThread::WaitStats t_waitStats;
+static std::map<uint32_t, GuestThread::WaitStats*> g_waitStatsByTid;   // under g_hostThreadMutex
+
+GuestThread::WaitStats& GuestThread::MyWaitStats() { return t_waitStats; }
+
+const GuestThread::WaitStats* GuestThread::WaitStatsOf(const char* name)
+{
+    std::lock_guard lk(g_hostThreadMutex);
+    auto it = g_tidByName.find(name);
+    if (it == g_tidByName.end())
+        return nullptr;
+    auto jt = g_waitStatsByTid.find(it->second);
+    return jt == g_waitStatsByTid.end() ? nullptr : jt->second;
+}
+
+static inline uint64_t MonoNs()
+{
+    return uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                        std::chrono::steady_clock::now().time_since_epoch())
+                        .count());
+}
+
+GuestThread::WaitScope::WaitScope(WaitKind k) : kind(k), t0(MonoNs()) {}
+GuestThread::WaitScope::~WaitScope()
+{
+    t_waitStats.ns[kind].fetch_add(MonoNs() - t0, std::memory_order_relaxed);
+    t_waitStats.calls[kind].fetch_add(1, std::memory_order_relaxed);
 }
 
 double GuestThread::CpuSecondsOf(const char* name)
@@ -159,6 +195,10 @@ uint32_t GuestThread::Run(const GuestThreadParams& params)
 #if !defined(_WIN32)
     RegisterHostThread(GuestThread::GetCurrentThreadId(), pthread_self());
 #endif
+    {
+        std::lock_guard lk(g_hostThreadMutex);
+        g_waitStatsByTid[GuestThread::GetCurrentThreadId()] = &t_waitStats;
+    }
     ctx.ppcContext.r3.u64 = params.arg0;
     ctx.ppcContext.r4.u64 = params.arg1;
 
@@ -214,6 +254,11 @@ uint32_t GuestThread::Run(const GuestThreadParams& params)
     fprintf(stderr, "[kernel] guest thread tid=%08X entry=%08X ENDED (%s, r3=%08X)\n",
             GuestThread::GetCurrentThreadId(), params.function,
             terminated ? "ExTerminateThread" : "returned", ctx.ppcContext.r3.u32);
+    {
+        // The thread_local dies with this thread; drop the pointer before it does.
+        std::lock_guard lk(g_hostThreadMutex);
+        g_waitStatsByTid.erase(GuestThread::GetCurrentThreadId());
+    }
 
     return ctx.ppcContext.r3.u32;
 }

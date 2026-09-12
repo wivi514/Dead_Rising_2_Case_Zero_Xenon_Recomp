@@ -30,8 +30,11 @@ def fold(sym):
     sym = sym.replace("__imp__", "")
     return sym
 
-def read(path, tid):
-    out = subprocess.run(["perf", "script", "-i", path, "--tid", str(tid)],
+def read(path, tid, symfs=None):
+    cmd = ["perf", "script", "-i", path, "--tid", str(tid)]
+    if symfs:
+        cmd += ["--symfs", symfs]
+    out = subprocess.run(cmd,
                          capture_output=True, text=True, errors="replace").stdout
     samples = []
     cur = None
@@ -55,6 +58,10 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("perf")
     ap.add_argument("--tid", type=int, required=True)
+    ap.add_argument("--symfs", default=None,
+                    help="the <tag>.symfs tools/part116_probe.sh wrote beside the capture; "
+                         "without it a capture whose binary has since been rebuilt reads "
+                         "as raw addresses")
     ap.add_argument("--top", type=int, default=40)
     ap.add_argument("--callers-of", nargs="*", default=[])
     ap.add_argument("--below", nargs="*", default=[],
@@ -64,7 +71,15 @@ def main():
                     help="print the table of frames at this depth below the thread entry "
                          "(0 = the leaf), i.e. which top-level phase each sample belongs to")
     a = ap.parse_args()
-    samples = read(a.perf, a.tid)
+    symfs = a.symfs
+    if symfs is None and a.perf.endswith(".cg.perf.data"):
+        symfs = a.perf[:-len(".cg.perf.data")] + ".symfs"
+    elif symfs is None and a.perf.endswith(".perf.data"):
+        symfs = a.perf[:-len(".perf.data")] + ".symfs"
+    import os
+    if symfs and not os.path.isdir(symfs):
+        symfs = None
+    samples = read(a.perf, a.tid, symfs)
     n = len(samples)
     if not n:
         sys.exit(f"no samples for tid {a.tid}")

@@ -104,11 +104,18 @@ if [ "$PERF" = 1 ]; then
     perf record -F 999 -p "$PID" -o "$OUT/$TAG.perf.data" -- sleep "$PERF_SECS" \
         > "$OUT/$TAG.perf.log" 2>&1
     echo "    perf: $(du -h "$OUT/$TAG.perf.data" 2>/dev/null | cut -f1)"
-    # Register the archived binary in perf's build-id cache under ITS build-id, so
-    # `perf report` on this perf.data resolves symbols after the route has overwritten
-    # cz_runtime_crowd with the next arm's binary. This is the mechanism gotcha 550's
-    # "unreadable a day later" was missing.
-    perf buildid-cache -a "$OUT/$TAG.bin" >/dev/null 2>&1 || echo "    (buildid-cache add failed)"
+    # A SYMFS for this capture, so `perf report/script --symfs` resolve symbols from
+    # the ARCHIVED binary after the route has overwritten cz_runtime_crowd with the
+    # next arm's. The build-id cache (`perf buildid-cache -a`) was tried first and
+    # does NOT do this: perf reads the file at the recorded path, finds a build-id
+    # mismatch and prints raw addresses rather than falling back to the cache. That
+    # is the mechanism behind gotcha 550's "unreadable a day later". The symfs tree
+    # mirrors the recorded absolute path onto the archive and /usr/lib64 onto itself.
+    SYMFS="$OUT/$TAG.symfs"
+    mkdir -p "$SYMFS$(dirname "$ROOT/runtime/build/cz_runtime_crowd")" "$SYMFS/usr"
+    ln -sfn "$OUT/$TAG.bin" "$SYMFS$ROOT/runtime/build/cz_runtime_crowd"
+    ln -sfn /usr/lib64 "$SYMFS/usr/lib64"
+    echo "    read with: --symfs $SYMFS"
     if [ "$CG" = 1 ]; then
         perf record -F 499 --call-graph dwarf,16384 -p "$PID" -o "$OUT/$TAG.cg.perf.data" \
             -- sleep "$CG_SECS" > "$OUT/$TAG.cg.perf.log" 2>&1

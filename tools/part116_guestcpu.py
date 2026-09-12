@@ -55,7 +55,7 @@ def report(name, rows):
         med = [statistics.median(x[i] for x in b[k]) for i in range(4)]
         out[k] = (med, len(b[k]))
         print(f"  {k:>7} {len(b[k]):>3} " + " ".join(f"{m:8.2f}" for m in med))
-    allm = [statistics.median(x[i] for x in rows) for i in range(4)]
+    allm = [statistics.median(x[i + 1] for x in rows) for i in range(4)]
     print(f"  {'ALL':>7} {len(rows):>3} " + " ".join(f"{m:8.2f}" for m in allm))
     return out
 

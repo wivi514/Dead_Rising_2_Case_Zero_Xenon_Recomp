@@ -39,7 +39,14 @@ HEAD = re.compile(r"^\s*(.+?)\s+(\d+)\s+[\d.]+:\s+(\d+)\s+")
 
 def read(path):
     """{tid: {function: cycles}} from one perf.data."""
-    out = subprocess.run(["perf", "script", "-i", path],
+    cmd = ["perf", "script", "-i", path]
+    # A `<tag>.symfs` beside the capture (tools/part116_probe.sh) resolves symbols from
+    # the ARCHIVED binary once the route has overwritten the recorded path (gotcha 550).
+    import os
+    symfs = path[:-len(".perf.data")] + ".symfs" if path.endswith(".perf.data") else None
+    if symfs and os.path.isdir(symfs):
+        cmd += ["--symfs", symfs]
+    out = subprocess.run(cmd,
                          capture_output=True, text=True, errors="replace")
     per = collections.defaultdict(collections.Counter)
     for line in out.stdout.splitlines():

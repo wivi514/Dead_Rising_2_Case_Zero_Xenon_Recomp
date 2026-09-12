@@ -1191,6 +1191,7 @@ static bool ApcAlways();
 
 static uint32_t WaitObject(KernelObject* obj, uint32_t timeoutMs, uint32_t id)
 {
+    GuestThread::WaitScope ws(GuestThread::kWaitSingle);
     const bool waitTrace = WaitTraceOn();
     // CZ_APC_ALWAYS: an infinite wait must not swallow this thread's APC queue.
     // Poll in short slices and drain between them; a completion queued while the
@@ -1372,6 +1373,7 @@ template <typename Poll, typename Id>
 static uint32_t WaitAnyPoll(uint32_t count, uint32_t timeoutMs, uint32_t alertable, Poll poll,
                             Id id)
 {
+    GuestThread::WaitScope ws(GuestThread::kWaitMulti);
     static const bool drainApcs = getenv("CZ_MULTIWAIT_APC") != nullptr;
     const auto start = std::chrono::steady_clock::now();
     for (uint64_t tick = 0;; tick++)
@@ -1462,6 +1464,7 @@ static uint32_t NtWaitForMultipleObjectsEx_x(uint32_t count, be<uint32_t>* handl
     const uint32_t timeoutMs = GuestTimeoutToMs(timeout);
     if (waitType == 0)
     {
+        GuestThread::WaitScope ws(GuestThread::kWaitMulti);
         for (uint32_t i = 0; i < count; i++)
             if (IsKernelObject(handles[i]) && IsLiveKernelHandle(handles[i]))
                 GetKernelObject(handles[i])->Wait(timeoutMs);
@@ -1904,6 +1907,7 @@ static uint32_t KeDelayExecutionThread_x(uint32_t mode, uint32_t alertable,
         return STATUS_USER_APC;
 
     const uint32_t ms = GuestTimeoutToMs(interval);
+    GuestThread::WaitScope ws(GuestThread::kWaitDelay);
     if (ms == 0)
         std::this_thread::yield();
     else if (ms != WAIT_TIMEOUT_INFINITE)
