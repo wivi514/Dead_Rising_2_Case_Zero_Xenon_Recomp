@@ -379,6 +379,7 @@ add_executable(cz_runtime
     kernel/xlive_overlay_glue.cpp    # the in-game overlay's seam; no-ops without CZ_XLIVE_OVERLAY
     gpu/vd.cpp
     gpu/pm4.cpp
+    gpu/pump_split.cpp
     gpu/vk_renderer.cpp              # phase 5; inert unless CZ_VKDRAW=1
     gpu/shader_translator.cpp        # release D.2; --translate-shaders and D.4's seam
     gpu/shader_prebuild.cpp          # release D.3; the first-run disc shader pass

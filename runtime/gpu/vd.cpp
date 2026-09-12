@@ -29,6 +29,7 @@
 #include "../kernel/memory.h"
 #include "../kernel/xex_imports.h"
 #include "pm4.h"
+#include "pump_split.h"
 #include "pump_stats.h"
 #include "vk_renderer.h"
 #include "../host/settings.h"
@@ -497,7 +498,13 @@ void GraphicsInterruptPump()
     // phase 4 (counted, otherwise inert), and nothing in the executor branches on a
     // renderer that is not there.
     if (VkRenderer_Init())
+    {
         Pm4_SetDrawSink(VkRenderer_Draw);
+        // Part 117: CZ_PUMP_SPLIT=1 moves every renderer call off this thread onto
+        // `cz-draw`, in stream order; this thread keeps the walk, the register file,
+        // the waits and both ISRs (gpu/pump_split.h).
+        Pm4_StartSplit(base);
+    }
 
     uint64_t ticks = 0;   // VBLANKS delivered — every `ticks %` below means vblanks
     int sinceVblankUs = 0; // us of ring ticks accumulated toward the next vblank
@@ -548,7 +555,7 @@ void GraphicsInterruptPump()
                 g_pumpHeldFastTicks.fetch_add(1, std::memory_order_relaxed);
                 napBackoffUs = napBackoffUs * 2 > tickUs ? tickUs : napBackoffUs * 2;
             }
-            std::this_thread::sleep_for(std::chrono::microseconds(napUs));
+            split::Nap(napUs);   // a plain sleep unless CZ_PUMP_SPLIT=1 (pump_split.h)
         }
         skipSleep = false;
         const uint64_t sleptNs = NowNs() - tSleep;
@@ -574,6 +581,11 @@ void GraphicsInterruptPump()
             PPC_STORE_U64(bundle + 8, KernelSystemTime());
             PPC_STORE_U32(bundle + 16, static_cast<uint32_t>(interruptTime / 10000));
         }
+
+        // Part 117: an INTERRUPT op D reached since the last tick is delivered here, on
+        // this thread's guest context, before the walk (pump_split.h, design point 2).
+        if (split::g_on)
+            split::ServiceInterrupts();
 
         const uint32_t callback = g_interruptCallback.load();
         const uint32_t userData = g_interruptUserData.load();

@@ -56,6 +56,12 @@ void VkRenderer_OnShaderBind(uint32_t type, uint64_t hash, const uint8_t* code,
 // current. Resolves arrive here too — they are draws with RB_MODECONTROL's edram_mode
 // set to kCopy, not a packet of their own — and are routed internally.
 void VkRenderer_Draw(uint8_t* base, const Pm4Draw& draw);
+// Part 117: the same draw from the two-core pump's `cz-draw` thread, with the register
+// file D replayed from the walk's log and the bindings captured at the packet
+// (gpu/pump_split.h). Resolves are routed exactly as VkRenderer_Draw routes them.
+struct Pm4ShaderBinding;
+void VkRenderer_DrawQueued(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
+                           const Pm4ShaderBinding& vs, const Pm4ShaderBinding& ps);
 
 // The XE_SWAP packet: submit the frame, read the resolved surface back and publish it
 // to the window. Called from the same walk, at the swap's own position in the stream.

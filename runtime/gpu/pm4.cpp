@@ -20,6 +20,7 @@
 #include "../cpu/fence_wait.h"   // part 107: wake the parked Draw Thread on a fence store
 #include "../cpu/timebase.h"
 #include "../host/window.h"
+#include "pump_split.h"   // part 117: the walk on one core, the renderer on another
 #include "vk_renderer.h"
 #include "xenos.h"   // register indices, for the bin trace's window scissor
 
@@ -848,7 +849,10 @@ void BindShader(uint32_t type, uint32_t ucodeVa, const uint8_t* code, uint32_t s
         // D.4: first sight of this hash — if the renderer's cache cannot answer it,
         // this is where the in-process translation starts. Inside the announce-once
         // block on purpose: one call per distinct shader per run, not per bind.
-        VkRenderer_OnShaderBind(type, hash, code, sizeDwords);
+        if (split::g_on)
+            split::EnqueueShaderBind(type, hash, code, sizeDwords);
+        else
+            VkRenderer_OnShaderBind(type, hash, code, sizeDwords);
     }
 
     DumpShader(type, hash, code, sizeDwords);
@@ -1085,6 +1089,14 @@ bool StoreGpuRaw(uint8_t* base, uint32_t physAddr, uint32_t value)
                     "(phys=%08X -> va=%08X value=%08X)\n",
                     physAddr, va, value);
         return false;
+    }
+    // Part 117: under the split the store is D's, in order with the draws before it —
+    // a fence written here would tell the guest the GPU is done with streams D has not
+    // yet copied (pump_split.h, design point 1).
+    if (split::g_on)
+    {
+        split::EnqueueStore(va, value);
+        return true;
     }
     GuestStore32(base, va, value);
     // Part 107: the Draw Thread's fence wait PARKS on the fence-completion word instead
@@ -1393,6 +1405,8 @@ void WriteRegister(uint8_t* base, uint32_t index, uint32_t value)
     if (index >= kFetchLo && index < kFetchHi)
         ++g_fetchConstVersion;
     g_regs[index] = value;
+    if (split::g_on)
+        split::LogRun(index, 1, &value);   // part 117: D's replica follows every write
 
     // Scratch-register writeback: when SCRATCH_UMSK enables a scratch register, each
     // write to it is mirrored to SCRATCH_ADDR + reg*4. This is a real reporting
@@ -1598,6 +1612,10 @@ void WriteRegisterRun(uint8_t* base, const Source& fetch, uint32_t srcPos,
             }
         }
     }
+    // Part 117: the run, as it now stands in g_regs (poison and repair included), for
+    // D's replica. A memcpy of dwords that are in L1 — the run was just written.
+    if (split::g_on)
+        split::LogRun(index, count, g_regs + index);
 }
 
 bool EvalWaitCondition(uint32_t func, uint32_t value, uint32_t mask, uint32_t ref)
@@ -2016,7 +2034,21 @@ uint32_t ExecutePacket(uint8_t* base, const Source& fetch, uint32_t pos, uint32_
             {
                 d.indexed = false; // a DMA draw with no address is not one we can honour
             }
-            g_drawSink(base, d);
+            if (split::g_on)
+            {
+                // Part 117: the draw and everything DoDraw read off this module's
+                // globals at the packet, captured for D. The palette take here has the
+                // same semantic as the renderer's own take on the one-thread pump: D
+                // accumulates what it is handed until the renderer takes it.
+                const Pm4VsPaletteWrites pal = Pm4_TakeVsPaletteWrites();
+                split::DrawCtx ctx{ { g_aluConstVersion[0], g_aluConstVersion[1] },
+                                    g_fetchConstVersion,
+                                    pal.coverExtent, pal.partialExtent, pal.coverBursts,
+                                    pal.partialBursts, g_vsPalHighWater };
+                split::EnqueueDraw(d, g_boundShaders[0], g_boundShaders[1], ctx);
+            }
+            else
+                g_drawSink(base, d);
             break;
         }
 
@@ -2100,10 +2132,31 @@ uint32_t ExecutePacket(uint8_t* base, const Source& fetch, uint32_t pos, uint32_
                 // Coherency requests complete instantly on a GPU with no caches: the
                 // driver sets bit 31 (pending) and waits for it to clear.
                 if (reg == kRegCoherStatusHost)
+                {
                     g_regs[reg] &= ~0x80000000u;
+                    if (split::g_on)
+                        split::LogRun(reg, 1, &g_regs[reg]);
+                }
                 value = reg < kRegCount ? g_regs[reg] : 0;
             }
-            if (!EvalWaitCondition(info, value, mask, ref))
+            bool met = EvalWaitCondition(info, value, mask, ref);
+            if (!met && split::g_on && isMemory)
+            {
+                // Part 117: a wait on a word OUR OWN deferred store will write — the
+                // driver's pipeline-drain block. D executes the stream in order, so
+                // the walk may run ahead the moment the pending value satisfies the
+                // condition (pump_split.h, PendingStoreValue).
+                uint32_t raw = 0;
+                if (split::PendingStoreValue(PhysToVa(poll & ~3u), &raw) &&
+                    EvalWaitCondition(info, GpuSwapResidual(raw, poll), mask, ref))
+                {
+                    met = true;
+                    split::NoteWaitSatisfiedByPending();
+                }
+                else
+                    split::NoteWaitUnmet(PhysToVa(poll & ~3u));
+            }
+            if (!met)
             {
                 const uint64_t n = g_waitUnmet.fetch_add(1) + 1;
                 if (n <= 8 || (n & 0xFFFF) == 0)
@@ -2171,7 +2224,9 @@ uint32_t ExecutePacket(uint8_t* base, const Source& fetch, uint32_t pos, uint32_
 
         case 0x54: // INTERRUPT: delivered HERE rather than after the walk — see pm4.h.
             g_interrupts.fetch_add(1, std::memory_order_relaxed);
-            if (g_interruptSink)
+            if (split::g_on)
+                split::EnqueueInterrupt();   // delivered by THIS thread at D's position
+            else if (g_interruptSink)
                 g_interruptSink();
             break;
 
@@ -2199,6 +2254,11 @@ uint32_t ExecutePacket(uint8_t* base, const Source& fetch, uint32_t pos, uint32_
                 // frame's pixels with this frame's descriptor once per swap — a
                 // one-frame lag that is invisible in a still and looks like input lag
                 // in motion.
+                if (split::g_on)
+                {
+                    split::EnqueueSwap(body(1), body(2), body(3));
+                    break;
+                }
                 VkRenderer_OnSwap(base, body(1), body(2), body(3));
                 Host_Present(body(1), body(2), body(3));
                 // The deterministic-clock instrument steps here, at the guest's own
@@ -2430,6 +2490,8 @@ uint32_t ExecuteLinear(uint8_t* base, uint32_t va, uint32_t sizeDwords, int dept
     Census& cs = g_atomicCounters ? g_censusUnused : ThreadCensus();
     while (pos < sizeDwords)
     {
+        if (split::g_on)
+            split::ServiceInterrupts();   // part 117: D may be waiting at an INTERRUPT op
         const uint32_t header = fetch(pos);
         // The filler fast path (item 1a). 100% of this title's type-2 dwords arrive here
         // rather than at ring level, and they are ~30% of every packet walked, so the one
@@ -2662,6 +2724,8 @@ uint32_t Pm4_Execute(uint8_t* base, uint32_t writePtr)
     uint32_t guard = g_ringDwords + 1; // never walk more than one lap per call
     while (g_cursor != target && guard--)
     {
+        if (split::g_on)
+            split::ServiceInterrupts();
         const uint32_t avail = (target + g_ringDwords - g_cursor) % g_ringDwords;
         const uint32_t consumed = ExecutePacket(base, fetch, g_cursor, avail, 0);
         if (!consumed)
@@ -2775,6 +2839,15 @@ uint32_t Pm4_Execute(uint8_t* base, uint32_t writePtr)
 }
 
 void Pm4_SetInterruptSink(void (*sink)()) { g_interruptSink = sink; }
+
+// Part 117: the source-1 delivery D asks W for (pump_split.h, design point 2). The
+// packet's own counter was already bumped at the packet.
+static void DeliverForSplit()
+{
+    if (g_interruptSink)
+        g_interruptSink();
+}
+bool Pm4_StartSplit(uint8_t* base) { return split::Start(base, DeliverForSplit); }
 void Pm4_SetDrawSink(void (*sink)(uint8_t*, const Pm4Draw&)) { g_drawSink = sink; }
 
 const Pm4ShaderBinding& Pm4_BoundShader(uint32_t stage)

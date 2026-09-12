@@ -85,6 +85,12 @@ uint32_t Pm4_Execute(uint8_t* base, uint32_t writePtr);
 // Pass nullptr to leave interrupts undelivered and merely counted.
 void Pm4_SetInterruptSink(void (*sink)());
 
+// Part 117: start the two-core pump (gpu/pump_split.h) — only under CZ_PUMP_SPLIT=1,
+// only once the renderer is up and only for the PM4 feed. Called from the pump thread
+// after the draw sink is registered, so the split's own thread inherits nothing it
+// should not. Returns false when the arm is not set.
+bool Pm4_StartSplit(uint8_t* base);
+
 // Where the parser has actually reached, ring-relative in dwords, and the scratch
 // writeback registers — for the ring trace. The read pointer the guest polls is a
 // number this module owns, so a trace that prints only what the DRIVER thinks the

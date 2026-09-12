@@ -2,6 +2,7 @@
 #include "../cpu/fence_wait.h"
 
 #include "pm4.h"
+#include "pump_split.h"   // part 117: the draw context under the two-core pump
 #include "pump_stats.h"
 #include "shader_translator.h"
 #include "drawid_ps_spv.h"
@@ -17426,6 +17427,31 @@ bool g_paletteCensus = false;
 //   reuse       — no palette-region write since the last dynamic copy: the file
 //                 content is unchanged and the previous bound still describes it
 //                 (0.0% at the crowd, consistent with §6ef's ~98% constant churn).
+// PART 117: the draw's view of pm4's globals. On the one-thread pump these are the
+// command processor's own counters, read at the draw; under CZ_PUMP_SPLIT=1 the draw
+// executes on `cz-draw` after the walk has moved on, so they are the values the walk
+// captured AT THE PACKET (split::DrawCtx). Same numbers, same instant in the stream.
+inline uint64_t DrawAluConstVersion(uint32_t half)
+{
+    if (const split::DrawCtx* c = split::CurrentDraw())
+        return c->aluVersion[half & 1];
+    return Pm4_AluConstVersion(half);
+}
+inline uint64_t DrawFetchConstVersion()
+{
+    if (const split::DrawCtx* c = split::CurrentDraw())
+        return c->fetchVersion;
+    return Pm4_FetchConstVersion();
+}
+inline Pm4VsPaletteWrites DrawTakeVsPaletteWrites()
+{
+    return split::g_on ? split::TakePalette() : Pm4_TakeVsPaletteWrites();
+}
+inline uint32_t DrawVsPaletteHighWater()
+{
+    return split::g_on ? split::PaletteHighWater() : Pm4_VsPaletteHighWater();
+}
+
 uint32_t g_vsPalSticky = 0;
 struct VsPalTake
 {
@@ -17437,7 +17463,7 @@ struct VsPalTake
 inline VsPalTake TakeVsPaletteBound()
 {
     VsPalTake r;
-    r.w = Pm4_TakeVsPaletteWrites();
+    r.w = DrawTakeVsPaletteWrites();
     if (r.w.coverBursts && r.w.partialExtent <= r.w.coverExtent)
     {
         g_vsPalSticky = r.w.coverExtent;
@@ -17445,7 +17471,7 @@ inline VsPalTake TakeVsPaletteBound()
     }
     else if (r.w.coverBursts || r.w.partialBursts)
     {
-        g_vsPalSticky = Pm4_VsPaletteHighWater();
+        g_vsPalSticky = DrawVsPaletteHighWater();
         r.kind = 1;
     }
     else
@@ -17571,7 +17597,7 @@ inline void Record(const VsPalTake& pt, size_t listN, uint32_t memoVsBase)
             std::min<uint64_t>(256, 4 + listN + (pt.bound >= 8 ? pt.bound - 7 : 0));
     t.bytesFull += 256 * 16;
     t.bytesBounded += boundedRegs * 16;
-    const uint32_t hw = Pm4_VsPaletteHighWater();
+    const uint32_t hw = DrawVsPaletteHighWater();
     t.bytesHighWater +=
         16 * std::min<uint64_t>(256, 4 + listN + (hw >= 8 ? hw - 7 : 0));
     t.extentSum += pt.bound;
@@ -23256,8 +23282,8 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
     VkDeviceSize vsConstAt, psConstAt;
     const uint32_t memoVsBase = regs[0x2307] & 0x1FF;
     const uint32_t memoPsBase = regs[0x2308] & 0x1FF;
-    const uint64_t vsVersion = Pm4_AluConstVersion(0);
-    const uint64_t psVersion = Pm4_AluConstVersion(1);
+    const uint64_t vsVersion = DrawAluConstVersion(0);
+    const uint64_t psVersion = DrawAluConstVersion(1);
     const bool memoOn = !g_constMemoOff && !g_psConstScaleActive &&
                         R->constMemoFrame == R->frame;
     // **THE SHADER IS PART OF THE KEY WHEN THE GATHER IS ON (part 74).** A gathered slot
@@ -25720,7 +25746,7 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
     // pairs that match, because that is what a memo actually experiences.
     if (g_fetchMemoCensus)
     {
-        const uint64_t v = Pm4_FetchConstVersion();
+        const uint64_t v = DrawFetchConstVersion();
         if (R->fetchMemoFor == &vs && R->fetchMemoVersion == v)
             ++g_fetchMemoHits;
         else
@@ -28748,6 +28774,22 @@ void VkRenderer_Draw(uint8_t* base, const Pm4Draw& draw)
     DoDraw(base, draw, regs, Pm4_BoundShader(0), Pm4_BoundShader(1));
 }
 
+// Part 117: the same draw, from `cz-draw`, with the register file D replayed and the
+// bindings the walk captured at the packet (gpu/pump_split.h).
+void VkRenderer_DrawQueued(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
+                           const Pm4ShaderBinding& vs, const Pm4ShaderBinding& ps)
+{
+    if (!g_active || g_d3dMode)
+        return;
+    COUNT("draw: handed to the renderer");
+    if ((regs[0x2208] & 7) == 6)
+    {
+        DoResolve(base, regs);
+        return;
+    }
+    DoDraw(base, draw, regs, vs, ps);
+}
+
 namespace {
 
 // The shared swap body — everything from "record the front buffer" to the frame
@@ -29080,6 +29122,17 @@ void DoSwapImpl(uint8_t* base, uint32_t frontBuffer, uint32_t width, uint32_t he
                 // native CRT hook, PGO on the recompiled TUs) moves THESE columns and,
                 // while the pump is the longer term, nothing else. Read through the
                 // named thread's CPU clock; -1 until the title has named its threads.
+                // Part 117: under CZ_PUMP_SPLIT=1 `pump cpu` above is THIS thread — the
+                // one calling DoDraw, i.e. cz-draw — and the walk's own core is this
+                // column. -1 on the one-thread pump.
+                double walkCpuMs = -1.0;
+                {
+                    static double lastWalk = -1.0;
+                    const double nowWalk = split::WalkCpuSeconds();
+                    if (frames && lastWalk >= 0.0 && nowWalk >= 0.0)
+                        walkCpuMs = (nowWalk - lastWalk) * 1e3 / double(frames);
+                    lastWalk = nowWalk;
+                }
                 double guestMainMs = -1.0, guestDrawMs = -1.0;
                 {
                     static double lastMain = -1.0, lastDraw = -1.0;
@@ -29131,14 +29184,14 @@ void DoSwapImpl(uint8_t* base, uint32_t frontBuffer, uint32_t width, uint32_t he
                         "[fps] %.1f fps mean (%.2f ms) | %.1f fps median (%.2f ms) | "
                         "p99 %.2f ms | worst %.2f ms | >2x med %.1f%% | "
                         "%llu frames in %.1f s | draws med %u (%u..%u) | "
-                        "pump cpu %.2f ms/frame (%.0f%% of a core) | "
+                        "pump cpu %.2f ms/frame (%.0f%% of a core) | walk cpu %.2f | "
                         "guest main %.2f draw %.2f ms/frame\n",
                         double(frames) / elapsed, 1000.0 * elapsed / double(frames),
                         1e6 / double(medUs), double(medUs) / 1000.0,
                         double(p99Us) / 1000.0, double(worstUs) / 1000.0,
                         n > 1 ? 100.0 * double(overTwice) / double(n - 1) : 0.0,
                         (unsigned long long)frames, elapsed, dMed, dMin, dMax,
-                        pumpCpuMs, pumpDuty, guestMainMs, guestDrawMs);
+                        pumpCpuMs, pumpDuty, walkCpuMs, guestMainMs, guestDrawMs);
                 if (waitLine[0])
                     fprintf(stderr, "[guestwait] ms/frame / calls/frame: %s\n", waitLine);
                 // ...and the register-run census beside it when armed, PER WINDOW rather
@@ -29206,6 +29259,35 @@ void DoSwapImpl(uint8_t* base, uint32_t frontBuffer, uint32_t width, uint32_t he
                                 (double(g_sharedZeroDraws) * double(kSharedSize)),
                             kSharedSize);
                 Pm4_RegRunCensusReport();
+                if (split::g_on)
+                {
+                    // Part 117: the queue's health per window. `wspace` must stay 0 (W
+                    // never blocked for room); `irqwait` is D's stall at INTERRUPT ops.
+                    static split::Stats last{};
+                    const split::Stats st = split::GetStats();
+                    fprintf(stderr,
+                            "[split] per frame: ops %.0f draws %.0f stores %.0f irq %.1f "
+                            "logdw %.0f | wspace %llu dempty %llu irqwait %.2f ms/frame "
+                            "(%.0f us each) | didle %.2f ms/frame | waits unmet %.1f/frame "
+                            "of which on OUR store %.1f, run-ahead %.1f\n",
+                            double(st.ops - last.ops) / double(frames),
+                            double(st.draws - last.draws) / double(frames),
+                            double(st.stores - last.stores) / double(frames),
+                            double(st.interrupts - last.interrupts) / double(frames),
+                            double(st.logDwords - last.logDwords) / double(frames),
+                            (unsigned long long)(st.wSpaceWaits - last.wSpaceWaits),
+                            (unsigned long long)(st.dEmptyWaits - last.dEmptyWaits),
+                            double(st.dIrqWaitNs - last.dIrqWaitNs) * 1e-6 / double(frames),
+                            st.interrupts > last.interrupts
+                                ? double(st.dIrqWaitNs - last.dIrqWaitNs) * 1e-3 /
+                                      double(st.interrupts - last.interrupts)
+                                : 0.0,
+                            double(st.dIdleNs - last.dIdleNs) * 1e-6 / double(frames),
+                            double(st.waitsUnmet - last.waitsUnmet) / double(frames),
+                            double(st.waitsOnOurStore - last.waitsOnOurStore) / double(frames),
+                            double(st.waitsByPending - last.waitsByPending) / double(frames));
+                    last = st;
+                }
                 // Part 107 item 2: the Draw Thread's fence wait, per window, beside
                 // the frame rate it is meant to move — so a plain crowd run (no phase
                 // profiler) still says whether the park ENGAGED and how each episode
@@ -32704,7 +32786,7 @@ void VkRenderer_DumpStats()
                     full ? 100.0 * double(full - bnd) / double(full) : 0.0,
                     double(hwB) / 1e6,
                     full ? 100.0 * double(full - hwB) / double(full) : 0.0,
-                    Pm4_VsPaletteHighWater(),
+                    DrawVsPaletteHighWater(),
                     double(t.extentSum - l.extentSum) / double(n));
             std::string hg = "[palcensus]   bound histogram (regs):";
             for (int b = 0; b < 32; ++b)
