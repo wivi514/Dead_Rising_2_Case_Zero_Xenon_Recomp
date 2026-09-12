@@ -44,9 +44,20 @@
 //     "EXCHANGING_DATA" wait dialog, sub_824BDA60) happens. When the player
 //     answers, the answer arrives as the same event, now with the prompt on
 //     record, and goes through untouched: accept, decline, or SetToPrivate.
-//   * sub_8254B108 (start the walkie-talkie call) raises the dialog directly
-//     instead of starting the ring nobody can see; its caller has nothing
-//     after it.
+//   * sub_8254B108 (start the walkie-talkie call) — PART 6 (the operator:
+//     *"show a proper message to press right on d pad or right on the
+//     keyboard when someone ask to join instead of showing the message
+//     directly, like how it behaves in main Dead Rising 2 and in Case
+//     West"*): the ring is let RING, as the title wrote it, and the face it
+//     lacks is supplied by the XenonLive overlay's toast — "Incoming co-op
+//     call from <name> — press RIGHT on the D-pad (-> on the keyboard) to
+//     answer" — for as long as the call element rings; the player's RIGHT
+//     reaches sub_82224F30 (the title's own answered handler), which raises
+//     the dialog as it always did, and the toast comes down on the answer,
+//     the decline or the ring's own timeout. Where there is no overlay to
+//     show it (not built in, or CZ_XLIVE_OVERLAY=0) the part-5 behaviour
+//     stands: the dialog is raised directly, since a ring nobody can see is
+//     the part-4 silence again. CZ_COOP_CALL_RING=0 forces that too.
 //
 // If the dialog cannot be raised (sub_824B6CF8: DlgOnHostConfirmCOOPJoin is
 // already up), the confirm goes through as before, and says so. Nothing here
@@ -63,6 +74,7 @@
 #include <ppc_context.h>
 
 #include "coop_objects.h"
+#include "xlive_overlay_glue.h"
 
 extern "C" PPC_FUNC(__imp__sub_824C0958);   // (game session, event, ...): the event handler
 extern "C" PPC_FUNC(__imp__sub_82582188);   // (session, accept): confirm/decline the pending client
@@ -208,22 +220,74 @@ void CoopCall_GameSessionEvent(PPCContext& ctx, uint8_t* base)
     __imp__sub_824C0958(ctx, base);
 }
 
-// The walkie-talkie route: ask now, instead of ringing a phone with no face.
+namespace
+{
+bool RingEnabled()
+{
+    static const bool on = [] {
+        const char* e = std::getenv("CZ_COOP_CALL_RING");
+        return !(e && *e == '0');
+    }();
+    return on;
+}
+constexpr const char* kCallTag = "coop-call";
+// The ring's own ceiling: sub_82224A38 declines an unanswered call after 120 s
+// of ringing (the 120.0f at 0x8200A1CC, compared against the start time the
+// ring stores at player+0x19FC); the toast is taken down earlier by the
+// answer or the decline, both of which pass through hooks below.
+constexpr double kRingSeconds = 120.0;
+bool g_ringing = false;
+}   // namespace
+
+// The walkie-talkie route. Part 6: let it ring, and give the ring a face.
 PPC_FUNC(sub_8254B108)
 {
     const uint32_t session = ctx.r3.u32;
     if (Trace())
         fprintf(stderr, "[coop:call] sub_8254B108(session %08X): the title would start the "
                         "co-op call for '%s'\n", session, PendingName(base, session));
+    if (PromptEnabled() && RingEnabled())
+    {
+        const char* name = PendingName(base, session);
+        char text[256];
+        snprintf(text, sizeof text,
+                 "Incoming co-op call from %s\nPress RIGHT on the D-pad (Right Arrow on the "
+                 "keyboard) to answer", name);
+        if (CwOverlay_Notify(text, kRingSeconds, kCallTag))
+        {
+            g_ringing = true;
+            fprintf(stderr, "[coop] INCOMING CO-OP CALL from '%s': ringing — RIGHT on the D-pad "
+                            "(Right Arrow) answers, the dialog follows; unanswered, the title "
+                            "declines it after %.0f s\n", name, kRingSeconds);
+            __imp__sub_8254B108(ctx, base);   // the title's own ring
+            return;
+        }
+        fprintf(stderr, "[coop] no overlay to show the incoming call on — asking directly\n");
+    }
     if (PromptEnabled() && RaisePrompt(ctx, base, session, "walkie-talkie"))
         return;
     __imp__sub_8254B108(ctx, base);
 }
 
+// The ring's face comes down with the call: answered (the title raises the
+// dialog from here), or confirmed/declined by any route.
+namespace
+{
+void CallOver(const char* how)
+{
+    if (!g_ringing)
+        return;
+    g_ringing = false;
+    CwOverlay_Dismiss(kCallTag);
+    fprintf(stderr, "[coop] incoming co-op call: %s\n", how);
+}
+}   // namespace
+
 // --- the instrument: every step of both routes, on CZ_COOP_CALL_TRACE=1 ---
 
 PPC_FUNC(sub_82582188)
 {
+    CallOver((ctx.r4.u32 & 0xFF) ? "accepted" : "declined");
     if (Trace())
         fprintf(stderr, "[coop:call] sub_82582188(session %08X, accept %u) from %08X: pending "
                         "'%s'\n", ctx.r3.u32, ctx.r4.u32 & 0xFF, uint32_t(ctx.lr),
@@ -275,6 +339,7 @@ PPC_FUNC(sub_82224F30)
     if (Trace())
         fprintf(stderr, "[coop:call] sub_82224F30: the call was answered (player %08X)\n",
                 ctx.r3.u32);
+    CallOver("answered — the title raises the dialog");
     __imp__sub_82224F30(ctx, base);
 }
 

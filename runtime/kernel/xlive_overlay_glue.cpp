@@ -28,16 +28,32 @@ void CwOverlay_OnEvent(const xlive::Event& event)
 {
     xlive_overlay::Overlay::Instance().OnEvent(event);
 }
+static bool OverlayOff()
+{
+    static const bool off = [] {
+        const char* v = std::getenv("CZ_XLIVE_OVERLAY");
+        return v && v[0] == '0';
+    }();
+    return off;
+}
+bool CwOverlay_Notify(const char* text, double seconds, const char* tag)
+{
+    if (OverlayOff())
+        return false;
+    xlive_overlay::Overlay::Instance().Notify(text, seconds, tag ? tag : "");
+    return true;
+}
+void CwOverlay_Dismiss(const char* tag)
+{
+    if (!OverlayOff())
+        xlive_overlay::Overlay::Instance().Dismiss(tag ? tag : "");
+}
 bool CwOverlay_Render(const CwOverlayVulkan& vk, VkCommandBuffer cmd, VkImage image,
                       uint32_t width, uint32_t height, uint64_t generation)
 {
     // CZ_XLIVE_OVERLAY=0: the off switch, so a build with the overlay can still
     // run without it drawing or initialising anything.
-    static const bool off = [] {
-        const char* v = std::getenv("CZ_XLIVE_OVERLAY");
-        return v && v[0] == '0';
-    }();
-    if (off)
+    if (OverlayOff())
         return false;
     xlive_overlay::VulkanHandles h;
     h.instance = vk.instance;
@@ -59,6 +75,8 @@ void CwOverlay_SetWindowSize(int, int) {}
 bool CwOverlay_Open() { return false; }
 void CwOverlay_SetClient(xlive::Client*, uint32_t) {}
 void CwOverlay_OnEvent(const xlive::Event&) {}
+bool CwOverlay_Notify(const char*, double, const char*) { return false; }
+void CwOverlay_Dismiss(const char*) {}
 bool CwOverlay_Render(const CwOverlayVulkan&, VkCommandBuffer, VkImage, uint32_t, uint32_t, uint64_t)
 {
     return false;

@@ -25,6 +25,14 @@ bool CwOverlay_Open();
 // -- the library's worker ----------------------------------------------------
 void CwOverlay_SetClient(xlive::Client* client, uint32_t titleId);
 void CwOverlay_OnEvent(const xlive::Event& event);
+// -- any thread ---------------------------------------------------------------
+// A notice of the game's own as a toast (the co-op call ringing, co-op plan
+// part 6), for `seconds`, shown whether or not the overlay is open; `tag`
+// lets CwOverlay_Dismiss take it down early. Returns false when the overlay
+// is not built in or switched off (CZ_XLIVE_OVERLAY=0) — the caller then
+// has no face to show and must do without.
+bool CwOverlay_Notify(const char* text, double seconds, const char* tag);
+void CwOverlay_Dismiss(const char* tag);
 
 // -- the render thread ---------------------------------------------------------
 struct CwOverlayVulkan
