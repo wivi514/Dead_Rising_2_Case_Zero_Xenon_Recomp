@@ -7,7 +7,10 @@ NOT the cause is what stops the next session re-buying it.
 
 Next, in order:
 
-0y. **THE WINDOWS SPELLING OF THREAD PLACEMENT (part 118).** `CZ_GUEST_PIN` mode 2 — the
+0y. ~~**THE WINDOWS SPELLING OF THREAD PLACEMENT (part 118).**~~ **DONE the same
+    evening — and it is worth −38% on czwin's hybrid 12700H (plan §4d).** Still owed:
+    the Windows guest thread clocks read ~0 on the [fps] line, and czamd's six-core
+    shape (deployed, `CZ_GUEST_PIN=1` forced, unmeasured). The original item: `CZ_GUEST_PIN` mode 2 — the
     Main Thread, the Draw Thread, `cz-pump` and `cz-draw` each on a physical core of its
     own, sibling empty — is ON by default from eight physical cores with SMT and worth
     −0.35/−0.58/−0.52 ms/frame on those three stages (p99 12 -> 11), and it is a NO-OP on

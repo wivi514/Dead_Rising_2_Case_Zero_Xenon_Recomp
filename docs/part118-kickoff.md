@@ -43,9 +43,11 @@ all three.
 
 ## §2. What is owed
 
-* **Windows**: `ThreadBudget_PinProcessAway/PinNamedThread/PinSweep` are no-ops there;
-  the spelling is SetProcessAffinityMask + SetThreadAffinityMask + a Toolhelp32 thread
-  walk. The Windows leg of the release ships without the −0.5 until then.
+* ~~**Windows**: no-ops there~~ — **DONE the same evening (plan §4d): on czwin's
+  12700H the pin reads −38% on the wall (22-24 -> 13-15 ms at the crowd, 42 -> 70 fps),
+  one 3.5-minute run a side.** Owed there: the Windows `guest main`/`draw` columns read
+  ~0 (GetThreadTimes on the registered handle — check the handle's access and the
+  Main Thread's registration), and czamd's six-core shape (deployed, unmeasured).
 * ~~**The operator's session on the default**~~ — **DONE, 15:10-15:40, two sittings on
   `tools/play_session.sh` at their own settings: *"feels smoother, above 100 fps almost
   all the time."*** Their log (`~/DR2CZ-troubleshooting/play/part118_play{1,2}.log`): at

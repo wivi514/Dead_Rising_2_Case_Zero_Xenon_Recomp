@@ -191,6 +191,31 @@ wall is at the 10 ms quantum on both (at this resolution the GPU is the other bo
 part 117 §4.5). Havok 3 shows the same tail-wait shape as 4 (two more single waits a
 frame, Main CPU no lower than the default at fewer draws): stock stays.
 
+## §4d. Windows — czwin (i7-12700H, 6 P-cores with SMT + 8 E-cores, RTX 3070 laptop), evening
+
+The Windows spelling shipped (`thread_budget.cpp`: per-thread `SetThreadAffinityMask`,
+the process mask left whole, a Toolhelp32 sweep, `NameSelf` pinning `cz-pump`/`cz-draw`
+from the threads themselves; both platforms now reserve only cores WITH an SMT sibling,
+which on a hybrid part keeps the frame's threads off the E-cores). The boot log on czwin:
+mode 2, Main Thread -> cpu 10, Draw -> 8, `cz-pump` -> 6, `cz-draw` -> 4, the rest on
+mask `ff00f` (two P-cores + the eight E-cores). `tools/windows/crowd_ab.ps1` is the
+route; one 3.5-minute run each way, warm pipeline cache, headless 1920x1080, the last
+five windows at the crowd:
+
+| arm | draws | wall mean | wall median | p99 |
+|---|---|---|---|---|
+| no pin (`CZ_GUEST_PIN=0`) | 8,010-8,200 | 22.5-24.8 | **21.9-23.9** | 35-46 |
+| **pinned (the default)** | 7,690-7,930 | 14.2-15.7 | **13.1-15.0** | 23-27 |
+
+**−38% on the wall, 42 -> 70 fps, at 4% fewer draws** — one run a side, so the size is
+approximate, but it is ten times this route's noise. On the hybrid part Windows had been
+scheduling the guest's threads onto E-cores and SMT siblings; the pin is worth far more
+there than on the desktop Ryzen. The `guest main`/`draw` columns on Windows read ~0 and
+are NOT yet trustworthy (GetThreadTimes on the registered handle; to be checked) — the
+wall carried this comparison. czamd (Ryzen 5 5500, 6c/12t, the six-core shape) has the
+build and the runner deployed and is unmeasured: the operator asked for short runs and a
+czamd boot alone is 90-130 s.
+
 ## §5. The honest answer
 
 The Main Thread's CPU at the operator's crowd is **8.3 -> 7.9 ms** (mode 2), and that

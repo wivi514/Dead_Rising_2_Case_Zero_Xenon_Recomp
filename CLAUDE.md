@@ -1276,7 +1276,10 @@ HAND-OFF; gotchas 570-573):
   every median today read 9.0x or 10.0x (gotcha 572) — read the CPU per stage.
 * **Operator-verified the same evening**: *"feels smoother, above 100 fps almost all the
   time"* (101-111 fps at their 8,900-9,100-draw crowd, p99 11-13).
-* Owed: the Windows spelling of the pin, the
+* **The Windows spelling shipped the same evening, and on czwin's hybrid 12700H it is
+  −38% ON THE WALL (22-24 -> 13-15 ms at the crowd, 42 -> 70 fps, one 3.5-min run a
+  side): Windows had been scheduling the guest's threads onto E-cores/siblings.**
+* Owed: the Windows guest thread clocks (read ~0), the
   six-core/no-SMT shapes, the clock printed once a window (`amd-pstate-epp` drifted the
   machine ~6% ninety minutes into today's runs).
 
