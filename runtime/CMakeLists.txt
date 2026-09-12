@@ -438,6 +438,14 @@ if(CZ_XLIVE_OVERLAY)
     endif()
     add_subdirectory("${XLIVE_LAUNCHER_ROOT}/overlay" "${CMAKE_CURRENT_BINARY_DIR}/xlive_overlay")
     target_link_libraries(cz_runtime PRIVATE xlive::overlay)
+    # clang-cl: SDL_endian.h defines _m_prefetch itself unless <intrin.h>'s
+    # prfchwintrin.h got there first, and newer clang has it as a builtin —
+    # "definition of builtin function '_m_prefetch'". The runtime never sees it
+    # because win_compat.h force-includes windows.h (which pulls intrin.h) into
+    # every TU; the overlay's TUs get the same guard the cheap way.
+    if(MSVC)
+        target_compile_options(xlive_overlay PRIVATE "$<$<COMPILE_LANGUAGE:CXX>:/FIintrin.h>")
+    endif()
     target_compile_definitions(cz_runtime PRIVATE CZ_HAVE_XLIVE_OVERLAY=1)
     message(STATUS "XenonLive overlay: on (${XLIVE_LAUNCHER_ROOT}/overlay)")
 else()
