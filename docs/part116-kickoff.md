@@ -66,7 +66,10 @@ PM4 walk. That is the architectural answer to both floors and it is a phase, not
 * **An operator session on the shipped default** — nothing here changes a pixel and the
   picture gates are in §3, but the wait-any wake changes WHEN guest threads run, and the
   only test of "does it feel the same" is theirs. If anything is off, `CZ_WAITANY_POLL=1`
-  first.
+  first. Headless evidence so far: 30+ crowd-route runs and one 10-minute
+  `CZ_AUTOCHUCK=EXPLORER` roam with `CZ_WAIT_TRACE=1` (outdoors at 8,689 draws, the map
+  closed twice, no thread ended, the only >5 s waits the idle JobThreads' — the same
+  idle waits the poll arm reports).
 * **The +0.24 ms on the normal arm has a candidate mechanism, not a proven one** (§4.4,
   §4.8). A `perf` pair on the pump shows its user-space table unchanged and `[unknown]`
   (kernel) +1 point; naming it needs kernel samples (`perf_event_paranoid` < 2, i.e. the
