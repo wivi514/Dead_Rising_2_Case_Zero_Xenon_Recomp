@@ -6950,3 +6950,69 @@ scan, the p99, the Windows compile (czwin unreachable), the artifact rebuild):
   (gotcha 535) and is owed a re-measurement.
 * Item 3(a) of the plan (bulk register runs) already existed; the walk's cost is the
   per-packet dispatch.
+
+## Part 110 status block (moved out of CLAUDE.md by part 116, per the rotation rule)
+
+Where the port was, as of 2026-09-10 (**PART 110 — THE PROFILER IS FIXED AND THE FOUR IDLE
+CORES HAVE A PRICE AND A CEILING.** The operator's instruction: *"You think you can make it
+so that we use more the third core last time you said it's pretty much only used like at 3%
+and if you can fix the profiler for the things he lie to us about?"* `docs/perf-plan-part110.md`
+§6-§7 is the plan AND the record, ~~`docs/part111-kickoff.md` THE LIVE HAND-OFF~~ — that
+was true for one day; the live hand-off is `part112-kickoff.md` — gotchas
+547-550. **AND THE OPERATOR DECIDED, KNOWING THE CEILING: BUILD ITEM B.
+`docs/perf-plan-part111.md` WAS THE BUILD PLAN AND PART 111 EXECUTED IT TO ITS OWN KILL
+RULE — B1 is a measured null, B2 is predicted dead and unbuilt, B3 was refuted by the
+census; see the part-111 block above.** ~~Its §1 INVERTS part 110's staging,
+because the constants CANNOT be deferred (their source is the register file the pump
+itself overwrites, and the const memo says the VS window changes on 98.3% of draws), so
+the order is B1 pre-zero the arena (hazard-free, 0.44 ms, and its kill refutes the whole
+design for one day's work), then B2 streams+textures (2.68 ms, our own caches, shardable),
+and B3 the constants is expected to be refuted by the census and never built. Its §0
+carries the budget that says WHEN TO STOP: **~2.1 ms of USEFUL headroom, not 5.6**, because
+`wall ~ max(pump, 8.8, GPU)` and the wall stops responding once the pump reaches the
+guest's floor.~~ The budget line survives its plan: it is still the right arithmetic, and
+part 111 spent none of the headroom because the pump turned out to be bound by bytes rather
+than by the core that issues them):
+
+* **ITEM A — the profiler.** `tools/phase_vs_perf.py` is the standing cross-check and it
+  is what should have existed three parts ago: it reads the phase table out of a profiled
+  log and the per-thread symbol shares out of a `perf.data`, puts them on one denominator,
+  and exits 1 when a phase disagrees with the symbols implementing THE SUBSYSTEM IT IS
+  NAMED AFTER by more than 2x. Its positive control fires on part 109's own archive —
+  `streams` **53.7x** — and found a second lie nobody had looked at, **`textures` at
+  2.1x**. **THE PLAN'S OWN PREMISE IS RETRACTED IN PLACE**: the coverage line it opened
+  with would not have caught any of it, because coverage is already ~73% phases / ~28%
+  walk / **~0% unscoped** and the defect is misattribution (gotcha 547). The line ships
+  carrying that warning. A.2's sampled whole-function timers work — they print
+  `streams 0.2%` beside `UploadStream 14.8%` on one line — **and failed their own identity
+  gate at +0.4 to +0.7 ms**, because an RAII probe changes codegen even when its body
+  never runs (gotcha 548), so they are compile-time only (`-DCZ_WHOLEFUNC=1`) and a default
+  build's `.text` is byte-identical to the binary before they existed.
+* **ITEM B — the four idle cores.** `CZ_VK_NO_DODRAW=1` (destructive, announced, counted)
+  runs the PM4 walk in full with `DoDraw`'s body removed. Six alternated runs, 102 crowd
+  windows an arm, matched bands: pump cpu **10.93 -> 2.49 ms**, monotone in all six.
+  `F` = 2.49 (cross-checked against part 109's independent symbol reading of the walk,
+  2.36), `M` = 8.44, **`F + M/3` = 5.33 ms against a pre-registered kill of 8.0 — IT DOES
+  NOT FIRE**, and §3's thesis is confirmed almost exactly.
+* **BUT THE WALL HAS A SECOND FLOOR AT 8.8 ms AND IT IS THE GAME.** Removing 8.44 ms of
+  critical-path CPU with the GPU idle moved the wall only 11.07 -> 8.80. A thread census
+  names it: the title's own recompiled code, two threads at 76.7% and 61.7% of a core,
+  neither saturated. Five more runs killed the suspect on our side — `CZ_PM4_TICK_US` at
+  25 µs and 10 µs is a **dead null** (8.94 -> 8.93). So `wall ~ max(pump, 8.8, GPU)`:
+  **item B is worth ~2.3 ms and ~90 -> ~113 fps, and 120 fps CPU-side is not reachable at
+  this crowd on this machine.** That is four times everything part 109's whole night found,
+  and it stops short of the goal — **the decision is the operator's** (`part111-kickoff.md`
+  §0), and §3.2's mutation census only refines the 2.3 ms, never the ceiling.
+* **THE NEW SUBJECT: the guest.** The 8.8 ms floor has never been decomposed by any part of
+  this project, it is now the largest single term in the frame, and it is what decides
+  whether 120 fps is reachable on any hardware. `part111-kickoff.md` §1 has the first three
+  questions, all cheap.
+* **The `[fps]` line now carries `pump cpu N.NN ms/frame` in every run**, profiled or not —
+  one `clock_gettime` per window, read with `tools/part110_pumpcpu.py`. It replaces
+  dividing one instrument's "% of a core" into another instrument's frame rate over a
+  different window.
+* Gates on the shipped binary: `--smoke` OK, A5 **exit 0** (5 permutation windows, 0 real),
+  `truncated=0`, and the `.text` identity above.
+* Two rules part 110 paid for: **archive the executable beside every `perf` capture** —
+  three of part 109's four are unreadable today (gotcha 550) — and **do not rebuild while a
+  campaign is running**, because the route script copies `cz_runtime` at each run's start.

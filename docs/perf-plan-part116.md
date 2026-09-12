@@ -391,3 +391,44 @@ longer staggered by a 1 ms quantum, builds the next packets while the pump is wa
 last, and the two contend for the same bytes (gotcha 551). **Shipped ON with the +0.24
 stated**: the floor that decides 120 fps is −1.11, the shipped frame's bound is the pump,
 and the control is one variable. `CZ_FENCE_PARK_SPIN_US` stays at its part-107 default.
+
+### 4.5 Item 5 — the sub-threshold bundle on the new baseline
+
+`CZ_VK_SCOPED_SHARED_ZERO=1 CZ_VK_TEXMEMO=1` together vs the same binary without, normal
+kind, three runs a side, alternated, both arms with the wait-any wake ON (04:30-04:53;
+`[texmemo]` 74.1% served, 0 disagreements — engaged):
+
+| band | nA | nB | wall | pump | Main | Draw |
+|---|---|---|---|---|---|---|
+| 8,000 | 15 | 6 | −0.88 | −1.37 | −0.37 | −0.70 |
+| 8,250 | 4 | 15 | −0.54 | −0.30 | −0.13 | +0.15 |
+| 8,500 | 17 | 18 | −0.48 | −0.54 | −0.13 | −0.05 |
+| 8,750 | 11 | 12 | −0.82 | −0.82 | −0.15 | −0.12 |
+
+**Wall −0.68 ms, pump −0.68 ms, monotone in four bands** — more than the −0.54 the two
+items summed to in parts 109 and 111, and above the 0.4 ms bar part 109 pre-registered
+for a single item. It is the one renderer-side saving in the tree that is verified,
+gated (picture null, poison positive control — part 111) and unshipped. **The ship
+decision stays the operator's** (the plan's rule); the number they asked for is −0.68 on
+the shipped frame, which more than covers the wake's +0.24 on the same frame.
+
+### 4.6 Gates on the shipped binary (04:55-05:10)
+
+`--smoke` OK · unlowered switches 0 · shader dims 0 disagreements · both PM4 oracles clean
+· picture gate vs E3 **+0.8472** best of 5, 4 agreeing on layout (pinned 1280x720;
+`ALL GATES CLEAN`) · A5 **exit 0** (5 permutation windows, 0 real) · `no translated
+shader` 0 · `truncated=0` (66 windows) · `tools/phase_vs_perf.py --self-test` PASSED.
+
+### 4.7 Item 6 — the honest answer
+
+**Is 120 fps CPU-side reachable on this machine?** The guest no longer forbids it: the
+floor is **7.0 ms** (was 8.1 at 1080p, 8.8 at 1440p), under the 8.33 target, and its
+remaining terms are the title's own work — a flat 6.5 ms Main Thread and a 5.0 ms Draw
+Thread that codegen does not move. **The pump forbids it**: 10.1-10.5 ms, byte-bound,
+and the only priced route below 8.33 is item B (the per-draw renderer off the pump
+thread, `F + M/3 = 5.33` ms), which the operator declined at ~113 fps. **With the floor
+at 7.0 that same build would stop at `max(5.33, 7.0, GPU)` ≈ 7.0-7.3 ms — ~137 fps
+CPU-side, not 113 — which is the one input to that decision this part changed.** The
+largest remaining term after the pump is the Draw Thread's display-list interpreter →
+D3D layer (81% of that thread), and the only thing that removes it is the
+D3D-translation pivot, which removes the pump's PM4 walk with it.

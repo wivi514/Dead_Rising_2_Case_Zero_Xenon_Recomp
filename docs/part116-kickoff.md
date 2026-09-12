@@ -75,4 +75,30 @@ PM4 walk. That is the architectural answer to both floors and it is a phase, not
   compiles (the calls are guarded) but prints `guest main -1.00` and no `[guestwait]`.
   `SetThreadDescription` + `GetThreadTimes` is a 20-line port when someone is on czwin.
 
-## §3. Gates (run on the shipped binary at the end of the night — see §4.6 of the plan)
+## §3. Gates on the shipped binary (plan §4.6)
+
+`--smoke` OK · unlowered switches 0 · shader dims clean · both PM4 oracles clean ·
+E3 **+0.8472** (4 of 5 agreeing, pinned) · A5 **exit 0** (5 permutation, 0 real) ·
+`no translated shader` 0 · `truncated=0` · `phase_vs_perf.py --self-test` PASSED.
+
+## §4. Item 5 — the bundle, re-measured: −0.68 ms on the shipped frame
+
+`CZ_VK_SCOPED_SHARED_ZERO=1 CZ_VK_TEXMEMO=1` on today's baseline: **wall −0.68, pump −0.68,
+monotone in four bands, three runs a side** (plan §4.5). Above the 0.4 ms bar that kept
+them off. Still the operator's call, as ordered; the recommendation is ON — it is the
+only verified, gated, unshipped renderer saving, and it is larger than the wake's +0.24
+on the same frame.
+
+## §5. Rules this part paid for
+
+* **A capture's binary must be archived AND mapped**: perf's build-id cache does not make
+  a capture readable after its binary is overwritten (it reads the recorded path, sees
+  the mismatch, prints addresses). `<tag>.symfs` does. Gotcha 550's mechanism.
+* **A thundering herd measures as a slower NEIGHBOUR**: v1's broadcast cost the pump 0.8
+  ms on another core. Wake the waiter, not the world.
+* **`pgrep -f "<script>"` matches the shell that runs it** — twice tonight, exit 144 —
+  bracket the first character (`"[p]art116_ab.sh"`). And never rebuild `runtime/build`
+  during a campaign; one run raced the link and was quarantined.
+* **Three items killed BEFORE building by census** (memcpy's 0.095 ms ceiling) or after
+  one clean build each (PGO, LTO, -O3) — the night's cost was ~100 s of compile per arm and
+  54 min of runs; a plan that pre-registers the kill can afford to try.

@@ -6455,3 +6455,46 @@ From phase C part 18 (the frame rate — and none of it was work):
     ROUTE — every step from the trigger to the terminal call, with the caller address
     on the terminal call — before deciding where to insert a prompt; the right seam
     turned out to be the funnel both branches share, not either branch. (co-op part 5)
+
+559. **A "simple and safe" poll IS the latency it hides, and a per-thread wait census is
+    the profile that finds it.** Our wait-any slept 1 ms between polls; the title's Main
+    Thread makes five a frame, so 1.1 ms of the guest's 8.1 ms floor was our quantum, not
+    its work. A CPU profile could never see it (a sleeping thread takes no samples) and a
+    "% of a core" census only says the thread was idle. Print each thread's CPU per frame
+    AND its wall time inside every blocking primitive by kind; when CPU + waits equals the
+    frame to 0.1 ms the census is complete and every wait has a name. (part 116)
+
+560. **Wake the waiter, not the world.** A process-wide "something was signalled" broadcast
+    is the two-line fix for a wait-any and it measured +0.9 ms on the wall — every Set
+    woke every parked wait-any, which re-polled its objects under their mutexes and
+    parked again, and the pump on ANOTHER core paid for the cache traffic. The per-object
+    registration (the waiter on each object's list) measured −1.1 ms on the same floor.
+    A thundering herd shows up as a slower neighbour, so read every thread's column, not
+    the one you changed. (part 116)
+
+561. **perf's build-id cache does not rescue a capture whose binary was overwritten.** It
+    reads the file at the recorded path, sees the mismatch and prints raw addresses; the
+    cached copy under ~/.debug is never consulted. Archive the executable AND map the
+    recorded path onto it with `--symfs` (a directory mirroring the absolute path with a
+    symlink). This is the mechanism gotcha 550 described without naming. (part 116)
+
+562. **A guest's cost measured with the host idle is its FLOOR, not its cost in the frame.**
+    The title's Main Thread costs 7.7-8.0 ms/frame with our renderer running and 6.4-6.7
+    with it deleted — same code, same draws; the pump's bytes on another core slow the
+    guest's memory accesses (gotcha 551 from the other side). Part 110's "8.8 ms of guest
+    work" was the floor. Quote which arm a per-thread number came from. (part 116)
+
+563. **Recompiled code does not respond to codegen; the emitter decided its cost.** PGO
+    −0.25 ms on one thread, ThinLTO and -O3 nulls, all on 57,822 functions. Every guest
+    call is a `weak,noinline` alias (so a hook can replace it), so no link can inline the
+    register save/restore ladders that are a tenth of the Draw Thread, and every guest
+    register is a struct field in memory that no optimisation level changes. Price a
+    codegen arm by what the emitter lets the compiler see, not by what the flag promises;
+    one clean build and three runs a side settles it in an hour. (part 116)
+
+564. **The title's own profiler markers name every subtree of a flat profile.** Two
+    thousand `sub_XXXXXXXX` at under 5% each became "half simulation, half render
+    submission" because every subsystem pushes a `"<class>::Update(ms)"` string before its
+    `submit` — `tools/func_strings.py` prints a function's string references, and one pass
+    over the DWARF chains' top frames classified 90% of the Main Thread. Look for the
+    engine's own instrumentation strings before reading any disassembly. (part 116)
