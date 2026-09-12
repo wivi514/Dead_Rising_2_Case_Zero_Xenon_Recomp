@@ -32,7 +32,7 @@
 
 #if defined(_WIN32)
 #include <windows.h>
-#include <timeapi.h>
+#include <mmsystem.h>   // timeBeginPeriod; WIN32_LEAN_AND_MEAN drops it from windows.h
 #pragma comment(lib, "winmm.lib")
 #elif !defined(__APPLE__)
 #include <gnu/libc-version.h>
