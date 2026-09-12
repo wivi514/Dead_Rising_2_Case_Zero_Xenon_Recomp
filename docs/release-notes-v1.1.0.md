@@ -1,7 +1,7 @@
 # Release notes — v1.1.0
 
 **This is the text to paste into the GitHub Release body.** Binaries are commit
-`aaf3d1f` (all three artifacts built from that source on 2026-09-11; the notes commit
+`c23138a` (all three artifacts built from that source on 2026-09-11; the notes commit
 after it changes no code). It carries co-op plan parts 1-5: two-player online co-op
 over XenonLive, and the XenonLive account, achievements and friends underneath it.
 
@@ -18,9 +18,10 @@ through the [XenonLive launcher](https://github.com/wivi514/XenonLive_Launcher),
 installs this build for you and starts it signed in.
 
 **Upgrading from v1.0.2:** unpack over your existing folder, or let the launcher
-install it — saves and settings live outside the game folder and are untouched. Your
-unpacked game data and shader cache are reused; the first launch spends a few seconds
-regenerating the menu files (the main menu gained a row).
+install it — settings live outside the game folder and are untouched. Your unpacked
+game data and shader cache are reused; the first launch spends a few seconds
+regenerating the menu files (the main menu gained a row). **Saves are now per
+profile** — read the XenonLive section before you look for yours.
 
 ### Co-op
 
@@ -41,12 +42,24 @@ regenerating the menu files (the main menu gained a row).
   picking up and dropping items, one side quitting (the host's game continues). Not
   yet exercised with two players: a mission transition and a big crowd — if either
   misbehaves, report it with both players' `cz_runtime.log`.
-- Playing **solo** is exactly as before. If you start the game outside the launcher,
-  or signed out, there is no session, no hosting and no prompt; every co-op path is
-  inert until a session exists. To be signed in but never host, set `CZ_XLIVE_HOST=0`.
+- Playing **solo** is exactly as before. Outside the launcher there is no session, no
+  hosting and no prompt; every co-op path is inert until a session exists. To be
+  signed in but never host, set `CZ_XLIVE_HOST=0`.
 
 ### XenonLive underneath
 
+- **Online is through the launcher, only.** Start the game from the XenonLive launcher
+  and you are signed in: your gamertag, achievements, friends, co-op. Start it any
+  other way and it is the **default profile, offline** — no account, nothing online,
+  the game exactly as v1.0.2 played it.
+- **Saves are per profile.** Each XenonLive account has its own save folder, named by
+  its gamertag, under the saved-games location (`~/.local/share/Dead Rising 2 Case
+  Zero/<gamertag>/` on Linux, `Saved Games\Dead Rising 2 Case Zero\<gamertag>\` on
+  Windows); the offline default profile keeps `default/`. **Your existing saves are
+  the default profile's**: to carry them onto your account, copy the save folders from
+  `default/` into your gamertag's folder once. `CZ_SAVE_DIR` still overrides the lot.
+- **The in-game overlay: Shift+Tab.** The launcher's friends, invites and notifications
+  over the game, on both platforms.
 - Your **gamertag and achievements** are real: unlocking an achievement in game records
   it on your XenonLive account, and the launcher shows it.
 - **Friends and presence**: the friends list in game is your XenonLive friends list,
@@ -106,6 +119,6 @@ downloads.
 
 | file | sha256 |
 |---|---|
-| `CaseZeroRecomp-linux-x86_64.tar.zst` | `513a4346bb32534e94182dce2fe7cd2b5e9be18e86d79ebad4d06b26dae20ab8` |
-| `CaseZeroRecomp-linux-x86_64.AppImage` | `ce5314abc78df137372ebc84dc2292f29897c9e24d31b13c8c47ca7369b6860e` |
-| `CaseZeroRecomp-windows-x86_64.zip` | `d152cbcdc7438678ebef3f2fd4795077cefed27e37b0aab9e80d76f6a8142248` |
+| `CaseZeroRecomp-linux-x86_64.tar.zst` | `8ece91899aa84d841e8fb40c14d03d22462e102b802c610f699bec4ea7095289` |
+| `CaseZeroRecomp-linux-x86_64.AppImage` | `9d9a7a1baa318943a7a496855b5c380fb301275d598494374bae2645c51ddf27` |
+| `CaseZeroRecomp-windows-x86_64.zip` | `e877a951927f3c9690162d3cbb38a0856d1abd4d295249fba8bea32522a4ef1c` |
