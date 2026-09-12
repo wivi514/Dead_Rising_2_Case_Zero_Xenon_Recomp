@@ -196,7 +196,7 @@ reliable layer (Syn Sent → Open on the joiner, Listen → Syn Recvd → Open o
    works when it works; use this order for anything that must not flake.
 5. **The Windows exe needs `libcurl-x64.dll` beside it** (`C:\cw\curlin`); without it
    the process exits with 0xC0000135 and an empty log. Build there with
-   `C:\czuild_cz_xlive.ps1` (Case West's recipe: `-DXLIVE_ROOT=C:/cw/XenonLive`,
+   `C:\cz\build_cz_xlive.ps1` (Case West's recipe: `-DXLIVE_ROOT=C:/cw/XenonLive`,
    curl from `C:/cw/curl`, overlay off).
 
 ### What is open after part 3
