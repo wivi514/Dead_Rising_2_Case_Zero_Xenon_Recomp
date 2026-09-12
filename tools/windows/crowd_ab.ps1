@@ -36,6 +36,11 @@ $o = Join-Path $Root "part118"
 New-Item -ItemType Directory -Force -Path $o | Out-Null
 $env:CZ_NO_WINDOW = "1"; $env:CZ_VKDRAW = "1"; $env:CZ_LAUNCHER = "0"; $env:CZ_FPS_CAP = "500"; $env:CZ_FPS_LOG = "10"
 $env:CZ_VK_RES = "1920x1080"; $env:CZ_NO_AUDIO_OUT = "1"; $env:CZ_FAKE_START_MS = "100"
+# The route's DebugJump entry lives in the main menu only with the debug menu on, and the
+# same safety flags as the Linux script (the first Windows run without them sat at the
+# title for 320 s: 31 windows at 2,480 draws).
+$env:CZ_DEBUG_MENU = "1"
+$env:CZ_DEBUG_FLAGS = "CHUCK GOD MODE,DISABLE DEATH SEQUENCE,ZOMBIES IGNORE ALL HUMANS"
 $env:CZ_FAKE_PRESS_SEQ = $seq
 foreach ($k in $Env.Keys) { Set-Item -Path "Env:$k" -Value $Env[$k] }
 Set-Location $Root
