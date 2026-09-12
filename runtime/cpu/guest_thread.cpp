@@ -9,6 +9,9 @@
 #include <map>
 #include <mutex>
 #include <string>
+#include <algorithm>
+#include <cstdlib>
+#include <vector>
 
 #if !defined(_WIN32)
 #include <pthread.h>
@@ -151,11 +154,96 @@ static inline uint64_t MonoNs()
                         .count());
 }
 
+// CZ_WAIT_CALLERS=1 (part 118): the same census keyed by the GUEST CALLER — the lr of
+// the import call — per thread and kind, printed every 10 s from whichever wait ends
+// the window. The [guestwait] line says the Main Thread spends 0.5 ms a frame in 5.7
+// single-object waits; only the caller says which of the title's subsystems it is
+// waiting FOR (a Havok step, a job, the Draw Thread), and that decides which lever
+// moves it. Diagnostic arm only: a mutex on every wait exit.
+static bool WaitCallersOn()
+{
+    static const bool on = getenv("CZ_WAIT_CALLERS") != nullptr;
+    return on;
+}
+struct WaitCallerRow { uint64_t ns = 0, calls = 0; };
+static std::mutex g_waitCallerMutex;
+static std::map<std::string, WaitCallerRow> g_waitCallers;   // "name kind lr" -> row
+static uint64_t g_waitCallerLastPrint = 0;
+// The calling thread's comm (the title's name, bound by BindHostName), read once per
+// thread; it is 15 characters at most and "?" where the platform cannot say.
+static const char* CurrentThreadComm()
+{
+    static thread_local char comm[20] = {0};
+    if (!comm[0])
+    {
+#if !defined(_WIN32) && !defined(__APPLE__)
+        if (pthread_getname_np(pthread_self(), comm, sizeof comm) != 0 || !comm[0])
+#endif
+            snprintf(comm, sizeof comm, "?");
+    }
+    return comm;
+}
+static void WaitCallerRecord(GuestThread::WaitKind kind, uint64_t ns)
+{
+    static const char* const kindName[] = {"single", "multi", "sleep", "fence"};
+    const uint32_t lr = g_ppcContext ? uint32_t(g_ppcContext->lr) : 0;
+    // Two more frames up the guest's back chain (*(r1) = the caller's r1, its lr at
+    // -8 from there), because the title's waits go through a WaitForMultipleObjects
+    // wrapper (sub_82822548) and the lr at the import names only the wrapper.
+    uint32_t lr2 = 0, lr3 = 0;
+    if (g_ppcContext)
+    {
+        uint8_t* base = g_memory.base;
+        uint32_t sp = g_ppcContext->r1.u32;
+        for (int i = 0; i < 2 && sp >= 0x10000 && sp < PPC_MEMORY_SIZE - 8; ++i)
+        {
+            const uint32_t prev = PPC_LOAD_U32(sp);
+            if (prev <= sp || prev - sp > 0x100000 || prev >= PPC_MEMORY_SIZE - 8)
+                break;
+            (i == 0 ? lr2 : lr3) = PPC_LOAD_U32(prev - 8);
+            sp = prev;
+        }
+    }
+    char key[128];
+    // The comm alone aggregates: a thread inherits its creator's name until the title
+    // names it, so four host threads read "Main Thread". The guest tid separates them.
+    snprintf(key, sizeof(key), "%-12s %08X %-6s %08X<%08X<%08X", CurrentThreadComm(),
+             GuestThread::GetCurrentThreadId(), kindName[kind], lr, lr2, lr3);
+    std::lock_guard lk(g_waitCallerMutex);
+    auto& r = g_waitCallers[key];
+    r.ns += ns;
+    r.calls += 1;
+    const uint64_t now = MonoNs();
+    if (g_waitCallerLastPrint == 0)
+        g_waitCallerLastPrint = now;
+    if (now - g_waitCallerLastPrint >= 10'000'000'000ull)
+    {
+        const double secs = double(now - g_waitCallerLastPrint) * 1e-9;
+        fprintf(stderr, "[waitcallers] %.1f s window — thread kind caller: ms/s calls/s\n", secs);
+        std::vector<std::pair<std::string, WaitCallerRow>> rows(g_waitCallers.begin(), g_waitCallers.end());
+        std::sort(rows.begin(), rows.end(), [](auto& a, auto& b) { return a.second.ns > b.second.ns; });
+        int n = 0;
+        for (auto& [k, v] : rows)
+        {
+            if (v.ns * 1e-6 / secs < 0.5 || n++ >= 24)
+                break;
+            fprintf(stderr, "[waitcallers]   %s  %8.2f  %8.1f\n", k.c_str(), v.ns * 1e-6 / secs, v.calls / secs);
+        }
+        g_waitCallers.clear();
+        g_waitCallerLastPrint = now;
+    }
+}
+
 GuestThread::WaitScope::WaitScope(WaitKind k) : kind(k), t0(MonoNs()) {}
 GuestThread::WaitScope::~WaitScope()
 {
-    t_waitStats.ns[kind].fetch_add(MonoNs() - t0, std::memory_order_relaxed);
+    const uint64_t ns = MonoNs() - t0;
+    t_waitStats.ns[kind].fetch_add(ns, std::memory_order_relaxed);
     t_waitStats.calls[kind].fetch_add(1, std::memory_order_relaxed);
+    if (WaitCallersOn())
+        WaitCallerRecord(kind, ns);
+}
+
 }
 
 double GuestThread::CpuSecondsOf(const char* name)
