@@ -32,8 +32,11 @@
 
 #if defined(_WIN32)
 #include <windows.h>
-#include <mmsystem.h>   // timeBeginPeriod; WIN32_LEAN_AND_MEAN drops it from windows.h
 #pragma comment(lib, "winmm.lib")
+// timeBeginPeriod's own header (mmsystem.h/timeapi.h) does not survive this tree's
+// WIN32_LEAN_AND_MEAN + the SDL/renderer macro set under clang-cl; the one prototype is
+// declared here instead (MMRESULT is UINT).
+extern "C" unsigned int __stdcall timeBeginPeriod(unsigned int uPeriod);
 #elif !defined(__APPLE__)
 #include <gnu/libc-version.h>
 #include <sys/utsname.h>
@@ -600,9 +603,9 @@ int main(int argc, char** argv)
     // CZ_NO_TIMER_PERIOD=1 is the control.
     if (!getenv("CZ_NO_TIMER_PERIOD"))
     {
-        const MMRESULT tr = timeBeginPeriod(1);
+        const unsigned tr = timeBeginPeriod(1);   // 0 = TIMERR_NOERROR
         fprintf(stderr, "[host] timeBeginPeriod(1) -> %s (CZ_NO_TIMER_PERIOD=1 is the control)\n",
-                tr == TIMERR_NOERROR ? "ok" : "REFUSED");
+                tr == 0 ? "ok" : "REFUSED");
     }
     else
         fprintf(stderr, "[host] timer resolution left at the system default (CZ_NO_TIMER_PERIOD)\n");
