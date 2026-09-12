@@ -41,6 +41,17 @@ XENOS_ROOT=${XENOS_ROOT:-$HOME/GithubRepo/XenosRecomp}
 # into thirdparty/oldbase/xenon-build — three targets, not the recompiler.
 XENON_ROOT=${XENON_ROOT:-$HOME/GithubRepo/XenonRecomp}
 [ -f "$XENON_ROOT/XenonUtils/ppc_context.h" ] || fail "no XenonRecomp checkout at $XENON_ROOT (set XENON_ROOT)"
+# XenonLive (co-op, the account, achievements): libxlive is built from the sibling
+# checkout and its HTTPS is libcurl. The curl is STATIC, with a static OpenSSL, built
+# in the container the way the XenonLive launcher's release builds it — distributions
+# disagree about libcurl's symbol versioning (Debian's is versioned, Fedora's is not),
+# so a dynamic one linked on either side fails on the other. A static OpenSSL knows no
+# CA directory but the build machine's; the launcher names the system bundle through
+# XLIVE_CA_FILE when it starts the game, and CURL_CA_FALLBACK covers a bare launch.
+XLIVE_ROOT=${XLIVE_ROOT:-$HOME/GithubRepo/XenonLive}
+[ -f "$XLIVE_ROOT/client/CMakeLists.txt" ] || fail "no XenonLive checkout at $XLIVE_ROOT (set XLIVE_ROOT)"
+CURL_VERSION=8.14.1
+CURL_SHA256=f4619a1e2474c4bbfedc88a7c2191209c8334b48fa1f4e53fd584cc12e9120dd
 
 fail() { echo "FAIL: $*" >&2; exit 1; }
 command -v podman >/dev/null || fail "podman not installed"
@@ -50,6 +61,13 @@ command -v podman >/dev/null || fail "podman not installed"
 if ! podman image exists "$IMAGE"; then
     echo "==> building the image $IMAGE (tools/release/oldbase/Containerfile)"
     podman build -t "$IMAGE" -f "$ROOT/tools/release/oldbase/Containerfile" "$ROOT/tools/release/oldbase"
+fi
+mkdir -p "$OB/work"
+if [ ! -f "$OB/curl/lib/libcurl.a" ]; then
+    if [ ! -f "$OB/work/curl-$CURL_VERSION.tar.xz" ]; then
+        curl -fsSL -o "$OB/work/curl-$CURL_VERSION.tar.xz" "https://curl.se/download/curl-$CURL_VERSION.tar.xz"
+    fi
+    echo "$CURL_SHA256  $OB/work/curl-$CURL_VERSION.tar.xz" | sha256sum -c - >/dev/null || fail "curl tarball checksum"
 fi
 
 mkdir -p "$OB/work/sdl2" "$OB/work/ffmpeg"
@@ -71,7 +89,9 @@ RUN=(podman run --rm -i
      -v "$DXC_SRC:/opt/dxc/libdxcompiler.so:ro,Z"
      -v "$XENOS_ROOT:$XENOS_ROOT:ro,Z"
      -v "$XENON_ROOT:$XENON_ROOT:ro,Z"
-     -e XENOS_ROOT="$XENOS_ROOT" -e XENON_ROOT="$XENON_ROOT"
+     -v "$XLIVE_ROOT:$XLIVE_ROOT:ro,Z"
+     -e XENOS_ROOT="$XENOS_ROOT" -e XENON_ROOT="$XENON_ROOT" -e XLIVE_ROOT="$XLIVE_ROOT"
+     -e CURL_VERSION="$CURL_VERSION"
      -e HOME="$HOMEDIR" -e CZ_DXC_LIB=/opt/dxc/libdxcompiler.so
      -e CZ_SDL2_WORK="$OB/work/sdl2" -e CZ_FFMPEG_WORK="$OB/work/ffmpeg"
      -e CZ_SDL2_PREFIX="$OB/sdl2" -e CZ_FFMPEG_PREFIX="$OB/ffmpeg-lgpl"
@@ -106,10 +126,31 @@ if [ ! -f "$XB/XenonUtils/libXenonUtils.a" ] || [ ! -f "$XB/thirdparty/fmt/libfm
     cmake --build "$XB" --target XenonUtils fmt xxhash -j"$(nproc)" 2>&1 | tail -1
 fi
 
+if [ ! -f "$OB/curl/lib/libcurl.a" ]; then
+    echo "==> libcurl $CURL_VERSION, static, OpenSSL, HTTP only (the launcher's recipe)"
+    rm -rf "$OB/work/curl-src" "$OB/curl"
+    mkdir -p "$OB/work/curl-src"
+    tar xf "$OB/work/curl-$CURL_VERSION.tar.xz" -C "$OB/work/curl-src" --strip-components=1
+    cmake -S "$OB/work/curl-src" -B "$OB/work/curl-build" -G Ninja \
+        -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_COMPILER=clang \
+        -DCMAKE_INSTALL_PREFIX="$OB/curl" \
+        -DBUILD_SHARED_LIBS=OFF -DBUILD_STATIC_LIBS=ON -DBUILD_CURL_EXE=OFF \
+        -DBUILD_TESTING=OFF -DBUILD_LIBCURL_DOCS=OFF -DBUILD_MISC_DOCS=OFF -DENABLE_CURL_MANUAL=OFF \
+        -DCURL_USE_OPENSSL=ON -DOPENSSL_USE_STATIC_LIBS=ON \
+        -DCURL_ZLIB=OFF -DCURL_BROTLI=OFF -DCURL_ZSTD=OFF -DUSE_NGHTTP2=OFF \
+        -DUSE_LIBIDN2=OFF -DCURL_USE_LIBPSL=OFF -DCURL_USE_LIBSSH2=OFF -DCURL_USE_GSSAPI=OFF \
+        -DCURL_DISABLE_LDAP=ON -DHTTP_ONLY=ON \
+        -DCURL_CA_BUNDLE=none -DCURL_CA_PATH=none -DCURL_CA_FALLBACK=ON > "$OB/work/curl-build.configure.log" 2>&1 \
+        || { tail -30 "$OB/work/curl-build.configure.log"; exit 1; }
+    cmake --build "$OB/work/curl-build" -j"$(nproc)" >/dev/null
+    cmake --install "$OB/work/curl-build" >/dev/null
+fi
+
 cfg() {
     cmake -S runtime -B "$1" -G Ninja -DCMAKE_BUILD_TYPE="$2" \
         -DCZ_FFMPEG_PREFIX="$OB/ffmpeg-lgpl" -DCZ_SDL2_PREFIX="$OB/sdl2" -DCZ_BUNDLE_RPATH=ON \
         -DXENOS_ROOT="$XENOS_ROOT" -DXENON_ROOT="$XENON_ROOT" -DXENON_BUILD="$XB" \
+        -DXLIVE_ROOT="$XLIVE_ROOT" -DCMAKE_PREFIX_PATH="$OB/curl" -DOPENSSL_USE_STATIC_LIBS=ON \
         > "$1.configure.log" 2>&1 || { tail -30 "$1.configure.log"; exit 1; }
 }
 echo "==> configuring + building runtime/build-release-oldbase (Release)"

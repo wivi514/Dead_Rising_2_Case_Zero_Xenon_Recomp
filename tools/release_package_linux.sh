@@ -59,6 +59,16 @@ if ldd "$BUILD/cz_runtime" | grep -q 'libavcodec.*=> */\(usr/\)\?lib'; then
     cmake -S runtime -B $BUILD -DCZ_FFMPEG_PREFIX=$ROOT/thirdparty/ffmpeg-lgpl ..."
 fi
 
+# THE CURL CHECK (co-op, part 5): libxlive's HTTPS is libcurl, and the release links it
+# STATICALLY with a static OpenSSL (tools/release_build_oldbase.sh says why: the two
+# big distributions disagree about libcurl's symbol versioning). A dynamic one here
+# would be bundled by nothing below and would fail the clean-container gate — or worse,
+# resolve to a host copy on the dev box and pass. Refuse it at the source.
+if ldd "$BUILD/cz_runtime" | grep -qE 'libcurl|libssl|libcrypto'; then
+    fail "this binary links libcurl or OpenSSL DYNAMICALLY; the release wants them static:
+    tools/release_build_oldbase.sh   (builds the static curl and configures with it)"
+fi
+
 echo "==> staging $STAGE"
 # PRESERVE PLAYER DATA ACROSS A REPACKAGE (part 85, and the Windows script carries the
 # same guard with the story of why): a staged folder that has been PLAYED holds the
@@ -228,6 +238,9 @@ echo "==> generating THIRD_PARTY.md"
     echo '| o1heap | MIT | compiled in (the guest heaps) |'
     echo '| SIMDe | MIT | compiled in (the guest VMX unit) |'
     echo '| Vulkan loader | Apache 2.0 | NOT bundled — the host system supplies it |'
+    echo '| XenonLive client library (libxlive) | see the XenonLive repository | compiled in: the account, achievements, friends and co-op sessions over the XenonLive service |'
+    echo '| curl (libcurl) | curl licence (MIT-style) | compiled in, static, HTTP(S) only |'
+    echo '| OpenSSL | Apache 2.0 | compiled in, static, for libcurl'"'"'s TLS |'
     echo
     echo '## ffmpeg (LGPL)'
     echo

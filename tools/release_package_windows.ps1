@@ -65,7 +65,12 @@ $dlls = @(
     @{ src = "C:\cz\thirdparty\sdl2\bin\SDL2.dll";                          why = "SDL2 (real, not sdl2-compat)" },
     @{ src = "C:\cz\thirdparty\ffmpeg-lgpl\bin\avcodec-62.dll";             why = "ffmpeg LGPL, xma only" },
     @{ src = "C:\cz\thirdparty\ffmpeg-lgpl\bin\avutil-60.dll";              why = "ffmpeg LGPL" },
-    @{ src = "C:\cz\XenosRecomp\thirdparty\dxc-bin\bin\x64\dxcompiler.dll"; why = "DXC - the shader translator dlopens it" }
+    @{ src = "C:\cz\XenosRecomp\thirdparty\dxc-bin\bin\x64\dxcompiler.dll"; why = "DXC - the shader translator dlopens it" },
+    # libxlive's HTTPS (co-op, the account, achievements): curl-for-win's single DLL
+    # (schannel TLS, its own dependencies static). Without it beside the exe the process
+    # exits at start with 0xC0000135 and an empty log - co-op plan part 3 found that on
+    # this very machine. The build is configured against C:\cw\curl (build_cz_xlive.ps1).
+    @{ src = "C:\cw\curl\bin\libcurl-x64.dll";                           why = "libcurl (curl-for-win), libxlive's HTTPS" }
 )
 foreach ($d in $dlls) {
     if (-not (Test-Path $d.src)) { Fail "missing $($d.src) ($($d.why))" }
@@ -73,6 +78,9 @@ foreach ($d in $dlls) {
     $kb = [math]::Round((Get-Item $d.src).Length / 1KB)
     Write-Host ("    {0,-20} {1,8} KB  {2}" -f (Split-Path -Leaf $d.src), $kb, $d.why)
 }
+$curlLicence = Get-ChildItem -Recurse "C:\cw\curl\unz" -Filter COPYING.txt | Select-Object -First 1
+if (-not $curlLicence) { Fail "no COPYING.txt under C:\cw\curl\unz (the curl-for-win archive's licence)" }
+Copy-Item $curlLicence.FullName (Join-Path $Stage "LICENSE.CURL")
 
 # The MSVC runtime, from the toolchain's redist directory (vc.bat sets
 # VCToolsRedistDir). Copying from System32 instead would work on this machine and be
@@ -172,6 +180,8 @@ the executable. Do not edit by hand.
 | o1heap | MIT | compiled in (the guest heaps) |
 | SIMDe | MIT | compiled in (the guest VMX unit) |
 | Vulkan loader | Apache 2.0 | NOT bundled - the GPU driver supplies it |
+| XenonLive client library (libxlive) | see the XenonLive repository | compiled in: the account, achievements, friends and co-op sessions over the XenonLive service |
+| curl (libcurl) | curl licence (MIT-style) | ``libcurl-x64.dll`` beside the executable (curl-for-win, schannel TLS); licence in ``LICENSE.CURL`` |
 "@ | Set-Content -Encoding utf8 (Join-Path $Stage "THIRD_PARTY.md")
 
 # THE GATE THAT RUNS THE STAGED EXE. Every import DLL resolves from the staged

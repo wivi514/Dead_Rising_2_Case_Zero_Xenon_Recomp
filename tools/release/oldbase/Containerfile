@@ -56,6 +56,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         libasound2-dev libpulse-dev libpipewire-0.3-dev \
         libdbus-1-dev libudev-dev libibus-1.0-dev \
         squashfs-tools \
+        libssl-dev zlib1g-dev \
     && rm -rf /var/lib/apt/lists/* \
     && update-alternatives --install /usr/bin/clang++ clang++ /usr/bin/clang++-15 100 \
     && update-alternatives --install /usr/bin/clang clang /usr/bin/clang-15 100 \
