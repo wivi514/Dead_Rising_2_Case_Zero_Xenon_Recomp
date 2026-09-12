@@ -1494,6 +1494,21 @@ inline bool GuardFoldSerial()
 // The tail is folded serially into lane 0 so a buffer under 32 bytes still mixes every
 // byte, and the lanes are combined with distinct rotations so that two lanes swapping
 // contents cannot cancel.
+// CZ_VK_GUARD_NTA=1 (part 118): non-temporal PREFETCH ahead of the fold, so the ~37 MB
+// a frame the guard streams through does not displace the GUEST's working set from the
+// shared L3. The guard reads every vertex stream once a frame, sequentially, and never
+// again until the next frame — the textbook non-temporal access — and part 118's PMU
+// pair on the Main Thread says our renderer's presence turns ~3,700 of its L3 hits a
+// frame into DRAM fills (31.1k vs 27.4k), on a thread whose cost is serialised misses.
+// x86 has no non-temporal LOAD for write-back memory; PREFETCHNTA is the nearest thing
+// (AMD: fills L1 only, not written back into L2/L3 on eviction). An arm because the
+// benefit lands on ANOTHER thread and only a frame-time A/B can price it.
+inline bool GuardFoldNta()
+{
+    static const bool nta = getenv("CZ_VK_GUARD_NTA") != nullptr;
+    return nta;
+}
+
 inline uint64_t GuardFold(uint64_t h, const uint8_t* p, size_t n)
 {
     constexpr uint64_t P = 1099511628211ull;
@@ -1502,8 +1517,14 @@ inline uint64_t GuardFold(uint64_t h, const uint8_t* p, size_t n)
     {
         uint64_t h0 = h, h1 = h ^ 0x9E3779B97F4A7C15ull, h2 = h ^ 0xC2B2AE3D27D4EB4Full,
                  h3 = h ^ 0x165667B19E3779F9ull;
+        const bool nta = GuardFoldNta();
+        if (nta)   // the first lines, which the loop's own prefetch would arrive too late for
+            for (size_t k = 0; k < 512 && k < n; k += 64)
+                __builtin_prefetch(p + k, 0, 0);
         for (; i + 32 <= n; i += 32)
         {
+            if (nta && (i & 63) == 0)
+                __builtin_prefetch(p + i + 512, 0, 0);   // locality 0 = prefetchnta
             uint64_t v0, v1, v2, v3;
             memcpy(&v0, p + i, 8);        // unaligned-safe; each compiles to one load
             memcpy(&v1, p + i + 8, 8);
