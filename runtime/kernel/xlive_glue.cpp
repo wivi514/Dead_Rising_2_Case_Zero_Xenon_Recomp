@@ -215,6 +215,12 @@ void OnEvent(const xlive::Event& event)
         KLOG("[xlive] %s %s the invitation\n", event.gamertag.c_str(),
              event.accepted ? "accepted" : "declined");
         break;
+
+    case xlive::EventKind::MessageReceived:
+        // The overlay shows it as a toast (and lets the player reply); the
+        // log keeps it for a run without one.
+        KLOG("[xlive] message from %s: %s\n", event.gamertag.c_str(), event.message.c_str());
+        break;
     }
 }
 
