@@ -4217,4 +4217,18 @@ CZ_XLIVE_HOST=1    HOST A CO-OP SESSION (part 2, runtime/kernel/coop_host.cpp). 
                    `hosting session <XNKID>`. Also prints `SetActiveUser(N)`, which is the
                    pad that pressed START and the user the matchmaking object asks
                    XamUserGetSigninState about — N must be 0
+CZ_OUTFIT_TRACE=1  THE CLOTHING PIPELINE, STEP BY STEP (co-op part 4,
+                   runtime/kernel/coop_outfit.cpp). Every [outfit] line is one step
+                   between a piece being asked for and a model being attached: SetOutfit /
+                   ApplyRow (an outfits.csv row by index, with its name), SetPart (the
+                   normal set-piece with the clothingdatabase row it resolved), CoopSetPart
+                   (the clothing-report receiver's path, name and hash only), IsWearing
+                   (the receiver's test, entry and records dumped), PieceFile (the file
+                   name the requester built — THIS is the line that named the chest
+                   defect: 'chest_NONE' for player 1), RecordSize (the per-part buffer,
+                   from a table with a solo and a two-player column), TexCreate /
+                   ModelCreate, LoadDone (files landed of expected, per record), Attach.
+                   Per-part, not per-frame; inert without the variable. The register
+                   readings on TexCreate/ModelCreate/LoadDone are approximate (the size
+                   fields print a string length) — the names and the results are right
 ```

@@ -6410,3 +6410,16 @@ From phase C part 18 (the frame rate — and none of it was work):
     honest attempts to make the cap fire, with every chatty trace armed, reached only
     268 KB — those runs were NULLS, not passes, and only a throwaway near-wrap build
     produced the flood that proved the cap works (gotcha 30 again). (part 113)
+
+555. **A name the title knows with no data row behind it is a silent default, and the
+    default is whatever the constructor wrote.** Case Zero's outfit table names
+    `OUTFIT_COOP_DEFAULT_UNDER` (index 16); its `outfits.csv` has no such row; the csv
+    loader fills entries by name and skips nothing loudly, so entry 16 held seven
+    "NONE"s from the constructor — and one code path (the chest-only swap that dresses
+    the second Chuck differently) read exactly that entry. The symptom was a partner with
+    no torso, and the first fix patched the row NEXT to it (the `_over` twin, which does
+    exist) and measured a null. Two transferable halves: (a) when a title ships a
+    subset of a bigger game's data, diff the code's NAME TABLES against the data's ROWS —
+    every name without a row is a constructor default waiting for a reader; (b) an
+    instrument that prints the string the code actually BUILT (`chest_NONE`) beats any
+    amount of reasoning about which row it should have read. (co-op part 4)

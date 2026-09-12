@@ -192,12 +192,20 @@ mask; trust the microcode's own swizzles.
     read `phase5-notes.md` §6ba before following anything in it.
   - **THE LIVE HAND-OFF IS ALWAYS THE HIGHEST-NUMBERED `partNN-kickoff.md`**, and it
     supersedes every earlier kickoff on "where the port is". **IT IS
+    `part114-kickoff.md` — CO-OP WORKS AND THE PARTNER IS DRESSED (co-op plan part 4,
+    evening of 2026-09-11, branch `xlive-integration`): the missing chest piece was
+    `OUTFIT_COOP_DEFAULT_UNDER`, a name in the title's table with NO row in Case Zero's
+    outfits.csv, so the chest-only substitution in the load requester asked for
+    `chest_NONE` (found by `CZ_OUTFIT_TRACE=1`, fixed as data in
+    `tools/patch_coop_outfit.py`); cinematic, host save, items and one side quitting
+    all normal, 0 desyncs; the incoming-call HUD is compiled out of both XBLA builds.
+    OWED: a mission transition and a crowd, then the ship-or-not decision.** ~~It was
     `part113-kickoff.md` — CO-OP WORKS ACROSS TWO MACHINES (co-op plan part 3,
     2026-09-11, branch `xlive-integration`): host here, joiner on the Windows laptop,
     two Chucks in Still Creek, operator-played. `docs/coop-plan.md` is the record and
     the kickoff's §2 is the ordered list — the joining Chuck's missing CHEST PIECE
     first (instrument the outfit code; the csv patch is a measured null), the host's
-    missing incoming-call notice, then the content test.** ~~It was
+    missing incoming-call notice, then the content test.~~ ~~It was
     `part112-kickoff.md` — ITEM B IS CLOSED BY MEASUREMENT AND THE REASON GENERALISES.
     The operator said build it knowing its ~113 fps ceiling; part 111 built its cleanest
     stage, measured it, and stopped, which is what B1's pre-registered kill was bought

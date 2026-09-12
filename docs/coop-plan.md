@@ -201,7 +201,8 @@ reliable layer (Syn Sent → Open on the joiner, Listen → Syn Recvd → Open o
 
 ### What is open after part 3
 
-- **The joining Chuck has no chest piece** — on both machines, head and hands placed
+- ~~**The joining Chuck has no chest piece**~~ — FIXED IN PART 4, see below; the paragraph
+  stands as the record of the wrong guess. On both machines, head and hands placed
   correctly (operator-confirmed against `~/DR2CZ-troubleshooting/coop/*.png`); changing
   clothes on the client makes it appear. NOT the `OUTFIT_COOP_DEFAULT` row of
   `outfits.csv` (chest `champions_jacket2`, which Case Zero does not ship):
@@ -211,7 +212,8 @@ reliable layer (Syn Sent → Open on the joiner, Listen → Syn Recvd → Open o
   read. Next: hook the outfit application (`sub_82167428` returns the entry, 0x11C bytes
   each from db+0x88; `sub_82167450` names index → `0x829D44F8`) and print the seven
   pieces the client sends (`POUT: Client:tEventOutfit` ×7).
-- **No incoming-call HUD on the host.** DR2 shows *"Incoming co-op call…"* (11546) with
+- ~~**No incoming-call HUD on the host.**~~ — CLOSED IN PART 4: the element is compiled
+  out of both XBLA builds (see below). DR2 shows *"Incoming co-op call…"* (11546) with
   D-pad RIGHT to answer; here the join goes through without it and the call is only
   visible in the pause menu. The session works regardless (the host confirmed the client
   without answering). Whether Case Zero's HUD lacks the element or the trigger is
@@ -237,6 +239,73 @@ CZ_ONLINE_LOG=3 CZ_NET_LOG=1`, plus the guest diagnostics as left on 2026-09-11)
 Headless joiner, same box: `XLIVE_DATA_DIR=~/.config/XenonLive-host XLIVE_ALLOW_INSECURE=1
 CZ_XLIVE_PEER_PORT=3075 … CZ_FAKE_PRESS_SEQ=START,NONE,NONE,A,NONE,A` (the two A's are
 the dialog and the slot).
+
+## Part 4: the chest piece, and the first content tests (DONE except two)
+
+**2026-09-11 evening, three more two-machine joins, operator-played.** The joining
+Chuck has his torso on both screens; cinematics, a host save, item pick-up/drop and
+one side quitting all behaved; 0 `[title:desync]` lines over a 1.65 M-line host log.
+Owed: a mission transition and a crowd (§ "Plan", item 4).
+
+### The chest piece: `OUTFIT_COOP_DEFAULT_UNDER` has no row, so the chest was `chest_NONE`
+
+Part 3 guessed the `OUTFIT_COOP_DEFAULT` row (DR2's champion's jacket) and measured a
+null. Part 4 built `CZ_OUTFIT_TRACE=1` (`runtime/kernel/coop_outfit.cpp`) and read the
+pipeline on the host across two joins:
+
+1. The client's seven `tEventOutfit` messages are its SAVE outfit — decodable from the
+   packet sizes alone with a 19-byte header (31, 31, 20, 31, 25, 31, 37 = `young_chuck`
+   ×2, `""`, `young_chuck`, `naked`, `young_chuck`, `young_chuck_under`) — and the
+   receiver `sub_82570E78` records them on the remote player's clothing object
+   (player + 0xCE74) through `sub_82371978`, correctly, chest included.
+2. The co-op flow (`sub_82582888`) then posts one change-part event per part, all seven.
+3. The load requester `sub_82270290` builds the file name — and it has a special case
+   **for the chest only**: a player other than player 0 asking for `OUTFIT_DEFAULT_UNDER`'s
+   chest (db entry 17, `db+0x1364`) is handed `OUTFIT_COOP_DEFAULT_UNDER`'s chest (entry
+   16, `db+0x1248`) instead, and player 0 the reverse. DR2's way of dressing the two
+   Chucks differently.
+4. Case Zero's `outfits.csv` has **no `OUTFIT_COOP_DEFAULT_UNDER` row**. The name is in
+   the title's table (`0x829D44F8`, index 16) but the loader `sub_821B67C0` fills entries
+   by NAME, so entry 16 keeps its constructor's seven `NONE`s and the requester asks for
+   `chest_NONE`. Nothing loads it, the per-file completion never reaches its count, the
+   normal set-piece never runs for part 3, and every other part goes through untouched —
+   which is exactly "only the torso is missing, on both machines" (the client's own Chuck
+   is player 1 there too), and why changing clothes fixed it (a non-default chest takes
+   the plain path).
+
+The fix is data: `tools/patch_coop_outfit.py` now makes BOTH co-op rows copies of the
+default rows (`OUTFIT_COOP_DEFAULT = OUTFIT_DEFAULT`, `OUTFIT_COOP_DEFAULT_UNDER` added
+`= OUTFIT_DEFAULT_UNDER`) — the operator's instruction: the partner spawns in what player
+one spawns in, and the substitution becomes the identity both ways. Both archives
+(`datafile.big`, `preload4.big`), both machines (scp; the laptop's game must be closed —
+it holds `datafile.big` open), hashes matched. Verified by trace (`PieceFile part 3 ->
+'chest_young_chuck'`, `SetPart … part 3` for `B9288350`) and by eye on both screens.
+To make the partner visibly different instead, change the chest of both co-op rows to
+`default` (DR2 Chuck's leather jacket, shipped). Still not in `overlay_gen.cpp`.
+
+Two things the trace found on the way that are NOT the defect, recorded so they are not
+re-bought: the clothing manager sizes each part's buffer from a table (`0x829D42F0`)
+with a solo and a two-player column at exactly half (chest 2006 → 1003 KB), and the
+texture-create path sets a byte for the two-player case (`g_82AC4878+0xB54`) — the
+`young_chuck` chest loads fine under both once its name is right. And
+`sub_8254BB70` (co-op level entry dressing player 1 in row 16) did not fire in any of
+these sessions; the outfit arrives by report, not by that row.
+
+### The host's "incoming co-op call" — the HUD element is not in this build, nor in Case West's
+
+String 11546 *"Incoming co-op call..."* exists in `str_en.bcs` and is referenced by NO
+instruction in Case Zero's image (no `li`/`addi` with 0x2D1A, no data word) — **and the
+same is true of Case West's image**, so the walkie-talkie call element is compiled out
+of both XBLA builds and the operator will not get it back by flipping a byte. What IS
+linked is the dialog: `sub_824BDBE8` formats 11533 (*"%s wants to join your game?"*)
+and posts it, from `sub_82224F30` — the call-element's "answered" handler, state 3 of
+the object at `sub_82224A38` — and the answer is read back at `0x824C10C0` (yes/no →
+`sub_82582188(session, accept)` → *"Pending client IS confirmed!"*). Auto-accept is
+`sub_82582188(session, 1)`, which `0x824C11E0` passes on one message path. Which path
+confirmed the client in our sessions was not instrumented; the session works without the
+prompt and the plan ranks it low. If it is ever wanted, the dialog path is the one to
+drive (post 11533 from the confirm-pending site and feed the answer to
+`sub_82582188`), not the HUD text.
 
 ## Online tunables (dataflow-bound, gotcha 241)
 
@@ -264,10 +333,13 @@ systemlink pair is the LAN path Case West dropped but Case Zero kept.
    setting once part 4 says co-op is worth shipping.
 3. **DONE — Joiner.** `CZ_XLIVE_JOIN=1`; see "The joiner, and the first two-machine
    sessions". Two machines, two Chucks in Still Creek, operator-played.
-4. **Content test — the real unknown, NOW STARTED.** Still Creek takes a second Chuck:
-   he spawns, walks, fights, sees the host's case and HUD. Owed: the chest piece, the
-   call notice, missions/cinematics/saves with two players, a crowd's desync count
-   (`[title:desync]`). `online_disable_coop_triggers` + `online_net_sim_*` are the debug
+4. **Content test — MOSTLY DONE (part 4).** Still Creek takes a second Chuck: he
+   spawns dressed (the chest piece, part 4), walks, fights, sees the host's case and
+   HUD. Tested by the operator on 2026-09-11: a cinematic, a save on the host, items
+   picked up and dropped, one side quitting (host re-hosts and continues) — all normal;
+   0 `[title:desync]` in that session. **Owed: a mission transition and a crowd** (the
+   desync count is the crowd's pass mark). The call notice is closed as "not in this
+   build" (§ Part 4). `online_disable_coop_triggers` + `online_net_sim_*` are the debug
    knobs.
 5. **If impossible:** revert the host/joiner wiring, keep `CZ_ONLINE_LOG` and the whole
    xlive stack for solo + leaderboards.
