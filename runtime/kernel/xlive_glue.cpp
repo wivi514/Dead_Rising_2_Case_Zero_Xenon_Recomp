@@ -10,6 +10,7 @@
 
 #include <xlive/client.h>
 
+#include "content.h"
 #include "klog.h"
 #include "xlive_overlay_glue.h"
 #include "xlive_session.h"
@@ -236,10 +237,24 @@ void CzXlive_Start(uint32_t titleId)
         return;
     }
 
+    // THE XENONLIVE LAUNCHER IS THE WAY ONLINE (operator decision, v1.1.0). The
+    // launcher signs the player in and starts the game with CZ_XLIVE_ONLINE=1
+    // (and CZ_XLIVE_COOP=1); a game started any other way is the DEFAULT
+    // PROFILE, offline — libxlive is not even started, so no cached account
+    // leaks in as a gamertag, no achievement is recorded against anyone, and
+    // nothing online can be reached. It used to load the cached identity and
+    // show its gamertag while telling the title it was signed out, which was
+    // neither one thing nor the other.
     if (const char* on = std::getenv("CZ_XLIVE_ONLINE"); on && on[0] == '1')
     {
         g_onlineAllowed = true;
         KLOG("[xlive] CZ_XLIVE_ONLINE: the title will be told it is signed in to Live\n");
+    }
+    else
+    {
+        KLOG("[xlive] not started through the XenonLive launcher (CZ_XLIVE_ONLINE is "
+             "unset): the default profile, offline — no account, no co-op\n");
+        return;
     }
 
     xlive::Options options;
@@ -260,7 +275,15 @@ void CzXlive_Start(uint32_t titleId)
     // the first successful round trip.
     const xlive::Identity identity = xlive::Client::Instance().identity();
     if (identity.xuid != xlive::kOfflineXuid)
+    {
         PublishGamertag(identity.gamertag);
+        // SAVES ARE PER PROFILE (operator decision, v1.1.0): this account's
+        // saves live in its own folder under the saved-games location, named
+        // by the gamertag; the offline default profile keeps "default". Set
+        // here, before any guest code runs, so the title's first save
+        // enumeration already looks in the right place.
+        ContentSetProfile(identity.gamertag);
+    }
 
     KLOG("[xlive] %s\n", xlive::Client::Instance().status().c_str());
 

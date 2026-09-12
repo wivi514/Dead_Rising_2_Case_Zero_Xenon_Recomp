@@ -17,6 +17,13 @@
 // unless CZ_SAVE_DIR says otherwise.
 void ContentSetRootFromGameDir(const std::string& gameDir);
 
+// Re-point the save root at a PROFILE's own folder: <SavedGames>/<name>, the
+// name sanitised for a filesystem. Called by the XenonLive glue once the
+// signed-in identity is known (before any guest code runs); never called for
+// the offline default profile, which keeps "default". A CZ_SAVE_DIR override
+// wins over both.
+void ContentSetProfile(const std::string& gamertag);
+
 // The resolved save root, for anything else that persists player-owned state next
 // to the saves (part 60's settings file). Empty until ContentSetRootFromGameDir.
 std::string ContentSaveRoot();

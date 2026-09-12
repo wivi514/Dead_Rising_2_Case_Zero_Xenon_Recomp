@@ -74,6 +74,7 @@
 #include <algorithm>
 #include <cstdio>
 #include <cstring>
+#include <cctype>
 #include <filesystem>
 #include <map>
 #include <mutex>
@@ -490,6 +491,33 @@ void ContentSetRootFromGameDir(const std::string& gameDir)
 
     KLOG("content: saves live in %s%s\n", g_saveRoot.string().c_str(),
          createFailed ? " (COULD NOT BE CREATED — saving will fail)" : "");
+}
+
+void ContentSetProfile(const std::string& gamertag)
+{
+    if (getenv("CZ_SAVE_DIR"))
+    {
+        KLOG("content: profile '%s' — CZ_SAVE_DIR overrides, saves stay in %s\n",
+             gamertag.c_str(), g_saveRoot.string().c_str());
+        return;
+    }
+    // The folder is the gamertag with anything a filesystem might refuse
+    // replaced; a gamertag is letters, digits and spaces on XenonLive, so this
+    // is normally the gamertag itself.
+    std::string folder;
+    for (unsigned char ch : gamertag)
+        folder += (std::isalnum(ch) || ch == ' ' || ch == '_' || ch == '-' || ch == '.')
+                      ? char(ch) : '_';
+    while (!folder.empty() && (folder.back() == ' ' || folder.back() == '.'))
+        folder.pop_back();
+    if (folder.empty() || folder == "default")
+        folder = "profile_" + std::to_string(std::hash<std::string>{}(gamertag) & 0xFFFFFF);
+    g_saveRoot = HostPaths::SavedGames() / folder;
+    std::error_code ec;
+    std::filesystem::create_directories(g_saveRoot, ec);
+    KLOG("content: profile '%s' — saves live in %s%s\n", gamertag.c_str(),
+         g_saveRoot.string().c_str(),
+         ec ? " (COULD NOT BE CREATED — saving will fail)" : "");
 }
 
 std::filesystem::path ContentSettingsDir()
