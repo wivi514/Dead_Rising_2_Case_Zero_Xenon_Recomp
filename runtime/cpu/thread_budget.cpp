@@ -15,6 +15,7 @@
 #include <vector>
 
 #if defined(__linux__)
+#include <pthread.h>
 #include <sched.h>
 #include <sys/resource.h>
 #include <sys/syscall.h>
@@ -347,4 +348,15 @@ void ThreadBudget_Report()
                 "[threads]   total runnable at a burst: %u budget + %u outside + pump + "
                 "the guest's busy threads, on %u physical cores\n",
                 s.total, outside, s.physical);
+}
+
+void ThreadBudget_NameSelf(const char* name)
+{
+#if defined(__linux__)
+    char shortName[16];
+    snprintf(shortName, sizeof shortName, "%s", name);
+    pthread_setname_np(pthread_self(), shortName);
+#else
+    (void)name;
+#endif
 }

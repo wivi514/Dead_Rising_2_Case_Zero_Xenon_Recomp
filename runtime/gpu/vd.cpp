@@ -22,6 +22,7 @@
 
 #include "../cpu/chain_stats.h"
 #include "../cpu/guest_thread.h"
+#include "../cpu/thread_budget.h"
 #include "../kernel/guestcall.h"
 #include "../kernel/heap.h"
 #include "../kernel/klog.h"
@@ -350,6 +351,7 @@ void DeliverCommandProcessorInterrupt()
 // graphics interrupt.
 void GraphicsInterruptPump()
 {
+    ThreadBudget_NameSelf("cz-pump");
     GuestThreadContext threadContext(2);
     uint8_t* base = g_memory.base;
 

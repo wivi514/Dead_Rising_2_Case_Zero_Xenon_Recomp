@@ -110,3 +110,11 @@ void ThreadBudget_Note(const char* pool, unsigned threads, const char* how);
 // per-thread). `CZ_NO_LOW_PRIORITY=1` is the same-binary control arm — every call is then
 // a counted no-op. Returns whether the priority actually changed.
 bool ThreadBudget_SetLowPriority(bool low);
+
+// Name the CALLING thread for the profiler and the per-thread census (part 116). Every
+// host thread this runtime spawns inherits its creator's comm at clone time, so once
+// the guest named its main thread "Main Thread" the pump, the guard pool and the
+// pipeline workers all reported as "Main Thread" too, and a thread census could not
+// tell the game's threads from ours. Linux keeps 15 characters; on Windows and macOS
+// this is a no-op (the per-thread readers this exists for are Linux tools).
+void ThreadBudget_NameSelf(const char* name);

@@ -24,10 +24,11 @@ load and the menus, which is a different workload from the one being asked about
 window is taken now, so it describes whatever the game is doing now -- point it at a
 crowd, not at the title screen.
 
-Threads are unnamed by our runtime (the GUEST names its threads through an exception
-channel we log, but that name never reaches the host TID), so they are reported by TID
-and ordered by cost. The first-seen order is stable enough to identify the pump: it is
-created early and it is normally the busiest.
+Threads are reported by TID and ordered by cost, with the thread's comm beside it. As
+of part 116 the guest's own names reach the host TID (the SetThreadName exception the
+title raises now calls pthread_setname_np), so the two busiest rows read `Main Thread`
+and `JobThread3` rather than two anonymous numbers; our own threads are `cz-*`. Before
+part 116 every row was anonymous and the pump was identified by creation order.
 
 Usage: part50_thread_cpu.py [seconds]     # default 20
 """
@@ -84,14 +85,16 @@ def find_pid():
 
 
 def sample(pid):
-    """{tid: cpu_ticks} for every thread alive right now."""
+    """{tid: (cpu_ticks, comm)} for every thread alive right now."""
     out = {}
     for t in glob.glob(f'/proc/{pid}/task/[0-9]*'):
         try:
             # The comm field is parenthesised and may contain spaces, so split on the
             # LAST ')' rather than on whitespace -- the classic /proc/stat parsing trap.
-            fields = open(f'{t}/stat').read().rsplit(')', 1)[1].split()
-            out[int(t.rsplit('/', 1)[1])] = int(fields[11]) + int(fields[12])  # utime+stime
+            head, tail = open(f'{t}/stat').read().rsplit(')', 1)
+            comm = head.split('(', 1)[1]
+            fields = tail.split()
+            out[int(t.rsplit('/', 1)[1])] = (int(fields[11]) + int(fields[12]), comm)  # utime+stime
         except (OSError, IndexError, ValueError):
             continue
     return out
@@ -108,21 +111,21 @@ def main():
     elapsed = t1 - t0
 
     rows = []
-    for tid, end in b.items():
+    for tid, (end, comm) in b.items():
         if tid in a:
-            rows.append((100.0 * (end - a[tid]) / HZ / elapsed, tid))
+            rows.append((100.0 * (end - a[tid][0]) / HZ / elapsed, tid, comm))
     rows.sort(reverse=True)
     total = sum(r[0] for r in rows)
 
     smt = f', {CORES // PHYS} threads/core' if PHYS and CORES > PHYS else ''
     print(f'pid {pid}, {len(rows)} threads, {elapsed:.1f} s window, '
           f'{PHYS} physical cores / {CORES} logical{smt}\n')
-    print(f'{"thread":>10} {"% of one core":>14}   {"bar (100% = 1 core)":<40}')
-    for pct, tid in rows:
+    print(f'{"thread":>10} {"name":<16} {"% of one core":>14}   {"bar (100% = 1 core)":<40}')
+    for pct, tid, comm in rows:
         if pct < 0.5:
             continue
-        print(f'{tid:>10} {pct:>13.1f}%   {"#" * min(40, int(pct / 2.5)):<40}')
-    quiet = sum(1 for p, _ in rows if p < 0.5)
+        print(f'{tid:>10} {comm:<16} {pct:>13.1f}%   {"#" * min(40, int(pct / 2.5)):<40}')
+    quiet = sum(1 for r in rows if r[0] < 0.5)
     if quiet:
         print(f'{"":>10} {"":>14}   ...and {quiet} thread(s) below 0.5%')
 

@@ -34,6 +34,7 @@ import subprocess
 import sys
 
 SYM = re.compile(r"Pu:\s+[0-9a-f]+\s+(.*)$")
+HEAD = re.compile(r"^\s*(.+?)\s+(\d+)\s+[\d.]+:\s+(\d+)\s+")
 
 
 def read(path):
@@ -42,14 +43,17 @@ def read(path):
                          capture_output=True, text=True, errors="replace")
     per = collections.defaultdict(collections.Counter)
     for line in out.stdout.splitlines():
-        f = line.split()
-        if len(f) < 6:
+        # `<comm> <tid> <time>: <period> <event>: ...` — the comm can contain SPACES now
+        # that the guest's own thread names reach the host ("Main Thread", "Draw
+        # Thread", part 116), so the fields are taken by a pattern anchored on the
+        # `<tid> <time>:` pair rather than by whitespace position: split on spaces
+        # read "Thread" as the tid and silently dropped every sample from exactly the
+        # two threads the part-116 profile exists to read.
+        h = HEAD.match(line)
+        if not h:
             continue
-        try:
-            tid = int(f[1])
-            period = int(f[3])
-        except ValueError:
-            continue
+        tid = int(h.group(2))
+        period = int(h.group(3))
         m = SYM.search(line)
         if not m:
             continue

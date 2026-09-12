@@ -52,6 +52,10 @@
 #include <string>
 #include <thread>
 #include <vector>
+#if !defined(_WIN32)
+#include <pthread.h>
+#include <unistd.h> // gettid(); win_compat.h supplies the Windows spelling
+#endif
 
 #include "../cpu/crash_report.h"
 #include "../cpu/guest_thread.h"
@@ -2472,10 +2476,30 @@ PPC_FUNC(__imp__RtlRaiseException)
 
     if (code == 0x406D1388) // MS_VC_EXCEPTION: "SetThreadName", debugger-only, continuable
     {
+        // THREADNAME_INFO sits in ExceptionInformation[0..3] (record + 0x14):
+        // {dwType=0x1000, szName, dwThreadID, dwFlags}. dwThreadID is -1 for "the
+        // calling thread"; the title only ever names itself this way (A1: 19 raises,
+        // each on the thread being named), and the other case is logged, not guessed.
         const uint32_t namePtr =
             __builtin_bswap32(*reinterpret_cast<const uint32_t*>(record + 0x18));
+        const uint32_t who =
+            __builtin_bswap32(*reinterpret_cast<const uint32_t*>(record + 0x1C));
         const char* name = namePtr ? reinterpret_cast<const char*>(base + namePtr) : "?";
-        KLOG("thread named '%s' (r13=%08X)\n", name, g_ppcContext ? g_ppcContext->r13.u32 : 0);
+        const uint32_t self = GuestThread::GetCurrentThreadId();
+        const uint32_t target = (who == 0xFFFFFFFFu) ? self : who;
+        // Bind the guest's name to the HOST thread (part 116). Until now the name
+        // went only into the kcall trace and every per-thread instrument — `perf`,
+        // `top -H`, tools/part50_thread_cpu.py — reported the guest's threads as
+        // anonymous tids, so "which thread is the 8.8 ms" needed a debugger to
+        // answer (part111-kickoff §1 question 1). On this title every one of the
+        // 19 boot-era raises comes from the MAIN thread naming a thread it just
+        // created (dwThreadID = the new thread's id, never -1), so the binding goes
+        // through the guest-tid registry rather than pthread_self().
+        const bool bound = GuestThread::BindHostName(target, name);
+        // Always logged: a dozen lines a boot, and it is the only place the guest
+        // tid and the title's own name for the thread meet.
+        fprintf(stderr, "[kernel] thread named '%s' guest tid=%08X (by %08X)%s\n",
+                name, target, self, bound ? "" : " — NOT BOUND to a host thread");
         return;
     }
 

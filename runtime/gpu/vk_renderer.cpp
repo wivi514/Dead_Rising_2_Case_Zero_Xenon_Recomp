@@ -14,6 +14,7 @@
 #include "../host/host_paths.h"
 #include "../host/settings.h"
 #include "../host/window.h"
+#include "../cpu/guest_thread.h"
 #include "../cpu/thread_budget.h"
 
 #include <vulkan/vulkan.h>
@@ -931,6 +932,7 @@ void Run(const Job& job)
 
 void Worker()
 {
+    ThreadBudget_NameSelf("cz-pipepack");
     for (;;)
     {
         Job job;
@@ -2542,6 +2544,7 @@ void Prezero_WorkerDrain();
 
 void GuardWorker(unsigned workerIdx)
 {
+    { char n[16]; snprintf(n, sizeof n, "cz-guard%u", workerIdx); ThreadBudget_NameSelf(n); }
     GuardPool& gp = *g_gp;
     uint64_t seen = 0;
     for (;;)
@@ -8830,6 +8833,7 @@ bool tablesReady = false;
 
 void Worker()
 {
+    ThreadBudget_NameSelf("cz-shaderjit");
     for (;;)
     {
         Job job;
@@ -12748,6 +12752,7 @@ bool ChainOn()
 
 void Worker()
 {
+    ThreadBudget_NameSelf("cz-pipeline");
     // PRIORITY FOLLOWS THE TIER (part 103 item 4a). A SPARE job is the speculative
     // warm — nobody is waiting for it, and on a cold driver cache it is 155 ms of pure
     // compiler time per key on czamd, 1,339 keys, four of these threads: for the first
@@ -29069,17 +29074,36 @@ void DoSwapImpl(uint8_t* base, uint32_t frontBuffer, uint32_t width, uint32_t he
                     lastPumpCpuNs = nowNs;
                     havePumpCpu = true;
                 }
+                // THE GUEST'S OWN CPU PER FRAME, same window, same line (part 116). The
+                // title's Main Thread and Draw Thread are the 8.8 ms floor part 110
+                // found under `wall ~ max(pump, guest, GPU)`; a guest-side change (a
+                // native CRT hook, PGO on the recompiled TUs) moves THESE columns and,
+                // while the pump is the longer term, nothing else. Read through the
+                // named thread's CPU clock; -1 until the title has named its threads.
+                double guestMainMs = -1.0, guestDrawMs = -1.0;
+                {
+                    static double lastMain = -1.0, lastDraw = -1.0;
+                    const double nowMain = GuestThread::CpuSecondsOf("Main Thread");
+                    const double nowDraw = GuestThread::CpuSecondsOf("Draw Thread");
+                    if (frames && lastMain >= 0.0 && nowMain >= 0.0)
+                        guestMainMs = (nowMain - lastMain) * 1e3 / double(frames);
+                    if (frames && lastDraw >= 0.0 && nowDraw >= 0.0)
+                        guestDrawMs = (nowDraw - lastDraw) * 1e3 / double(frames);
+                    lastMain = nowMain;
+                    lastDraw = nowDraw;
+                }
                 fprintf(stderr,
                         "[fps] %.1f fps mean (%.2f ms) | %.1f fps median (%.2f ms) | "
                         "p99 %.2f ms | worst %.2f ms | >2x med %.1f%% | "
                         "%llu frames in %.1f s | draws med %u (%u..%u) | "
-                        "pump cpu %.2f ms/frame (%.0f%% of a core)\n",
+                        "pump cpu %.2f ms/frame (%.0f%% of a core) | "
+                        "guest main %.2f draw %.2f ms/frame\n",
                         double(frames) / elapsed, 1000.0 * elapsed / double(frames),
                         1e6 / double(medUs), double(medUs) / 1000.0,
                         double(p99Us) / 1000.0, double(worstUs) / 1000.0,
                         n > 1 ? 100.0 * double(overTwice) / double(n - 1) : 0.0,
                         (unsigned long long)frames, elapsed, dMed, dMin, dMax,
-                        pumpCpuMs, pumpDuty);
+                        pumpCpuMs, pumpDuty, guestMainMs, guestDrawMs);
                 // ...and the register-run census beside it when armed, PER WINDOW rather
                 // than only at exit. The exit path is the right home for a summary
                 // (gotcha 543) but it is not a reliable one: two runs tonight ended

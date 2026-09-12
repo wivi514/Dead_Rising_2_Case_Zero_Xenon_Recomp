@@ -5,10 +5,13 @@
 #include <bit>
 #include <chrono>
 #include <cstring>
+#include <ctime>
 #include <map>
 #include <mutex>
+#include <string>
 
 #if !defined(_WIN32)
+#include <pthread.h>
 #include <unistd.h>
 #endif
 
@@ -81,6 +84,67 @@ uint32_t GuestThread::ThreadIdForPcr(uint32_t pcr)
     return it != g_pcrToThreadId.end() ? it->second : 0;
 }
 
+// Guest thread id -> the host thread, for BindHostName. Filled at spawn (the
+// std::thread's native handle exists before the new thread has run a single
+// instruction) and by Run() for threads we did not spawn (the main guest thread).
+static std::mutex g_hostThreadMutex;
+static std::map<uint32_t, std::thread::native_handle_type> g_hostThreadFor;
+
+static void RegisterHostThread(uint32_t threadId, std::thread::native_handle_type h)
+{
+    std::lock_guard lk(g_hostThreadMutex);
+    g_hostThreadFor[threadId] = h;
+}
+
+// The named guest threads' host handles, for CpuSecondsOf. Keyed by the title's own
+// name; a name reused for two threads (HavokWorkerThread) keeps the first.
+static std::map<std::string, std::thread::native_handle_type> g_hostThreadByName;
+
+bool GuestThread::BindHostName(uint32_t threadId, const char* name)
+{
+#if !defined(_WIN32) && !defined(__APPLE__)
+    std::thread::native_handle_type h;
+    {
+        std::lock_guard lk(g_hostThreadMutex);
+        auto it = g_hostThreadFor.find(threadId);
+        if (it == g_hostThreadFor.end())
+            return false;
+        h = it->second;
+        g_hostThreadByName.emplace(name, h);
+    }
+    char shortName[16]; // the kernel keeps 15 characters
+    snprintf(shortName, sizeof shortName, "%s", name);
+    return pthread_setname_np(h, shortName) == 0;
+#else
+    (void)threadId; (void)name;
+    return false;
+#endif
+}
+
+double GuestThread::CpuSecondsOf(const char* name)
+{
+#if defined(__linux__)
+    std::thread::native_handle_type h;
+    {
+        std::lock_guard lk(g_hostThreadMutex);
+        auto it = g_hostThreadByName.find(name);
+        if (it == g_hostThreadByName.end())
+            return -1.0;
+        h = it->second;
+    }
+    clockid_t cid;
+    if (pthread_getcpuclockid(h, &cid) != 0)
+        return -1.0;
+    timespec ts{};
+    if (clock_gettime(cid, &ts) != 0)
+        return -1.0;
+    return double(ts.tv_sec) + 1e-9 * double(ts.tv_nsec);
+#else
+    (void)name;
+    return -1.0;
+#endif
+}
+
 uint32_t GuestThread::Run(const GuestThreadParams& params)
 {
     // Top set bit of the processor mask picks the CPU number (matches
@@ -92,6 +156,9 @@ uint32_t GuestThread::Run(const GuestThreadParams& params)
     const uint32_t cpuNumber = procMask == 0 ? 0 : 7 - std::countl_zero(procMask);
 
     GuestThreadContext ctx(cpuNumber, params.stackSize);
+#if !defined(_WIN32)
+    RegisterHostThread(GuestThread::GetCurrentThreadId(), pthread_self());
+#endif
     ctx.ppcContext.r3.u64 = params.arg0;
     ctx.ppcContext.r4.u64 = params.arg1;
 
@@ -173,6 +240,7 @@ GuestThreadHandle::GuestThreadHandle(const GuestThreadParams& params)
       suspended((params.flags & 0x1) != 0), // CREATE_SUSPENDED
       thread(GuestThreadFunc, this)
 {
+    RegisterHostThread(threadId, thread.native_handle());
 }
 
 GuestThreadHandle::~GuestThreadHandle()
