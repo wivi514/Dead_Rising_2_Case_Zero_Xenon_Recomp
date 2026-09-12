@@ -309,6 +309,17 @@ uint32_t GuestThread::Run(const GuestThreadParams& params)
     GuestThreadContext ctx(cpuNumber, params.stackSize);
 #if !defined(_WIN32)
     RegisterHostThread(GuestThread::GetCurrentThreadId(), pthread_self());
+#else
+    // GetCurrentThread() is a pseudo-handle valid only on this thread; the registry is
+    // read from others (the pin, the thread clock), so a real one is duplicated. Without
+    // this the title's own naming of its Main Thread — which runs on main.cpp's raw
+    // std::thread, not a GuestThreadHandle — found nothing to bind (part 118, czwin).
+    {
+        HANDLE real = nullptr;
+        if (DuplicateHandle(GetCurrentProcess(), GetCurrentThread(), GetCurrentProcess(), &real, 0,
+                            FALSE, DUPLICATE_SAME_ACCESS))
+            RegisterHostThread(GuestThread::GetCurrentThreadId(), real);
+    }
 #endif
     {
         std::lock_guard lk(g_hostThreadMutex);
