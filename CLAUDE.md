@@ -197,9 +197,10 @@ mask; trust the microcode's own swizzles.
     was profiled for the first time (the threads are NAMED now; the Main Thread is half
     simulation, half render submission; the Draw Thread is 81% the title's display-list
     interpreter -> its D3D layer), **a 1 ms poll in OUR wait-any was 1.1 ms of the
-    floor** (fixed per-object, `CZ_WAITANY_POLL=1` the control; the guest floor at 1080p
-    is 8.1 -> 7.0 ms, UNDER the 8.33 target; the shipped frame +0.24 because the Draw
-    Thread now reaches our fence sooner), native CRT hooks refuted by census (memcpy
+    floor** (fixed per-object; the guest floor at 1080p is 8.1 -> 7.0 ms, UNDER the
+    8.33 target; the shipped frame +0.3 because the Draw Thread now reaches our fence
+    sooner — **so the operator PARKED it: OFF by default, `CZ_WAITANY_WAKE=1` engages,
+    flip when the pump is under ~8 ms, and do not re-chase it**), native CRT hooks refuted by census (memcpy
     0.9%), PGO/ThinLTO/-O3 on the ppc TUs all KILLED (−0.25/null/null), the bundle
     `CZ_VK_SCOPED_SHARED_ZERO=1 CZ_VK_TEXMEMO=1` re-measured at **−0.68 ms** on the
     shipped frame (the operator's call, recommendation ON), and THE HONEST ANSWER: the
@@ -1244,7 +1245,8 @@ HAND-OFF; gotchas 559-564):
   Per-object wake (`WaitAnyBlock`): the guest floor (`CZ_VK_NO_DODRAW=1` wall) **8.1 ->
   7.0 ms at 1080p, −1.11 monotone, three runs a side, CPU columns unmoved**; the shipped
   wall **+0.24** (the Draw Thread reaches our fence sooner; 5.1 parks a frame where
-  3.1) — shipped ON with that stated, `CZ_WAITANY_POLL=1` the control. v1 was a
+  3.1) — **OFF by default by the operator's decision, `CZ_WAITANY_WAKE=1` engages;
+  flip when the pump is under ~8 ms and not before**. v1 was a
   process-wide broadcast and measured +0.9 (thundering herd; the pump paid on another
   core) — retracted in place.
 * **Codegen on the recompiled TUs is dead**: PGO −0.25 ms on the Main Thread (killed at
@@ -1263,8 +1265,7 @@ HAND-OFF; gotchas 559-564):
 * Gates on the shipped binary: `--smoke` OK, A5 **exit 0** (5 permutation, 0 real),
   `truncated=0`, `no translated shader` 0, unlowered switches / shader dims / both PM4
   oracles clean, E3 **+0.8472** (4 of 5), `phase_vs_perf.py --self-test` PASSED. Owed:
-  the operator's eye on the wake (nothing changes a pixel; `CZ_WAITANY_POLL=1` first if
-  anything feels off), the Windows spelling of the thread clocks.
+  nothing (the default is the poll every release shipped with), the Windows spelling of the thread clocks.
 
 Where the port was, as of 2026-09-10 (**PART 111 — ITEM B WAS BUILT ON ITS CLEANEST JOB AND
 THE PUMP TURNS OUT TO BE BOUND BY BYTES.** The operator decided to build item B knowing its

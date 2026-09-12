@@ -1438,7 +1438,12 @@ static uint32_t WaitAnyPoll(uint32_t count, uint32_t timeoutMs, uint32_t alertab
 {
     GuestThread::WaitScope ws(GuestThread::kWaitMulti);
     static const bool drainApcs = getenv("CZ_MULTIWAIT_APC") != nullptr;
-    static const bool pollOnly = getenv("CZ_WAITANY_POLL") != nullptr;
+    // OFF BY DEFAULT — the operator's decision after part 116 measured both sides: the
+    // wake takes the game's own floor 8.1 -> 7.0 ms but the SHIPPED frame is our pump
+    // (10.1-10.4 ms), so today it reads +0.3 ms (~3 fps) with no visible upside. Flip
+    // the default when the pump is under ~8 ms (item B or the D3D pivot); the fix is
+    // built, gated and one line away. Do not re-measure it before then.
+    static const bool pollOnly = getenv("CZ_WAITANY_WAKE") == nullptr;
     const auto start = std::chrono::steady_clock::now();
     // Register this wait on every object that supports it (kobject.h, wait-any
     // wake-ups) BEFORE the first poll, so a signal between poll and park bumps the
@@ -1494,7 +1499,7 @@ static uint32_t WaitAnyPoll(uint32_t count, uint32_t timeoutMs, uint32_t alertab
         // Park until one of OUR objects is signalled, bounded by the old 1 ms
         // quantum; the generation was read BEFORE the poll above, so a signal that
         // landed during the poll returns immediately (kobject.h, wait-any wake-ups).
-        // CZ_WAITANY_POLL=1 is the pre-part-116 behaviour, the control arm.
+        // The poll is the default; CZ_WAITANY_WAKE=1 engages the wake (see above).
         if (pollOnly)
             std::this_thread::sleep_for(std::chrono::milliseconds(1));
         else

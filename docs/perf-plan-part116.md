@@ -351,7 +351,7 @@ prediction and kill above stand unchanged for v2. (And a rule was broken to get 
 `runtime/build` was rebuilt while campaign 2 was running; the one run that raced the
 binary is quarantined as `*_v1_binary_race.rejected` and campaign 3 is the clean A/B.)
 
-**v2 RESULT — the wait-any wake vs the 1 ms poll, same binary, `CZ_WAITANY_POLL=1` the
+**v2 RESULT — the wait-any wake vs the 1 ms poll, same binary, the poll (now the default; `CZ_WAITANY_WAKE=1` engages the wake) the
 control, alternated, at 02:12-02:24** (campaign 3 + one extra NO_DODRAW run for the wake
 arm after one of its runs missed the crowd gate and was rejected):
 

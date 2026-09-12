@@ -51,9 +51,10 @@ PM4 walk. That is the architectural answer to both floors and it is a phase, not
 3. **Wait-any wakes on the signal** (`WaitAnyBlock`, per-object registration), not on a
    1 ms tick. **Guest floor −1.11 ms, monotone, three runs a side, CPU unmoved; the shipped
    wall +0.24 ms** (§4.4 — the Draw Thread reaches the fence sooner and the pump pays for
-   the contention). `CZ_WAITANY_POLL=1` is the control. The +0.24 is stated, not hidden:
-   if the operator would rather have 0.24 ms on today's frame than 1.1 ms on the floor
-   that decides the target, the default is one line.
+   the contention). **THE OPERATOR DECIDED (morning of 2026-09-12, after seeing both
+   numbers): OFF by default, `CZ_WAITANY_WAKE=1` engages, and do not go after it again.**
+   Flip the default when the pump is under ~8 ms (item B / the D3D pivot); at that point
+   the frame is the game's floor and the fix is 8.1 -> 7.0 ms ≈ 17 fps.
 4. **Codegen arms in CMake** (`CZ_PPC_OPT`, `CZ_PPC_PGO`, `CZ_PPC_LTO`), all OFF; the PGO
    profile flushes from the SIGTERM handler.
 5. Tools: `part116_probe.sh` (archives the binary + a symfs — perf's build-id cache does
@@ -65,8 +66,9 @@ PM4 walk. That is the architectural answer to both floors and it is a phase, not
 
 * **An operator session on the shipped default** — nothing here changes a pixel and the
   picture gates are in §3, but the wait-any wake changes WHEN guest threads run, and the
-  only test of "does it feel the same" is theirs. If anything is off, `CZ_WAITANY_POLL=1`
-  first. Headless evidence so far: 30+ crowd-route runs and one 10-minute
+  only test of "does it feel the same" is theirs — now moot for the default (the poll
+  is what shipped in every release so far); it applies the day `CZ_WAITANY_WAKE` becomes
+  the default. Headless evidence so far: 30+ crowd-route runs and one 10-minute
   `CZ_AUTOCHUCK=EXPLORER` roam with `CZ_WAIT_TRACE=1` (outdoors at 8,689 draws, the map
   closed twice, no thread ended, the only >5 s waits the idle JobThreads' — the same
   idle waits the poll arm reports).

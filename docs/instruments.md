@@ -4272,16 +4272,18 @@ CZ_COOP_CALL_TRACE=1  every step of both host-side routes from "a client is pend
                    — and how many a frame. CPU + waits = the frame, to 0.1 ms, on both
                    threads (§4.4). It is the census that found the 1 ms wait-any poll.
                    Printed after every [fps] line, no variable
-CZ_WAITANY_POLL=1  **THE CONTROL ARM for the wait-any wake-up (item 4).** By default a
-                   wait-any (KeWaitForMultipleObjects / NtWaitForMultipleObjectsEx,
+CZ_WAITANY_WAKE=1  **THE WAIT-ANY WAKE-UP (item 4) — OFF BY DEFAULT, THE OPERATOR'S CALL.**
+                   With it a wait-any (KeWaitForMultipleObjects / NtWaitForMultipleObjectsEx,
                    wait-any type) registers on each Event/Semaphore it waits on and parks
-                   until one of THEM is signalled, bounded by 1 ms. =1 restores the
-                   pre-part-116 loop: poll, sleep 1 ms, poll — where every wait ended up to
-                   a millisecond after its object was signalled, five times a frame on the
+                   until one of THEM is signalled, bounded by 1 ms. The default is the
+                   original loop: poll, sleep 1 ms, poll — where every wait ends up to a
+                   millisecond after its object was signalled, five times a frame on the
                    Main Thread. Measured: the guest floor (the NO_DODRAW wall) −1.11 ms,
-                   monotone in three bands, CPU columns unmoved; the normal wall +0.24
-                   (the Draw Thread reaches the fence sooner and spins there — see
-                   CZ_FENCE_PARK_SPIN_US). v1 of the fix was a process-wide broadcast and
+                   monotone in three bands, CPU columns unmoved; the SHIPPED wall +0.24-0.3
+                   (~3 fps), because that frame is the pump and the Draw Thread just reaches
+                   our fence sooner. So it is parked: flip the default when the pump is
+                   under ~8 ms (item B / the D3D pivot) and the 1.1 ms becomes ~17 fps.
+                   DO NOT re-measure it before then. v1 was a process-wide broadcast and
                    measured +0.9 ms (thundering herd) — retracted in place in §4.4
 CZ_VK_NO_DODRAW=1 (part 110) is the arm a GUEST-side change is read on: with the per-draw
                    renderer deleted the wall IS the guest floor. Read its wall; on the

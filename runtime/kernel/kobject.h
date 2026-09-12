@@ -162,4 +162,5 @@ T* QueryKernelObject(XDISPATCHER_HEADER& header)
 // it already holds. Object kinds that do not register (a file handle, a content
 // enumerator) keep the old 1 ms poll through the bounded wait.
 //
-// CZ_WAITANY_POLL=1 restores the 1 ms sleep — the same-binary control arm.
+// CZ_WAITANY_WAKE=1 engages the wake; the 1 ms poll is the DEFAULT (the operator's call
+// after part 116: −1.1 ms on the game's floor, +0.3 on today's pump-bound frame).
