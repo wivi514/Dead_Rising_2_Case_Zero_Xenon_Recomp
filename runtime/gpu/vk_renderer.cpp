@@ -29222,6 +29222,7 @@ void DoSwapImpl(uint8_t* base, uint32_t frontBuffer, uint32_t width, uint32_t he
                         pumpCpuMs, pumpDuty, walkCpuMs, guestMainMs, guestDrawMs);
                 if (waitLine[0])
                     fprintf(stderr, "[guestwait] ms/frame / calls/frame: %s\n", waitLine);
+                ThreadBudget_PinSweep();   // CZ_GUEST_PIN (part 118): a no-op unless set
                 // ...and the register-run census beside it when armed, PER WINDOW rather
                 // than only at exit. The exit path is the right home for a summary
                 // (gotcha 543) but it is not a reliable one: two runs tonight ended

@@ -583,6 +583,9 @@ int main(int argc, char** argv)
     // what makes a run's parallelism visible in its own log rather than inferred from the
     // machine it happened to run on. See runtime/cpu/thread_budget.h.
     ThreadBudget_Report();
+    // CZ_GUEST_PIN (part 118): from the process's main thread, before anything spawns,
+    // because affinity is inherited — see thread_budget.cpp.
+    ThreadBudget_PinProcessAway();
 
     // Before any guest code: the title reads the XMA context-array base out of the
     // decoder's register aperture exactly once (sub_8285EDF8) and caches it, so a

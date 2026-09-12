@@ -118,3 +118,22 @@ bool ThreadBudget_SetLowPriority(bool low);
 // tell the game's threads from ours. Linux keeps 15 characters; on Windows and macOS
 // this is a no-op (the per-thread readers this exists for are Linux tools).
 void ThreadBudget_NameSelf(const char* name);
+
+// CZ_GUEST_PIN (part 118): reserve two physical cores (with their SMT siblings) for the
+// title's Main Thread and Draw Thread. Call PinProcessAway from the process's main
+// thread BEFORE any thread is spawned (affinity is inherited), and PinNamedThread when
+// the title names a thread. Both are no-ops unless the arm is set; see thread_budget.cpp.
+void ThreadBudget_PinProcessAway();
+// Move every thread that is not one of the two pinned ones onto the rest mask; a no-op
+// unless the arm is on. Cheap; called after each pin and once per [fps] window.
+void ThreadBudget_PinSweep();
+#if defined(__linux__)
+#include <pthread.h>
+bool ThreadBudget_PinNamedThread(const char* name, pthread_t h);
+// A thread just spawned by any thread: give it the process's "rest" mask (a spawn
+// inherits its creator's, and the creator may be a pinned guest thread).
+void ThreadBudget_PinRest(pthread_t h);
+#else
+bool ThreadBudget_PinNamedThread(const char* name, unsigned long h);
+void ThreadBudget_PinRest(unsigned long h);
+#endif

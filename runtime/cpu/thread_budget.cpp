@@ -4,6 +4,7 @@
 #include <windows.h>
 #endif
 
+#include <algorithm>
 #include <cerrno>
 #include <cstdio>
 #include <cstdlib>
@@ -15,6 +16,7 @@
 #include <vector>
 
 #if defined(__linux__)
+#include <dirent.h>
 #include <pthread.h>
 #include <sched.h>
 #include <sys/resource.h>
@@ -360,3 +362,322 @@ void ThreadBudget_NameSelf(const char* name)
     (void)name;
 #endif
 }
+
+// ---------------------------------------------------------------------------------------
+// CZ_GUEST_PIN (part 118): the two guest threads that ARE the frame, each on a physical
+// core of its own, with the SMT sibling kept empty.
+//
+// WHY. Part 118's PMU pair on the guest's Main Thread: with our renderer running it
+// retires 0.78 cycles an instruction, without it 0.665 — 17% more cycles for the same
+// instruction stream, of which the extra DRAM fills (31.1k vs 27.4k a frame) explain
+// perhaps a third. The rest is either DRAM latency under our traffic or the scheduler
+// landing the Main Thread on the SMT sibling of a core our pump, draw or guard thread
+// is saturating. Pinning separates the two: if the Main Thread's cycles a frame fall
+// when its core is exclusively its own, the sibling was busy; if they do not, it is the
+// memory system and no placement fixes it.
+//
+// HOW. Every thread of the process inherits its creator's affinity, so the whole
+// process is first confined to the CPUs OUTSIDE the two reserved cores (both siblings
+// of each), from the main thread before anything is spawned; then, when the title
+// names its "Main Thread" and "Draw Thread", each is moved onto its reserved core.
+// The reserved cores are the first two physical cores in the affinity mask, with all
+// their siblings read from sysfs (`thread_siblings_list`), so it is correct on any SMT
+// width and a no-op on a machine without SMT topology. Off by default; `taskset -c 0-7`
+// (the whole process on eight distinct cores) was measured WORSE in part 117 — this is
+// not that: nothing else loses a CPU it was using, only the two siblings.
+#if defined(__linux__)
+namespace
+{
+struct PinPlan
+{
+    bool on = false;
+    int mode = 0;                    // 1 = Main + Draw; 2 = also cz-pump and cz-draw
+    int mainCpu = -1, drawCpu = -1, pumpCpu = -1, rendCpu = -1;
+    std::vector<int> reserved;       // every reserved core and all its siblings
+    cpu_set_t rest;                  // the process mask minus `reserved`
+};
+
+std::vector<int> SiblingsOf(int cpu)
+{
+    std::vector<int> out;
+    const std::string path = "/sys/devices/system/cpu/cpu" + std::to_string(cpu) +
+                             "/topology/thread_siblings_list";
+    FILE* f = fopen(path.c_str(), "r");
+    if (!f)
+        return out;
+    char buf[256] = {0};
+    if (fgets(buf, sizeof buf, f))
+    {
+        // "0,8" or "0-1" or "0"
+        for (char* p = buf; *p;)
+        {
+            char* end = nullptr;
+            long a = strtol(p, &end, 10);
+            if (end == p)
+                break;
+            long b = a;
+            if (*end == '-')
+                b = strtol(end + 1, &end, 10);
+            for (long c = a; c <= b; ++c)
+                out.push_back(int(c));
+            while (*end == ',' || *end == '\n' || *end == ' ')
+                ++end;
+            p = end;
+        }
+    }
+    fclose(f);
+    if (out.empty())
+        out.push_back(cpu);
+    return out;
+}
+
+PinPlan& Plan()
+{
+    static PinPlan plan = [] {
+        PinPlan p;
+        cpu_set_t set;
+        CPU_ZERO(&set);
+        if (sched_getaffinity(0, sizeof set, &set) != 0)
+            return p;
+        const char* e = Env("CZ_GUEST_PIN");
+        if (e)
+        {
+            if (strcmp(e, "0") == 0)
+                return p;
+            p.mode = atoi(e) >= 2 ? 2 : 1;
+        }
+        else
+        {
+            // THE DEFAULT (part 118 campaign 2, three runs an arm, matched bands):
+            // mode 2 on eight physical cores with SMT — where it was measured — and
+            // off below that. Mode 2 reserves four cores; on six it would leave two
+            // for the guard pool, the Havok workers and the audio pump, which nobody
+            // has measured, and on a machine without SMT the sibling it keeps empty
+            // does not exist (the migration half of the effect is unmeasured alone).
+            const unsigned physical = ThreadBudget_PhysicalCores();
+            bool smt = false;
+            for (int cpu = 0; cpu < CPU_SETSIZE && !smt; ++cpu)
+                if (CPU_ISSET(cpu, &set))
+                    smt = SiblingsOf(cpu).size() > 1;
+            if (physical >= 8 && smt)
+                p.mode = 2;
+            else
+                return p;
+        }
+        // Distinct physical cores from the TOP of the mask downwards: cpu 0 is where
+        // the kernel lands most interrupt handling (the GPU driver's included) and a
+        // thread pinned there shares it.
+        const int want = p.mode == 2 ? 4 : 2;
+        std::vector<int> picked;
+        std::set<int> taken;
+        for (int cpu = CPU_SETSIZE - 1; cpu >= 0 && int(picked.size()) < want; --cpu)
+        {
+            if (!CPU_ISSET(cpu, &set))
+                continue;
+            int core = cpu;
+            ReadInt("/sys/devices/system/cpu/cpu" + std::to_string(cpu) + "/topology/core_id",
+                    &core);
+            if (taken.count(core))
+                continue;
+            taken.insert(core);
+            for (int s : SiblingsOf(cpu))
+                p.reserved.push_back(s);
+            picked.push_back(cpu);
+        }
+        if (int(picked.size()) < want)
+            return p;
+        p.mainCpu = picked[0];
+        p.drawCpu = picked[1];
+        if (p.mode == 2)
+        {
+            p.pumpCpu = picked[2];
+            p.rendCpu = picked[3];
+        }
+        // Everything but the reserved CPUs must remain — at least two — or the plan is
+        // refused rather than starving the pool.
+        int left = 0;
+        for (int cpu = 0; cpu < CPU_SETSIZE; ++cpu)
+            if (CPU_ISSET(cpu, &set) &&
+                std::find(p.reserved.begin(), p.reserved.end(), cpu) == p.reserved.end())
+                ++left;
+        if (left < 2)
+            return p;
+        p.rest = set;
+        for (int cpu : p.reserved)
+            CPU_CLR(cpu, &p.rest);
+        p.on = true;
+        return p;
+    }();
+    return plan;
+}
+}   // namespace
+
+void ThreadBudget_PinProcessAway()
+{
+    PinPlan& p = Plan();
+    if (!p.on)
+    {
+        if (Env("CZ_GUEST_PIN") && strcmp(Env("CZ_GUEST_PIN"), "0") != 0)
+            fprintf(stderr, "[pin] CZ_GUEST_PIN: refused (no SMT topology, too few CPUs, or no mask)\n");
+        else
+            fprintf(stderr, "[pin] thread placement OFF (%s; CZ_GUEST_PIN=1/2 forces it)\n",
+                    Env("CZ_GUEST_PIN") ? "CZ_GUEST_PIN=0" : "under eight physical cores or no SMT");
+        return;
+    }
+    const int rc = sched_setaffinity(0, sizeof p.rest, &p.rest);
+    std::string res;
+    for (int cpu : p.reserved)
+        res += (res.empty() ? "" : ",") + std::to_string(cpu);
+    fprintf(stderr, "[pin] thread placement mode %d (%s; CZ_GUEST_PIN=0 is the control): process "
+                    "confined away from cpus {%s}; Main Thread -> cpu %d, Draw Thread -> cpu %d, "
+                    "cz-pump -> %d, cz-draw -> %d (%s)\n",
+            p.mode, Env("CZ_GUEST_PIN") ? "CZ_GUEST_PIN" : "the default from 8 physical cores with SMT",
+            res.c_str(), p.mainCpu, p.drawCpu, p.pumpCpu, p.rendCpu,
+            rc == 0 ? "ok" : strerror(errno));
+}
+
+void ThreadBudget_PinRest(pthread_t h)
+{
+    PinPlan& p = Plan();
+    if (!p.on)
+        return;
+    cpu_set_t set;
+    CPU_ZERO(&set);
+    if (sched_getaffinity(0, sizeof set, &set) != 0)   // the process's own mask ...
+        return;
+    for (int cpu : p.reserved)                          // ... minus the reserved cores
+        CPU_CLR(cpu, &set);
+    // sched_getaffinity(0) reads the CALLING thread's mask, which on a pinned thread is
+    // its one CPU: rebuild from the plan's own record of the process mask instead.
+    if (CPU_COUNT(&set) < 2)
+        set = p.rest;
+    pthread_setaffinity_np(h, sizeof set, &set);
+}
+
+// Every thread of the process that is not one of the two pinned ones gets the rest
+// mask. Threads are spawned from many places (std::thread in the renderer, the audio
+// pump, the guest's own ExCreateThread) and a spawn inherits its creator's mask, so a
+// per-spawn hook cannot be complete; this walk of /proc/self/task is, and at a dozen
+// threads a second it is free. Run after every pin and from the [fps] window.
+void ThreadBudget_PinSweep()
+{
+    PinPlan& p = Plan();
+    if (!p.on)
+        return;
+    DIR* d = opendir("/proc/self/task");
+    if (!d)
+        return;
+    // Which thread is which, by comm and CPU time. Several threads carry each name
+    // (a spawn inherits its creator's comm until the title names it; children of the
+    // pump inherit `cz-pump`), so the thread that IS the name is the one with the most
+    // CPU time — the same rule every tool in tools/ uses. The first build of this sweep
+    // exempted any thread sitting on one reserved CPU as "pinned", which exempted every
+    // Havok worker the Main Thread had spawned onto its own core (frame 22 ms).
+    struct Best { pid_t tid = -1; unsigned long cpu = 0; };
+    Best main, draw, pump, rend;
+    std::vector<pid_t> tids;
+    while (dirent* e = readdir(d))
+    {
+        if (e->d_name[0] == '.')
+            continue;
+        const pid_t tid = pid_t(atoi(e->d_name));
+        tids.push_back(tid);
+        char path[64], comm[32] = {0};
+        snprintf(path, sizeof path, "/proc/self/task/%d/comm", int(tid));
+        if (FILE* f = fopen(path, "r"))
+        {
+            if (!fgets(comm, sizeof comm, f))
+                comm[0] = 0;
+            fclose(f);
+        }
+        Best* b = nullptr;
+        if (strncmp(comm, "Main Thread", 11) == 0)
+            b = &main;
+        else if (strncmp(comm, "Draw Thread", 11) == 0)
+            b = &draw;
+        else if (p.mode == 2 && strncmp(comm, "cz-pump", 7) == 0)
+            b = &pump;
+        else if (p.mode == 2 && strncmp(comm, "cz-draw", 7) == 0)
+            b = &rend;
+        if (!b)
+            continue;
+        snprintf(path, sizeof path, "/proc/self/task/%d/stat", int(tid));
+        unsigned long ut = 0, st = 0;
+        if (FILE* f = fopen(path, "r"))
+        {
+            char line[512] = {0};
+            if (fgets(line, sizeof line, f))
+                if (char* close = strrchr(line, ')'))
+                    sscanf(close + 1, " %*c %*d %*d %*d %*d %*d %*u %*u %*u %*u %*u %lu %lu", &ut, &st);
+            fclose(f);
+        }
+        if (ut + st >= b->cpu)
+        {
+            b->cpu = ut + st;
+            b->tid = tid;
+        }
+    }
+    closedir(d);
+    int moved = 0;
+    for (pid_t tid : tids)
+    {
+        int cpu = -1;
+        const char* who = nullptr;
+        if (tid == main.tid) { cpu = p.mainCpu; who = "Main Thread"; }
+        else if (tid == draw.tid) { cpu = p.drawCpu; who = "Draw Thread"; }
+        else if (tid == pump.tid) { cpu = p.pumpCpu; who = "cz-pump"; }
+        else if (tid == rend.tid) { cpu = p.rendCpu; who = "cz-draw"; }
+        cpu_set_t cur;
+        CPU_ZERO(&cur);
+        if (sched_getaffinity(tid, sizeof cur, &cur) != 0)
+            continue;
+        if (cpu >= 0)
+        {
+            if (CPU_COUNT(&cur) == 1 && CPU_ISSET(cpu, &cur))
+                continue;
+            cpu_set_t one;
+            CPU_ZERO(&one);
+            CPU_SET(cpu, &one);
+            if (sched_setaffinity(tid, sizeof one, &one) == 0)
+                fprintf(stderr, "[pin] '%s' (tid %d) -> cpu %d\n", who, int(tid), cpu);
+            continue;
+        }
+        bool touchesReserved = false;
+        for (int r : p.reserved)
+            if (CPU_ISSET(r, &cur))
+                touchesReserved = true;
+        if (!touchesReserved)
+            continue;               // already on the rest mask (or a subset)
+        if (sched_setaffinity(tid, sizeof p.rest, &p.rest) == 0)
+            ++moved;
+    }
+    if (moved)
+        fprintf(stderr, "[pin] sweep moved %d thread(s) off the reserved cores\n", moved);
+}
+
+bool ThreadBudget_PinNamedThread(const char* name, pthread_t h)
+{
+    PinPlan& p = Plan();
+    if (!p.on)
+        return false;
+    int cpu = -1;
+    if (strcmp(name, "Main Thread") == 0)
+        cpu = p.mainCpu;
+    else if (strcmp(name, "Draw Thread") == 0)
+        cpu = p.drawCpu;
+    if (cpu < 0)
+        return false;
+    cpu_set_t set;
+    CPU_ZERO(&set);
+    CPU_SET(cpu, &set);
+    const int rc = pthread_setaffinity_np(h, sizeof set, &set);
+    fprintf(stderr, "[pin] '%s' -> cpu %d (%s)\n", name, cpu, rc == 0 ? "ok" : strerror(rc));
+    ThreadBudget_PinSweep();
+    return rc == 0;
+}
+#else
+void ThreadBudget_PinProcessAway() {}
+bool ThreadBudget_PinNamedThread(const char*, unsigned long) { return false; }
+void ThreadBudget_PinRest(unsigned long) {}
+void ThreadBudget_PinSweep() {}
+#endif

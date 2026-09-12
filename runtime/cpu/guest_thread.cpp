@@ -22,6 +22,7 @@
 #include "../kernel/kobject.h"
 #include "../kernel/heap.h"
 #include "../kernel/memory.h"
+#include "thread_budget.h"
 
 constexpr size_t kPcrSize = 0xAB0;
 constexpr size_t kTlsSize = 0x100; // 64 slots x 4 bytes — matches the XEX header
@@ -244,6 +245,21 @@ GuestThread::WaitScope::~WaitScope()
         WaitCallerRecord(kind, ns);
 }
 
+void GuestThread::PinHostByName(const char* name)
+{
+#if defined(__linux__)
+    std::thread::native_handle_type h;
+    {
+        std::lock_guard lk(g_hostThreadMutex);
+        auto it = g_hostThreadByName.find(name);
+        if (it == g_hostThreadByName.end())
+            return;
+        h = it->second;
+    }
+    ThreadBudget_PinNamedThread(name, h);
+#else
+    (void)name;
+#endif
 }
 
 double GuestThread::CpuSecondsOf(const char* name)
@@ -375,6 +391,13 @@ GuestThreadHandle::GuestThreadHandle(const GuestThreadParams& params)
       thread(GuestThreadFunc, this)
 {
     RegisterHostThread(threadId, thread.native_handle());
+#if defined(__linux__)
+    // CZ_GUEST_PIN: a thread spawned by a PINNED thread inherits its one-CPU mask, and
+    // the Main Thread spawns everything (the Havok workers, the job pool, audio) after
+    // it is named — the first build of the arm ran all of them on the Main Thread's
+    // core and the frame went to 25 fps. Every spawn gets the process's "rest" mask.
+    ThreadBudget_PinRest(thread.native_handle());
+#endif
 }
 
 GuestThreadHandle::~GuestThreadHandle()

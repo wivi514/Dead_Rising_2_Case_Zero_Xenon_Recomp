@@ -121,6 +121,9 @@ struct GuestThread
     // so the guest's own CPU per frame is on the same line, over the same window, as
     // the pump's (part 116 — the quantity a guest-side change is measured by).
     static double CpuSecondsOf(const char* name);
+    // CZ_GUEST_PIN (part 118): move the host thread the title just named onto its
+    // reserved core, if the arm reserves one for that name. No-op otherwise.
+    static void PinHostByName(const char* name);
 
     // WHERE A GUEST THREAD'S NON-CPU TIME GOES (part 116 item 4). The Main Thread's
     // CPU per frame is 6.5 ms and the wall under CZ_VK_NO_DODRAW is 8.1: the gap is

@@ -2697,6 +2697,8 @@ PPC_FUNC(__imp__RtlRaiseException)
         // created (dwThreadID = the new thread's id, never -1), so the binding goes
         // through the guest-tid registry rather than pthread_self().
         const bool bound = GuestThread::BindHostName(target, name);
+        if (bound)
+            GuestThread::PinHostByName(name);   // CZ_GUEST_PIN (part 118), else a no-op
         // Always logged: a dozen lines a boot, and it is the only place the guest
         // tid and the title's own name for the thread meet.
         fprintf(stderr, "[kernel] thread named '%s' guest tid=%08X (by %08X)%s\n",
