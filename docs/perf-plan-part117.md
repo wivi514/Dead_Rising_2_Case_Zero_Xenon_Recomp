@@ -175,6 +175,17 @@ Thread 64%, cz-pump 36%, three guards 34% each on eight hardware threads. So the
 is ON from six physical cores OR eight logical CPUs; a 4c/4t part stays on the one-thread
 pump unmeasured.
 
+### 4.5 Campaign 3 (10:18-11:10) — the ring size, and the operator's own resolution
+
+* **The stream ring's size is a null**: `CZ_PUMP_SPLIT_MB=4` vs the 32 MB default, three
+  runs each, alternated — wall +0.01, D +0.07, Main +0.02, `wspace` 0 throughout. The
+  guest's +0.4 ms under the split is NOT the ring cycling fresh lines through L3
+  (the kickoff's one untried lever, tried). Left at 32 MB.
+* **At 3440x1440 — the crowd route's own default and the operator's screen — the
+  one-thread pump vs the shipped default, two runs each, 9,000-9,500 draws: wall
+  11.2-11.6 -> 10.0-10.1, −1.46 ms median, monotone in three bands (~87 -> ~100 fps);
+  D −1.60; the guest's threads +0.42/+0.34.** The 1080p number transfers.
+
 **So the decomposition of the shipped −1.19 is: ~−0.3 from the two cores, ~−0.9 from the
 wait-any wake that the two cores made worth having.** That is gotcha 569 in numbers: the
 parked item's trigger was "which term is longest", and the split changed the term. It is

@@ -10,7 +10,7 @@ separate the pm4 pump on multiple core"*), what shipped, and what is owed.
 
 | term | part 116 close | part 117 close | how measured |
 |---|---|---|---|
-| the shipped wall | 10.2-10.6 ms (~96 fps) | **9.0-9.1 ms (~110 fps)** | median, matched 250-draw bands, 3 runs a side (§4.2) |
+| the shipped wall | 10.2-10.6 ms (~96 fps) | **9.0-9.1 ms (~110 fps)**; at 3440x1440 11.2-11.6 -> 10.0-10.1 (−1.46, §4.5) | median, matched 250-draw bands, 3 runs a side (§4.2) |
 | the walk (`cz-pump`) | part of the 10.1 | **3.3-3.7 ms**, off the critical path | `walk cpu` on the [fps] line |
 | the renderer thread (`cz-draw`) | — | **8.6-9.1 ms/frame, ~0.9 of it idle** | `pump cpu` (the thread that calls DoDraw) + `[split] didle` |
 | the guest's Main Thread | 7.7-7.9 ms CPU + 2.2 in the wait-any poll | **8.1-8.4 CPU + ~1.2 waits** — **THE LONGEST TERM NOW** | `guest main` + `[guestwait]` |
@@ -70,9 +70,8 @@ item alone can take the frame under ~8.5 ms at this crowd any more.
   the 4c/8t stand-in measured −1.3 ms with it (plan §4.4, one run each way) — and OFF on
   four cores without SMT, which nobody has measured.
 * **The guest's +0.36/+0.53 ms under the split** — cache or SMT contention from the fifth
-  busy core. `taskset -c 0-7` made it worse (the scheduler beats the pin). A smaller
-  stream ring (the 32 MB one cycles 3.5 MB of fresh lines through L3 every frame) is the
-  one untried lever; it needs the vblank ISR to survive a blocked walk.
+  busy core. `taskset -c 0-7` made it worse (the scheduler beats the pin); a 4 MB stream
+  ring (L3-resident) is a measured null (plan §4.5). No lever is known.
 * **D's ~0.9 ms idle a frame** is the guest/renderer ping-pong at the driver's fence
   blocks plus the swap rendezvous (the vblank walker clears `mirror+4` on the next tick).
   Both are the guest's timing; neither is a renderer item.

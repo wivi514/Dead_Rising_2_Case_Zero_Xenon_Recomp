@@ -1250,7 +1250,8 @@ HAND-OFF; gotchas 565-569):
   will write reads the PENDING value as the truth (run-ahead ~10/frame, holds otherwise).
   The first build had two queues and crashed on `ctr=0BADF00D` (gotcha 566).
   **Measured, three runs a side, matched bands: wall −1.19 ms median, monotone (10.3-10.6
-  -> 9.1-9.9; ~96 -> ~110 fps at the crowd), p99 14.0 -> 12.1.** `cz-pump` 3.3-3.7 ms,
+  -> 9.1-9.9; ~96 -> ~110 fps at the crowd), p99 14.0 -> 12.1; at the operator's own
+  3440x1440, −1.46 monotone (11.5 -> 10.0).** `cz-pump` 3.3-3.7 ms,
   `cz-draw` 8.6-9.1 with ~0.9 idle. **ON BY DEFAULT from six physical cores or eight
   logical CPUs** — the 4c/8t stand-in measured −1.3 ms with it (`CZ_PUMP_SPLIT=0` the
   control; OFF on 4c/4t and below, `=1` forces it).
