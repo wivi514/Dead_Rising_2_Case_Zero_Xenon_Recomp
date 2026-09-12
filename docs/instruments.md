@@ -4379,3 +4379,62 @@ tools/part116_ab.sh <tagA> <binA> <tagB> <binB>   three runs a side, alternated,
                    normal AND the NO_DODRAW kinds (KINDS=normal to skip one; ENVA/ENVB
                    for env arms on the same binary)
 ```
+
+## Part 118 — the guest's Main Thread: placement, Havok's pool, the wait callers (docs/perf-plan-part118.md)
+
+```
+CZ_GUEST_PIN=0     **THE CONTROL ARM FOR THREAD PLACEMENT (campaign 2), which is ON BY
+                   DEFAULT from eight physical cores with SMT.** Mode 2 (the default
+                   there): the title's Main Thread and Draw Thread and our cz-pump and
+                   cz-draw each get a physical core of its own — the four highest in the
+                   affinity mask, cpu 0 avoided because the kernel lands interrupt
+                   handling there — with the SMT sibling kept EMPTY, and every other
+                   thread of the process (guards, Havok, jobs, audio, pipeline) is
+                   confined to the remaining cores. =1 pins only the two guest threads;
+                   =2 forces mode 2 on any machine with four cores to spare. The process
+                   is confined from the main thread before anything spawns (affinity is
+                   inherited), the named threads are moved when the title names them,
+                   and a sweep of /proc/self/task after each pin and once per [fps]
+                   window catches every spawn that inherited a pinned creator's mask —
+                   the first build skipped that and put the Havok workers on the Main
+                   Thread's core (25 fps; gotcha 571). Prints `[pin] ...` once and
+                   `[pin] sweep moved N` when it moves something. Linux only; a no-op on
+                   Windows (owed). Measured (§4, three runs an arm, matched bands):
+                   cz-draw −0.52, the Main Thread −0.35, the Draw Thread −0.58 ms/frame,
+                   every column monotone in every band; p99 12.0 -> 11.0; the A/B/A on
+                   the shipped binary reads the wall MEAN −0.6. The wall MEDIAN cannot
+                   read it — the 1 ms vblank quantises every presented frame to whole
+                   milliseconds (gotcha 572); read the CPU columns.
+CZ_HAVOK_WORKERS=N the title's Havok thread pool size (0..6; STOCK IS 2 and the
+                   default). runtime/cpu/havok_threads.cpp hooks hkCpuJobThreadPool's
+                   and hkJobQueue's constructors and rewrites the stock cinfo values
+                   (m_numThreads 2 -> N, m_numCpuThreads 3 -> N+1; the hardware-thread-id
+                   array is emptied so the constructor's unbounded index read takes its
+                   default path). Prints `[havok] thread pool: N workers` either way.
+                   Measured at 4 (§3): Main CPU −0.21 but its single-object waits +0.5
+                   ms (5.7 -> 9.9 calls a frame — it parks for the workers instead of
+                   finishing the last jobs itself), wall +0.46. KILLED; kept as the one
+                   place the title's own code can be told to use more cores.
+CZ_VK_GUARD_NTA=1  prefetchnta 512 bytes ahead of the content guard's fold, so the ~37
+                   MB a frame it streams once does not displace the guest's working set
+                   from L3. Measured (§3): a NULL on the Main Thread's CPU (+0.03) —
+                   either the L3 eviction §1 measured comes from elsewhere or PREFETCHNTA
+                   does not keep Zen 3's L3 clean. Kept for a PMU pass.
+CZ_WAIT_CALLERS=1  the [guestwait] census keyed by GUEST CALLER: thread comm + guest
+                   tid + kind + the import's lr and two frames of the back chain
+                   (*(r1) -> lr at -8), printed every 10 s as ms/s and calls/s, rows
+                   under 0.5 ms/s dropped. The comm alone aggregates (a spawn inherits
+                   its creator's comm until named — four host threads read "Main
+                   Thread"), which is why the tid is in the key. A mutex per wait exit:
+                   a diagnostic arm, never on a measured run. It is what named the Main
+                   Thread's waits (§2): one per frame on the Draw Thread through
+                   sub_827CC6A8, one frame-boundary join through sub_82788808.
+tools/part118_guestprobe.sh <tag> [ENV=..]   the crowd route + perf stat (three PMU
+                   groups) on the GUEST'S MAIN THREAD, plus a 4 Hz census of which cpu
+                   each busy thread sits on (<tag>.cpus: the SMT question) — the
+                   part-117 memprobe pointed at the other thread. IBS=1 adds op sampling.
+tools/part118_campaign.sh / part118_campaign2.sh <bin> [N]   campaign 1 (stock / Havok
+                   4 / Havok 4 + NTA) and campaign 2 (no pin / pin 1 / pin 2), three runs
+                   an arm alternated on one frozen binary; read with
+                   tools/part116_guestcpu.py <A logs> -- <B logs>.
+```

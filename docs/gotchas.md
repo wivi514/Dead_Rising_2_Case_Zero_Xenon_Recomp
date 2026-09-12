@@ -6543,3 +6543,41 @@ From phase C part 18 (the frame rate — and none of it was work):
     in that very poll) the longest term; the wake then paid −0.1 to −0.9 ms on the same
     frame it had cost +0.3 on. A parked item is a prediction about which term is
     longest; the day that changes, its number changes with it. (part 117)
+
+570. **A thread's CPI is a measurement of its NEIGHBOURS as much as of its code.** The
+    guest's Main Thread retired the same instruction stream at 17% more cycles with our
+    renderer running than without (IPC 1.29 vs 1.50, part 118 §1), and only a third of
+    that was the memory system (3,700 more DRAM fills a frame): the rest was the
+    scheduler placing it on the SMT sibling of one of our saturated threads 29% of the
+    time and migrating it on nearly every one of its ~11 wakes a frame. `perf stat -t`
+    on the thread, plus a 4 Hz census of which cpu every busy thread sits on
+    (`tools/part118_guestprobe.sh`, the `.cpus` file), separates the two for the cost
+    of two runs; a profile of the thread's own symbols cannot, because a shared core
+    makes every symbol slower in proportion. (part 118)
+571. **A pinned thread's children inherit its one CPU.** Affinity is inherited at clone,
+    and the title's Main Thread spawns the Havok workers, the job pool and the audio
+    thread AFTER it is named — so pinning it at naming time put all of them on its core
+    and the frame went to 25 fps, with every wait in the pipeline reading milliseconds
+    and no thread reading busy (`rejected/c2B_pin1_1`). A per-spawn hook cannot be
+    complete either (std::thread in the renderer, the audio pump, ExCreateThread): walk
+    `/proc/self/task` after every pin and once a window, and identify the pinned threads
+    by comm + CPU time, never by "sits on one reserved CPU" — the children do too.
+    (part 118)
+572. **A vblank-paced wall is QUANTISED to the vblank, and a change smaller than the
+    quantum is invisible in it until it crosses a boundary.** `CZ_FPS_CAP=500` makes the
+    vblank a 1 ms tick; the title presents on a vblank; so every median of every arm of
+    part 118's campaigns read 9.0x or 10.0x and nothing between, a run flipped
+    9.11 -> 9.99 mid-soak at the same draw count when the machine's clock drifted, and a
+    change that moved every CPU column −0.35 to −0.58 ms monotone in every band read
+    −0.01 on the wall. Gotcha 237's shape at a finer quantum: read the CPU per frame of
+    each pipeline stage (the `[fps]` line carries all three), and the frame follows the
+    longest. And print the clock: `amd-pstate-epp` at `balance_performance` let it fall
+    ~6% ninety minutes into back-to-back crowd runs, which is a machine fact an
+    alternated campaign only partly cancels. (part 118)
+573. **More workers can cost a thread more in WAITS than they save it in CPU.** Havok's
+    calling thread finishes the tail of every step itself; with two workers it rarely
+    waits for anyone, with four the last jobs are always on a worker and it parks —
+    four more single-object waits a frame at our kernel's wake latency, +0.5 ms against
+    −0.21 of CPU (part 118 §3). Read the wait census next to the CPU column before
+    calling a thread-count change a saving; the [guestwait] line exists for exactly
+    this. (part 118)

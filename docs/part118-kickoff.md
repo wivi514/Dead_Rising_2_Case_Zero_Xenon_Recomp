@@ -1,0 +1,73 @@
+# Part 118 kick-off — the Main Thread: what it is bound by, and each pipeline stage on its own core
+
+**READ `docs/perf-plan-part118.md` FIRST — §1 (the PMU pair), §2 (the wait census by
+caller), §4 (placement) and §5 (the honest answer).** This file says where the port is
+after the operator's order of 2026-09-12 12:30 (*"reduce the main thread ms ... by
+splitting some part you can on other core"*, deadline 16:00), what shipped, and what is
+owed.
+
+## §0. Where the frame is (the operator's crowd, 1920x1080, Ryzen 7 5700)
+
+| term | part 117 close | part 118 close | how |
+|---|---|---|---|
+| the guest's Main Thread | 8.1-8.4 ms CPU | **7.9-8.0** (−0.35 monotone) | `guest main` on the [fps] line, matched bands |
+| the guest's Draw Thread | 6.2-6.5 CPU | **5.7-5.9** (−0.58) | `guest draw` |
+| the renderer thread `cz-draw` | 8.6-9.1 CPU | **8.4-8.8** (−0.52) | `pump cpu` |
+| p99 | 12.1 | **11.0** | [fps] line |
+| the wall | 9.0-9.1 | reads 9.0x OR 10.0x — **quantised at 1 ms by the vblank** (gotcha 572) | median |
+
+**The frame is a three-stage pipeline whose stages are within 5% of each other** — the
+Main Thread (7.9 CPU + ~1.3 waits, one of them a whole-frame wait on the Draw Thread
+through `sub_827CC6A8`), the Draw Thread (5.8 CPU + ~3 on our fence), `cz-draw` (8.5-8.8
+CPU, 95% of a core). No single stage's saving moves the wall; the placement default moves
+all three.
+
+## §1. What shipped
+
+1. **Thread placement (`runtime/cpu/thread_budget.cpp`, `CZ_GUEST_PIN`) — ON by default
+   from eight physical cores with SMT, mode 2**: the Main Thread, the Draw Thread,
+   `cz-pump` and `cz-draw` each on a physical core of its own (the four highest in the
+   mask; cpu 0 avoided), SMT sibling kept empty, every other thread confined to the rest;
+   a `/proc/self/task` sweep after each pin and per [fps] window catches inherited masks.
+   `CZ_GUEST_PIN=0` is the control. Measured three runs an arm, matched bands: `cz-draw`
+   −0.52, Main −0.35, Draw −0.58 ms/frame, all monotone; p99 12.0 -> 11.0. Linux only.
+2. **`CZ_HAVOK_WORKERS=N` (`runtime/cpu/havok_threads.cpp`)** — the title's Havok pool
+   size, hard-coded 2 for the 360, hooked at its two constructors. **Stock by default:
+   4 measured Main CPU −0.21 and Main waits +0.5, wall +0.46 — killed** (gotcha 573).
+3. **`CZ_WAIT_CALLERS=1`** — the [guestwait] census keyed by guest tid + caller + two
+   frames of the back chain. It named the Main Thread's waits (plan §2).
+4. **`CZ_VK_GUARD_NTA=1`** — prefetchnta ahead of the guard's fold. A null on the Main
+   Thread; kept for a PMU pass.
+5. `tools/part118_guestprobe.sh` (PMU on the guest's Main Thread + the cpu-placement
+   census), `tools/part118_campaign.sh`, `tools/part118_campaign2.sh`.
+
+## §2. What is owed
+
+* **Windows**: `ThreadBudget_PinProcessAway/PinNamedThread/PinSweep` are no-ops there;
+  the spelling is SetProcessAffinityMask + SetThreadAffinityMask + a Toolhelp32 thread
+  walk. The Windows leg of the release ships without the −0.5 until then.
+* **The operator's session on the default** — the confinement changes which cores the
+  guard pool and the audio pump get; the p99 says it should feel better, not worse.
+* **The six-core and no-SMT shapes** (the default is OFF there, unmeasured).
+* **A finer wall**: the vblank quantum hides any change under 1 ms on the wall column
+  (gotcha 572). `CZ_VBLANK_MS` cannot go under 1 ms; the mean of the [fps] line is
+  finer than its median; the CPU columns are the instrument. And PRINT THE CLOCK once a
+  window — today's runs drifted ~6% ninety minutes in (`amd-pstate-epp`,
+  `balance_performance`).
+* **Havok at 3 workers** was not measured (4 was the arm); the wait census says the
+  loss is the tail-wait, which 3 would halve.
+* The Main Thread's remaining 7.9 ms is the title's own pointer-chasing (31k demand
+  DRAM fills a frame, flat); the next lever is architectural (the D3D pivot removes the
+  Draw Thread's interpreter half and the PM4 walk, not the Main Thread's simulation).
+
+## §3. Gates on the shipped binary (`ARM=CZ_GUEST_PIN=2 tools/part117_gates.sh`, 14:18-14:49)
+
+`--smoke` OK · unlowered switches 0 · shader dims clean · both PM4 oracles clean · E3
+**+0.8415** (4 of 5 agreeing on layout, pinned 1280x720; part 117 read +0.8411) · A5
+**exit 0** (5 permutation windows, 0 real — identical to parts 116 and 117) · `no
+translated shader` 0 · **synchronization validation 0 hazards** at 5,154 draws on the
+outdoor route, **the poison producing 30** · `truncated=0` across every crowd log of the
+part · a 10-minute `CZ_AUTOCHUCK=EXPLORER` soak with `CZ_WAIT_TRACE=1` under the
+placement default: no fault, no corrupt stream, the map closed twice, **143 fps median at
+5,000-5,600 draws** (part 117's soak read 143 at 2,400-3,200). The default's own policy
+was checked under `taskset` masks of six and four cores: OFF on both, as designed.

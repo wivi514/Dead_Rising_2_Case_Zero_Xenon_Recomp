@@ -7,6 +7,18 @@ NOT the cause is what stops the next session re-buying it.
 
 Next, in order:
 
+0y. **THE WINDOWS SPELLING OF THREAD PLACEMENT (part 118).** `CZ_GUEST_PIN` mode 2 — the
+    Main Thread, the Draw Thread, `cz-pump` and `cz-draw` each on a physical core of its
+    own, sibling empty — is ON by default from eight physical cores with SMT and worth
+    −0.35/−0.58/−0.52 ms/frame on those three stages (p99 12 -> 11), and it is a NO-OP on
+    Windows: `ThreadBudget_PinProcessAway/PinNamedThread/PinSweep` in
+    `runtime/cpu/thread_budget.cpp` have `#else` stubs. The spelling is
+    SetProcessAffinityMask before anything spawns, SetThreadAffinityMask at naming, and a
+    Toolhelp32 thread walk for the sweep (GetLogicalProcessorInformationEx already gives
+    the SMT sibling sets — CountPhysicalCoresWin reads it). Gate: the [fps] line's three
+    CPU columns on czwin, three runs a side. Then the six-core and no-SMT shapes, where
+    the default is OFF unmeasured. `docs/part118-kickoff.md` §2.
+
 0x. **v1.0.1 — SHIP PART 98'S STUTTER FIX TO THE PUBLIC RELEASE.** ~~Next in line~~ —
     ~~the operator queued two more fixes ahead of the release~~ — **BOTH QUEUED FIXES
     ARE IN-TREE AS OF PART 99 (subtitle language from the launcher, the

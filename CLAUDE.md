@@ -192,6 +192,17 @@ mask; trust the microcode's own swizzles.
     read `phase5-notes.md` §6ba before following anything in it.
   - **THE LIVE HAND-OFF IS ALWAYS THE HIGHEST-NUMBERED `partNN-kickoff.md`**, and it
     supersedes every earlier kickoff on "where the port is". **IT IS
+    `part118-kickoff.md` — PART 118 (the late afternoon of 2026-09-12, unattended, a
+    16:00 deadline) GAVE EACH PIPELINE STAGE A PHYSICAL CORE OF ITS OWN: the PMU said the
+    guest's Main Thread runs the same instructions at 17% more cycles with our renderer
+    present, two-thirds of that being the scheduler's placement (SMT sibling of a
+    saturated thread 29% of the time, a migration on every wake); `CZ_GUEST_PIN` mode 2
+    (default from 8 physical cores with SMT, `=0` the control) pins the Main Thread, the
+    Draw Thread, `cz-pump` and `cz-draw` each to its own core, sibling empty — `cz-draw`
+    −0.52, Main −0.35, Draw −0.58 ms/frame monotone, p99 12 -> 11; the wall MEDIAN is
+    quantised at 1 ms by the vblank and cannot read it (gotcha 572). Havok 4 workers:
+    killed (waits +0.5 > CPU −0.21). `docs/perf-plan-part118.md` §5 the honest answer;
+    gotchas 570-573.** ~~It was
     `part117-kickoff.md` — PART 117 (the afternoon of 2026-09-12, unattended) PUT THE
     PUMP ON TWO CORES: the PM4 walk stays on `cz-pump`, every renderer call and every
     guest-visible store executes in stream order on `cz-draw` from one ordered stream
@@ -200,7 +211,7 @@ mask; trust the microcode's own swizzles.
     retracted in part); measured −1.19 ms median, monotone, three runs a side (~96 -> ~110
     fps at the crowd), ON by default from six physical cores; the parked wait-any wake
     follows it; THE FRAME'S BOUND IS NOW THE GUEST'S MAIN THREAD (8.1-8.4 ms CPU).
-    `docs/perf-plan-part117.md` §0/§4 the record; gotchas 565-569.** ~~It was
+    `docs/perf-plan-part117.md` §0/§4 the record; gotchas 565-569.~~ ~~It was
     `part116-kickoff.md` — PART 116 (the night of 2026-09-11/12, unattended) RAN
     `docs/perf-plan-part116.md` END TO END AND ITS §4 IS THE RECORD: the guest's 8.8 ms
     was profiled for the first time (the threads are NAMED now; the Main Thread is half
@@ -1231,11 +1242,47 @@ ground is and that PERFORMANCE IS PARKED. (This
 line has now named the wrong plan TWICE — the two-live-pointers defect the block-rotation note at the bottom of this file
 describes, and the reason that note asks for the rule and not just the name; gotcha 13.)
 
-Where the port is, as of 2026-09-12, afternoon (**PART 117 — THE PUMP RUNS ON TWO CORES
+Where the port is, as of 2026-09-12, late afternoon (**PART 118 — EACH PIPELINE STAGE ON ITS
+OWN CORE, AND THE MAIN THREAD'S BOUND NAMED.** The operator's order (*"reduce the main
+thread ms ... by splitting some part you can on other core"*, deadline 16:00 EST);
+`docs/perf-plan-part118.md` §1/§2/§4/§5 the record; `docs/part118-kickoff.md` THE LIVE
+HAND-OFF; gotchas 570-573):
+
+* **The PMU on the guest's Main Thread, with and without our renderer** (§1): the same
+  instruction stream at IPC 1.29 vs 1.50 — 17% more cycles with the renderer. A third of
+  it is L3 eviction (3,700 more DRAM fills a frame); the rest was PLACEMENT: a 4 Hz
+  census caught the Main Thread on the SMT sibling of one of our saturated threads 29% of
+  the time, migrating on nearly every one of its ~11 wakes a frame. The thread itself is
+  pointer-chasing the title's heap (31k demand DRAM fills a frame, the hot instructions
+  all consumers of a guest load, flat) — nothing of ours moves that.
+* **The wait census by CALLER (`CZ_WAIT_CALLERS=1`)** named the Main Thread's waits: one
+  whole-frame wait on the DRAW THREAD (`sub_827CC6A8`), one frame-boundary join. **The
+  frame is a three-stage pipeline within 5% of itself** — Main (7.9 CPU + 1.3 waits),
+  Draw Thread (5.8 + 3 on our fence), `cz-draw` (8.5-8.8, 95% of a core) — and a saving
+  on one stage reappears as waiting on the next.
+* **Havok's pool (`CZ_HAVOK_WORKERS`, the title hard-codes 2 for the 360): 4 workers
+  measured Main CPU −0.21 and Main WAITS +0.5 (it parks for the workers' tail instead of
+  finishing it), wall +0.46 — KILLED, stock default** (gotcha 573). The guard's
+  prefetchnta (`CZ_VK_GUARD_NTA=1`): a null.
+* **THREAD PLACEMENT SHIPPED ON BY DEFAULT from eight physical cores with SMT
+  (`CZ_GUEST_PIN`, mode 2; `=0` the control)**: the Main Thread, the Draw Thread,
+  `cz-pump` and `cz-draw` each on a physical core of its own with the SMT sibling kept
+  empty, everything else confined to the other four; a `/proc/self/task` sweep catches
+  inherited masks (the first build without it ran the Havok workers on the Main Thread's
+  core: 25 fps, gotcha 571). **Three runs an arm, matched bands: `cz-draw` −0.52, Main
+  −0.35, Draw −0.58 ms/frame, every column monotone; p99 12.0 -> 11.0; the A/B/A on the
+  shipped binary reads the wall mean −0.6.** THE WALL MEDIAN CANNOT READ IT: the 1 ms
+  vblank (`CZ_FPS_CAP=500`) quantises every presented frame to whole milliseconds, so
+  every median today read 9.0x or 10.0x (gotcha 572) — read the CPU per stage.
+* Owed: the Windows spelling of the pin, the operator's session on the default, the
+  six-core/no-SMT shapes, the clock printed once a window (`amd-pstate-epp` drifted the
+  machine ~6% ninety minutes into today's runs).
+
+Where the port was, as of 2026-09-12, afternoon (**PART 117 — THE PUMP RUNS ON TWO CORES
 AND THE FRAME'S BOUND HAS MOVED TO THE GUEST.** The operator's second unattended order of
 the day (*"try to see if you can separate the pm4 pump on multiple core"*);
-`docs/perf-plan-part117.md` §0 and §4 the record; `docs/part117-kickoff.md` THE LIVE
-HAND-OFF; gotchas 565-569):
+`docs/perf-plan-part117.md` §0 and §4 the record; `docs/part117-kickoff.md` was the live
+hand-off until part 118 that evening; gotchas 565-569):
 
 * **The PMU said what the pump is before anything was built** (`tools/part117_memprobe.sh`):
   IPC 1.61, 0.7 GB/s from DRAM, 0.47% of loads from RAM — an INSTRUCTION-bound serial
@@ -1274,53 +1321,8 @@ HAND-OFF; gotchas 565-569):
   the poison at 30**, a 10-min explorer soak. Owed: the operator's session, Windows, the
   4c/4t shape.
 
-Where the port was, as of 2026-09-12, morning (**PART 116 — THE GUEST'S 8.8 ms WAS PROFILED FOR THE
-FIRST TIME, AND 1.1 ms OF IT WAS OURS.** The operator's 12-hour unattended order
-(`docs/perf-plan-part116.md`, its §4 the record; `docs/part116-kickoff.md` was the live
-hand-off until part 117 that afternoon; gotchas 559-564):
-
-* **The threads have names.** The title names them from the main thread by id through
-  the SetThreadName exception; a guest-tid registry filled at spawn binds the name to
-  the host thread, ours are `cz-*`, and `perf`/`top -H`/the census read `Main Thread`
-  74% / `Draw Thread` 54% / `cz-pump` 98% of a core at the crowd. The `[fps]` line now
-  carries `guest main N.NN draw N.NN ms/frame` and a `[guestwait]` line (wall time in
-  our kernel's waits by kind); CPU + waits = the frame to 0.1 ms on both threads.
-* **What the guest is** (DWARF chains + the title's own `"<class>::Update(ms)"` profiler
-  markers, `tools/func_strings.py`): the Main Thread is half simulation
-  (cZombieManager 15%, cAIManager 12%, Havok 11%) and half render submission (cLevel
-  ::Render 36%, cTransModel::Render 15%); the Draw Thread is 81% one function, the
-  title's 0x49-opcode display-list interpreter `sub_827D5B18` playing that submission
-  into its D3D layer (DrawIndexedVerticesUP 15%, SetTexture 6%). Both 100% recompiled
-  code, flat (top self 4.8%), CRT class = one memcpy at 0.9% (item 2 refuted by census:
-  0.095 ms ceiling against a 0.3 ms kill).
-* **Our wait-any slept 1 ms between polls and the Main Thread makes five a frame.**
-  Per-object wake (`WaitAnyBlock`): the guest floor (`CZ_VK_NO_DODRAW=1` wall) **8.1 ->
-  7.0 ms at 1080p, −1.11 monotone, three runs a side, CPU columns unmoved**; the shipped
-  wall **+0.24** (the Draw Thread reaches our fence sooner; 5.1 parks a frame where
-  3.1) — **OFF by default by the operator's decision, `CZ_WAITANY_WAKE=1` engages;
-  flip when the pump is under ~8 ms and not before**. v1 was a
-  process-wide broadcast and measured +0.9 (thundering herd; the pump paid on another
-  core) — retracted in place.
-* **Codegen on the recompiled TUs is dead**: PGO −0.25 ms on the Main Thread (killed at
-  0.3), ThinLTO −0.03, -O3 −0.02 (`CZ_PPC_PGO/LTO/OPT` remain as CMake arms). Guest
-  calls are `weak,noinline` aliases; the save/restore ladders (10% of the Draw Thread)
-  are the emitter's to inline, not the linker's.
-* **The guest's CPU per frame falls 1.2 ms when our renderer is deleted** — the pump's
-  bytes slow the guest (gotcha 562); part 110's 8.8 was the floor, not the cost.
-* **Item 5, the bundle** (`CZ_VK_SCOPED_SHARED_ZERO=1 CZ_VK_TEXMEMO=1`): **−0.68 ms on the
-  shipped frame**, monotone in four bands — above part 109's 0.4 ms bar. The
-  operator's call; recommendation ON.
-* **The honest answer**: the guest no longer forbids 120 fps CPU-side; the pump (10.1
-  ms, byte-bound) does, and item B's ceiling is now `max(5.33, 7.0, GPU)` ≈ 137 fps,
-  not 113. The next guest-side lever is architectural (the D3D-translation pivot
-  removes the interpreter's D3D half AND the PM4 walk).
-* Gates on the shipped binary: `--smoke` OK, A5 **exit 0** (5 permutation, 0 real),
-  `truncated=0`, `no translated shader` 0, unlowered switches / shader dims / both PM4
-  oracles clean, E3 **+0.8472** (4 of 5), `phase_vs_perf.py --self-test` PASSED. Owed:
-  nothing (the default is the poll every release shipped with), the Windows spelling of the thread clocks.
-
 **Older per-part status blocks (parts 28-54, the superseded mid-part-44 closure and the
-superseded MID-PART-46 block) moved to `docs/port-history.md`, NOW INCLUDING PARTS 60-91's, 97's, 98's, 99's, 100's, 101's, 103's, 104's, 105's, 106's, 107's, 110's AND 111's** — part 117 moved part 111's out in the same commit that added its own block, part 116 moved part 110's out in the same commit that added its own block, part 111 moved part 107's out in the same commit that added its own block, part 110 moved part 106's out in the same commit that added its own block, part 107 moved part 105's out in the same commit that added its own block, part 106 moved part 104's out in the same commit that added its own block, part 105 moved part 103's out in the same commit that added its own block, part 104 moved part 101's out in the same commit that added its own block, part 103 moved part 100's out in the same commit that added its own block, part 101 moved parts 98's and 99's out in the same commit that added its own block, part 99 moved part 97's out in the same commit that added its own block, part 98 moved part 91's out in the same commit that added its own block, part 91 moved part 89's out in the same commit that added its own block, part 90 moved part 88's out in the same commit that added its own block, part 89 moved part 87's out in the same commit that added its own block, part 88 moved part 86's out in the same commit that added its own block, part 87 moved part 85's out in the same commit that added its own block, part 86 moved part 84's out in the same commit that added its own block, part 85 moved part 83's out in the same commit that added its own block, part 84 moved part 82's out in the same commit that added its own block, part 83 moved part 81's out in the same commit that added its own block, part 82 moved part 80's out in the same commit that added its own block, part 78 moved part 76's out in the same commit that added its own block, part 76 moved part 74's out in the same commit that added its own block, part 74 moved part 72's out in the same commit that added its own block, part 73 moved part 71's out in the same commit that added its own block, part 72 moved part 70's out in the same commit that added its own block, part 71 moved part 69's out in the same commit that added its own block, part 70 moved part 68's out in the same commit that added its own block, part 69 moved part 67's out in the same commit that added its own block, part 68 moved part 66's out in the same commit that added its own block, part 67 moved part 65's out the same way, part 65 moved part 63's out the same way, part 64 moved parts 61/62's out the same way, part 63 moved part 60's out the same way, part 61 moved part 59's out the same way, part 59 moved part 57's out the same way, part 57 moved part 55's out the same way, part 55 moved part 53's
+superseded MID-PART-46 block) moved to `docs/port-history.md`, NOW INCLUDING PARTS 60-91's, 97's, 98's, 99's, 100's, 101's, 103's, 104's, 105's, 106's, 107's, 110's, 111's AND 116's** — part 118 moved part 116's out in the same commit that added its own block, part 117 moved part 111's out in the same commit that added its own block, part 116 moved part 110's out in the same commit that added its own block, part 111 moved part 107's out in the same commit that added its own block, part 110 moved part 106's out in the same commit that added its own block, part 107 moved part 105's out in the same commit that added its own block, part 106 moved part 104's out in the same commit that added its own block, part 105 moved part 103's out in the same commit that added its own block, part 104 moved part 101's out in the same commit that added its own block, part 103 moved part 100's out in the same commit that added its own block, part 101 moved parts 98's and 99's out in the same commit that added its own block, part 99 moved part 97's out in the same commit that added its own block, part 98 moved part 91's out in the same commit that added its own block, part 91 moved part 89's out in the same commit that added its own block, part 90 moved part 88's out in the same commit that added its own block, part 89 moved part 87's out in the same commit that added its own block, part 88 moved part 86's out in the same commit that added its own block, part 87 moved part 85's out in the same commit that added its own block, part 86 moved part 84's out in the same commit that added its own block, part 85 moved part 83's out in the same commit that added its own block, part 84 moved part 82's out in the same commit that added its own block, part 83 moved part 81's out in the same commit that added its own block, part 82 moved part 80's out in the same commit that added its own block, part 78 moved part 76's out in the same commit that added its own block, part 76 moved part 74's out in the same commit that added its own block, part 74 moved part 72's out in the same commit that added its own block, part 73 moved part 71's out in the same commit that added its own block, part 72 moved part 70's out in the same commit that added its own block, part 71 moved part 69's out in the same commit that added its own block, part 70 moved part 68's out in the same commit that added its own block, part 69 moved part 67's out in the same commit that added its own block, part 68 moved part 66's out in the same commit that added its own block, part 67 moved part 65's out the same way, part 65 moved part 63's out the same way, part 64 moved parts 61/62's out the same way, part 63 moved part 60's out the same way, part 61 moved part 59's out the same way, part 59 moved part 57's out the same way, part 57 moved part 55's out the same way, part 55 moved part 53's
 out in the same commit that added its own, which is what the rule below asks for. — CLAUDE.md keeps only the
 live part and one part back, per the 2026-08-08 split's rule, and **part 53 moved part
 51's out in the same commit that added its own**, which is what the rule below asks for.

@@ -7072,3 +7072,52 @@ gotchas 551-552):
   real defects with no debugging**: a worker that could zero constants the pump had already
   written (a plain `ready` flag is not enough — ownership has to be a compare-exchange), and
   a `CZ_VK_NO_PARALLEL_GUARD=1` arm in which the pump would have memset the whole region.
+
+
+## Part 116 status block (moved out of CLAUDE.md by part 118, per the rotation rule)
+
+Where the port was, as of 2026-09-12, morning (**PART 116 — THE GUEST'S 8.8 ms WAS PROFILED FOR THE
+FIRST TIME, AND 1.1 ms OF IT WAS OURS.** The operator's 12-hour unattended order
+(`docs/perf-plan-part116.md`, its §4 the record; `docs/part116-kickoff.md` was the live
+hand-off until part 117 that afternoon; gotchas 559-564):
+
+* **The threads have names.** The title names them from the main thread by id through
+  the SetThreadName exception; a guest-tid registry filled at spawn binds the name to
+  the host thread, ours are `cz-*`, and `perf`/`top -H`/the census read `Main Thread`
+  74% / `Draw Thread` 54% / `cz-pump` 98% of a core at the crowd. The `[fps]` line now
+  carries `guest main N.NN draw N.NN ms/frame` and a `[guestwait]` line (wall time in
+  our kernel's waits by kind); CPU + waits = the frame to 0.1 ms on both threads.
+* **What the guest is** (DWARF chains + the title's own `"<class>::Update(ms)"` profiler
+  markers, `tools/func_strings.py`): the Main Thread is half simulation
+  (cZombieManager 15%, cAIManager 12%, Havok 11%) and half render submission (cLevel
+  ::Render 36%, cTransModel::Render 15%); the Draw Thread is 81% one function, the
+  title's 0x49-opcode display-list interpreter `sub_827D5B18` playing that submission
+  into its D3D layer (DrawIndexedVerticesUP 15%, SetTexture 6%). Both 100% recompiled
+  code, flat (top self 4.8%), CRT class = one memcpy at 0.9% (item 2 refuted by census:
+  0.095 ms ceiling against a 0.3 ms kill).
+* **Our wait-any slept 1 ms between polls and the Main Thread makes five a frame.**
+  Per-object wake (`WaitAnyBlock`): the guest floor (`CZ_VK_NO_DODRAW=1` wall) **8.1 ->
+  7.0 ms at 1080p, −1.11 monotone, three runs a side, CPU columns unmoved**; the shipped
+  wall **+0.24** (the Draw Thread reaches our fence sooner; 5.1 parks a frame where
+  3.1) — **OFF by default by the operator's decision, `CZ_WAITANY_WAKE=1` engages;
+  flip when the pump is under ~8 ms and not before**. v1 was a
+  process-wide broadcast and measured +0.9 (thundering herd; the pump paid on another
+  core) — retracted in place.
+* **Codegen on the recompiled TUs is dead**: PGO −0.25 ms on the Main Thread (killed at
+  0.3), ThinLTO −0.03, -O3 −0.02 (`CZ_PPC_PGO/LTO/OPT` remain as CMake arms). Guest
+  calls are `weak,noinline` aliases; the save/restore ladders (10% of the Draw Thread)
+  are the emitter's to inline, not the linker's.
+* **The guest's CPU per frame falls 1.2 ms when our renderer is deleted** — the pump's
+  bytes slow the guest (gotcha 562); part 110's 8.8 was the floor, not the cost.
+* **Item 5, the bundle** (`CZ_VK_SCOPED_SHARED_ZERO=1 CZ_VK_TEXMEMO=1`): **−0.68 ms on the
+  shipped frame**, monotone in four bands — above part 109's 0.4 ms bar. The
+  operator's call; recommendation ON.
+* **The honest answer**: the guest no longer forbids 120 fps CPU-side; the pump (10.1
+  ms, byte-bound) does, and item B's ceiling is now `max(5.33, 7.0, GPU)` ≈ 137 fps,
+  not 113. The next guest-side lever is architectural (the D3D-translation pivot
+  removes the interpreter's D3D half AND the PM4 walk).
+* Gates on the shipped binary: `--smoke` OK, A5 **exit 0** (5 permutation, 0 real),
+  `truncated=0`, `no translated shader` 0, unlowered switches / shader dims / both PM4
+  oracles clean, E3 **+0.8472** (4 of 5), `phase_vs_perf.py --self-test` PASSED. Owed:
+  nothing (the default is the poll every release shipped with), the Windows spelling of the thread clocks.
+
