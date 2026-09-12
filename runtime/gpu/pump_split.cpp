@@ -1,6 +1,17 @@
 // The pump on two cores — see pump_split.h for the design and the three consequences of
-// executing in stream order. This file is the queue, the register-run log and the D
-// thread; pm4.cpp is where the walk decides between executing and enqueueing.
+// executing in stream order. This file is the stream, the D thread and the run-ahead
+// table; pm4.cpp is where the walk decides between executing and appending.
+//
+// ONE STREAM, NOT TWO. The first build carried the register runs and the stores in a
+// log and the draws / swaps / interrupts in a separate op ring, each op naming the log
+// position it had to be replayed to. That is two orders, and the seam between them was
+// a real defect: D's idle path replayed the log "as far as W has published", which
+// could be PAST an op W had just queued — a scratch-mirror poison store landed before
+// the INTERRUPT op it followed in the stream, and the guest ISR called 0x0BADF00D
+// (crowd run split4w, `ctr=0BADF00D`, exactly the crash the pre-phase-C guard existed
+// for). Everything is one record stream now: a run, a store, a draw, a swap, an
+// interrupt, a shader bind, each a header dword and a payload, consumed in order. There
+// is no second position to disagree with.
 #include "pump_split.h"
 
 #include <algorithm>
@@ -12,7 +23,6 @@
 #include <cstring>
 #include <mutex>
 #include <thread>
-#include <vector>
 
 #if !defined(_WIN32)
 #include <pthread.h>
@@ -38,67 +48,47 @@ bool g_on = false;
 
 namespace {
 
-// --- the queues ----------------------------------------------------------------------
-// Sizes are generous on purpose: W blocks when either ring is full, and a blocked W
-// delays the vblank ISR it also delivers. The guest cannot run more than ~2 frames ahead
-// of the fences D writes, so ~10 frames of capacity means "never" at any load this title
-// reaches; `wSpaceWaits` in the stats block is the counter that says whether that held.
-constexpr uint32_t kLogDwords = 1u << 23;        // 32 MB; ~815 k dwords a crowd frame
+// --- the stream ----------------------------------------------------------------------
+// 32 MB of dwords: ~1.2 M a crowd frame (815 k of register runs, 11 k stores, 8.7 k
+// draws at 29 dwords). W blocks when it is full, and a blocked W delays the vblank ISR it
+// also delivers — but the guest cannot run more than ~2 frames ahead of the fences D
+// writes, so ~7 frames of capacity means "never"; `wSpaceWaits` says whether that held.
+constexpr uint32_t kLogDwords = 1u << 23;
 constexpr uint32_t kLogMask = kLogDwords - 1;
-constexpr uint32_t kOps = 1u << 17;               // ~12 k ops a crowd frame
-constexpr uint32_t kOpsMask = kOps - 1;
-constexpr uint32_t kSkipMarker = 0xFFFF0000u;    // "the rest of this lap is unused"
-// A guest-memory store rides the LOG rather than the op ring: header 0xFFFE0002, then
-// (va, value). Stores are ~11,000 a crowd frame against ~8,600 draws, and a 128-byte op
-// each was a quarter of what D streamed from W's core; as three log dwords they are
-// ~130 KB a frame. Order is unchanged — the log is replayed in stream order up to each
-// op's position, and past the last op (see PublishLog) so a fence with no draw behind
-// it still lands.
-constexpr uint32_t kStoreMarker = 0xFFFE0002u;
 
-enum : uint8_t { kDraw = 1, kStore, kInterrupt, kSwap, kShader };
+// Record headers. A register run is `(index << 16) | count` with index < 0x8000; every
+// other kind has a top halfword no register index can reach.
+constexpr uint32_t kSkip = 0xFFFF0000u;       // the rest of this lap is unused
+constexpr uint32_t kStore = 0xFFFE0002u;      // va, value
+constexpr uint32_t kIrq = 0xFFFC0000u;        // (no payload)
+constexpr uint32_t kSwap = 0xFFFB0003u;       // front, w, h
+constexpr uint32_t kShader = 0xFFFA0006u;     // type, sizeDwords, hash lo/hi, ptr lo/hi
+constexpr uint32_t kDrawKind = 0xFFFDu;       // low halfword = payload dwords
 
-struct alignas(64) Op
+struct DrawRec
 {
-    uint8_t kind;
-    uint64_t logEnd;   // replay the log to here before executing
-    union
-    {
-        struct
-        {
-            Pm4Draw d;
-            Pm4ShaderBinding vs, ps;
-            DrawCtx ctx;
-        } draw;
-        struct { uint32_t va, value; } store;
-        struct { uint32_t front, w, h; } swap;
-        struct { uint32_t type, sizeDwords; uint64_t hash; uint8_t* code; } shader;
-    };
+    Pm4Draw d;
+    Pm4ShaderBinding vs, ps;
+    DrawCtx ctx;
 };
-static_assert(sizeof(Op) <= 192, "Op grew; check the ring's footprint");
+constexpr uint32_t kDrawDwords = uint32_t(sizeof(DrawRec) / 4);
+static_assert(sizeof(DrawRec) % 4 == 0, "DrawRec must be whole dwords");
+static_assert(kDrawDwords < 0x10000, "DrawRec header halfword");
 
 uint32_t* g_log = nullptr;
-Op* g_ops = nullptr;
 uint8_t* g_base = nullptr;
 void (*g_deliver)() = nullptr;
 
-// W-private cursors (only W writes them; D reads the published copies).
-uint64_t g_logHead = 0;
-uint64_t g_opHeadLocal = 0;
-// Published: written by one side with release, read by the other with acquire.
-std::atomic<uint64_t> g_opHead{ 0 };    // W -> D: ops available
-std::atomic<uint64_t> g_opTail{ 0 };    // D -> W: ops consumed
-std::atomic<uint64_t> g_logTail{ 0 };   // D -> W: log consumed
-std::atomic<uint64_t> g_logPub{ 0 };    // W -> D: log dwords D may replay ahead of any op
-// D-private
-uint64_t g_logTailLocal = 0;
-uint64_t g_opTailLocal = 0;
+uint64_t g_head = 0;                       // W-private write position
+std::atomic<uint64_t> g_pub{ 0 };          // W -> D: records complete up to here
+std::atomic<uint64_t> g_tail{ 0 };         // D -> W: consumed up to here
+uint64_t g_tailLocal = 0;                  // D-private
 
 // The interrupt hand-off (design point 2).
 std::atomic<uint64_t> g_irqRequested{ 0 };
 std::atomic<uint64_t> g_irqDelivered{ 0 };
 
-// D's park when the queue is empty (menus, loads, a guest waiting on us).
+// D's park when the stream is empty (menus, loads, a guest waiting on us).
 std::mutex g_parkMx;
 std::condition_variable g_parkCv;
 std::atomic<bool> g_dSleeping{ false };
@@ -109,8 +99,7 @@ std::condition_variable g_napCv;
 std::atomic<bool> g_wNapping{ false };
 
 // D's replica register file. 0x8000 dwords — pm4's kRegCount, restated here because the
-// two must agree and pm4.cpp's is file-local; the static_assert in Start checks it
-// against the index bound every run carries.
+// two must agree and pm4.cpp's is file-local; a run header's index cannot exceed it.
 constexpr uint32_t kRegCount = 0x8000;
 alignas(64) uint32_t g_regsD[kRegCount];
 
@@ -120,18 +109,19 @@ uint32_t g_palCover = 0, g_palPartial = 0, g_palCoverBursts = 0, g_palPartialBur
 uint32_t g_palHigh = 0;
 
 Stats g_stats{};
-// W: the log position of the last deferred store to each of the words the walk's
-// WAIT_REG_MEMs poll (a handful of addresses in the device's writeback block). A wait
-// that is unmet while D has not yet reached that position is a wait on OUR OWN store —
-// the pipeline draining at a hand-off — as opposed to a wait on the guest CPU.
-constexpr uint32_t kStoreTrack = 64;
-struct StoreTrack { uint32_t va; uint32_t value; uint64_t pos; };
-StoreTrack g_storeTrack[kStoreTrack];
-uint32_t g_storeTrackN = 0;
 #if !defined(_WIN32)
 clockid_t g_wClock;
 bool g_haveWClock = false;
 #endif
+
+// W: the stream position just past the last deferred store to each of the words the
+// walk's WAIT_REG_MEMs poll (a handful of addresses in the device's writeback block),
+// and the value it carries. A wait that is unmet while D has not reached that position
+// is a wait on OUR OWN store — see PendingStoreValue.
+constexpr uint32_t kStoreTrack = 64;
+struct StoreTrack { uint32_t va; uint32_t value; uint64_t pos; };
+StoreTrack g_storeTrack[kStoreTrack];
+uint32_t g_storeTrackN = 0;
 
 inline uint64_t NowNs()
 {
@@ -146,39 +136,6 @@ inline void GuestStore32(uint8_t* base, uint32_t va, uint32_t value)
     memcpy(base + va, &raw, 4);
 }
 
-// W: wait until the log has `need` dwords free and the op ring has a slot. Services the
-// interrupt hand-off while it waits so D can never be waiting on W while W waits on D.
-inline void WaitLogSpace(uint64_t need)
-{
-    for (;;)
-    {
-        const uint64_t tail = g_logTail.load(std::memory_order_acquire);
-        if (g_logHead + need - tail <= kLogDwords)
-            return;
-        ++g_stats.wSpaceWaits;
-        ServiceInterrupts();
-        std::this_thread::yield();
-    }
-}
-inline void WaitOpSpace()
-{
-    for (;;)
-    {
-        const uint64_t tail = g_opTail.load(std::memory_order_acquire);
-        if (g_opHeadLocal - tail < kOps)
-            return;
-        ++g_stats.wSpaceWaits;
-        ServiceInterrupts();
-        std::this_thread::yield();
-    }
-}
-
-inline Op& NextOp()
-{
-    WaitOpSpace();
-    return g_ops[g_opHeadLocal & kOpsMask];
-}
-
 inline void WakeD()
 {
     if (g_dSleeping.load(std::memory_order_seq_cst))
@@ -188,73 +145,169 @@ inline void WakeD()
     }
 }
 
+// W: reserve `need` dwords that do not straddle the physical end (padding the lap out
+// with a skip record if they would), waiting for D to free space if it must. Services
+// the interrupt hand-off while it waits so D can never be waiting on W while W waits
+// on D.
+inline uint32_t* Reserve(uint64_t need)
+{
+    const uint32_t off = uint32_t(g_head & kLogMask);
+    const uint64_t pad = (off + need > kLogDwords) ? (kLogDwords - off) : 0;
+    for (;;)
+    {
+        const uint64_t tail = g_tail.load(std::memory_order_acquire);
+        if (g_head + pad + need - tail <= kLogDwords)
+            break;
+        ++g_stats.wSpaceWaits;
+        ServiceInterrupts();
+        std::this_thread::yield();
+    }
+    if (pad)
+    {
+        g_log[off] = kSkip;
+        g_head += pad;
+    }
+    return g_log + (g_head & kLogMask);
+}
+
+// W: the record is complete; let D have it. Called after every record that D must act
+// on promptly (a store, a draw, a swap, an interrupt); register runs are published by
+// the next such record, since nothing observes a run before the draw that follows it.
 inline void Publish()
 {
-    g_ops[g_opHeadLocal & kOpsMask].logEnd = g_logHead;
-    ++g_opHeadLocal;
-    ++g_stats.ops;
-    g_opHead.store(g_opHeadLocal, std::memory_order_seq_cst);
-    g_logPub.store(g_logHead, std::memory_order_seq_cst);
+    g_pub.store(g_head, std::memory_order_seq_cst);
     WakeD();
 }
 
-// W: let D replay the log this far even with no op behind it (a fence after the last
-// draw of a batch must land, or the guest waits on it forever).
-inline void PublishLog()
+void RunDraw(const DrawRec& r)
 {
-    g_logPub.store(g_logHead, std::memory_order_seq_cst);
-    WakeD();
+    g_palCover = std::max(g_palCover, r.ctx.palCoverExtent);
+    g_palPartial = std::max(g_palPartial, r.ctx.palPartialExtent);
+    g_palCoverBursts += r.ctx.palCoverBursts;
+    g_palPartialBursts += r.ctx.palPartialBursts;
+    g_palHigh = r.ctx.palHighWater;
+    g_cur = &r.ctx;
+    VkRenderer_DrawQueued(g_base, r.d, g_regsD, r.vs, r.ps);
+    g_cur = nullptr;
+    ++g_stats.draws;
 }
 
-// D: bring the replica (and guest memory, for the stores in the log) up to `logEnd`.
-inline void Replay(uint64_t logEnd)
+void RunInterrupt()
 {
-    uint64_t t = g_logTailLocal;
-    while (t < logEnd)
+    // Ask W and wait (design point 2). W services the request at the top of its tick,
+    // between packets, in its nap and inside its own space waits.
+    const uint64_t ticket = g_irqRequested.fetch_add(1, std::memory_order_seq_cst) + 1;
+    if (g_wNapping.load(std::memory_order_seq_cst))
     {
-        // The log is a sequential stream of lines DIRTY IN W's L2, and every header
-        // depends on the one before it (the next position is this header's count) — a
-        // dependent chain of cross-core misses that the hardware prefetcher did not
-        // hide (the first build's replay loop was 9.4% of D's cycles by itself).
+        std::lock_guard<std::mutex> lk(g_napMx);
+        g_napCv.notify_one();
+    }
+    const uint64_t t0 = NowNs();
+    uint32_t spins = 0;
+    while (g_irqDelivered.load(std::memory_order_acquire) < ticket)
+    {
+        if (++spins < 20000)
+            SPLIT_PAUSE();
+        else
+            std::this_thread::yield();
+    }
+    g_stats.dIrqWaitNs += NowNs() - t0;
+    ++g_stats.interrupts;
+}
+
+// D: consume records up to `limit`.
+void Consume(uint64_t limit)
+{
+    uint64_t t = g_tailLocal;
+    while (t < limit)
+    {
+        // The stream is a sequence of lines DIRTY IN W's L2, and every header depends
+        // on the one before it (the next position is this header's length) — a
+        // dependent chain of cross-core misses the hardware prefetcher did not hide
+        // (the first build's replay loop was 9.4% of D's cycles by itself).
         // Prefetching two and four lines ahead breaks the chain.
         __builtin_prefetch(g_log + ((t + 32) & kLogMask));
         __builtin_prefetch(g_log + ((t + 64) & kLogMask));
         const uint32_t h = g_log[t & kLogMask];
-        if (h == kSkipMarker)
+        const uint32_t kind = h >> 16;
+        if (kind < kRegCount)
         {
-            t = (t | kLogMask) + 1;   // the next lap
+            const uint32_t count = h & 0xFFFFu;
+            memcpy(g_regsD + kind, g_log + ((t + 1) & kLogMask), size_t(count) * 4);
+            t += count + 1;
             continue;
         }
-        if (h == kStoreMarker)
+        switch (h)
         {
-            const uint32_t va = g_log[(t + 1) & kLogMask];
-            const uint32_t value = g_log[(t + 2) & kLogMask];
-            GuestStore32(g_base, va, value);
-            FenceWait_Stored(g_base, va);
-            ++g_stats.stores;
-            t += 3;
-            continue;
+            case kSkip:
+                t = (t | kLogMask) + 1;   // the next lap
+                continue;
+            case kStore:
+            {
+                const uint32_t va = g_log[(t + 1) & kLogMask];
+                const uint32_t value = g_log[(t + 2) & kLogMask];
+                GuestStore32(g_base, va, value);
+                FenceWait_Stored(g_base, va);
+                ++g_stats.stores;
+                t += 3;
+                break;
+            }
+            case kIrq:
+                t += 1;
+                g_tailLocal = t;
+                g_tail.store(t, std::memory_order_release);
+                RunInterrupt();
+                break;
+            case kSwap:
+            {
+                const uint32_t front = g_log[(t + 1) & kLogMask];
+                const uint32_t w = g_log[(t + 2) & kLogMask];
+                const uint32_t hh = g_log[(t + 3) & kLogMask];
+                t += 4;
+                VkRenderer_OnSwap(g_base, front, w, hh);
+                Host_Present(front, w, hh);
+                cz_timebase::AdvanceFrame();
+                ++g_stats.swaps;
+                break;
+            }
+            case kShader:
+            {
+                const uint32_t type = g_log[(t + 1) & kLogMask];
+                const uint32_t size = g_log[(t + 2) & kLogMask];
+                const uint64_t hash = uint64_t(g_log[(t + 3) & kLogMask]) |
+                                      (uint64_t(g_log[(t + 4) & kLogMask]) << 32);
+                const uint64_t ptr = uint64_t(g_log[(t + 5) & kLogMask]) |
+                                     (uint64_t(g_log[(t + 6) & kLogMask]) << 32);
+                t += 7;
+                uint8_t* code = reinterpret_cast<uint8_t*>(uintptr_t(ptr));
+                VkRenderer_OnShaderBind(type, hash, code, size);
+                free(code);
+                break;
+            }
+            default:
+                if (kind == kDrawKind)
+                {
+                    const uint32_t n = h & 0xFFFFu;   // == kDrawDwords
+                    DrawRec r;
+                    memcpy(&r, g_log + ((t + 1) & kLogMask), size_t(n) * 4);
+                    t += n + 1;
+                    RunDraw(r);
+                    break;
+                }
+                // An unknown header is a corrupt stream; stop rather than guess.
+                fprintf(stderr, "[split] CORRUPT STREAM at %llu: header %08X — D stops\n",
+                        (unsigned long long)t, h);
+                g_tailLocal = t;
+                for (;;)
+                    std::this_thread::sleep_for(std::chrono::seconds(1));
         }
-        const uint32_t index = h >> 16;
-        const uint32_t count = h & 0xFFFFu;
-        memcpy(g_regsD + index, g_log + ((t + 1) & kLogMask), size_t(count) * 4);
-        t += count + 1;
+        // Publish consumption after every non-run record: W's space check and the
+        // run-ahead table read it, and a run is never the last record before a draw.
+        g_tailLocal = t;
+        g_tail.store(t, std::memory_order_release);
     }
-    g_logTailLocal = t;
-    g_logTail.store(t, std::memory_order_release);
-}
-
-void RunDraw(const Op& op)
-{
-    g_palCover = std::max(g_palCover, op.draw.ctx.palCoverExtent);
-    g_palPartial = std::max(g_palPartial, op.draw.ctx.palPartialExtent);
-    g_palCoverBursts += op.draw.ctx.palCoverBursts;
-    g_palPartialBursts += op.draw.ctx.palPartialBursts;
-    g_palHigh = op.draw.ctx.palHighWater;
-    g_cur = &op.draw.ctx;
-    VkRenderer_DrawQueued(g_base, op.draw.d, g_regsD, op.draw.vs, op.draw.ps);
-    g_cur = nullptr;
-    ++g_stats.draws;
+    g_tailLocal = t;
+    g_tail.store(t, std::memory_order_release);
 }
 
 void DrawThread()
@@ -262,89 +315,32 @@ void DrawThread()
     ThreadBudget_NameSelf("cz-draw");
     for (;;)
     {
-        uint64_t head = g_opHead.load(std::memory_order_acquire);
-        if (head == g_opTailLocal)
+        uint64_t pub = g_pub.load(std::memory_order_acquire);
+        if (pub != g_tailLocal)
         {
-            // Nothing queued: apply whatever the log holds past the last op (stores
-            // that must land now; register runs that are harmless early), then spin
-            // briefly — the queue is rarely empty at load — then park.
-            const uint64_t tIdle = NowNs();
-            Replay(g_logPub.load(std::memory_order_acquire));
-            // ~200 us of spinning before the futex: at load the queue runs dry ~6 times
-            // a frame for tens of microseconds each (W is gated by the guest producing
-            // packets), and a park/unpark round trip costs more than the gap.
-            for (int i = 0; i < 16000 && head == g_opTailLocal; ++i)
-            {
-                SPLIT_PAUSE();
-                if ((i & 63) == 0)
-                    Replay(g_logPub.load(std::memory_order_acquire));
-                head = g_opHead.load(std::memory_order_acquire);
-            }
-            if (head == g_opTailLocal)
-            {
-                Replay(g_logPub.load(std::memory_order_acquire));
-                ++g_stats.dEmptyWaits;
-                g_dSleeping.store(true, std::memory_order_seq_cst);
-                std::unique_lock<std::mutex> lk(g_parkMx);
-                g_parkCv.wait(lk, [&] {
-                    return g_opHead.load(std::memory_order_seq_cst) != g_opTailLocal ||
-                           g_logPub.load(std::memory_order_seq_cst) != g_logTailLocal;
-                });
-                g_dSleeping.store(false, std::memory_order_seq_cst);
-                g_stats.dIdleNs += NowNs() - tIdle;
-                continue;
-            }
-            g_stats.dIdleNs += NowNs() - tIdle;
+            Consume(pub);
+            continue;
         }
-        while (g_opTailLocal != head)
+        // Nothing to do. ~200 us of spinning before the futex: at load the stream runs
+        // dry a few times a frame for tens of microseconds each (W is gated by the guest
+        // producing packets), and a park/unpark round trip costs more than the gap.
+        const uint64_t tIdle = NowNs();
+        for (int i = 0; i < 16000 && pub == g_tailLocal; ++i)
         {
-            Op& op = g_ops[g_opTailLocal & kOpsMask];
-            Replay(op.logEnd);
-            switch (op.kind)
-            {
-                case kDraw:
-                    RunDraw(op);
-                    break;
-                case kInterrupt:
-                {
-                    // Ask W and wait (design point 2). W services the request at the top
-                    // of its tick, between packets, and inside its own space waits.
-                    const uint64_t ticket = g_irqRequested.fetch_add(1, std::memory_order_seq_cst) + 1;
-                    if (g_wNapping.load(std::memory_order_seq_cst))
-                    {
-                        std::lock_guard<std::mutex> lk(g_napMx);
-                        g_napCv.notify_one();
-                    }
-                    const uint64_t t0 = NowNs();
-                    uint32_t spins = 0;
-                    while (g_irqDelivered.load(std::memory_order_acquire) < ticket)
-                    {
-                        if (++spins < 20000)
-                            SPLIT_PAUSE();
-                        else
-                            std::this_thread::yield();
-                    }
-                    g_stats.dIrqWaitNs += NowNs() - t0;
-                    ++g_stats.interrupts;
-                    break;
-                }
-                case kSwap:
-                    VkRenderer_OnSwap(g_base, op.swap.front, op.swap.w, op.swap.h);
-                    Host_Present(op.swap.front, op.swap.w, op.swap.h);
-                    cz_timebase::AdvanceFrame();
-                    ++g_stats.swaps;
-                    break;
-                case kShader:
-                    VkRenderer_OnShaderBind(op.shader.type, op.shader.hash, op.shader.code,
-                                            op.shader.sizeDwords);
-                    free(op.shader.code);
-                    break;
-                default:
-                    break;
-            }
-            ++g_opTailLocal;
-            g_opTail.store(g_opTailLocal, std::memory_order_release);
+            SPLIT_PAUSE();
+            pub = g_pub.load(std::memory_order_acquire);
         }
+        if (pub == g_tailLocal)
+        {
+            ++g_stats.dEmptyWaits;
+            g_dSleeping.store(true, std::memory_order_seq_cst);
+            std::unique_lock<std::mutex> lk(g_parkMx);
+            g_parkCv.wait(lk, [&] {
+                return g_pub.load(std::memory_order_seq_cst) != g_tailLocal;
+            });
+            g_dSleeping.store(false, std::memory_order_seq_cst);
+        }
+        g_stats.dIdleNs += NowNs() - tIdle;
     }
 }
 
@@ -364,10 +360,9 @@ bool Start(uint8_t* base, void (*deliverInterrupt)())
     g_base = base;
     g_deliver = deliverInterrupt;
     g_log = static_cast<uint32_t*>(calloc(kLogDwords, sizeof(uint32_t)));
-    g_ops = static_cast<Op*>(calloc(kOps, sizeof(Op)));
-    if (!g_log || !g_ops)
+    if (!g_log)
     {
-        fprintf(stderr, "[split] queue allocation failed — one-thread pump\n");
+        fprintf(stderr, "[split] stream allocation failed — one-thread pump\n");
         return false;
     }
     // D's replica starts as W's file is now (all zero before the first walk).
@@ -380,10 +375,10 @@ bool Start(uint8_t* base, void (*deliverInterrupt)())
                       "the walk, the register file, the waits and the ISRs");
     std::thread(DrawThread).detach();
     g_on = true;
-    fprintf(stderr, "[split] CZ_PUMP_SPLIT=1 — the PM4 walk stays on cz-pump, draws / "
-                    "stores / swaps / interrupts execute in stream order on cz-draw "
-                    "(log %u MB, %u ops)\n",
-            unsigned(kLogDwords * 4 / (1024 * 1024)), unsigned(kOps));
+    fprintf(stderr, "[split] CZ_PUMP_SPLIT=1 — the PM4 walk stays on cz-pump; draws, "
+                    "stores, swaps and interrupts execute in stream order on cz-draw "
+                    "(one %u MB stream)\n",
+            unsigned(kLogDwords * 4 / (1024 * 1024)));
     return true;
 }
 
@@ -392,18 +387,10 @@ void LogRun(uint32_t index, uint32_t count, const uint32_t* src)
     while (count)
     {
         const uint32_t n = count > 0xFFFFu ? 0xFFFFu : count;
-        const uint64_t need = uint64_t(n) + 1;
-        const uint32_t off = uint32_t(g_logHead & kLogMask);
-        const uint64_t pad = (off + need > kLogDwords) ? (kLogDwords - off) : 0;
-        WaitLogSpace(pad + need);
-        if (pad)
-        {
-            g_log[off] = kSkipMarker;
-            g_logHead += pad;
-        }
-        g_log[g_logHead & kLogMask] = (index << 16) | n;
-        memcpy(g_log + ((g_logHead + 1) & kLogMask), src, size_t(n) * 4);
-        g_logHead += need;
+        uint32_t* p = Reserve(uint64_t(n) + 1);
+        p[0] = (index << 16) | n;
+        memcpy(p + 1, src, size_t(n) * 4);
+        g_head += uint64_t(n) + 1;
         g_stats.logDwords += n;
         index += n;
         src += n;
@@ -414,30 +401,26 @@ void LogRun(uint32_t index, uint32_t count, const uint32_t* src)
 void EnqueueDraw(const Pm4Draw& d, const Pm4ShaderBinding& vs, const Pm4ShaderBinding& ps,
                  const DrawCtx& ctx)
 {
-    Op& op = NextOp();
-    op.kind = kDraw;
-    op.draw.d = d;
-    op.draw.vs = vs;
-    op.draw.ps = ps;
-    op.draw.ctx = ctx;
+    uint32_t* p = Reserve(kDrawDwords + 1);
+    p[0] = (kDrawKind << 16) | kDrawDwords;
+    DrawRec r;
+    r.d = d;
+    r.vs = vs;
+    r.ps = ps;
+    r.ctx = ctx;
+    memcpy(p + 1, &r, sizeof r);
+    g_head += kDrawDwords + 1;
+    ++g_stats.ops;
     Publish();
 }
 
 void EnqueueStore(uint32_t va, uint32_t value)
 {
-    const uint64_t need = 3;
-    const uint32_t off = uint32_t(g_logHead & kLogMask);
-    const uint64_t pad = (off + need > kLogDwords) ? (kLogDwords - off) : 0;
-    WaitLogSpace(pad + need);
-    if (pad)
-    {
-        g_log[off] = kSkipMarker;
-        g_logHead += pad;
-    }
-    g_log[g_logHead & kLogMask] = kStoreMarker;
-    g_log[(g_logHead + 1) & kLogMask] = va;
-    g_log[(g_logHead + 2) & kLogMask] = value;
-    g_logHead += need;
+    uint32_t* p = Reserve(3);
+    p[0] = kStore;
+    p[1] = va;
+    p[2] = value;
+    g_head += 3;
     {
         uint32_t i = 0;
         for (; i < g_storeTrackN; ++i)
@@ -447,12 +430,53 @@ void EnqueueStore(uint32_t va, uint32_t value)
             g_storeTrack[g_storeTrackN++].va = va;
         if (i < kStoreTrack)
         {
-            g_storeTrack[i].pos = g_logHead;
+            g_storeTrack[i].pos = g_head;
             g_storeTrack[i].value = value;
         }
     }
     ++g_stats.storesQueued;
-    PublishLog();
+    Publish();
+}
+
+void EnqueueInterrupt()
+{
+    uint32_t* p = Reserve(1);
+    p[0] = kIrq;
+    g_head += 1;
+    ++g_stats.ops;
+    Publish();
+}
+
+void EnqueueSwap(uint32_t frontBuffer, uint32_t width, uint32_t height)
+{
+    uint32_t* p = Reserve(4);
+    p[0] = kSwap;
+    p[1] = frontBuffer;
+    p[2] = width;
+    p[3] = height;
+    g_head += 4;
+    ++g_stats.ops;
+    Publish();
+}
+
+void EnqueueShaderBind(uint32_t type, uint64_t hash, const uint8_t* code, uint32_t sizeDwords)
+{
+    uint8_t* copy = static_cast<uint8_t*>(malloc(size_t(sizeDwords) * 4));
+    if (!copy)
+        return;
+    memcpy(copy, code, size_t(sizeDwords) * 4);
+    const uint64_t ptr = uint64_t(uintptr_t(copy));
+    uint32_t* p = Reserve(7);
+    p[0] = kShader;
+    p[1] = type;
+    p[2] = sizeDwords;
+    p[3] = uint32_t(hash);
+    p[4] = uint32_t(hash >> 32);
+    p[5] = uint32_t(ptr);
+    p[6] = uint32_t(ptr >> 32);
+    g_head += 7;
+    ++g_stats.ops;
+    Publish();
 }
 
 void Nap(int us)
@@ -473,38 +497,6 @@ void Nap(int us)
         });
     }
     g_wNapping.store(false, std::memory_order_seq_cst);
-}
-
-void EnqueueInterrupt()
-{
-    Op& op = NextOp();
-    op.kind = kInterrupt;
-    Publish();
-}
-
-void EnqueueSwap(uint32_t frontBuffer, uint32_t width, uint32_t height)
-{
-    Op& op = NextOp();
-    op.kind = kSwap;
-    op.swap.front = frontBuffer;
-    op.swap.w = width;
-    op.swap.h = height;
-    Publish();
-}
-
-void EnqueueShaderBind(uint32_t type, uint64_t hash, const uint8_t* code, uint32_t sizeDwords)
-{
-    uint8_t* copy = static_cast<uint8_t*>(malloc(size_t(sizeDwords) * 4));
-    if (!copy)
-        return;
-    memcpy(copy, code, size_t(sizeDwords) * 4);
-    Op& op = NextOp();
-    op.kind = kShader;
-    op.shader.type = type;
-    op.shader.sizeDwords = sizeDwords;
-    op.shader.hash = hash;
-    op.shader.code = copy;
-    Publish();
 }
 
 void ServiceInterrupts()
@@ -554,7 +546,7 @@ bool PendingStoreValue(uint32_t va, uint32_t* value)
     for (uint32_t i = 0; i < g_storeTrackN; ++i)
         if (g_storeTrack[i].va == va)
         {
-            if (g_storeTrack[i].pos <= g_logTail.load(std::memory_order_acquire))
+            if (g_storeTrack[i].pos <= g_tail.load(std::memory_order_acquire))
                 return false;   // D has landed it; memory is the truth
             *value = g_storeTrack[i].value;
             return true;
@@ -572,7 +564,7 @@ void NoteWaitUnmet(uint32_t va)
     for (uint32_t i = 0; i < g_storeTrackN; ++i)
         if (g_storeTrack[i].va == va)
         {
-            if (g_storeTrack[i].pos > g_logTail.load(std::memory_order_acquire))
+            if (g_storeTrack[i].pos > g_tail.load(std::memory_order_acquire))
                 ++g_stats.waitsOnOurStore;
             return;
         }

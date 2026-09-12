@@ -2122,9 +2122,24 @@ uint32_t ExecutePacket(uint8_t* base, const Source& fetch, uint32_t pos, uint32_
             // because that guest thread is very likely the one waiting for us to make
             // progress. Holding means returning and retrying next tick — see below.
             uint32_t value;
+            bool pendingUsed = false;
             if (isMemory)
             {
                 value = LoadGpu(base, poll);
+                // Part 117: under the split a store the walk already passed may not have
+                // landed yet (D executes it in order, later). The word's value AT THIS
+                // POINT IN THE STREAM is that pending store's, not memory's — so it
+                // replaces the memory read. Satisfied, the walk runs ahead of D at the
+                // driver's pipeline-drain blocks (EVENT_WRITE then WAIT on the same
+                // word); unsatisfied, the walk holds exactly as hardware's CP would,
+                // and memory becomes the truth again once D lands the store
+                // (pump_split.h, PendingStoreValue).
+                uint32_t raw = 0;
+                if (split::g_on && split::PendingStoreValue(PhysToVa(poll & ~3u), &raw))
+                {
+                    value = GpuSwapResidual(raw, poll);
+                    pendingUsed = true;
+                }
             }
             else
             {
@@ -2139,23 +2154,11 @@ uint32_t ExecutePacket(uint8_t* base, const Source& fetch, uint32_t pos, uint32_
                 }
                 value = reg < kRegCount ? g_regs[reg] : 0;
             }
-            bool met = EvalWaitCondition(info, value, mask, ref);
+            const bool met = EvalWaitCondition(info, value, mask, ref);
+            if (met && pendingUsed)
+                split::NoteWaitSatisfiedByPending();
             if (!met && split::g_on && isMemory)
-            {
-                // Part 117: a wait on a word OUR OWN deferred store will write — the
-                // driver's pipeline-drain block. D executes the stream in order, so
-                // the walk may run ahead the moment the pending value satisfies the
-                // condition (pump_split.h, PendingStoreValue).
-                uint32_t raw = 0;
-                if (split::PendingStoreValue(PhysToVa(poll & ~3u), &raw) &&
-                    EvalWaitCondition(info, GpuSwapResidual(raw, poll), mask, ref))
-                {
-                    met = true;
-                    split::NoteWaitSatisfiedByPending();
-                }
-                else
-                    split::NoteWaitUnmet(PhysToVa(poll & ~3u));
-            }
+                split::NoteWaitUnmet(PhysToVa(poll & ~3u));
             if (!met)
             {
                 const uint64_t n = g_waitUnmet.fetch_add(1) + 1;
