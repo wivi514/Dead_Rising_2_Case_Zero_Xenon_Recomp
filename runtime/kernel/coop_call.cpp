@@ -334,11 +334,33 @@ PPC_FUNC(sub_82224DF0)
     __imp__sub_82224DF0(ctx, base);
 }
 
+// The answered handler. The title's own body raises the dialog and then puts the
+// player INTO THE CALL: an event of kind 0x5C to the object at
+// [[player+0x4D4]+0x78]+0x18 (sub_82157178 sets its +0x40/+0x41 bytes) and the call
+// element's state to 3, the "talking" state with a 120 s timer. On the 360 the
+// walkie-talkie HUD then plays the conversation and ends it; here that element is
+// compiled out, so the flags stayed set and the joining player's load never finished
+// (the first part-6 session: sync points traded for ever after the accept). So the
+// answer does what part 5's direct prompt did — the dialog, through the same three
+// guest calls, with the answer confirming through the title's own path — and the ring
+// itself is taken down: queue emptied (read index = write index), state idle, no 0x5C.
 PPC_FUNC(sub_82224F30)
 {
+    const uint32_t player = ctx.r3.u32;
     if (Trace())
         fprintf(stderr, "[coop:call] sub_82224F30: the call was answered (player %08X)\n",
-                ctx.r3.u32);
+                player);
+    if (PromptEnabled() && RingEnabled())
+    {
+        const Objects o = Resolve(ctx, base);
+        if (o.session && RaisePrompt(ctx, base, o.session, "call answered"))
+        {
+            CallOver("answered — the dialog is up, the ring taken down");
+            PPC_STORE_U32(player + 0x1A3C, PPC_LOAD_U32(player + 0x1A38));   // queue empty
+            PPC_STORE_U32(player + 0x1A40, 0);                              // state idle
+            return;
+        }
+    }
     CallOver("answered — the title raises the dialog");
     __imp__sub_82224F30(ctx, base);
 }
