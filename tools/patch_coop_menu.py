@@ -29,11 +29,12 @@ title.txt. So this tool puts a row back, and nothing in C++ changes:
                  NAME (sub_824D8A00 hides TrialUnlock and moves ExitToArcade
                  up when the game is licensed; sub_824D88C0 hides
                  DebugJumpPrologue), so a new name is invisible to it.
-  joingame.txt   the "JOIN FRIENDS" row is REMOVED. It raises ACT:Friends,
-                 which posts a friends-list request the kernel answers with an
-                 honest failure — a row that does nothing is the gamma slider
-                 all over again (part60-kickoff §3). The remaining row's focus
-                 chain points at itself.
+  joingame.txt   UNTOUCHED. Its "JOIN FRIENDS" row raises ACT:Friends, which
+                 runtime/kernel/coop_friends.cpp turns into the LIVE row's
+                 search-and-join kept to friends' sessions. (An earlier form of
+                 this tool removed the row as dead; that overlay copy is
+                 superseded, which is why mainmenu.big is always rebuilt from
+                 the package's copy and never from the overlay's.)
   path_fe.txt    (in fecmn.big) TitleScreen gains a JoinGame=">Normal" edge.
                  The manifest is the frontend's transition graph — which
                  screens a screen may open and which file backs each — and
@@ -51,7 +52,7 @@ measured in part 60 with a truncated nested archive).
 
 Run AFTER tools/gen_pc_options.py (which writes the overlay's fecmn.big,
 bootskip copy and layout.bin this reads) and beside tools/patch_coop_outfit.py.
-Idempotent: a second run finds the rows in place and says so. Not yet ported to
+Idempotent for fecmn.big; mainmenu.big is regenerated each run. Not yet ported to
 runtime/host/overlay_gen.cpp — a release with co-op needs that; a solo release
 does not.
 
@@ -136,22 +137,6 @@ def rewrite_title(text):
     return '\n'.join(lines)
 
 
-def rewrite_joingame(text):
-    """joingame.txt without the Friends row, or None if already so."""
-    if 'cFEButton Friends' not in text:
-        return None
-    lines = text.split('\n')
-    h, o, c = find_block(lines, lambda l: l.strip() == 'cFEButton Friends')
-    del lines[h:c + 1]
-    h2, o2, c2 = find_block(lines, lambda l: l.strip() == 'cFEButton XboxLive')
-    for key in ('onUp', 'onDown'):
-        i = block_field(lines, o2, c2, key)
-        assert lines[i] == f'{key}="FOC:Friends"'
-        lines[i] = f'{key}="FOC:XboxLive"'
-    assert 'Friends' not in '\n'.join(lines)
-    return '\n'.join(lines)
-
-
 def rewrite_path_fe(text):
     """path_fe.txt with TitleScreen -> JoinGame, or None if already so."""
     lines = text.split('\n')
@@ -219,8 +204,10 @@ def update_layout(changed):
 def main():
     changed = []
     rel = 'data/frontend/mainmenu.big'
-    done = patch_archive(overlay_src(rel), os.path.join(PATCHED, rel),
-                         {'title.txt': rewrite_title, 'joingame.txt': rewrite_joingame},
+    # Always from the package's copy: no other tool patches this archive, and
+    # an overlay copy may carry an earlier form of this tool's edits.
+    done = patch_archive(os.path.join(REPO, 'assets/game', rel), os.path.join(PATCHED, rel),
+                         {'title.txt': rewrite_title},
                          align=4)   # the shipped archive packs at 4 bytes
     for name, before, after, comp in done:
         print(f'{rel}: {name} rewritten ({before} -> {after} bytes text, {comp} compressed)')

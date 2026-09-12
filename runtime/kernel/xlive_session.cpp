@@ -381,6 +381,10 @@ std::vector<xlive::Client::Ticket> g_socialTickets;
 
 xlive::Client& Live() { return xlive::Client::Instance(); }
 
+// Set by kernel/coop_friends.cpp for the JoinGame screen's "JOIN FRIENDS" row;
+// read when a search completes. Cleared by the "JOIN XBOX LIVE GAME" row.
+bool g_friendsOnlySearch = false;
+
 // ---------------------------------------------------------------------------
 // Address bookkeeping
 // ---------------------------------------------------------------------------
@@ -743,9 +747,35 @@ void SettleWith(const Pending& pending, const xlive::Client::SessionResult& resu
         }
 
         case 0x000B001C: // XSessionSearchEx
-            status = WriteSearchResults(pending, result.results);
-            KLOG("[xlive] search found %zu session(s)\n", result.results.size());
+        {
+            // The JoinGame screen's "JOIN FRIENDS" row (co-op part 5,
+            // kernel/coop_friends.cpp): the same search, kept to the sessions
+            // a friend is hosting. The library's friends list carries each
+            // friend's xuid; a session names its host. Nothing else about the
+            // join changes, so the result the title reads is a normal search
+            // result that happens to hold only friends' games.
+            std::vector<xlive::Client::SessionInfo> results = result.results;
+            if (g_friendsOnlySearch)
+            {
+                std::vector<xlive::Client::SessionInfo> friendsOnly;
+                const auto friends = Live().friends();
+                for (const auto& session : results)
+                    for (const auto& f : friends)
+                        if (f.is_friend() && f.xuid == session.host_xuid)
+                        {
+                            friendsOnly.push_back(session);
+                            break;
+                        }
+                KLOG("[xlive] search found %zu session(s), %zu hosted by a friend "
+                     "(friends-only search; %zu friend(s) on the list)\n",
+                     results.size(), friendsOnly.size(), friends.size());
+                results.swap(friendsOnly);
+            }
+            else
+                KLOG("[xlive] search found %zu session(s)\n", results.size());
+            status = WriteSearchResults(pending, results);
             break;
+        }
 
         case 0x000B001D: // XSessionGetDetails
             if (result.session.valid())
@@ -1998,4 +2028,11 @@ void XliveSession_SelfTest()
         fprintf(stderr, "[xlive] session self-test: the guest ABI is intact\n");
     else
         fprintf(stderr, "[xlive] session self-test: %d FAILURE(S)\n", g_selfTestFailures);
+}
+
+void XliveSession_SetFriendsOnlySearch(bool on)
+{
+    g_friendsOnlySearch = on;
+    KLOG("[xlive] session search: %s\n",
+         on ? "FRIENDS ONLY (the JoinGame screen's JOIN FRIENDS row)" : "any joinable session");
 }
