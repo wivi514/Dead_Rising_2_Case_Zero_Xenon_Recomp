@@ -9,9 +9,13 @@
 # Regeneratable recompiler output (run XenonRecomp on config/CaseZero.toml)
 /ppc/
 
-# Build artifacts (any build/ dir)
+# Build artifacts (any build/ dir, and every runtime/build-<arm>/ — part 116 committed two
+# 150 MB static libraries with a `git add -A runtime/` before this line existed, and
+# rewrote eight commits to get them back out)
 build/
 build-asan/
+build-*/
+*.configure.log
 
 # Locally built analysis binary (rebuild with tools/build_xex_image_dump.sh)
 /tools/xex_image_dump
