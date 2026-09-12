@@ -381,9 +381,11 @@ std::vector<xlive::Client::Ticket> g_socialTickets;
 
 xlive::Client& Live() { return xlive::Client::Instance(); }
 
-// Set by kernel/coop_friends.cpp for the JoinGame screen's "JOIN FRIENDS" row;
-// read when a search completes. Cleared by the "JOIN XBOX LIVE GAME" row.
-bool g_friendsOnlySearch = false;
+// Set by kernel/coop_friends.cpp; read when a search completes. 0 = any
+// joinable session (the JoinGame screen's LIVE row), 1 = sessions a friend
+// hosts, 2 = the one host the player picked on the friends screen.
+int g_searchHostFilter = 0;
+uint64_t g_searchHostXuid = 0;
 
 // ---------------------------------------------------------------------------
 // Address bookkeeping
@@ -755,21 +757,32 @@ void SettleWith(const Pending& pending, const xlive::Client::SessionResult& resu
             // join changes, so the result the title reads is a normal search
             // result that happens to hold only friends' games.
             std::vector<xlive::Client::SessionInfo> results = result.results;
-            if (g_friendsOnlySearch)
+            if (g_searchHostFilter == 1)
             {
-                std::vector<xlive::Client::SessionInfo> friendsOnly;
+                std::vector<xlive::Client::SessionInfo> kept;
                 const auto friends = Live().friends();
                 for (const auto& session : results)
                     for (const auto& f : friends)
                         if (f.is_friend() && f.xuid == session.host_xuid)
                         {
-                            friendsOnly.push_back(session);
+                            kept.push_back(session);
                             break;
                         }
                 KLOG("[xlive] search found %zu session(s), %zu hosted by a friend "
                      "(friends-only search; %zu friend(s) on the list)\n",
-                     results.size(), friendsOnly.size(), friends.size());
-                results.swap(friendsOnly);
+                     results.size(), kept.size(), friends.size());
+                results.swap(kept);
+            }
+            else if (g_searchHostFilter == 2)
+            {
+                std::vector<xlive::Client::SessionInfo> kept;
+                for (const auto& session : results)
+                    if (session.host_xuid == g_searchHostXuid)
+                        kept.push_back(session);
+                KLOG("[xlive] search found %zu session(s), %zu hosted by %016llX (the "
+                     "friend picked on the friends screen)\n",
+                     results.size(), kept.size(), (unsigned long long)g_searchHostXuid);
+                results.swap(kept);
             }
             else
                 KLOG("[xlive] search found %zu session(s)\n", results.size());
@@ -2030,9 +2043,15 @@ void XliveSession_SelfTest()
         fprintf(stderr, "[xlive] session self-test: %d FAILURE(S)\n", g_selfTestFailures);
 }
 
-void XliveSession_SetFriendsOnlySearch(bool on)
+void XliveSession_SetSearchHostFilter(int mode, uint64_t hostXuid)
 {
-    g_friendsOnlySearch = on;
-    KLOG("[xlive] session search: %s\n",
-         on ? "FRIENDS ONLY (the JoinGame screen's JOIN FRIENDS row)" : "any joinable session");
+    g_searchHostFilter = mode;
+    g_searchHostXuid = hostXuid;
+    if (mode == 2)
+        KLOG("[xlive] session search: ONLY the session hosted by %016llX\n",
+             (unsigned long long)hostXuid);
+    else
+        KLOG("[xlive] session search: %s\n",
+             mode == 1 ? "FRIENDS ONLY (the JoinGame screen's JOIN FRIENDS row)"
+                       : "any joinable session");
 }

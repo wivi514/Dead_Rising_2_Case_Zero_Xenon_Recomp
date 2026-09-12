@@ -172,13 +172,13 @@ void FireJoin(PPCContext& ctx, uint8_t* base, const Objects& o)
 // transition manager (captured by the title's own first screen change), with
 // the {1, 1} params the row passes. The screen then makes the call above
 // itself and reacts to what follows.
-void FireJoinScreen(PPCContext& ctx, uint8_t* base, const Objects& o)
+uint32_t FireJoinScreen(PPCContext& ctx, uint8_t* base, const Objects& o)
 {
     const uint32_t manager = DebugTunables_FrontendManager();
     if (!manager)
     {
         fprintf(stderr, "[coop] join: no frontend transition manager captured yet\n");
-        return;
+        return 0;
     }
     PPCContext call = ctx;
     const uint32_t params = (ctx.r1.u32 - 0x20) & ~0xFu;
@@ -205,6 +205,7 @@ void FireJoinScreen(PPCContext& ctx, uint8_t* base, const Objects& o)
                     "pending hash %08X, state %u/%u)\n", call.r3.u32,
             LoadU32(base, manager + 0x120), LoadU32(base, manager + 0x17C),
             LoadU8(base, manager + 0x16C), LoadU8(base, manager + 0x16D));
+    return call.r3.u32;
 }
 
 // Why the join is not fired this frame, or nullptr to fire. Printed only when
@@ -263,11 +264,39 @@ const char* WhyNotJoining(PPCContext& ctx, uint8_t* base, const Objects& o, char
 }
 } // namespace
 
+// A one-shot request from the friends screen (coop_friends.cpp): open
+// GameSelect in mode 1 on a later frame, once the dialog that asked has gone —
+// a transition requested from inside a dialog's own handler is refused by the
+// manager while that dialog is still the current screen. Retried for a few
+// frames because the close takes one or two.
+int g_screenRequestTries = 0;
+
+void CoopJoin_RequestJoinScreen()
+{
+    g_screenRequestTries = 90;
+    fprintf(stderr, "[coop] join: GameSelect (mode 1) requested for the next frame\n");
+}
+
 // The game session's per-frame Update. The title's own join call goes after
 // the update it would have followed on the JoinGame screen.
 PPC_FUNC(sub_824C2268)
 {
     __imp__sub_824C2268(ctx, base);
+    if (g_screenRequestTries > 0)
+    {
+        const Objects o = Resolve(ctx, base);
+        if (--g_screenRequestTries % 3 == 0)
+        {
+            const uint32_t manager = DebugTunables_FrontendManager();
+            // A pending transition (+0x17C) is the dialog's own close in
+            // flight; wait for it rather than have ours refused.
+            if (manager && !LoadU32(base, manager + 0x17C) && FireJoinScreen(ctx, base, o))
+                g_screenRequestTries = 0;
+            else if (g_screenRequestTries == 0)
+                fprintf(stderr, "[coop] join: the GameSelect request from the friends screen "
+                                "was never taken (manager %08X)\n", manager);
+        }
+    }
     if (!JoinRequested())
         return;
     // Every 15th frame: the predicate chain is several guest calls, and the

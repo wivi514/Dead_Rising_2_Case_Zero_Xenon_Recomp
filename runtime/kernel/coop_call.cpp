@@ -171,8 +171,10 @@ bool RaisePrompt(PPCContext& ctx, uint8_t* base, uint32_t session, const char* r
 } // namespace
 
 // The game session's event handler. A "Yes" that no player gave becomes the
-// question; the player's own answer, later, goes through untouched.
-PPC_FUNC(sub_824C0958)
+// question; the player's own answer, later, goes through untouched. The
+// PPC_FUNC hook itself lives in coop_friends.cpp (one function, two hooks);
+// this is its half.
+void CoopCall_GameSessionEvent(PPCContext& ctx, uint8_t* base)
 {
     const uint32_t event = ctx.r4.u32;
     const uint32_t id = LoadU32(base, event + 4);

@@ -112,7 +112,7 @@ bool XliveSession_LocalXnAddr(void* xnaddrOut);
 // than only when two people sit down to play. Off unless CZ_XLIVE_COOP_TEST=1.
 void XliveSession_SelfTest();
 
-// The JoinGame screen's two rows (co-op part 5, kernel/coop_friends.cpp): with
-// `on`, every XSessionSearchEx result is kept to sessions whose host is on
-// the player's friends list; off is the plain search.
-void XliveSession_SetFriendsOnlySearch(bool on);
+// The JoinGame screen's rows (co-op part 5, kernel/coop_friends.cpp): mode 0
+// is the plain search, 1 keeps every XSessionSearchEx result to sessions whose
+// host is on the player's friends list, 2 to the one host `hostXuid`.
+void XliveSession_SetSearchHostFilter(int mode, uint64_t hostXuid = 0);
