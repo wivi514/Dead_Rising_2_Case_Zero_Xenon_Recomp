@@ -31,7 +31,6 @@
 // The hook sits on sub_82553130 ("is there a session"), the first predicate of that
 // block, keyed on the return address so it runs once per level start and nowhere else.
 // CZ_NO_DEFAULT_OUTFIT=1 is the control (the invisible joiner).
-#include <chrono>
 #include <cstdio>
 #include <cstdlib>
 
@@ -70,19 +69,16 @@ bool PieceEmpty(uint8_t* base, uint32_t save, uint32_t part)
 // GameplayFlow::Enter both players are alive, which is where the operator's manual
 // outfit pick worked from.
 bool g_pendingDefault = false;
-// THE HOST HAS TO BE TOLD. The row applier dresses the joiner's own Chuck (SetPart on
-// his clothing, six pieces) but broadcasts nothing — the wardrobe's put-on action is
-// what sends PlayerPutOnClothing events, and this is not that. What the host DOES
-// consume is the outfit REPORT the joiner sent at join (tEventOutfit: seven piece
-// names, received as `CoopSetPart clothing ... part N 'name'`), which went out empty
-// before the dressing. So the report is sent AGAIN, through the title's own sender —
-// sub_82581EC8(session, owner, 0x33) = "my current pieces" (0x33 is what a joiner
-// passes at join, 0x82588560; the host passes row 0) — a few seconds after the dress,
-// once the pieces' models have loaded and the records carry the names.
-std::chrono::steady_clock::time_point g_resendAt{};
-bool g_resendPending = false;
-constexpr uint32_t kFnSendOutfitReport = 0x82581EC8;
-constexpr uint32_t kCurrentPieces = 0x33;
+// THE HOST'S HALF. The row applier dresses the joiner's own Chuck but broadcasts
+// nothing (the wardrobe's put-on action is what sends PlayerPutOnClothing, and this is
+// not that), and RE-SENDING the join-time outfit report is not an option: the host
+// answers it with FLOW_COMMAND_DONE_OUTFIT_TRANSFER, which the joiner's flow takes as
+// the join step completing — it re-ran CONNMESH_CONNECTED and the whole 87 KB state
+// transfer while already in gameplay, and crashed (run 11). So the host dresses the
+// remote player ITSELF: the report it receives from a save-less joiner carries seven
+// EMPTY piece names (`CoopSetPart clothing ... part 0..6 ''`), and on the seventh the
+// host applies the same row 17 to that player slot. Both sides end up in the same
+// outfit by the same rule, and nothing extra goes over the wire.
 
 void CoopOutfit_ApplyPendingDefault(PPCContext& ctx, uint8_t* base)
 {
@@ -111,32 +107,51 @@ void CoopOutfit_ApplyPendingDefault(PPCContext& ctx, uint8_t* base)
                     "game's player 0 (CZ_NO_DEFAULT_OUTFIT=1 is the control)\n",
             kJoinerSlot, kDefaultUnderRow);
     coop::GuestCall(call, base, kFnSetOutfit, "set-outfit");
-    g_resendAt = std::chrono::steady_clock::now() + std::chrono::seconds(4);
-    g_resendPending = true;
 }
 
-// Per frame (from the game session's Update hook in coop_host.cpp): the report resend.
-void CoopOutfit_Tick(PPCContext& ctx, uint8_t* base)
+void CoopOutfit_OnReportPiece(PPCContext& ctx, uint8_t* base, uint32_t clothing, uint32_t part,
+                              bool nameEmpty)
 {
-    if (!g_resendPending || std::chrono::steady_clock::now() < g_resendAt)
+    static const bool off = getenv("CZ_NO_DEFAULT_OUTFIT") != nullptr;
+    static uint32_t lastClothing = 0;
+    static unsigned emptyCount = 0;
+    if (off || part >= 7)
         return;
-    g_resendPending = false;
-    const coop::Objects o = coop::Resolve(ctx, base);
+    if (part == 0 || clothing != lastClothing)
+    {
+        lastClothing = clothing;
+        emptyCount = 0;
+    }
+    emptyCount += nameEmpty ? 1 : 0;
+    if (part != 6 || emptyCount < 7)
+        return;
+    // Seven empty pieces: the sender has no outfit. Which slot is he? The report is
+    // about a REMOTE player, and DR2 co-op has two, so the slot is the one that is
+    // not ours: *(owner + 0x80) is the local index.
     const uint32_t ownerRoot = PPC_LOAD_U32(kOwnerGlobal);
     const uint32_t owner = ownerRoot ? PPC_LOAD_U32(ownerRoot + 0x2C) : 0;
-    if (!o.session || !owner)
+    const uint32_t mgrOwner = owner ? PPC_LOAD_U32(owner + 0x78) : 0;
+    const uint32_t mgr = mgrOwner ? PPC_LOAD_U32(mgrOwner + 0x2C) : 0;
+    const uint32_t local = owner ? PPC_LOAD_U32(owner + 0x80) : 0;
+    const uint32_t slot = local == 0 ? 1 : 0;
+    if (!mgr)
     {
-        fprintf(stderr, "[outfit] joiner: cannot re-send the outfit report (session %08X owner "
-                        "%08X) — the host keeps him undressed\n", o.session, owner);
+        fprintf(stderr, "[outfit] a player reported an EMPTY outfit but the outfit manager could "
+                        "not be reached (owner %08X) — he stays undressed here\n", owner);
         return;
     }
     PPCContext call = ctx;
-    call.r3.u64 = o.session;
-    call.r4.u64 = owner;
-    call.r5.u64 = kCurrentPieces;
-    fprintf(stderr, "[outfit] joiner: re-sending the outfit report (session %08X, owner %08X, "
-                    "current pieces) so the host dresses him too\n", o.session, owner);
-    coop::GuestCall(call, base, kFnSendOutfitReport, "send-outfit-report");
+    call.r3.u64 = mgr;
+    call.r4.u64 = slot;
+    call.r5.u64 = kDefaultUnderRow;
+    call.r6.u64 = 0;
+    call.r7.u64 = 1;
+    call.r8.u64 = 0;
+    fprintf(stderr, "[outfit] the other player's outfit report is EMPTY (no save on his side): "
+                    "dressing slot %u in row %u (OUTFIT_DEFAULT_UNDER) here, the same row his "
+                    "own machine applies (CZ_NO_DEFAULT_OUTFIT=1 is the control)\n",
+            slot, kDefaultUnderRow);
+    coop::GuestCall(call, base, kFnSetOutfit, "set-outfit");
 }
 
 PPC_FUNC(sub_82553130)

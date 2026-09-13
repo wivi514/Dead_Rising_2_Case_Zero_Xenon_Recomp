@@ -57,4 +57,5 @@ uint32_t GameState(uint8_t* base);
 // coop_outfit_default.cpp: dress a save-less joiner in the default outfit, deferred
 // from level start (where it is decided) to GameplayFlow::Enter (where it works).
 void CoopOutfit_ApplyPendingDefault(PPCContext& ctx, uint8_t* base);
-void CoopOutfit_Tick(PPCContext& ctx, uint8_t* base);   // per frame: the report resend
+void CoopOutfit_OnReportPiece(PPCContext& ctx, uint8_t* base, uint32_t clothing, uint32_t part,
+                              bool nameEmpty);   // the host side: an all-empty report

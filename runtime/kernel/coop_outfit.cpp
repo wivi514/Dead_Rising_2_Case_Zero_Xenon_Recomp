@@ -59,6 +59,8 @@
 #include <ppc_config.h>
 #include <ppc_context.h>
 
+#include "coop_objects.h"
+
 #include "memory.h"
 
 extern "C" PPC_FUNC(__imp__sub_821B5880);
@@ -174,9 +176,14 @@ PPC_FUNC(sub_82371978)
     if (Enabled())
         fprintf(stderr, "[outfit] CoopSetPart clothing %08X part %u '%s' lr %08X\n",
                 clothing, part, GuestStr(base, ctx.r5.u32), uint32_t(ctx.lr));
+    // The name is empty when the sender had no outfit (a save-less joiner): the
+    // host-side half of the default-outfit rule (coop_outfit_default.cpp).
+    const char* name = GuestStr(base, ctx.r5.u32);
+    const bool empty = !name || !*name;
     __imp__sub_82371978(ctx, base);
     if (Enabled() && part < 7)
         PrintRecord(base, clothing, part);
+    CoopOutfit_OnReportPiece(ctx, base, clothing, part, empty);
 }
 
 PPC_FUNC(sub_82371B88)
