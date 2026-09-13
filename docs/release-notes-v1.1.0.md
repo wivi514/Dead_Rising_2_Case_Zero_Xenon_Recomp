@@ -16,6 +16,10 @@ below before attaching.
 > [XenonLive launcher](https://github.com/wivi514/XenonLive_Launcher).** It signs you
 > in, installs this build for you and starts it. Started any other way, the game is
 > offline: the full single-player game, nothing online.
+>
+> **Co-op invites are not working properly yet in this game.** To join someone, use
+> **JOIN CO-OP GAME** on the main menu (JOIN XBOX LIVE GAME, or JOIN FRIENDS and X on
+> the friend) — not an invite from the launcher.
 
 **Two-player online co-op**, the feature the Xbox build carried in its code and never
 showed in its menus. It works the way Dead Rising 2's does: one player hosts by
@@ -32,8 +36,9 @@ profile** — read the XenonLive section before you look for yours.
 
 ### Co-op
 
-- **JOIN CO-OP GAME** is on the main menu, under START GAME. It opens the game's own
-  Join Game screen:
+- **JOIN CO-OP GAME** is on the main menu, under START GAME — and it is the way to
+  join in this release, because invites do not work properly yet. It opens the game's
+  own Join Game screen:
   - **JOIN XBOX LIVE GAME** — finds any joinable public game and joins it.
   - **JOIN FRIENDS** — opens the game's friends list (the same one Dead Rising 2 has),
     with each friend's presence. Move to a friend and press **X** to join their game.
