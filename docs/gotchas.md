@@ -6590,3 +6590,17 @@ From phase C part 18 (the frame rate — and none of it was work):
     11 the resolution is per process unless the window is foreground, so a player's game
     behind another window is in the state the headless box was in. Ask for the timer at
     start-up; and a wall that is FLAT across loads is a quantum, not a workload. (part 118)
+
+575. **A change that widens a default reaches instances the feature was never tested on —
+    and the control you build afterwards is built after the change.** "`CZ_XLIVE_COOP=1`
+    implies hosting" (e7a9e25) was tested on the host; the launcher sets that variable on
+    the joiner too, so the joiner ran the host hook for the first time and a byte the hook
+    forced (`session+0x98`) made the title's sync-point sender DEFER the joiner's
+    `FINALIZE_START_LEVEL` for ever (`+0x98 && +0x92` = "host loading the previous game").
+    Two hours of bisection followed, every arm downstream of the commit, including a
+    "v1.1.0 joiner control" exe built twenty-five minutes AFTER it. When a join that
+    worked stops working, diff the two sides' LOGS for the first line that appears on one
+    and not the other (`IS-COOP 0 -> 1` was on the joiner's), and build the control from
+    the commit of the last working run, not from the release that followed it. (co-op
+    part 6)
+

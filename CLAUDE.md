@@ -42,7 +42,7 @@ the part a future Case West port will reuse verbatim:
 
 ## Transferable gotchas
 
-**THE FULL NUMBERED LEDGER IS `docs/gotchas.md` — 569 entries, and every "gotcha N"
+**THE FULL NUMBERED LEDGER IS `docs/gotchas.md` — 575 entries, and every "gotcha N"
 reference in this repo and in the docs resolves there.** It was split out of this file
 on 2026-08-08, when this file reached 308 KB and was being loaded into every session
 whole. Read it **before making a measurement claim, adding an instrument, believing a
@@ -191,8 +191,14 @@ mask; trust the microcode's own swizzles.
     was built, but **two of its eight steps are retired and its item 0 is answered** —
     read `phase5-notes.md` §6ba before following anything in it.
   - **THE LIVE HAND-OFF IS ALWAYS THE HIGHEST-NUMBERED `partNN-kickoff.md`**, and it
-    supersedes every earlier kickoff on "where the port is". **IT IS
-    `part118-kickoff.md` — PART 118 (the late afternoon of 2026-09-12, unattended, a
+    supersedes every earlier kickoff on "where the port is". **AS OF THE EVENING OF
+    2026-09-12 THE LIVE WORK IS CO-OP PART 6 — `docs/coop-plan.md` "Part 6": the call
+    RINGS (toast + D-pad RIGHT / Right Arrow), and the JOIN THAT SAT IN INFINITE LOADING
+    FOR EVERY SESSION SINCE 09-11 21:57 WAS A REGRESSION FROM e7a9e25 ("CZ_XLIVE_COOP=1
+    implies hosting" put the host hook on the JOINER; a forced `session+0x98` made the
+    title's sync-point sender defer the joiner's FINALIZE_START_LEVEL for ever — gotcha
+    575, fixed in b981df6, operator-verified). OWED: invites, a save-less joiner rule.
+    The performance hand-off is still `part118-kickoff.md` — PART 118 (the late afternoon of 2026-09-12, unattended, a
     16:00 deadline) GAVE EACH PIPELINE STAGE A PHYSICAL CORE OF ITS OWN: the PMU said the
     guest's Main Thread runs the same instructions at 17% more cycles with our renderer
     present, two-thirds of that being the scheduler's placement (SMT sibling of a

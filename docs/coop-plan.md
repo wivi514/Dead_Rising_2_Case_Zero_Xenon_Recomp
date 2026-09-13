@@ -411,6 +411,85 @@ invite path (`xlive_social.cpp`), which is separate and not built into a menu.
 - The "OnSLHosts" system-link host browser (`hosts.txt`) is registered in the screen
   factory and untouched; DR2's LAN join path is still there for whoever wants it.
 
+## Part 6: the call rings, and the regression that parked every join (DONE, 2026-09-12)
+
+The operator's ask: *"show a proper message to press right on d pad or right on the
+keyboard when someone asks to join instead of showing the message directly (like main
+Dead Rising 2 and Case West)"*. Delivered and operator-verified the same evening, then
+the join that followed sat in infinite loading for two hours of bisection — and the cause
+was a commit from the night before, not anything part 6 built.
+
+### The ring (`runtime/kernel/coop_call.cpp`, the overlay's `Notify`/`Dismiss`)
+
+- The incoming call now RINGS: `sub_8254B108` (the title's own ring) runs as shipped, and
+  the XenonLive overlay shows a tagged toast (*"<name> wants to join — press RIGHT"*) for
+  the ring's 120 s (`0x8200A1CC`). `CZ_COOP_CALL_RING=0` is the part-5 form (the prompt
+  straight away).
+- D-pad RIGHT answers through the title's `COMMAND_AI_INTERACT_WITH_PHONE`; on the
+  keyboard the same command is `KEY_RIGHT` — it had been on `KEY_C`, and the native-KB/M
+  splice takes only the FIRST key of a kbmap line (one free `src2` slot in the pad record),
+  so `KEY_RIGHT` goes first in `kbm_default_map.h` (`gen_kbm_map.py` mirrored; regenerating
+  that header reverts parts 99/108's hand edits — note in the generator).
+- **The title's own answered body must NOT run.** `sub_82224F30` posts event 0x5C and sets
+  call state 3 — the host is then "in the call" and the joiner never loads. The hook raises
+  the part-5 dialog itself (`RaisePrompt`), takes the ring down, and leaves the call queue
+  empty and the state idle (`player+0x1A3C/+0x1A40`).
+- The toast API is the launcher's: `Notify(text, seconds, tag)` replaces a toast with the
+  same tag, `Dismiss(tag)` removes it (XenonLive_Launcher 2e250d2; glue in
+  `xlive_overlay_glue.cpp`, both no-ops without the overlay).
+
+### Found on the way (each a real defect, none the stall)
+
+- **`enable_trial_experience` (0x82A57BFE)** is forced to 1 by init (`sub_82496D98`) and
+  cleared by the licence consumer only behind a user-state test — with the diag byte
+  cleared it stayed 1 (the laptop's UNLOCK FULL GAME row). `cpu/trial_flag.cpp` pins it to
+  0 after init unless `CZ_TRIAL_EXPERIENCE` is set.
+- **The listener gate** (`coop_transport.cpp`) read only `CZ_XLIVE_HOST/JOIN`, so a host
+  launched the part-5 way (`CZ_XLIVE_COOP=1`) crashed at guest 0x80 on the first join. It
+  follows `XliveSession_Enabled()` now.
+- **Per-profile saves (part 115) left the joiner's `<gamertag>/` folder EMPTY**: the joiner
+  sent 1 outfit event where host9 saw 6. Seeding it from `default/` restored the 6 — real,
+  and not the stall. A runtime rule for a save-less joiner is still owed.
+- Case West's offline-overlay fix (no client → no Shift+Tab) ported (16fcc7e).
+
+### THE STALL: `e7a9e25` put the host hook on the joiner (gotcha 575)
+
+The last working join was host9 (09-11 21:57). Seven minutes later `e7a9e25` made
+`CZ_XLIVE_COOP=1` imply hosting — and the launcher sets that on BOTH machines, so the
+JOINER ran `coop_host.cpp`'s hooks for the first time. Everything bisected afterwards
+(pin, timer, trial, ring, outfit trace, and the "v1.1.0 joiner control" exe — built at
+22:29, AFTER the commit, so never a control) was downstream of it.
+
+The mechanism, all the title's own code:
+
+1. The `GameplayFlow::Enter` hook stored 1 into session `+0x98` unconditionally. The
+   joiner's log said so: `IS-COOP 0 -> 1` — the title holds it at 0 on a joined session.
+2. The sync-point sender (`0x82496118`, the one caller of `SignalSyncPoint` 0x82581A08)
+   checks before EVERY send: `if (sub_82547920(session) /* +0x98 */ && session+0x92)
+   { pending = 1; return; }`. `+0x92` is `EnableLoadingPrevGame(HOST|CLIENT)`
+   (`sub_8256FBF0`, called from 0x8218C528), and the joiner sets it as CLIENT during the
+   load.
+3. So the joiner's `SYNCPOINT_TYPE_GAMESTATE_FINALIZE_START_LEVEL` — the next line in
+   host9 after the second `TRANSITION_BEGIN`, and exactly where every session since
+   stopped — was parked in the pending slot, which only the host's path (`0x82499BB0`,
+   clears `+0x92`) ever flushes. Infinite loading.
+
+The fix (b981df6): the hook stores the byte only where the title's own next predicate
+would let it matter — a session NOT already live (`sub_8254AF30`) and whose mm_info is not
+a JOIN's (IsHost 0, GameType COOP). A host's recreate after a level change (session torn
+down → not live) is unchanged. Operator-verified: *"It worked!"* — host17 receives
+`FINALIZE_START_LEVEL` then `READY_FOR_PLAY -> RESULT_HOST_SUCCESS`, as host9 did.
+
+Two readings retracted on the way: `GamestateMan (SP)` is a fixed format string
+(0x8206AC28), not a single-player mode; and the empty save folder was incidental.
+
+### Still owed after part 6
+
+- Invites: *"sending an invite and trying to join by the invite doesn't work"* — the invite
+  path in `xlive_social.cpp` was never wired to a menu.
+- A save-less joiner: seed from `default/` or refuse with a message.
+- Docs for the Windows release leg (open item 0z) now that the joiner fix is in.
+
 ## Online tunables (dataflow-bound, gotcha 241)
 
 Loader `sub_824A2470`; bank based at 0x82A57xxx. The knobs we will want:
