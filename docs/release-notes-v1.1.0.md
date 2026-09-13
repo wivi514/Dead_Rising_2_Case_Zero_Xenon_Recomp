@@ -1,7 +1,7 @@
 # Release notes — v1.1.0
 
-**This is the text to paste into the GitHub Release body.** Binaries are commit
-`fede8e1` (all FOUR artifacts rebuilt from that source on 2026-09-13 — the co-op
+**This is the text to paste into the GitHub Release body.** Binaries are the tag
+`v1.1.0` = `fede8e1` + this notes commit (all FOUR artifacts built from it on 2026-09-13 — the co-op
 fixes of the night of the 12th/13th: the five-minute session end, the save-less
 joiner, the voice endpoint, the sign-in grace, the F8/F9 bug reports; the hashes below
 are the current ones). It carries co-op plan parts 1-6: two-player online co-op over XenonLive, the XenonLive account, achievements
@@ -161,7 +161,7 @@ downloads.
 
 | file | sha256 |
 |---|---|
-| `CaseZeroRecomp-linux-x86_64.tar.zst` | `1762b9fe03c61e885d7f2c2ccfc3d6c71b4101db6cbba6717543dddab4eabfd0` |
-| `CaseZeroRecomp-linux-x86_64.AppImage` | `35c58b87610a7b7920f553ace91b1095623edafa9cdfda57f2c96fee77c49e91` |
-| `CaseZeroRecomp-windows-x86_64.zip` | `d1d7da2f7e67e1f8e072765f9b30448173799d8a6b5dd573a0b22f3cd262054b` |
-| `CaseZeroRecomp-steamdeck-x86_64.tar.gz` | `6e843f161007a58a0c58e635f1260ac5068fbc30adac820edd018a3fc28d8b95` |
+| `CaseZeroRecomp-linux-x86_64.tar.zst` | `e1b5a176e707462dd189a9d1a25a7d17eeb726cd5dda19e094cb8f3e762d2462` |
+| `CaseZeroRecomp-linux-x86_64.AppImage` | `9c0066c3c2ef49750bfd96d5d3849d52972f6e745969b8072649dd455a19d740` |
+| `CaseZeroRecomp-windows-x86_64.zip` | `7a97e90fc287990979769c240b0439cb621063c522f1dc7ffa0c9815e6575b2d` |
+| `CaseZeroRecomp-steamdeck-x86_64.tar.gz` | `7c81736367c983df4aacfbb6bd5e1776db0c50141f83aa181a8a535f215477a0` |
