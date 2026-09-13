@@ -19,6 +19,11 @@
 #   3. `cz_runtime --smoke` runs — the phase 0.2 link gate, in the packaged binary.
 #   4. The first-run refusal fires with the right message, since a fresh container has
 #      no game and that is exactly the state a player is in.
+#      CZ_GATE_SYSTEM_CXX=1 adds libstdc++/libgcc_s to the permitted list, for a bundle
+#      packaged with CZ_PKG_SYSTEM_CXX=1 (the Steam Deck variant) where using the
+#      system's C++ runtime is the POINT rather than a packaging slip. It must be opt-in:
+#      the desktop artifact bundles both, and a gate that shrugged at their absence would
+#      stop being able to catch the packaging defect it was written for.
 #
 # Usage:  tools/release_gate_clean_container.sh [stageDir] [image]
 set -uo pipefail
@@ -91,7 +96,7 @@ LOG=$(mktemp)
 trap 'rm -f "$LOG"; rm -rf "$UCODE_DIR"' EXIT
 podman run --rm -i "${MOUNT[@]}" -v "$UCODE_DIR:/ucode:Z" \
     -v "$PKGFILE:/pkg/package:ro,Z" -e "CZ_GATE_OVERLAY_SHA=$OVERLAY_SHA" \
-    -e "APPIMAGE_MODE=$APPIMAGE_MODE" \
+    -e "APPIMAGE_MODE=$APPIMAGE_MODE" -e "CZ_GATE_SYSTEM_CXX=${CZ_GATE_SYSTEM_CXX:-}" \
     "$IMAGE" /bin/sh -s > "$LOG" 2>&1 <<'IN'
 set -u
 
@@ -148,7 +153,14 @@ done
 # resolved outside the bundle and the gate fails. A system copy sitting there is
 # therefore a stronger test of the RPATH than an empty filesystem would be.
 if [ -e /lib64/libstdc++.so.6 ]; then
-    echo "    /lib64/libstdc++.so.6 present -- good, it makes the RPATH check meaningful"
+    if [ -n "${CZ_GATE_SYSTEM_CXX:-}" ]; then
+        # In the variant the system copy is the one that is SUPPOSED to win, so what
+        # this line reports is the opposite fact: that there is a copy here at all, and
+        # which one, since the whole point of not bundling ours is to get this one.
+        echo "    /lib64/libstdc++.so.6 -> $(readlink -f /lib64/libstdc++.so.6 | sed 's|.*/||') -- the copy this bundle intends to use"
+    else
+        echo "    /lib64/libstdc++.so.6 present -- good, it makes the RPATH check meaningful"
+    fi
 fi
 
 echo "--- ldd $APP/cz_runtime:"
@@ -168,9 +180,14 @@ fi
 # 2. Everything that resolves must be either inside the bundle or on the permitted
 #    list. `not found` lines are excluded first, or awk's $3 picks up the word "not"
 #    and reports it as a mysterious library outside the bundle.
+PERMIT='/(libc|libm|libvulkan|libdl|libpthread|librt)\.so'
+if [ -n "${CZ_GATE_SYSTEM_CXX:-}" ]; then
+    PERMIT='/(libc|libm|libvulkan|libdl|libpthread|librt|libstdc\+\+|libgcc_s)\.so'
+    echo "    CZ_GATE_SYSTEM_CXX: the system's libstdc++/libgcc_s are permitted here"
+fi
 outside=$(grep -v "not found" /tmp/ldd.txt | awk '/=>/ {print $3}' \
     | grep -v "^$APP/" | grep -v '^$' \
-    | grep -vE '/(libc|libm|libvulkan|libdl|libpthread|librt)\.so')
+    | grep -vE "$PERMIT")
 if [ -n "$outside" ]; then
     echo "    RESOLVED OUTSIDE THE BUNDLE and not on the permitted list:"
     echo "$outside" | sed 's/^/      /'
@@ -178,7 +195,7 @@ if [ -n "$outside" ]; then
 fi
 
 [ $rc -eq 0 ] && echo "    OK: every bundled dependency resolved inside $APP; only libc,"
-[ $rc -eq 0 ] && echo "        libm, the Vulkan loader and ld.so are the host system's."
+[ $rc -eq 0 ] && echo "        libm, the Vulkan loader${CZ_GATE_SYSTEM_CXX:+, libstdc++/libgcc_s} and ld.so are the host system's."
 
 echo "--- cz_runtime --smoke (the phase 0.2 link gate, in the PACKAGED binary):"
 $APP/cz_runtime --smoke 2>&1 | tail -3 | sed 's/^/    /'

@@ -54,6 +54,11 @@ profile** — read the XenonLive section before you look for yours.
   somewhere the game then removes — so for this release we chose to disconnect the
   second player at that point rather than crash the host. A fix that keeps both
   players in for the ending is being worked on.
+- **Steam Deck:** take `CaseZeroRecomp-steamdeck-x86_64.tar.gz`. It starts without the
+  settings window (the launcher that crashed on SteamOS in v1.0.2) and renders at the
+  Deck's 1280x800, pinned; its README says how to put the package in and how to go
+  online through the XenonLive launcher from Desktop Mode. Built from `6b87926`
+  (the same source plus the Deck defaults; the desktop path is unchanged).
 - Playing **solo** is exactly as before. Outside the launcher there is no session, no
   hosting and no prompt; every co-op path is inert until a session exists. To be
   signed in but never host, set `CZ_XLIVE_HOST=0`.
@@ -134,3 +139,4 @@ downloads.
 | `CaseZeroRecomp-linux-x86_64.tar.zst` | `b10d3b0b924bc189a90b97389af41259a676ae42955f90857cf42c146a7dff92` |
 | `CaseZeroRecomp-linux-x86_64.AppImage` | `4c4adf79672cf2b0d9c05a107c76078c86e1bc9c56abd626c53e89add51ad8e9` |
 | `CaseZeroRecomp-windows-x86_64.zip` | `908cecb82a32f0c1ba06a8be59dc84525df7946f7c6162519764315c86266dda` |
+| `CaseZeroRecomp-steamdeck-x86_64.tar.gz` | `2b95373a4b5157a22da0acec97992d561779b4d633709b171f7eca608fb0e5a9` |
