@@ -1,9 +1,9 @@
 # Release notes — v1.1.0
 
 **This is the text to paste into the GitHub Release body.** Binaries are commit
-`7ca3652` (all three artifacts REBUILT from that source on 2026-09-12, replacing the
-2026-09-11 `c23138a` draft; the hashes below are the new ones). It carries co-op plan
-parts 1-6: two-player online co-op over XenonLive, the XenonLive account, achievements
+`96ccdf2` (all FOUR artifacts rebuilt from that source late on 2026-09-12 — the third
+build of the day: the overlay's text input fix went in after the 21:19 set; the hashes
+below are the current ones). It carries co-op plan parts 1-6: two-player online co-op over XenonLive, the XenonLive account, achievements
 and friends underneath it, the ringing walkie-talkie, part 118's thread placement and
 the Windows timer fix — and the military-arrival limitation stated under Co-op.
 
@@ -67,8 +67,7 @@ profile** — read the XenonLive section before you look for yours.
 - **Steam Deck:** take `CaseZeroRecomp-steamdeck-x86_64.tar.gz`. It starts without the
   settings window (the launcher that crashed on SteamOS in v1.0.2) and renders at the
   Deck's 1280x800, pinned; its README says how to put the package in and how to go
-  online through the XenonLive launcher from Desktop Mode. Built from `6b87926`
-  (the same source plus the Deck defaults; the desktop path is unchanged).
+  online through the XenonLive launcher from Desktop Mode.
 - Playing **solo** is exactly as before. Outside the launcher there is no session, no
   hosting and no prompt; every co-op path is inert until a session exists. To be
   signed in but never host, set `CZ_XLIVE_HOST=0`.
@@ -86,7 +85,8 @@ profile** — read the XenonLive section before you look for yours.
   the default profile's**: to carry them onto your account, copy the save folders from
   `default/` into your gamertag's folder once. `CZ_SAVE_DIR` still overrides the lot.
 - **The in-game overlay: Shift+Tab.** The launcher's friends, invites and notifications
-  over the game, on both platforms.
+  over the game, on both platforms — and you can type in it (a friend's name, a
+  message); that did not work in the first v1.1.0 build.
 - Your **gamertag and achievements** are real: unlocking an achievement in game records
   it on your XenonLive account, and the launcher shows it.
 - **Friends and presence**: the friends list in game is your XenonLive friends list,
@@ -146,7 +146,7 @@ downloads.
 
 | file | sha256 |
 |---|---|
-| `CaseZeroRecomp-linux-x86_64.tar.zst` | `b10d3b0b924bc189a90b97389af41259a676ae42955f90857cf42c146a7dff92` |
-| `CaseZeroRecomp-linux-x86_64.AppImage` | `4c4adf79672cf2b0d9c05a107c76078c86e1bc9c56abd626c53e89add51ad8e9` |
-| `CaseZeroRecomp-windows-x86_64.zip` | `908cecb82a32f0c1ba06a8be59dc84525df7946f7c6162519764315c86266dda` |
-| `CaseZeroRecomp-steamdeck-x86_64.tar.gz` | `2b95373a4b5157a22da0acec97992d561779b4d633709b171f7eca608fb0e5a9` |
+| `CaseZeroRecomp-linux-x86_64.tar.zst` | `1762b9fe03c61e885d7f2c2ccfc3d6c71b4101db6cbba6717543dddab4eabfd0` |
+| `CaseZeroRecomp-linux-x86_64.AppImage` | `35c58b87610a7b7920f553ace91b1095623edafa9cdfda57f2c96fee77c49e91` |
+| `CaseZeroRecomp-windows-x86_64.zip` | `d1d7da2f7e67e1f8e072765f9b30448173799d8a6b5dd573a0b22f3cd262054b` |
+| `CaseZeroRecomp-steamdeck-x86_64.tar.gz` | `49584e45828d8b989223a02f49c44dc9e8786f398835858b6b67e9d1c003f7d2` |
