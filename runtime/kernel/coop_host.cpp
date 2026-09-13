@@ -239,18 +239,52 @@ const char* WhyNotHosting(PPCContext& ctx, uint8_t* base, const Objects& o, char
 } // namespace
 
 // GameplayFlow::Enter. Set IS-COOP first; the title arms the host request itself.
+//
+// ONLY WHILE THE SESSION IS NOT ALREADY LIVE. The title's own body reads the
+// byte only after "not already live" (sub_8254AF30) has passed, so on a live
+// session the store can arm nothing — and it is not free: a JOINER enters
+// gameplay with its joined session live and this byte 0, and the title's
+// sync-point sender (0x82496118) DEFERS every sync point instead of sending it
+// when `+0x98 && +0x92` (EnableLoadingPrevGame, which the joiner sets as
+// CLIENT during the load). Forcing +0x98 on the joiner therefore parked its
+// SYNCPOINT_TYPE_GAMESTATE_FINALIZE_START_LEVEL forever — the infinite loading
+// of co-op part 6, a regression from "CZ_XLIVE_COOP=1 implies hosting", which
+// put this hook on the joiner for the first time (docs/coop-plan.md part 6).
 PPC_FUNC(sub_82537FA0)
 {
     if (HostRequested())
     {
         const Objects o = Resolve(ctx, base);
+        PPCContext call = ctx;
+        bool live = false;
         if (o.session)
+        {
+            call.r3.u64 = o.session;
+            live = GuestCall(call, base, kFnSessionIsLive, "session-is-live") &&
+                   (call.r3.u32 & 0xFF) != 0;
+        }
+        // The second reading of "this is a join": the session-info's mm_info is
+        // the one the JoinGame front end built — IsHost 0, GameType COOP. A host
+        // that has never armed holds the ctor's values there.
+        const uint32_t mm = o.sessionInfo ? o.sessionInfo + 0x1C : 0;
+        const bool joinInfo = mm && !LoadU8(base, mm) && LoadU32(base, mm + 4) == 1;
+        if (o.session && (live || joinInfo))
+        {
+            fprintf(stderr, "[coop] GameplayFlow::Enter: session %08X %s%s — IS-COOP left "
+                            "at %u, no host request to arm (loading-prev-game byte %u)\n",
+                    o.session, live ? "is already live" : "",
+                    joinInfo ? (live ? ", and the mm_info is a JOIN's" : "carries a JOIN's mm_info") : "",
+                    LoadU8(base, o.session + kSessionIsCoopByte), LoadU8(base, o.session + 0x92));
+        }
+        else if (o.session)
         {
             const uint8_t was = LoadU8(base, o.session + kSessionIsCoopByte);
             PPC_STORE_U8(o.session + kSessionIsCoopByte, 1);
             fprintf(stderr, "[coop] GameplayFlow::Enter: session %08X IS-COOP %u -> 1 "
-                            "(online %08X matchmaking %08X game session %08X)\n",
-                    o.session, was, o.online, o.matchmaking, o.gameSession);
+                            "(online %08X matchmaking %08X game session %08X; mm_info host %u "
+                            "type %u)\n",
+                    o.session, was, o.online, o.matchmaking, o.gameSession,
+                    mm ? LoadU8(base, mm) : 0, mm ? LoadU32(base, mm + 4) : 0);
         }
         else
         {
