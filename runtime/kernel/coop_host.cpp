@@ -307,6 +307,7 @@ PPC_FUNC(sub_82537FA0)
 // The per-frame create path. Name the refusal, once per distinct reason.
 PPC_FUNC(sub_824C0668)
 {
+    CoopOutfit_Tick(ctx, base);   // a save-less joiner's outfit, applied here by the host
     if (HostRequested())
     {
         static char lastReason[320] = "";

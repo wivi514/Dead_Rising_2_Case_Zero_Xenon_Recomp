@@ -31,6 +31,7 @@
 // The hook sits on sub_82553130 ("is there a session"), the first predicate of that
 // block, keyed on the return address so it runs once per level start and nowhere else.
 // CZ_NO_DEFAULT_OUTFIT=1 is the control (the invisible joiner).
+#include <chrono>
 #include <cstdio>
 #include <cstdlib>
 
@@ -69,6 +70,9 @@ bool PieceEmpty(uint8_t* base, uint32_t save, uint32_t part)
 // GameplayFlow::Enter both players are alive, which is where the operator's manual
 // outfit pick worked from.
 bool g_pendingDefault = false;
+bool g_hostDressPending = false;
+uint32_t g_hostDressSlot = 1;
+std::chrono::steady_clock::time_point g_hostDressAt{};
 // THE HOST'S HALF. The row applier dresses the joiner's own Chuck but broadcasts
 // nothing (the wardrobe's put-on action is what sends PlayerPutOnClothing, and this is
 // not that), and RE-SENDING the join-time outfit report is not an option: the host
@@ -140,17 +144,47 @@ void CoopOutfit_OnReportPiece(PPCContext& ctx, uint8_t* base, uint32_t clothing,
                         "not be reached (owner %08X) — he stays undressed here\n", owner);
         return;
     }
+    // NOT NOW. Applied here, during the join handshake, the row's per-piece events went
+    // nowhere on the host too (SetOutfit/ApplyRow printed, no SetPart followed — run 12),
+    // exactly as they did on the joiner at level start: the remote player's clothing
+    // loader is not up yet. The joiner's own dressing works from GameplayFlow::Enter,
+    // which the host does not pass again; so the host applies it from its per-frame
+    // hook once the joiner has been in the game for a while.
+    (void)mgr;
+    g_hostDressSlot = slot;
+    g_hostDressAt = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+    g_hostDressPending = true;
+    fprintf(stderr, "[outfit] the other player's outfit report is EMPTY (no save on his side): "
+                    "slot %u will be dressed in row %u (OUTFIT_DEFAULT_UNDER) here in 10 s, the "
+                    "same row his own machine applies (CZ_NO_DEFAULT_OUTFIT=1 is the control)\n",
+            slot, kDefaultUnderRow);
+}
+
+// Per frame (the game session's Update hook in coop_host.cpp): the host's deferred dress.
+void CoopOutfit_Tick(PPCContext& ctx, uint8_t* base)
+{
+    if (!g_hostDressPending || std::chrono::steady_clock::now() < g_hostDressAt)
+        return;
+    g_hostDressPending = false;
+    const uint32_t ownerRoot = PPC_LOAD_U32(kOwnerGlobal);
+    const uint32_t owner = ownerRoot ? PPC_LOAD_U32(ownerRoot + 0x2C) : 0;
+    const uint32_t mgrOwner = owner ? PPC_LOAD_U32(owner + 0x78) : 0;
+    const uint32_t mgr = mgrOwner ? PPC_LOAD_U32(mgrOwner + 0x2C) : 0;
+    if (!mgr)
+    {
+        fprintf(stderr, "[outfit] cannot dress slot %u: the outfit manager could not be reached "
+                        "(owner %08X)\n", g_hostDressSlot, owner);
+        return;
+    }
     PPCContext call = ctx;
     call.r3.u64 = mgr;
-    call.r4.u64 = slot;
+    call.r4.u64 = g_hostDressSlot;
     call.r5.u64 = kDefaultUnderRow;
     call.r6.u64 = 0;
     call.r7.u64 = 1;
     call.r8.u64 = 0;
-    fprintf(stderr, "[outfit] the other player's outfit report is EMPTY (no save on his side): "
-                    "dressing slot %u in row %u (OUTFIT_DEFAULT_UNDER) here, the same row his "
-                    "own machine applies (CZ_NO_DEFAULT_OUTFIT=1 is the control)\n",
-            slot, kDefaultUnderRow);
+    fprintf(stderr, "[outfit] dressing slot %u in row %u (OUTFIT_DEFAULT_UNDER) now — the other "
+                    "player joined with no outfit\n", g_hostDressSlot, kDefaultUnderRow);
     coop::GuestCall(call, base, kFnSetOutfit, "set-outfit");
 }
 
