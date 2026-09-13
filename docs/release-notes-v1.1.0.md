@@ -38,10 +38,20 @@ profile** — read the XenonLive section before you look for yours.
   your Yes.
 - **The second player spawns dressed** in Chuck's starting outfit (the Xbox data has no
   row for the co-op partner's torso; one was added).
+- **When someone asks to join, the walkie-talkie rings** — a notice says to press
+  **RIGHT on the D-pad** (**Right Arrow** on the keyboard) to answer, as Dead Rising 2
+  does; the question follows.
 - What has been played through in co-op so far: cinematics, saving on the host,
-  picking up and dropping items, one side quitting (the host's game continues). Not
-  yet exercised with two players: a mission transition and a big crowd — if either
+  picking up and dropping items, one side quitting (the host's game continues), and
+  the mission transition. Not yet exercised with two players: a big crowd — if it
   misbehaves, report it with both players' `cz_runtime.log`.
+- **THE MILITARY ARRIVAL (the end of the game) IS SINGLE-PLAYER FOR NOW.** When the
+  story reaches the part where Chuck is put on the motorcycle to flee the military,
+  the second player is dropped from the session and the host carries on alone. In
+  our tests the host crashed there with two players — that scene puts the partner
+  somewhere the game then removes — so for this release we chose to disconnect the
+  second player at that point rather than crash the host. A fix that keeps both
+  players in for the ending is being worked on.
 - Playing **solo** is exactly as before. Outside the launcher there is no session, no
   hosting and no prompt; every co-op path is inert until a session exists. To be
   signed in but never host, set `CZ_XLIVE_HOST=0`.

@@ -73,7 +73,9 @@ game folder at any time without losing progress.
   code and never showed: JOIN CO-OP GAME on the main menu, a friends list to
   join from, and the host asked before anyone comes in — over
   [XenonLive](https://github.com/wivi514/XenonLive), through its
-  [launcher](https://github.com/wivi514/XenonLive_Launcher).
+  [launcher](https://github.com/wivi514/XenonLive_Launcher). The military
+  arrival at the end of the game is single-player for now: the second player
+  is dropped there rather than crash the host (a fix is in progress).
 - **Level cap raised to 50** (the original XBLA release stopped Chuck at
   level 5) with all fifteen skills unlockable — Case Zero as a full game,
   not a demo-sized one.

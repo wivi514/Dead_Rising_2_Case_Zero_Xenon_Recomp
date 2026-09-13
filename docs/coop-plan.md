@@ -483,8 +483,50 @@ down → not live) is unchanged. Operator-verified: *"It worked!"* — host17 re
 Two readings retracted on the way: `GamestateMan (SP)` is a fixed format string
 (0x8206AC28), not a single-player mode; and the empty save folder was incidental.
 
+### The military arrival (the motorcycle escape at the end): SHIPPED AS SINGLE-PLAYER
+
+The first co-op run through the ending crashed the HOST on the frame the mission action
+`ArmyPA` ran. Six operator runs on the two machines (each read from both logs — no
+headless reproduction, the operator's instruction) established the chain; the record
+is `runtime/cpu/prop_attach_guard.cpp`'s header comments and these points:
+
+1. `ArmyPA` destroys the two landed helicopter props (`DestroyProp: 2457x-ArmyHelicopterN`);
+   the pool ZEROES a released prop (its first word is a vtable while alive), so a
+   stale reference is a NULL write in the prop's SetPosition (`sub_822CF898`, `+0xB0`).
+2. Holder one: an attachment RIG (`sub_82295D20`, five slots at +0x58 / 0x2C) still
+   carried a helicopter — guarded (slot dropped, one log line). Not enough.
+3. Holder two, the one that matters: an ACTOR in its MOUNTED mode. The mode block at
+   `actorData+0x3794` {vtable 0x820446A4, SEAT ptr, float, index} is 0x1C0 bytes the
+   title **replicates raw over the wire, seat pointer included** (vt[1] writes it out,
+   vt[2] = `sub_82278468` memcpy's it in) — sound on the 360's deterministic heap, and
+   the census (`CZ_PROP_HOLDER_SCAN=1`) showed the same seat addresses on both machines
+   here. The remote player's actor on the host is mounted wherever the joiner's Chuck
+   is: in the landed helicopter, while the host — ahead in the flow — has already
+   destroyed it. Nothing on the host ever writes that reference; it arrives. No
+   single-player run can show it.
+4. Clearing the seat reference is WRONG (run 5 crashed on it — the mounted update's
+   caller at 0x822A4874 dereferences the seat unconditionally). The shipped guard is
+   on the prop's own `SetPosition`/`SetRotation` (`sub_822CF898`/`sub_822CF958`):
+   a zeroed prop is refused, printed once. `CZ_NO_ATTACH_GUARD=1` is the control.
+5. With the guards, run 6 did not crash — and the second player was DISCONNECTED
+   during the host's LEVEL LOAD before `ArmyPA`: the host's main thread blocks for the
+   load (`[DRAW] Main thread is blocked, suspending the D3D Device`) and sends and
+   receives nothing for ~11 s (vblank #86500 -> #98000 at the 1 ms vblank); the
+   endpoints on both sides go `Open -> Error` ("link shut down"). The 360 loads faster
+   than that window, or services the link during the load — not yet established.
+
+**The operator's decision (2026-09-12, 21:40):** ship it as it is — the ending is
+single-player, the second player is dropped there (today by that timeout, not by a
+switch of ours), the release notes and README say so and that a fix is in progress.
+What the fix needs: (a) keep the link alive through the host's load (find why the net
+thread does not run during it, or lengthen the endpoint's expiry), then (b) with both
+players in, see whether the guards in point 4 are enough for the ending or whether the
+partner needs the title's own dismount when the helicopter goes.
+
 ### Still owed after part 6
 
+- The military arrival in co-op (above): the link through the host's load, then the
+  partner's dismount.
 - Invites: *"sending an invite and trying to join by the invite doesn't work"* — the invite
   path in `xlive_social.cpp` was never wired to a menu.
 - A save-less joiner: seed from `default/` or refuse with a message.
