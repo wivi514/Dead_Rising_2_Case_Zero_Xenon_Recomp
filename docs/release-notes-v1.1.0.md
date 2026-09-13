@@ -1,10 +1,10 @@
 # Release notes — v1.1.0
 
 **This is the text to paste into the GitHub Release body.** Binaries are commit
-`96ccdf2` (all FOUR artifacts rebuilt from that source late on 2026-09-12 — the third
-build of the day: the overlay's text input fix went in after the 21:19 set; the Deck
-artifact repackaged at `71a1dee` with the resolution pin dropped — no code change; the
-hashes below are the current ones). It carries co-op plan parts 1-6: two-player online co-op over XenonLive, the XenonLive account, achievements
+`fede8e1` (all FOUR artifacts rebuilt from that source on 2026-09-13 — the co-op
+fixes of the night of the 12th/13th: the five-minute session end, the save-less
+joiner, the voice endpoint, the sign-in grace, the F8/F9 bug reports; the hashes below
+are the current ones). It carries co-op plan parts 1-6: two-player online co-op over XenonLive, the XenonLive account, achievements
 and friends underneath it, the ringing walkie-talkie, part 118's thread placement and
 the Windows timer fix — and the military-arrival limitation stated under Co-op.
 
@@ -50,7 +50,18 @@ profile** — read the XenonLive section before you look for yours.
   declines and makes your session private for the rest of it. Nobody enters without
   your Yes.
 - **The second player spawns dressed** in Chuck's starting outfit (the Xbox data has no
-  row for the co-op partner's torso; one was added).
+  row for the co-op partner's torso; one was added) — including a brand-new account
+  with no save yet, which the first v1.1.0 build showed as an invisible Chuck.
+- **A session no longer ends by itself five minutes in.** The game flushes its
+  stats five minutes after a session starts; the first v1.1.0 build answered that with
+  an error and the host's session closed, dropping the second player every time.
+  Tested past ten minutes on two machines.
+- **In-game voice chat is a silent channel**: the game registers you in chat (it used
+  to fail and log about it every frame) but no audio is carried — use Discord or
+  party chat.
+- **F9 (or F8) captures a bug report** — the frame, the last 60 s of log and 15 s
+  after, and your machine — into the XenonLive launcher's Issues tab, where you write
+  what happened and Send (or Delete). Nothing leaves your machine until you press Send.
 - **When someone asks to join, the walkie-talkie rings** — a notice says to press
   **RIGHT on the D-pad** (**Right Arrow** on the keyboard) to answer, as Dead Rising 2
   does; the question follows.
