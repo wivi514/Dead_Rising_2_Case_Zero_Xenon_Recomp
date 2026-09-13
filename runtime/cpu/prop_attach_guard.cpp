@@ -55,3 +55,88 @@ PPC_FUNC(sub_82295D20)
     }
     __imp__sub_82295D20(ctx, base);
 }
+
+// THE SECOND HOLDER, AND THE CENSUS THAT FINDS THE REST.
+//
+// With the rig guard in, the same scene crashed one frame later through the
+// player update (sub_82230170 -> ... -> sub_82290720): an ACTOR's mount
+// reference — the struct at actorData(+0x28)+0x3794 {vtable 0x820446A4, prop
+// +4, float +8, index +0xC} — still pointed at the destroyed helicopter, and the
+// title's DestroyProp clears an actor's +0x59C and +0x40C0 but not that one.
+// So DestroyProp is hooked here too: after the title's own body, every player's
+// actor (the same getters it uses: local sub_82482AD8 x4, remote sub_82482AF0
+// x10, actor = player vt[0xB4]) has that reference cleared if it names the
+// destroyed prop.
+//
+// And because "which holders exist" was learned one crash at a time,
+// CZ_PROP_HOLDER_SCAN=1 sweeps the title's whole heap (the 512 MB physical
+// alias at A0000000) for the destroyed prop's pointer before the release and
+// prints every holder's address — a census, so the next stale reference is read
+// off a log line instead of a crash report.
+#include "../kernel/coop_objects.h"
+
+extern "C" PPC_FUNC(__imp__sub_8221E9C8);
+
+namespace
+{
+constexpr uint32_t kFnLocalPlayer = 0x82482AD8;   // (playerMgr, i<4)
+constexpr uint32_t kFnRemotePlayer = 0x82482AF0;  // (playerMgr, i<10)
+constexpr uint32_t kPlayerVtActor = 0xB4;
+constexpr uint32_t kActorData = 0x28;
+constexpr uint32_t kMountRef = 0x3794;
+constexpr uint32_t kHeapLo = 0xA0000000, kHeapHi = 0xC0000000;
+
+void HolderScan(uint8_t* base, uint32_t prop, uint32_t id)
+{
+    const uint32_t needle = __builtin_bswap32(prop);
+    const uint32_t* p = reinterpret_cast<const uint32_t*>(base + kHeapLo);
+    const uint32_t* e = reinterpret_cast<const uint32_t*>(base + kHeapHi);
+    unsigned n = 0;
+    for (; p < e; p++)
+        if (*p == needle)
+        {
+            const uint32_t at = uint32_t(reinterpret_cast<const uint8_t*>(p) - base);
+            if (at == prop) continue;   // its own vtable slot is not a holder
+            if (n++ < 40)
+                fprintf(stderr, "[attach] holder of prop %u (%08X): %08X\n", id, prop, at);
+        }
+    fprintf(stderr, "[attach] prop %u (%08X): %u holder(s) in the heap before DestroyProp\n",
+            id, prop, n);
+}
+} // namespace
+
+PPC_FUNC(sub_8221E9C8)
+{
+    const uint32_t self = ctx.r3.u32, id = ctx.r4.u32;
+    const uint32_t prop = (id < 0x800) ? PPC_LOAD_U32(self + (id + 0xC) * 4) : 0;
+    static const bool scan = getenv("CZ_PROP_HOLDER_SCAN") != nullptr;
+    if (prop && scan)
+        HolderScan(base, prop, id);
+    __imp__sub_8221E9C8(ctx, base);
+    static const bool off = getenv("CZ_NO_ATTACH_GUARD") != nullptr;
+    if (!prop || off)
+        return;
+    const uint32_t playerMgr = PPC_LOAD_U32(self + 8);
+    if (!playerMgr)
+        return;
+    for (uint32_t i = 0; i < 14; i++)
+    {
+        PPCContext call = ctx;
+        call.r3.u64 = playerMgr;
+        call.r4.u64 = i < 4 ? i : i - 4;
+        if (!coop::GuestCall(call, base, i < 4 ? kFnLocalPlayer : kFnRemotePlayer, "player"))
+            return;
+        const uint32_t player = call.r3.u32;
+        if (!player) continue;
+        const uint32_t actor = coop::VCall(call, base, player, kPlayerVtActor, 0, "actor");
+        if (!actor) continue;
+        const uint32_t data = PPC_LOAD_U32(actor + kActorData);
+        if (!data) continue;
+        if (PPC_LOAD_U32(data + kMountRef + 4) != prop) continue;
+        PPC_STORE_U32(data + kMountRef + 4, 0);
+        PPC_STORE_U32(data + kMountRef + 0xC, 0xFFFFFFFF);
+        fprintf(stderr, "[attach] player %u (%s) actor %08X was mounted on DESTROYED prop %u "
+                        "(%08X) — the mount reference cleared\n", i < 4 ? i : i - 4,
+                i < 4 ? "local" : "remote", actor, id, prop);
+    }
+}
