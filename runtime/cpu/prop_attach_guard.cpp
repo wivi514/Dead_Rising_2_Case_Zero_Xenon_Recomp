@@ -140,3 +140,35 @@ PPC_FUNC(sub_8221E9C8)
                 i < 4 ? "local" : "remote", actor, id, prop);
     }
 }
+
+// THE THIRD RUN: the census found NO actor holding the helicopter at
+// DestroyProp time on either side, and the host still crashed one frame later
+// in sub_82290720 with an actor's mount reference (actorData+0x3798) naming the
+// destroyed prop — so the reference is written AFTER the destroy, by something
+// that resolved the prop earlier (the census did show four queued event
+// records per helicopter carrying its pointer: the joiner's `PropAction
+// mAction=0` for that prop, received before the host's own destroy and executed
+// after). Until that writer is named, the reader is guarded where it
+// dereferences: a mount reference whose prop reads a zero vtable is cleared and
+// the actor printed — its address, vtable, and whether it is one of the
+// players — so the writer can be found from the log rather than from a crash.
+extern "C" PPC_FUNC(__imp__sub_82290720);
+
+PPC_FUNC(sub_82290720)
+{
+    static const bool off = getenv("CZ_NO_ATTACH_GUARD") != nullptr;
+    const uint32_t actor = ctx.r3.u32;
+    const uint32_t data = actor ? PPC_LOAD_U32(actor + kActorData) : 0;
+    const uint32_t prop = data ? PPC_LOAD_U32(data + kMountRef + 4) : 0;
+    if (!off && prop && PPC_LOAD_U32(prop) == 0)
+    {
+        const uint32_t index = PPC_LOAD_U32(data + kMountRef + 0xC);
+        PPC_STORE_U32(data + kMountRef + 4, 0);
+        PPC_STORE_U32(data + kMountRef + 0xC, 0xFFFFFFFF);
+        fprintf(stderr, "[attach] actor %08X (vtable %08X, data %08X) is mounted on DESTROYED "
+                        "prop %08X at index %d — the mount reference cleared before the "
+                        "updater moved it (caller lr %08X)\n",
+                actor, PPC_LOAD_U32(actor), data, prop, int(index), uint32_t(ctx.lr));
+    }
+    __imp__sub_82290720(ctx, base);
+}
