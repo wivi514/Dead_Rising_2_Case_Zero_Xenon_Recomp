@@ -352,6 +352,7 @@ add_executable(cz_runtime
     cpu/thread_budget.cpp
     cpu/fence_wait.cpp               # part 107: the Draw Thread fence wait, parked on a futex
     cpu/trial_flag.cpp               # co-op part 6: enable_trial_experience follows the licence
+    cpu/prop_attach_guard.cpp        # co-op part 6: a destroyed prop leaves its attachment slot
     cpu/havok_threads.cpp            # part 118: the Havok worker count (CZ_HAVOK_WORKERS)
     cpu/rumble_guest.cpp             # part 108: the rumble tick at 30 Hz (CZ_RUMBLE_TICK_HZ) + the probe (CZ_RUMBLE_TRACE)
     kernel/klog.cpp
