@@ -314,17 +314,43 @@ bool CzXlive_SignedIn()
     if (!g_started)
         return false;
     if (xlive::Client::Instance().online())
+    {
+        // Back online — clear a pending drop so the next blip gets a fresh grace,
+        // and say how long the drop we masked actually lasted.
+        const long long since = g_dropSinceMs.exchange(-1);
+        if (since >= 0)
+        {
+            g_dropAnnounced.store(false);
+            KLOG("[xlive] gateway back after %lld ms (held from the title)\n", NowMs() - since);
+        }
         return true;
-    // Inside a held gateway drop the answer is still yes; past it, the first
-    // reader announces the sign-out the immediate post would have made.
-    const long long since = g_dropSinceMs.load();
+    }
+    // Offline. SELF-ARM the grace on the FIRST offline read (Case West's adc9386,
+    // ported). The gateway flaps every few minutes and recovers in ~2 s, but libxlive
+    // logs those as "gateway closed: connection ended" WITHOUT firing the
+    // ConnectionChanged event that used to arm this hold — so g_dropSinceMs stayed -1,
+    // this returned false the instant online() dipped, and the title's periodic check
+    // read a sign-out and tore the co-op session down ("HW MM session found account: 0
+    // is not signed in to xbox live!" -> DELETING_SESSION). Arming here, on the
+    // observed offline itself, holds the title's sign-in over any blip wherever it came
+    // from; a real outage past the grace still tells the title, once.
+    long long since = g_dropSinceMs.load();
     if (since < 0)
-        return false;
+    {
+        if (SigninGraceMs() <= 0)
+            return false;   // grace disabled (CZ_XLIVE_SIGNIN_GRACE_MS=0): the control arm
+        g_dropSinceMs.store(NowMs());
+        g_dropAnnounced.store(false);
+        KLOG("[xlive] gateway offline — holding the title's sign-in for up to %lld ms "
+             "(CZ_XLIVE_SIGNIN_GRACE_MS)\n", SigninGraceMs());
+        return true;
+    }
     if (NowMs() - since < SigninGraceMs())
         return true;
     if (!g_dropAnnounced.exchange(true))
     {
-        KLOG("[xlive] gateway drop outlasted the grace; telling the title it is signed out\n");
+        KLOG("[xlive] gateway offline outlasted the %lld ms grace; telling the title it "
+             "is signed out\n", SigninGraceMs());
         if (g_onlineAllowed)
             PostGuestNotification(XN_SYS_SIGNINCHANGED, 1);
     }

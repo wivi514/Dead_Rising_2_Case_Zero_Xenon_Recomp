@@ -5331,6 +5331,72 @@ static uint32_t XamContentGetLicenseMask_x(be<uint32_t>* mask, uint32_t overlapp
 GUEST_FUNCTION_HOOK(__imp__XamContentGetLicenseMask, XamContentGetLicenseMask_x)
 
 // ---------------------------------------------------------------------------
+// Voice / in-game chat — a SILENT no-op endpoint (co-op part 6; Case West's f804b65
+// ported, its diagnosis quoted)
+// ---------------------------------------------------------------------------
+//
+// Single-player never touches voice, so these were honest-failure stubs. But a
+// CO-OP session does: the title builds its voice-chat object only if XamVoiceCreate
+// succeeds, and the stub returned STATUS_NOT_IMPLEMENTED (0xC0000002, a negative
+// HRESULT). The call site checks only `result >= 0`; a negative sent it down the
+// failure branch, the chat object stayed null and "User 0 cannot be added to the
+// chat" spammed every frame — 29,645 lines in one host log here (coop_host29).
+//
+// We do NOT implement real voice — players use Discord/party chat, and the whole
+// mic->encode->P2P->mix->playback stack would duplicate it. What co-op needs is
+// only that the endpoint EXIST so the local user registers in chat. So:
+// XamVoiceCreate writes a non-zero handle and returns S_OK, and the rest
+// accept-and-discard. A real (minimal) service, not a fake-success stub — the
+// service is "a voice channel that carries no audio", which is exactly what a build
+// with no in-game voice should present. (The 300 s session teardown that Case West
+// first pinned on this was XSessionFlushStats — handled above — on both ports.)
+constexpr uint32_t kSilentVoiceHandle = 0xF0000001u;
+
+static uint32_t XamVoiceCreate_x(uint32_t context, uint32_t flags, be<uint32_t>* outHandle)
+{
+    (void)context;
+    (void)flags;
+    if (outHandle)
+        *outHandle = kSilentVoiceHandle;
+    static bool announced = false;
+    if (!announced)
+    {
+        announced = true;
+        KLOG("[voice] XamVoiceCreate -> a SILENT no-op voice endpoint (handle %08X): co-op "
+             "chat registration succeeds, no audio is carried — use Discord/party chat\n",
+             kSilentVoiceHandle);
+    }
+    return 0;
+}
+GUEST_FUNCTION_HOOK(__imp__XamVoiceCreate, XamVoiceCreate_x)
+
+static uint32_t XamVoiceClose_x(uint32_t handle)
+{
+    (void)handle;
+    return 0;
+}
+GUEST_FUNCTION_HOOK(__imp__XamVoiceClose, XamVoiceClose_x)
+
+// Accept every outgoing local packet and drop it.
+static uint32_t XamVoiceSubmitPacket_x(uint32_t handle, uint32_t a1, uint32_t a2, uint32_t a3)
+{
+    (void)handle;
+    (void)a1;
+    (void)a2;
+    (void)a3;
+    return 0;
+}
+GUEST_FUNCTION_HOOK(__imp__XamVoiceSubmitPacket, XamVoiceSubmitPacket_x)
+
+// No headset is present, so the title never expects to hear anything.
+static uint32_t XamVoiceHeadsetPresent_x(uint32_t handle)
+{
+    (void)handle;
+    return 0;
+}
+GUEST_FUNCTION_HOOK(__imp__XamVoiceHeadsetPresent, XamVoiceHeadsetPresent_x)
+
+// ---------------------------------------------------------------------------
 // XAM app messages, tasks, and the storage device
 // ---------------------------------------------------------------------------
 //
