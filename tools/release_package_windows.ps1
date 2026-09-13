@@ -179,6 +179,7 @@ the executable. Do not edit by hand.
 | MSVC runtime | Microsoft redistributable | ``vcruntime140*.dll``, ``msvcp140.dll`` from the build toolchain's redist |
 | o1heap | MIT | compiled in (the guest heaps) |
 | SIMDe | MIT | compiled in (the guest VMX unit) |
+| miniz (Rich Geldreich, RAD Game Tools) | public domain / unlicense | compiled in (the PNG writer of the F8/F9 bug-report capture) |
 | Vulkan loader | Apache 2.0 | NOT bundled - the GPU driver supplies it |
 | XenonLive client library (libxlive) | see the XenonLive repository | compiled in: the account, achievements, friends and co-op sessions over the XenonLive service |
 | curl (libcurl) | curl licence (MIT-style) | ``libcurl-x64.dll`` beside the executable (curl-for-win, schannel TLS); licence in ``LICENSE.CURL`` |

@@ -62,6 +62,7 @@ static int (*const __llvm_profile_write_file)(void) = nullptr;
 #include "gpu/vk_renderer.h"
 #include "host/first_run.h"
 #include "host/host_paths.h"
+#include "host/bug_report.h"
 #include "host/log_file.h"
 #include "host/overlay_gen.h"
 #include "host/stfs_extract.h"
@@ -747,6 +748,9 @@ int main(int argc, char** argv)
     // never blocks, so this costs the boot nothing whether or not the player
     // has an account or a network.
     CzXlive_Start(XexTitleId());
+    // The bug-report capture (F8/F9 -> the launcher's Issues tab): after the account,
+    // because the folder is the launcher's data dir, which libxlive resolves.
+    BugReport_Init();
 
     // The window, before any guest code runs.
     //
@@ -802,6 +806,7 @@ int main(int argc, char** argv)
         Host_WindowRun();
     }
     guest.join();
+    BugReport_Shutdown();   // a capture 15 s from being written is written now, short
     LogFile::End();
     return 0;
 }

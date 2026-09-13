@@ -12,6 +12,7 @@
 #include "xenos.h"
 #include "../kernel/xlive_overlay_glue.h"
 #include "pit_gravel_tex.h"
+#include "../host/bug_report.h"
 #include "../host/host_paths.h"
 #include "../host/settings.h"
 #include "../host/window.h"
@@ -8004,6 +8005,15 @@ bool CreateDevice()
     DeviceCaps caps;
     QueryDeviceCaps(R->physical, caps);
     PrintDriverLine(caps, "[vk]");
+    {
+        // The bug report's GPU line: the device, and the driver's own name + version.
+        char drv[320];
+        if (caps.haveDriverProps)
+            snprintf(drv, sizeof drv, "%s %s", caps.driver.driverName, caps.driver.driverInfo);
+        else
+            snprintf(drv, sizeof drv, "unknown (device below Vulkan 1.2)");
+        BugReport_SetGpu(caps.props.deviceName, drv, caps.props.apiVersion);
+    }
     if (caps.props.apiVersion < VK_API_VERSION_1_3)
     {
         fprintf(stderr, "[vk] this device reports Vulkan %u.%u.%u and the renderer needs "
@@ -29495,7 +29505,10 @@ void DoSwapImpl(uint8_t* base, uint32_t frontBuffer, uint32_t width, uint32_t he
     // `readbackUntilFrame` covers the two or three frames one F9 press needs, and it is a
     // frame NUMBER rather than a countdown so that two presses in quick succession cannot
     // shorten each other.
-    const bool edgeArmed = R->burstActive || R->frame <= R->readbackUntilFrame;
+    // ...and the bug-report capture (host/bug_report.h), which wants a frame or three
+    // after F8/F9 whether or not the dev instruments are armed.
+    const bool edgeArmed = R->burstActive || R->frame <= R->readbackUntilFrame ||
+                           BugReport_WantsPixels();
     const bool doReadback =
         !R->wantSwapchain || wantCachedPixels || presentAlways || edgeArmed;
     // Counted, both halves, because an arm with no counter cannot be shown to have
@@ -29706,6 +29719,9 @@ void DoSwapImpl(uint8_t* base, uint32_t frontBuffer, uint32_t width, uint32_t he
                         (unsigned long long)pres.pixelFrame);
         }
         Host_PresentPixels(px, width1, height1);
+        // The bug-report capture's frame(s), copied out of the readback here (the slot
+        // is reused next frame); a no-op unless a capture is waiting for pixels.
+        BugReport_OfferPixels(px, width1, height1, pres.frame);
     }
 
     // CZ_VK_SNAP_ON_BLACK[=pct] — dump the whole resolve chain of the frame the picture

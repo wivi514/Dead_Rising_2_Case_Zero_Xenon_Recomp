@@ -144,6 +144,14 @@ steps run again — your saves are unaffected, they live in the saved-games loca
 above. Deleting THAT folder removes your saves and settings; the game never does this
 itself.
 
+**Reporting a bug from inside the game: press F9.** The game writes a capture — the
+frame on screen, the log for the 60 s before and 15 s after, and your machine (OS, CPU,
+GPU, driver, settings) — that the XenonLive launcher's **Issues** tab lists. Open the
+launcher, write what happened, and Send; or Delete it. Nothing leaves your machine
+until you press Send. F8 does the same with three frames a half-second apart, for
+something that moves. The folder is bounded (the oldest captures are deleted when it
+passes 256 MB), and `CZ_BUG_REPORTS=0` turns the keys off.
+
 **A log of everything** is written to `cz_runtime.log` next to the game folder's
 `assets/`, and the previous run's log
 is kept as `cz_runtime.log.1`. When reporting a problem, attach that file. To describe

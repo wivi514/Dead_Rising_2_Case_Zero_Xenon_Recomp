@@ -270,6 +270,7 @@ echo "==> generating THIRD_PARTY.md"
     echo '| DirectX Shader Compiler (DXC) | University of Illinois/NCSA | `lib/libdxcompiler.so`, loaded at run time to translate shaders; license in `lib/LICENSE.DXC` |'
     echo '| o1heap | MIT | compiled in (the guest heaps) |'
     echo '| SIMDe | MIT | compiled in (the guest VMX unit) |'
+    echo '| miniz (Rich Geldreich, RAD Game Tools) | public domain / unlicense | compiled in (the PNG writer of the F8/F9 bug-report capture) |'
     echo '| Vulkan loader | Apache 2.0 | NOT bundled — the host system supplies it |'
     echo '| XenonLive client library (libxlive) | see the XenonLive repository | compiled in: the account, achievements, friends and co-op sessions over the XenonLive service |'
     echo '| curl (libcurl) | curl licence (MIT-style) | compiled in, static, HTTP(S) only |'

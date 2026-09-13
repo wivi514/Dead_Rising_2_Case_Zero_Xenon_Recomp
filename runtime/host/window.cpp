@@ -1,3 +1,4 @@
+#include "bug_report.h"
 #include "window.h"
 #include "../gpu/vk_renderer.h"
 
@@ -57,8 +58,18 @@ std::atomic<bool> g_burstDumpPressed{false};
 void Host_RequestDebugJump() { g_debugJumpPressed.store(true, std::memory_order_release); }
 void Host_RequestDebugEnter() { g_debugEnterPressed.store(true, std::memory_order_release); }
 void Host_RequestDebugMenu() { g_debugMenuPressed.store(true, std::memory_order_release); }
-void Host_RequestSnapDump() { g_snapDumpPressed.store(true, std::memory_order_release); }
-void Host_RequestBurstDump() { g_burstDumpPressed.store(true, std::memory_order_release); }
+// The synthetic presses (CZ_FAKE_PRESS_SEQ F9/F8) are the same key to the bug-report
+// capture as the real ones: that is how a headless run can exercise it.
+void Host_RequestSnapDump()
+{
+    g_snapDumpPressed.store(true, std::memory_order_release);
+    BugReport_Request("F9", 1);
+}
+void Host_RequestBurstDump()
+{
+    g_burstDumpPressed.store(true, std::memory_order_release);
+    BugReport_Request("F8", 3);
+}
 
 // The window's pending follow-size, one word so a torn W/H pair cannot exist between
 // the pump (producer) and the window thread (consumer). 0 = nothing pending.
@@ -1215,13 +1226,21 @@ HostPadState ReadKeyboard()
         if (f7Down && !f7WasDown)
             g_markPressed.store(true, std::memory_order_release);
         f7WasDown = f7Down;
+        // F8/F9: the dev instruments (CZ_BURST_DUMP, CZ_CAPTURE_KEY) when armed, AND
+        // the bug-report capture for the launcher's Issues tab, always (bug_report.h).
         const bool f8Down = keys[SDL_SCANCODE_F8] != 0;
         if (f8Down && !f8WasDown)
+        {
             g_burstDumpPressed.store(true, std::memory_order_release);
+            BugReport_Request("F8", 3);
+        }
         f8WasDown = f8Down;
         const bool f9Down = keys[SDL_SCANCODE_F9] != 0;
         if (f9Down && !f9WasDown)
+        {
             g_snapDumpPressed.store(true, std::memory_order_release);
+            BugReport_Request("F9", 1);
+        }
         f9WasDown = f9Down;
         if (f2Down && !f2WasDown)
             g_debugJumpPressed.store(true, std::memory_order_release);

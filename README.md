@@ -46,7 +46,9 @@ never fails with a blank screen on purpose. A `README.md` inside the bundle has
 a troubleshooting section. **Every run writes `cz_runtime.log`** next to the
 game folder's `assets/` (for the AppImage, next to the `.AppImage`), and
 `cz_runtime --diag` prints your OS, GPU, driver and display facts and exits —
-attach both to any bug report.
+attach both to any bug report. **Or press F9 in the game**: it captures the frame, the
+last 60 s of log and your machine into a report the XenonLive launcher's Issues tab
+sends for you.
 
 Your **saves and settings live outside the game folder** (Windows:
 `Saved Games\Dead Rising 2 Case Zero\`; Linux:

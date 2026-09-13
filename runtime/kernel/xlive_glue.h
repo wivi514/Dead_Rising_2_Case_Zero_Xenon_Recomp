@@ -120,3 +120,10 @@ void CzXlive_SetPresenceSession(uint64_t sessionId, bool joinable);
 // appear online. Called from the window's Shutdown(), beside LogFile::Flush,
 // for exactly the reason part 38 learned about counters.
 void CzXlive_Shutdown(int timeoutMs);
+
+// Where a capture goes for the launcher to find it (docs/bug-reports.md in XenonLive):
+// <data dir>/captures. The data dir is the one libxlive resolves — the client's own
+// when it is started, the same rule (XLIVE_DATA_DIR, else the platform's XenonLive
+// folder) through libxlive's paths when the game runs offline — so the folder is the
+// launcher's whether or not the player is signed in.
+std::string CzXlive_CapturesDir();

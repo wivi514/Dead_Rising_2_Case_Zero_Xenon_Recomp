@@ -8,6 +8,8 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <deque>
+#include <mutex>
 #include <string>
 #include <thread>
 
@@ -94,6 +96,35 @@ unsigned long long LogCapBytes()
     return kDefaultLogCapBytes;
 }
 
+// The recent-log ring: see log_file.h. Chunks as the pipe delivered them (a chunk is
+// whatever was written between two reads — one line to a few KB), each with the
+// steady-clock time it arrived. Appended by the tee thread, read by a capture's
+// worker, so it is under its own lock and never the file's.
+struct RingChunk
+{
+    std::chrono::steady_clock::time_point at;
+    std::string text;
+};
+std::mutex g_ringMutex;
+std::deque<RingChunk> g_ring;
+size_t g_ringBytes = 0;
+constexpr size_t kRingMaxBytes = 16u * 1024 * 1024;
+constexpr auto kRingMaxAge = std::chrono::seconds(120);
+
+void RingPush(const char* p, int n)
+{
+    const auto now = std::chrono::steady_clock::now();
+    std::lock_guard<std::mutex> lock(g_ringMutex);
+    g_ring.push_back({ now, std::string(p, size_t(n)) });
+    g_ringBytes += size_t(n);
+    while (!g_ring.empty() &&
+           (g_ringBytes > kRingMaxBytes || now - g_ring.front().at > kRingMaxAge))
+    {
+        g_ringBytes -= g_ring.front().text.size();
+        g_ring.pop_front();
+    }
+}
+
 void TeeLoop()
 {
     char buf[65536];
@@ -108,6 +139,7 @@ void TeeLoop()
         if (n <= 0)
             break; // the write end is closed: End() ran, or the process is going
         g_read += unsigned(n);
+        RingPush(buf, n);
         if (g_origErr >= 0)
             WriteAll(g_origErr, buf, n);
         if (g_file >= 0 && !capped)
@@ -347,4 +379,15 @@ void End()
 }
 
 const std::filesystem::path& Path() { return g_path; }
+
+std::string Recent(std::chrono::steady_clock::time_point from,
+                   std::chrono::steady_clock::time_point to)
+{
+    std::string out;
+    std::lock_guard<std::mutex> lock(g_ringMutex);
+    for (const RingChunk& c : g_ring)
+        if (c.at >= from && c.at <= to)
+            out += c.text;
+    return out;
+}
 } // namespace LogFile

@@ -4438,3 +4438,29 @@ tools/part118_campaign.sh / part118_campaign2.sh <bin> [N]   campaign 1 (stock /
                    an arm alternated on one frozen binary; read with
                    tools/part116_guestcpu.py <A logs> -- <B logs>.
 ```
+
+## The bug-report capture (co-op part 6 follow-up, 2026-09-13; `host/bug_report.cpp`)
+
+**F9** (one frame) and **F8** (three frames, ~0.5 s apart) write a capture the XenonLive
+launcher's Issues tab lists and can send: `screenshot.png` (+ `burst_2/3.png` for F8),
+`log.txt` (the stderr tee's ring — 60 s before the key, 15 s after; cut to its last
+3.5 MiB with a note), `system.txt` (OS, CPU, GPU + driver, Vulkan, RAM, resolution and
+settings, game version, signed-in), and `capture.json` per XenonLive's
+`docs/bug-reports.md`. Written as `<name>.partial/` then renamed; at most 6 files, 4 MiB
+each, 8 MiB together (frames wider than 1920 are halved; a PNG over budget is halved
+again). The dev instruments on the same keys (`CZ_CAPTURE_KEY`, `CZ_BURST_DUMP`) are
+unchanged and fire beside it. The synthetic presses (`CZ_FAKE_PRESS_SEQ=...,F9,...`)
+trigger it too, which is how a headless run tests it.
+
+```
+CZ_BUG_REPORTS=0           off: F8/F9 write no capture for the launcher
+CZ_BUG_REPORT_DIR=dir      where; default <XenonLive data dir>/captures (XLIVE_DATA_DIR,
+                           else ~/.config/XenonLive or %APPDATA%\XenonLive — libxlive's rule)
+CZ_BUG_REPORT_MAX_MB=N     the folder's cap (default 256; and at most 40 captures) — the
+                           oldest by name is deleted first; a .partial older than ten
+                           minutes is removed as a crashed capture
+```
+
+The log line `[bugreport] F9: wrote <dir> (N files, K KiB)` is the receipt; the same
+text is a toast when the overlay is up. `CZ_GAME_VERSION` (CMake, `git describe` at
+configure) is the version the capture names.

@@ -9,6 +9,7 @@
 #include <string>
 
 #include <xlive/client.h>
+#include <../src/paths.h>   // xlive::UserDataDir — the same rule the client uses
 
 #include "content.h"
 #include "klog.h"
@@ -465,4 +466,11 @@ void CzXlive_Shutdown(int timeoutMs)
     // worker thread there is the same hazard running static destructors would
     // be, and there is nothing to lose by skipping it — everything is already
     // on disk.
+}
+
+std::string CzXlive_CapturesDir()
+{
+    if (g_started)
+        return xlive::Client::Instance().captures_dir();
+    return (xlive::UserDataDir() / "captures").string();
 }

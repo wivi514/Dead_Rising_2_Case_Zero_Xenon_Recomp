@@ -29,7 +29,9 @@
 // off entirely (and says so — an instrument that silently stopped is worse than none).
 // An existing file is rotated to <name>.1 first, so the previous run's log survives
 // one launch of "let me just try it again".
+#include <chrono>
 #include <filesystem>
+#include <string>
 
 namespace LogFile
 {
@@ -50,4 +52,14 @@ void End();
 
 // The file being written, or empty when the tee is off.
 const std::filesystem::path& Path();
+
+// THE RECENT-LOG RING (the bug-report capture). The tee keeps the last two minutes
+// of everything that went through it — the same bytes the file and the console got —
+// stamped with the time each chunk arrived. Recent(from, to) returns the text of the
+// chunks whose arrival lies in [from, to]: what a capture attaches as "the log for the
+// 60 s before the key and the 15 s after". Bounded at 16 MB and 120 s, so a run that
+// logs per frame costs the ring its window, never the process its memory. Empty when
+// the tee is not running.
+std::string Recent(std::chrono::steady_clock::time_point from,
+                   std::chrono::steady_clock::time_point to);
 } // namespace LogFile
