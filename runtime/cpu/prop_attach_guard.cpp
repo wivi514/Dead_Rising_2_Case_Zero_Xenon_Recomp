@@ -63,10 +63,9 @@ PPC_FUNC(sub_82295D20)
 // reference — the struct at actorData(+0x28)+0x3794 {vtable 0x820446A4, prop
 // +4, float +8, index +0xC} — still pointed at the destroyed helicopter, and the
 // title's DestroyProp clears an actor's +0x59C and +0x40C0 but not that one.
-// So DestroyProp is hooked here too: after the title's own body, every player's
-// actor (the same getters it uses: local sub_82482AD8 x4, remote sub_82482AF0
-// x10, actor = player vt[0xB4]) has that reference cleared if it names the
-// destroyed prop.
+// (A first version cleared that reference from every player's actor after the
+// title's own body; it never matched — see the next paragraph for why — and
+// clearing it is unsafe anyway. DestroyProp is hooked for the census only.)
 //
 // And because "which holders exist" was learned one crash at a time,
 // CZ_PROP_HOLDER_SCAN=1 sweeps the title's whole heap (the 512 MB physical
@@ -79,9 +78,6 @@ extern "C" PPC_FUNC(__imp__sub_8221E9C8);
 
 namespace
 {
-constexpr uint32_t kFnLocalPlayer = 0x82482AD8;   // (playerMgr, i<4)
-constexpr uint32_t kFnRemotePlayer = 0x82482AF0;  // (playerMgr, i<10)
-constexpr uint32_t kPlayerVtActor = 0xB4;
 constexpr uint32_t kActorData = 0x28;
 constexpr uint32_t kMountRef = 0x3794;
 constexpr uint32_t kHeapLo = 0xA0000000, kHeapHi = 0xC0000000;
@@ -121,73 +117,90 @@ PPC_FUNC(sub_8221E9C8)
                 g_readerCalls);
         HolderScan(base, prop, id);
     }
-    static const bool off = getenv("CZ_NO_ATTACH_GUARD") != nullptr;
-    if (!prop || off)
-        return;
-    const uint32_t playerMgr = PPC_LOAD_U32(self + 8);
-    if (!playerMgr)
-        return;
-    for (uint32_t i = 0; i < 14; i++)
-    {
-        PPCContext call = ctx;
-        call.r3.u64 = playerMgr;
-        call.r4.u64 = i < 4 ? i : i - 4;
-        if (!coop::GuestCall(call, base, i < 4 ? kFnLocalPlayer : kFnRemotePlayer, "player"))
-            return;
-        const uint32_t player = call.r3.u32;
-        if (!player) continue;
-        const uint32_t actor = coop::VCall(call, base, player, kPlayerVtActor, 0, "actor");
-        if (!actor) continue;
-        const uint32_t data = PPC_LOAD_U32(actor + kActorData);
-        if (!data) continue;
-        if (PPC_LOAD_U32(data + kMountRef + 4) != prop) continue;
-        PPC_STORE_U32(data + kMountRef + 4, 0);
-        PPC_STORE_U32(data + kMountRef + 0xC, 0xFFFFFFFF);
-        fprintf(stderr, "[attach] player %u (%s) actor %08X was mounted on DESTROYED prop %u "
-                        "(%08X) — the mount reference cleared\n", i < 4 ? i : i - 4,
-                i < 4 ? "local" : "remote", actor, id, prop);
-    }
 }
 
-// THE THIRD RUN: the census found NO actor holding the helicopter at
-// DestroyProp time on either side, and the host still crashed one frame later
-// in sub_82290720 with an actor's mount reference (actorData+0x3798) naming the
-// destroyed prop — so the reference is written AFTER the destroy, by something
-// that resolved the prop earlier (the census did show four queued event
-// records per helicopter carrying its pointer: the joiner's `PropAction
-// mAction=0` for that prop, received before the host's own destroy and executed
-// after). Until that writer is named, the reader is guarded where it
-// dereferences: a mount reference whose prop reads a zero vtable is cleared and
-// the actor printed — its address, vtable, and whether it is one of the
-// players — so the writer can be found from the log rather than from a crash.
+// THE THIRD, FOURTH AND FIFTH RUNS, in one paragraph. The census found NO actor
+// holding the helicopter at DestroyProp time on either side, and the host still
+// crashed one frame later in sub_82290720 — the update of an actor in its
+// MOUNTED mode. What that update reads is actorData+0x3798, which is not the
+// prop: it is a SEAT object (0x410 bytes, vtable 0x8202A190) whose +4 is the
+// prop; sub_822D5350/58 forward SetPosition/SetRotation from the seat to the
+// prop (0x822CF898/0x822CF958). The mode block at actorData+0x3794 {vtable
+// 0x820446A4, seat, float, index} is 0x1C0 bytes that the title REPLICATES RAW
+// — vt[1] copies it out to the wire, vt[2] (0x82278468) memcpy's it back in,
+// seat pointer included, on the strength of the 360's deterministic heap (the
+// census showed the same seat addresses on both machines). So the remote
+// player's actor on the host is mounted wherever the joiner's is: the joiner's
+// Chuck sits in the landed helicopter when the host's ArmyPA destroys it (the
+// joiner, behind in the flow, has not run its own ArmyPA yet). Nothing on the
+// host ever wrote that reference — it arrived.
+//
+// Clearing the reference is WRONG: the mounted update's caller (0x822A4874)
+// dereferences the seat unconditionally (run 5 crashed there, on my own
+// clearing). What is safe is the prop's own SetPosition/SetRotation refusing a
+// prop the pool has zeroed — the seat stays, the remote Chuck sits on a ghost
+// seat until the joiner's own flow dismounts him and the next replicated block
+// says so. The reader hook below is now a TRACE (CZ_ATTACH_TRACE=1) and a
+// counter; the guards are on the two prop methods.
 extern "C" PPC_FUNC(__imp__sub_82290720);
 namespace { unsigned g_readerCalls = 0; }
 
 PPC_FUNC(sub_82290720)
 {
-    static const bool off = getenv("CZ_NO_ATTACH_GUARD") != nullptr;
     const uint32_t actor = ctx.r3.u32;
     const uint32_t data = actor ? PPC_LOAD_U32(actor + kActorData) : 0;
-    const uint32_t prop = data ? PPC_LOAD_U32(data + kMountRef + 4) : 0;
+    const uint32_t seat = data ? PPC_LOAD_U32(data + kMountRef + 4) : 0;
     g_readerCalls++;
     static const bool trace = getenv("CZ_ATTACH_TRACE") != nullptr;
     static unsigned traced = 0;
-    if (trace && prop && traced < 8)
+    if (trace && seat && traced < 16)
     {
         traced++;
-        fprintf(stderr, "[attach] trace: sub_82290720 actor %08X data %08X prop %08X vtable %08X "
-                        "index %d lr %08X\n", actor, data, prop, PPC_LOAD_U32(prop),
-                int(PPC_LOAD_U32(data + kMountRef + 0xC)), uint32_t(ctx.lr));
-    }
-    if (!off && prop && (PPC_LOAD_U32(prop) == 0 || PPC_LOAD_U32(prop + 0xB0) == 0))
-    {
-        const uint32_t index = PPC_LOAD_U32(data + kMountRef + 0xC);
-        PPC_STORE_U32(data + kMountRef + 4, 0);
-        PPC_STORE_U32(data + kMountRef + 0xC, 0xFFFFFFFF);
-        fprintf(stderr, "[attach] actor %08X (vtable %08X, data %08X) is mounted on DESTROYED "
-                        "prop %08X at index %d — the mount reference cleared before the "
-                        "updater moved it (caller lr %08X)\n",
-                actor, PPC_LOAD_U32(actor), data, prop, int(index), uint32_t(ctx.lr));
+        const uint32_t prop = PPC_LOAD_U32(seat + 4);
+        fprintf(stderr, "[attach] trace: mounted update actor %08X (vtable %08X) seat %08X "
+                        "(vtable %08X) prop %08X (vtable %08X) index %d lr %08X\n",
+                actor, PPC_LOAD_U32(actor), seat, PPC_LOAD_U32(seat), prop,
+                prop ? PPC_LOAD_U32(prop) : 0, int(PPC_LOAD_U32(data + kMountRef + 0xC)),
+                uint32_t(ctx.lr));
     }
     __imp__sub_82290720(ctx, base);
+}
+
+// The prop's SetPosition / SetRotation: refuse a prop the pool has released
+// (first word zero — it is virtual while alive). Printed once per prop.
+extern "C" PPC_FUNC(__imp__sub_822CF898);
+extern "C" PPC_FUNC(__imp__sub_822CF958);
+
+namespace
+{
+bool DeadProp(PPCContext& ctx, uint8_t* base, const char* what)
+{
+    static const bool off = getenv("CZ_NO_ATTACH_GUARD") != nullptr;
+    const uint32_t prop = ctx.r3.u32;
+    if (off || !prop || PPC_LOAD_U32(prop) != 0)
+        return false;
+    static uint32_t last = 0;
+    if (last != prop)
+    {
+        last = prop;
+        fprintf(stderr, "[attach] %s on DESTROYED prop %08X (zero vtable) refused — caller lr "
+                        "%08X (CZ_NO_ATTACH_GUARD=1 is the control)\n", what, prop,
+                uint32_t(ctx.lr));
+    }
+    return true;
+}
+} // namespace
+
+PPC_FUNC(sub_822CF898)
+{
+    if (DeadProp(ctx, base, "SetPosition"))
+        return;
+    __imp__sub_822CF898(ctx, base);
+}
+
+PPC_FUNC(sub_822CF958)
+{
+    if (DeadProp(ctx, base, "SetRotation"))
+        return;
+    __imp__sub_822CF958(ctx, base);
 }
