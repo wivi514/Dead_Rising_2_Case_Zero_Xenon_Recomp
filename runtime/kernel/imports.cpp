@@ -5444,8 +5444,9 @@ static std::map<uint64_t, uint32_t> g_userContexts;
 //              0021 0025 0026
 //   XLB  0xFC: 00000000 00058004 00058006 0005800E 00058020 00058023
 //   XMP  0xFA: 00070009 0007001B
-// Handled below: 000B0006 (presence contexts), 000B0008 (achievements) and
-// 000B0025 (XSessionWriteStats, the leaderboard write). Everything else is
+// Handled below: 000B0006 (presence contexts), 000B0008 (achievements),
+// 000B0025 (XSessionWriteStats, the leaderboard write) and 000B0026
+// (XSessionFlushStats, a success — see it). Everything else is
 // session, matchmaking, presence or media-player work this runtime cannot yet
 // perform, so failing it is the honest answer rather than a gap. A1 only ever
 // sends 000B0006 during boot.
@@ -5551,6 +5552,29 @@ static uint32_t DispatchAppMessage(uint32_t app, uint32_t message, void* buffer,
     // 000B0008: the stats are recorded, durably, before this returns. What this
     // runtime cannot do is rank them locally, and nothing in guest code can
     // observe that.
+    // XGI 0x000B0026 — XSessionFlushStats. THE FIVE-MINUTE CO-OP DISCONNECT (co-op
+    // part 6, 2026-09-13): the title's session arms a "stats flush timer" of 300,000 ms
+    // when a session starts, and when it fires the HW MM session enters
+    // LIVE_STATE_FLUSH_STATS and sends this message. Unhandled, it fell through to the
+    // E_FAIL below, the session read "extended error result" and CLOSED ITSELF
+    // ("Ms MM Session: Closing session" -> P2PClient: disconnecting) — every co-op
+    // session ended at exactly 300 s, on the host, by our own honest-failure stub
+    // (host log coop_host29). There is nothing to flush here: the leaderboard writes
+    // already reach XenonLive one by one through 000B0025 above, so the flush is
+    // complete the moment it is asked for. 24-byte buffer: the session handle and
+    // the overlapped's own bookkeeping; nothing in it is read.
+    if (app == kAppXgi && message == 0x000B0026)
+    {
+        static bool said = false;
+        if (!said)
+        {
+            said = true;
+            KLOG("XSessionFlushStats: nothing to flush (leaderboard writes go out as they "
+                 "happen) — completed with success, the session stays up\n");
+        }
+        return 0;
+    }
+
     if (app == kAppXgi && message == 0x000B0025)
     {
         if (!buffer || bufferLength < 24)
