@@ -1,9 +1,11 @@
 # Release notes — v1.1.0
 
 **This is the text to paste into the GitHub Release body.** Binaries are commit
-`c23138a` (all three artifacts built from that source on 2026-09-11; the notes commit
-after it changes no code). It carries co-op plan parts 1-5: two-player online co-op
-over XenonLive, and the XenonLive account, achievements and friends underneath it.
+`7ca3652` (all three artifacts REBUILT from that source on 2026-09-12, replacing the
+2026-09-11 `c23138a` draft; the hashes below are the new ones). It carries co-op plan
+parts 1-6: two-player online co-op over XenonLive, the XenonLive account, achievements
+and friends underneath it, the ringing walkie-talkie, part 118's thread placement and
+the Windows timer fix — and the military-arrival limitation stated under Co-op.
 
 **The release is frozen at the tag**: if any artifact is EVER rebuilt, refresh its hash
 below before attaching.
@@ -129,6 +131,6 @@ downloads.
 
 | file | sha256 |
 |---|---|
-| `CaseZeroRecomp-linux-x86_64.tar.zst` | `8ece91899aa84d841e8fb40c14d03d22462e102b802c610f699bec4ea7095289` |
-| `CaseZeroRecomp-linux-x86_64.AppImage` | `9d9a7a1baa318943a7a496855b5c380fb301275d598494374bae2645c51ddf27` |
-| `CaseZeroRecomp-windows-x86_64.zip` | `e877a951927f3c9690162d3cbb38a0856d1abd4d295249fba8bea32522a4ef1c` |
+| `CaseZeroRecomp-linux-x86_64.tar.zst` | `b10d3b0b924bc189a90b97389af41259a676ae42955f90857cf42c146a7dff92` |
+| `CaseZeroRecomp-linux-x86_64.AppImage` | `4c4adf79672cf2b0d9c05a107c76078c86e1bc9c56abd626c53e89add51ad8e9` |
+| `CaseZeroRecomp-windows-x86_64.zip` | `908cecb82a32f0c1ba06a8be59dc84525df7946f7c6162519764315c86266dda` |
