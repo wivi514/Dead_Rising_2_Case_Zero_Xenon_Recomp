@@ -493,6 +493,22 @@ void ContentSetRootFromGameDir(const std::string& gameDir)
          createFailed ? " (COULD NOT BE CREATED — saving will fail)" : "");
 }
 
+bool ContentHasAnySave()
+{
+    std::error_code ec;
+    if (g_saveRoot.empty() || !std::filesystem::is_directory(g_saveRoot, ec))
+        return false;
+    for (const auto& entry : std::filesystem::directory_iterator(g_saveRoot, ec))
+    {
+        if (!entry.is_directory(ec))
+            continue;
+        for (const auto& f : std::filesystem::directory_iterator(entry.path(), ec))
+            if (f.is_regular_file(ec) && f.file_size(ec) > 0)
+                return true;
+    }
+    return false;
+}
+
 void ContentSetProfile(const std::string& gamertag)
 {
     if (getenv("CZ_SAVE_DIR"))

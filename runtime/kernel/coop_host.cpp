@@ -294,6 +294,8 @@ PPC_FUNC(sub_82537FA0)
         }
     }
     __imp__sub_82537FA0(ctx, base);
+    // A joiner with no save gets Chuck's default outfit here (coop_outfit_default.cpp).
+    CoopOutfit_ApplyPendingDefault(ctx, base);
     if (HostRequested())
     {
         const uint32_t gsObj = LoadU32(base, LoadU32(base, kGameSessionOwner) + 0x14);

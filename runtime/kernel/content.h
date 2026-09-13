@@ -24,6 +24,11 @@ void ContentSetRootFromGameDir(const std::string& gameDir);
 // wins over both.
 void ContentSetProfile(const std::string& gamertag);
 
+// Does this profile have ANY save (a content directory with a file in it) — the
+// question a co-op joiner's outfit rule asks (coop_outfit_default.cpp): a brand-new
+// account has none and its Chuck must be dressed by the runtime.
+bool ContentHasAnySave();
+
 // The resolved save root, for anything else that persists player-owned state next
 // to the saves (part 60's settings file). Empty until ContentSetRootFromGameDir.
 std::string ContentSaveRoot();

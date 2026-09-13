@@ -37,6 +37,7 @@
 #include <ppc_config.h>
 #include <ppc_context.h>
 
+#include "content.h"
 #include "coop_objects.h"
 #include "memory.h"
 
@@ -60,6 +61,44 @@ bool PieceEmpty(uint8_t* base, uint32_t save, uint32_t part)
 }
 } // namespace
 
+// The two halves: DETECT at level start (the save is readable there, and it is the
+// title's own moment for the question), APPLY when the game flow enters gameplay —
+// the first attempt applied at level start and the row applier's per-piece events
+// went nowhere (no SetPart ever followed): the joiner's player object does not exist
+// yet at that point, and events for a player that is not there are dropped. By
+// GameplayFlow::Enter both players are alive, which is where the operator's manual
+// outfit pick worked from.
+bool g_pendingDefault = false;
+
+void CoopOutfit_ApplyPendingDefault(PPCContext& ctx, uint8_t* base)
+{
+    if (!g_pendingDefault)
+        return;
+    g_pendingDefault = false;
+    const uint32_t ownerRoot = PPC_LOAD_U32(kOwnerGlobal);
+    const uint32_t owner = ownerRoot ? PPC_LOAD_U32(ownerRoot + 0x2C) : 0;
+    const uint32_t mgrOwner = owner ? PPC_LOAD_U32(owner + 0x78) : 0;
+    const uint32_t mgr = mgrOwner ? PPC_LOAD_U32(mgrOwner + 0x2C) : 0;
+    if (!mgr)
+    {
+        fprintf(stderr, "[outfit] joiner has no save outfit but the outfit manager could not be "
+                        "reached (owner %08X) — he stays undressed\n", owner);
+        return;
+    }
+    PPCContext call = ctx;
+    call.r3.u64 = mgr;
+    call.r4.u64 = kJoinerSlot;
+    call.r5.u64 = kDefaultUnderRow;
+    call.r6.u64 = 0;
+    call.r7.u64 = 1;
+    call.r8.u64 = 0;
+    fprintf(stderr, "[outfit] joiner with no save outfit: dressing player %u in row %u "
+                    "(OUTFIT_DEFAULT_UNDER) at gameplay entry, the way the title dresses a new "
+                    "game's player 0 (CZ_NO_DEFAULT_OUTFIT=1 is the control)\n",
+            kJoinerSlot, kDefaultUnderRow);
+    coop::GuestCall(call, base, kFnSetOutfit, "set-outfit");
+}
+
 PPC_FUNC(sub_82553130)
 {
     const uint32_t lr = uint32_t(ctx.lr);
@@ -74,37 +113,23 @@ PPC_FUNC(sub_82553130)
         return;
     if (call.r3.u32 & 0xFF)
         return;                                   // the host dresses both itself
+    // THE TEST IS THE PROFILE'S SAVE FOLDER, not the save-data object's piece names:
+    // the object at *(0x82A59CD4)+8 mirrors player 0's boot outfit whether or not a
+    // file exists (it read "1 of 7 empty" — the face — with and without a save), so it
+    // cannot tell a new account from an old one. A folder with no save in it can.
     const uint32_t saveOwner = PPC_LOAD_U32(kSaveGlobal);
     const uint32_t save = saveOwner ? PPC_LOAD_U32(saveOwner + 8) : 0;
     unsigned empty = 0;
     for (uint32_t part = 0; part < 7 && save; part++)
         empty += PieceEmpty(base, save, part) ? 1 : 0;
-    if (save && empty == 0)
+    if (ContentHasAnySave())
     {
-        fprintf(stderr, "[outfit] joiner: the save carries an outfit (7 pieces) — nothing to do\n");
+        fprintf(stderr, "[outfit] joiner: this profile has a save (save data %08X, %u of 7 piece "
+                        "names empty) — its own outfit stands\n", save, empty);
         return;
     }
-    const uint32_t ownerRoot = PPC_LOAD_U32(kOwnerGlobal);
-    const uint32_t owner = ownerRoot ? PPC_LOAD_U32(ownerRoot + 0x2C) : 0;
-    const uint32_t mgrOwner = owner ? PPC_LOAD_U32(owner + 0x78) : 0;
-    const uint32_t mgr = mgrOwner ? PPC_LOAD_U32(mgrOwner + 0x2C) : 0;
-    if (!mgr)
-    {
-        fprintf(stderr, "[outfit] joiner has no save outfit (%u of 7 pieces empty) but the outfit "
-                        "manager could not be reached (owner %08X) — he stays undressed\n",
-                empty, owner);
-        return;
-    }
-    call = ctx;
-    call.r3.u64 = mgr;
-    call.r4.u64 = kJoinerSlot;
-    call.r5.u64 = kDefaultUnderRow;
-    call.r6.u64 = 0;
-    call.r7.u64 = 1;
-    call.r8.u64 = 0;
-    fprintf(stderr, "[outfit] joiner with no save outfit (%u of 7 pieces empty, save %08X): "
-                    "dressing player %u in row %u (OUTFIT_DEFAULT_UNDER) the way the title "
-                    "dresses a new game's player 0 (CZ_NO_DEFAULT_OUTFIT=1 is the control)\n",
-            save ? empty : 7, save, kJoinerSlot, kDefaultUnderRow);
-    coop::GuestCall(call, base, kFnSetOutfit, "set-outfit");
+    fprintf(stderr, "[outfit] joiner with NO SAVE in this profile (save data %08X, %u of 7 piece "
+                    "names empty): the default outfit will be applied when the game flow enters "
+                    "gameplay\n", save, empty);
+    g_pendingDefault = true;
 }

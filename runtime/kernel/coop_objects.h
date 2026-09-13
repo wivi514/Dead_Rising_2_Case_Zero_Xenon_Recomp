@@ -53,3 +53,7 @@ Objects Resolve(PPCContext& ctx, uint8_t* base);
 int LoginState(uint8_t* base, const Objects& o);
 uint32_t GameState(uint8_t* base);
 } // namespace coop
+
+// coop_outfit_default.cpp: dress a save-less joiner in the default outfit, deferred
+// from level start (where it is decided) to GameplayFlow::Enter (where it works).
+void CoopOutfit_ApplyPendingDefault(PPCContext& ctx, uint8_t* base);
