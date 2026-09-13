@@ -12,6 +12,11 @@ below before attaching.
 
 ---
 
+> **To play online — gamertag, achievements, friends, co-op — start the game from the
+> [XenonLive launcher](https://github.com/wivi514/XenonLive_Launcher).** It signs you
+> in, installs this build for you and starts it. Started any other way, the game is
+> offline: the full single-player game, nothing online.
+
 **Two-player online co-op**, the feature the Xbox build carried in its code and never
 showed in its menus. It works the way Dead Rising 2's does: one player hosts by
 playing, the other joins from the main menu, and the host is asked before anyone comes
@@ -81,9 +86,9 @@ profile** — read the XenonLive section before you look for yours.
   it on your XenonLive account, and the launcher shows it.
 - **Friends and presence**: the friends list in game is your XenonLive friends list,
   and it shows what they are playing.
-- **Invites** from the launcher reach the game (the plumbing Case West established),
-  but that road is untested on this title; joining from the menus is the one this
-  release was tested on.
+- **Invites do not work yet** in this release — sending one from the launcher and
+  joining by it was tried and does not connect. Join from the menus (JOIN CO-OP GAME,
+  or JOIN FRIENDS + X on the friend); that is the road this release was tested on.
 
 ### Requirements
 
@@ -126,7 +131,7 @@ downloads.
 - Co-op: the session privacy setting is not in the options yet — the only way to go
   private is the prompt's "Set to private" when someone asks to join. A friend's
   private game cannot be joined from the friends list (it is not searchable); an
-  invite is the way in, and invites from the launcher are new ground.
+  invite would be the way in, and invites are not working yet (above).
 - The Linux builds link a static libcurl/OpenSSL for XenonLive; the launcher hands
   the game the system's CA bundle (`XLIVE_CA_FILE`). A bare launch on an unusual
   distribution that keeps its CA bundle somewhere non-standard can fail to sign in
