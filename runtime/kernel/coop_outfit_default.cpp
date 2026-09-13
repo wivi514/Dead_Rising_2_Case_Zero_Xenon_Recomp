@@ -31,6 +31,7 @@
 // The hook sits on sub_82553130 ("is there a session"), the first predicate of that
 // block, keyed on the return address so it runs once per level start and nowhere else.
 // CZ_NO_DEFAULT_OUTFIT=1 is the control (the invisible joiner).
+#include <chrono>
 #include <cstdio>
 #include <cstdlib>
 
@@ -69,6 +70,19 @@ bool PieceEmpty(uint8_t* base, uint32_t save, uint32_t part)
 // GameplayFlow::Enter both players are alive, which is where the operator's manual
 // outfit pick worked from.
 bool g_pendingDefault = false;
+// THE HOST HAS TO BE TOLD. The row applier dresses the joiner's own Chuck (SetPart on
+// his clothing, six pieces) but broadcasts nothing — the wardrobe's put-on action is
+// what sends PlayerPutOnClothing events, and this is not that. What the host DOES
+// consume is the outfit REPORT the joiner sent at join (tEventOutfit: seven piece
+// names, received as `CoopSetPart clothing ... part N 'name'`), which went out empty
+// before the dressing. So the report is sent AGAIN, through the title's own sender —
+// sub_82581EC8(session, owner, 0x33) = "my current pieces" (0x33 is what a joiner
+// passes at join, 0x82588560; the host passes row 0) — a few seconds after the dress,
+// once the pieces' models have loaded and the records carry the names.
+std::chrono::steady_clock::time_point g_resendAt{};
+bool g_resendPending = false;
+constexpr uint32_t kFnSendOutfitReport = 0x82581EC8;
+constexpr uint32_t kCurrentPieces = 0x33;
 
 void CoopOutfit_ApplyPendingDefault(PPCContext& ctx, uint8_t* base)
 {
@@ -97,6 +111,32 @@ void CoopOutfit_ApplyPendingDefault(PPCContext& ctx, uint8_t* base)
                     "game's player 0 (CZ_NO_DEFAULT_OUTFIT=1 is the control)\n",
             kJoinerSlot, kDefaultUnderRow);
     coop::GuestCall(call, base, kFnSetOutfit, "set-outfit");
+    g_resendAt = std::chrono::steady_clock::now() + std::chrono::seconds(4);
+    g_resendPending = true;
+}
+
+// Per frame (from the game session's Update hook in coop_host.cpp): the report resend.
+void CoopOutfit_Tick(PPCContext& ctx, uint8_t* base)
+{
+    if (!g_resendPending || std::chrono::steady_clock::now() < g_resendAt)
+        return;
+    g_resendPending = false;
+    const coop::Objects o = coop::Resolve(ctx, base);
+    const uint32_t ownerRoot = PPC_LOAD_U32(kOwnerGlobal);
+    const uint32_t owner = ownerRoot ? PPC_LOAD_U32(ownerRoot + 0x2C) : 0;
+    if (!o.session || !owner)
+    {
+        fprintf(stderr, "[outfit] joiner: cannot re-send the outfit report (session %08X owner "
+                        "%08X) — the host keeps him undressed\n", o.session, owner);
+        return;
+    }
+    PPCContext call = ctx;
+    call.r3.u64 = o.session;
+    call.r4.u64 = owner;
+    call.r5.u64 = kCurrentPieces;
+    fprintf(stderr, "[outfit] joiner: re-sending the outfit report (session %08X, owner %08X, "
+                    "current pieces) so the host dresses him too\n", o.session, owner);
+    coop::GuestCall(call, base, kFnSendOutfitReport, "send-outfit-report");
 }
 
 PPC_FUNC(sub_82553130)
