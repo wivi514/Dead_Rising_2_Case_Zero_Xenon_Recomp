@@ -144,8 +144,23 @@ your own copy of the game.
 **You must own the game.** No Capcom content ships in this repository or in these
 downloads.
 
-### Known issues (minor)
+### Known issues
 
+Reported by players on the v1.1.0 release thread — noted, and on the list for a
+future release unless said otherwise:
+
+- **Steam controller (Steam Input) does not work.** The game reads controllers
+  through SDL, which does support it; something in the Steam Input path is not
+  reaching the game. Until it is fixed, use the controller directly (Steam Input off
+  for the game) or a keyboard.
+- **Black textures and boxes** when a large amount of fading gore is on screen, and
+  when an NPC clips the camera on the right side (seen on an NVIDIA machine).
+- **Items spawned floating in the air** (the survivor's money case above her head in
+  the gas station, for one). This is Dead Rising 2's own physics misbehaving above
+  ~90 fps — the original game does it too at high frame rates — so it is probably
+  not fixable here; capping the frame rate in the options avoids it.
+- **Mouse scroll is inconsistent** in menus and item cycling; it registers more
+  reliably at higher frame rates (~120 fps).
 - Unchanged from v1.0.2: on AMD GPUs a flickering black square can appear in game
   (alt-tab out and back clears it); the main-menu zombies may flicker on that GPU.
 - Co-op: the session privacy setting is not in the options yet — the only way to go
