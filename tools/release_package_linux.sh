@@ -36,6 +36,19 @@ NAME=CaseZeroRecomp
 STAGE=$OUT/$NAME
 # Where the ffmpeg source and the SDL2 prefix are: the host scripts' defaults, or wherever
 # tools/release_build_oldbase.sh put them for a container build (it exports both).
+# THE VARIANT KNOBS (v1.0.2-steamdeck by hand, v1.1.0 in the script — ported back from
+# Case West's tools/release_package_linux.sh, which was ported from that hand build).
+# All default to the desktop artifact's behaviour, so an unset environment produces
+# exactly the archive this script has always produced — the variant is additive and the
+# normal release path is untouched.
+#   CZ_PKG_SUFFIX      archive name suffix; empty = "linux-x86_64"
+#   CZ_PKG_TARGZ=1     write .tar.gz instead of .tar.zst (a Deck extracts .gz by
+#                      double-click in Dolphin; zstd needs a terminal)
+#   CZ_PKG_NO_LAUNCHER=1   cz_defaults.env says CZ_LAUNCHER=0
+#   CZ_PKG_SYSTEM_CXX=1    do NOT bundle libstdc++/libgcc_s (see the bundling block)
+#   CZ_PKG_README=path     ship this README.md instead of tools/release/README.md
+#   CZ_PKG_EXTRA_DEFAULTS  extra KEY=VALUE lines appended to cz_defaults.env
+PKG_SUFFIX=${CZ_PKG_SUFFIX:-linux-x86_64}
 FFWORK=${CZ_FFMPEG_WORK:-/var/tmp/cz-ffmpeg-build}
 SDL2PFX=${CZ_SDL2_PREFIX:-$ROOT/thirdparty/sdl2}
 
@@ -94,6 +107,19 @@ cp "$BUILD/cz_runtime" "$STAGE/"
 # player reports a missing library; ldd cannot drift.
 echo "==> bundling libraries"
 BUNDLE_RE='libSDL2|libavcodec|libavutil|libstdc\+\+|libgcc_s'
+# CZ_PKG_SYSTEM_CXX=1 — leave the C++ runtime to the system. Bundling libstdc++ puts our
+# copy on $ORIGIN/lib, and because cz_runtime links it directly it is ALREADY LOADED under
+# that soname by the time SDL dlopens the GL driver — so Mesa gets OUR libstdc++ instead of
+# the distribution's, whatever the distribution's is. On the dev box that never shows,
+# because its GL driver is NVIDIA's and does not link libstdc++ at all; on an AMD box
+# (radeonsi, RADV) Mesa is C++ and does. The bundled copy is the base's GLIBCXX_3.4.30.
+# Dropping it is only safe where the target's own libstdc++ is NEWER — true of SteamOS,
+# not true in general, which is why this is a variant switch and not the default.
+if [ -n "${CZ_PKG_SYSTEM_CXX:-}" ]; then
+    BUNDLE_RE='libSDL2|libavcodec|libavutil'
+    echo "    CZ_PKG_SYSTEM_CXX: libstdc++ and libgcc_s are NOT bundled (system's are used)"
+fi
+
 ldd "$BUILD/cz_runtime" | awk '/=>/ {print $3}' | grep -E "$BUNDLE_RE" | while read -r so; do
     [ -f "$so" ] || continue
     # Copy the real file AND recreate the SONAME symlink, because the DT_NEEDED entry
@@ -159,7 +185,7 @@ directory; the unpacked files are written to ../game/ on first run.
 TXT
 
 cp "$ROOT/LICENSE" "$STAGE/"
-cp "$ROOT/tools/release/README.md" "$STAGE/"
+cp "${CZ_PKG_README:-$ROOT/tools/release/README.md}" "$STAGE/README.md"
 
 # THE PRE-WARM SEED (part 85): pipeline keys from an operator playthrough, read by
 # the renderer only when the player has no per-user key file yet — i.e. exactly once,
@@ -212,12 +238,19 @@ echo "    kbm_chips/                      26 key-cap prompt icons (our art)"
 # every renderer claim. A player gets the opposite default from this file, which
 # main.cpp applies only for variables the environment leaves unset — so the shipped
 # binary stays byte-identical to the dev one and CZ_VKDRAW=0 still works.
-cat > "$STAGE/cz_defaults.env" <<'ENV'
+cat > "$STAGE/cz_defaults.env" <<ENV
 # Defaults for a shipped build. KEY=VALUE, one per line, # comments.
 # Anything set in your environment overrides these.
 CZ_VKDRAW=1
-CZ_LAUNCHER=1
+CZ_LAUNCHER=$([ -n "${CZ_PKG_NO_LAUNCHER:-}" ] && echo 0 || echo 1)
 ENV
+# Variant lines, appended rather than templated in, so the base file above stays the one
+# thing every artifact ships and a variant can only ADD to it.
+if [ -n "${CZ_PKG_EXTRA_DEFAULTS:-}" ]; then
+    printf '%s\n' "$CZ_PKG_EXTRA_DEFAULTS" >> "$STAGE/cz_defaults.env"
+    echo "    cz_defaults.env carries variant lines:"
+    printf '%s\n' "$CZ_PKG_EXTRA_DEFAULTS" | sed 's/^/        /'
+fi
 
 # THIRD_PARTY.md, GENERATED (release-plan E.3). Written from what the binary actually
 # links so it cannot drift away from the artifact it describes — an attribution file
@@ -277,13 +310,21 @@ fi
 
 echo "==> archive"
 mkdir -p "$OUT"
-TAR=$OUT/$NAME-linux-x86_64.tar.zst
+if [ -n "${CZ_PKG_TARGZ:-}" ]; then
+    TAR=$OUT/$NAME-$PKG_SUFFIX.tar.gz
+else
+    TAR=$OUT/$NAME-$PKG_SUFFIX.tar.zst
+fi
 rm -f "$TAR"
 # Part 105: the runtime writes cz_runtime.log (and --diag writes cz_diag.txt) beside its
 # data root, which for the stage IS the stage — so a gate that ran the staged exe leaves
 # a log in it, and a re-package after a gate would ship someone's log. Never archive one.
 rm -f "$STAGE"/cz_runtime.log "$STAGE"/cz_runtime.log.1 "$STAGE"/cz_diag.txt "$STAGE"/cz_diag.txt.1
-tar --zstd -cf "$TAR" -C "$OUT" "$NAME"
+if [ -n "${CZ_PKG_TARGZ:-}" ]; then
+    tar -czf "$TAR" -C "$OUT" "$NAME"
+else
+    tar --zstd -cf "$TAR" -C "$OUT" "$NAME"
+fi
 sha256sum "$TAR" > "$TAR.sha256"
 
 printf '    %s  %s MB\n' "$(basename "$TAR")" "$(( $(stat -c%s "$TAR") / 1024 / 1024 ))"

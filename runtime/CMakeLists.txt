@@ -729,3 +729,21 @@ if(CZ_SPLIT_DEBUG)
                 $<TARGET_FILE:cz_runtime>
         COMMENT "Splitting debug info into cz_runtime.debug and stripping the binary")
 endif()
+
+# CZ_DECK — the Steam Deck variant of the release artifact (v1.0.2-steamdeck by hand,
+# tools/release_build_steamdeck.sh since v1.1.0).
+#
+# It changes exactly one thing in the binary: the settings store's DEFAULTS, used only
+# on a run that finds no cz_settings.txt (1280x800 fullscreen-desktop, the Deck's native
+# panel on every model, instead of 1280x720 windowed). Everything else that makes the
+# Deck artifact different — no launcher, the resolution pin, no bundled libstdc++ —
+# lives in the packaging, not here, so the two halves can be reverted independently.
+#
+# It is OFF by default and must stay that way: the desktop artifact's binary is gated on
+# a .text identity comparison, and a variant that quietly became the default would move
+# the defaults of every build in the project.
+option(CZ_DECK "Steam Deck variant: native-resolution settings defaults" OFF)
+if(CZ_DECK)
+    message(STATUS "CZ_DECK: settings defaults are 1280x800 fullscreen-desktop")
+    target_compile_definitions(cz_runtime PRIVATE CZ_DECK_DEFAULTS)
+endif()
