@@ -2,8 +2,9 @@
 
 **This is the text to paste into the GitHub Release body.** Binaries are commit
 `96ccdf2` (all FOUR artifacts rebuilt from that source late on 2026-09-12 — the third
-build of the day: the overlay's text input fix went in after the 21:19 set; the hashes
-below are the current ones). It carries co-op plan parts 1-6: two-player online co-op over XenonLive, the XenonLive account, achievements
+build of the day: the overlay's text input fix went in after the 21:19 set; the Deck
+artifact repackaged at `71a1dee` with the resolution pin dropped — no code change; the
+hashes below are the current ones). It carries co-op plan parts 1-6: two-player online co-op over XenonLive, the XenonLive account, achievements
 and friends underneath it, the ringing walkie-talkie, part 118's thread placement and
 the Windows timer fix — and the military-arrival limitation stated under Co-op.
 
@@ -65,9 +66,12 @@ profile** — read the XenonLive section before you look for yours.
   second player at that point rather than crash the host. A fix that keeps both
   players in for the ending is being worked on.
 - **Steam Deck:** take `CaseZeroRecomp-steamdeck-x86_64.tar.gz`. It starts without the
-  settings window (the launcher that crashed on SteamOS in v1.0.2) and renders at the
-  Deck's 1280x800, pinned; its README says how to put the package in and how to go
-  online through the XenonLive launcher from Desktop Mode.
+  settings window (the launcher that crashed on SteamOS in v1.0.2) and comes up at the
+  Deck's 1280x800 on the first run; from then on the in-game settings menu's
+  RESOLUTION row is yours (1920x1080 when docked to a 1080p screen, lower for frame
+  rate) — v1.0.2's Deck build pinned it, this one does not. Its README says how to
+  put the package in and how to go online through the XenonLive launcher from Desktop
+  Mode.
 - Playing **solo** is exactly as before. Outside the launcher there is no session, no
   hosting and no prompt; every co-op path is inert until a session exists. To be
   signed in but never host, set `CZ_XLIVE_HOST=0`.
@@ -149,4 +153,4 @@ downloads.
 | `CaseZeroRecomp-linux-x86_64.tar.zst` | `1762b9fe03c61e885d7f2c2ccfc3d6c71b4101db6cbba6717543dddab4eabfd0` |
 | `CaseZeroRecomp-linux-x86_64.AppImage` | `35c58b87610a7b7920f553ace91b1095623edafa9cdfda57f2c96fee77c49e91` |
 | `CaseZeroRecomp-windows-x86_64.zip` | `d1d7da2f7e67e1f8e072765f9b30448173799d8a6b5dd573a0b22f3cd262054b` |
-| `CaseZeroRecomp-steamdeck-x86_64.tar.gz` | `49584e45828d8b989223a02f49c44dc9e8786f398835858b6b67e9d1c003f7d2` |
+| `CaseZeroRecomp-steamdeck-x86_64.tar.gz` | `6e843f161007a58a0c58e635f1260ac5068fbc30adac820edd018a3fc28d8b95` |
