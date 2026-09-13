@@ -105,6 +105,8 @@ void HolderScan(uint8_t* base, uint32_t prop, uint32_t id)
 }
 } // namespace
 
+namespace { extern unsigned g_readerCalls; }
+
 PPC_FUNC(sub_8221E9C8)
 {
     const uint32_t self = ctx.r3.u32, id = ctx.r4.u32;
@@ -113,6 +115,12 @@ PPC_FUNC(sub_8221E9C8)
     if (prop && scan)
         HolderScan(base, prop, id);
     __imp__sub_8221E9C8(ctx, base);
+    if (prop && scan)
+    {
+        fprintf(stderr, "[attach] after DestroyProp (mount reader called %u times so far):\n",
+                g_readerCalls);
+        HolderScan(base, prop, id);
+    }
     static const bool off = getenv("CZ_NO_ATTACH_GUARD") != nullptr;
     if (!prop || off)
         return;
@@ -153,6 +161,7 @@ PPC_FUNC(sub_8221E9C8)
 // the actor printed — its address, vtable, and whether it is one of the
 // players — so the writer can be found from the log rather than from a crash.
 extern "C" PPC_FUNC(__imp__sub_82290720);
+namespace { unsigned g_readerCalls = 0; }
 
 PPC_FUNC(sub_82290720)
 {
@@ -160,7 +169,17 @@ PPC_FUNC(sub_82290720)
     const uint32_t actor = ctx.r3.u32;
     const uint32_t data = actor ? PPC_LOAD_U32(actor + kActorData) : 0;
     const uint32_t prop = data ? PPC_LOAD_U32(data + kMountRef + 4) : 0;
-    if (!off && prop && PPC_LOAD_U32(prop) == 0)
+    g_readerCalls++;
+    static const bool trace = getenv("CZ_ATTACH_TRACE") != nullptr;
+    static unsigned traced = 0;
+    if (trace && prop && traced < 8)
+    {
+        traced++;
+        fprintf(stderr, "[attach] trace: sub_82290720 actor %08X data %08X prop %08X vtable %08X "
+                        "index %d lr %08X\n", actor, data, prop, PPC_LOAD_U32(prop),
+                int(PPC_LOAD_U32(data + kMountRef + 0xC)), uint32_t(ctx.lr));
+    }
+    if (!off && prop && (PPC_LOAD_U32(prop) == 0 || PPC_LOAD_U32(prop + 0xB0) == 0))
     {
         const uint32_t index = PPC_LOAD_U32(data + kMountRef + 0xC);
         PPC_STORE_U32(data + kMountRef + 4, 0);
