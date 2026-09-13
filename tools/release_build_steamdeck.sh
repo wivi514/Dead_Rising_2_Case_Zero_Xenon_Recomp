@@ -21,9 +21,10 @@
 # which one mattered:
 #   1. cz_defaults.env says CZ_LAUNCHER=0                        (CZ_PKG_NO_LAUNCHER)
 #   2. settings defaults are 1280x800 fullscreen-desktop, the    (CZ_DECK -> CZ_DECK_DEFAULTS)
-#      Deck's native panel, instead of 1280x720 windowed, AND
-#      cz_defaults.env PINS CZ_VK_RES=1280x800 so an existing    (CZ_PKG_EXTRA_DEFAULTS)
-#      or migrated settings file cannot put it back
+#      Deck's native panel, instead of 1280x720 windowed — a
+#      DEFAULT for the first run; the in-game settings menu
+#      owns it from then on (the pin the first builds carried
+#      is retired below)
 #   3. libstdc++/libgcc_s are NOT bundled, so Mesa gets SteamOS's  (CZ_PKG_SYSTEM_CXX)
 #      newer copy instead of our GLIBCXX_3.4.30 one shadowing it
 #
@@ -51,20 +52,16 @@ export CZ_PKG_NO_LAUNCHER=1
 export CZ_PKG_SYSTEM_CXX=1
 export CZ_PKG_README=$ROOT/tools/release/README.steamdeck.md
 export CZ_PKG_OUT=dist-steamdeck
-# THE RESOLUTION PIN (operator instruction). CZ_DECK's 1280x800 is only a DEFAULT — it
-# applies on a run that finds no cz_settings.txt, and the first test launch showed
-# exactly how that is not enough: the save relocation carried a settings file in from an
-# existing install and the run came up at 3440x1440. CZ_VK_RES is the lever that wins
-# over the settings file (the env-wins rule every consumer enforces), so the shipped
-# defaults file pins it and a Deck starts at its native panel whatever a migrated or
-# hand-edited settings file says.
-#
-# WHAT IT COSTS, said out loud: while this line is present the in-game settings screen's
-# RESOLUTION row does nothing — env beats the file, and the renderer says so on stdout
-# ("internal resolution 1280x800 from CZ_VK_RES (env wins over ...)"). The README tells
-# the player to delete the line if they want that row back, which is a plain-text edit
-# next to the executable and not a rebuild.
-export CZ_PKG_EXTRA_DEFAULTS='CZ_VK_RES=1280x800'
+# THE RESOLUTION IS A DEFAULT, NOT A PIN (operator instruction, v1.1.0: "launch the
+# first time in 1280x800 but the player can then change resolution in game — a user is
+# asking for 1080p"). The v1.0.2 Deck build and the first v1.1.0 Deck build appended
+# CZ_VK_RES=1280x800 to cz_defaults.env, which wins over the settings file and so made
+# the in-game RESOLUTION row do nothing; a docked Deck could never pick its 1080p
+# screen. CZ_DECK's compiled defaults (1280x800 borderless, when there is no settings
+# file yet) give the first run its native panel, and after that the settings file is the
+# player's. The one case the pin covered — a settings file carried over from a PC
+# install — is now one trip to the settings menu, and the README says so.
+# (CZ_PKG_EXTRA_DEFAULTS is still honoured for anyone who wants the pin back.)
 # The SDL2/ffmpeg/XenonUtils prefixes under thirdparty/oldbase are the desktop build's
 # and are variant-independent — rebuilding them would cost 20 minutes and change nothing.
 export CZ_OLDBASE_SKIP_DEPS=${CZ_OLDBASE_SKIP_DEPS:-1}

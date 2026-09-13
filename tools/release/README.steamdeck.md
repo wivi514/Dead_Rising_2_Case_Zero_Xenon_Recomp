@@ -17,19 +17,18 @@ Steam Deck build made):
   SteamOS that window is where the v1.0.2 crash a player reported happened, so this build skips it and
   goes straight to the game. Everything the launcher offered — resolution, display
   mode, shadows, FOV, language — is in the in-game settings menu instead.
-* **Always renders at 1280x800**, the Deck's panel on every model, instead of the
-  desktop build's 1280x720. This one is a **pin, not a default**: `cz_defaults.env`
-  next to the executable carries the line `CZ_VK_RES=1280x800`, and that beats anything
-  in your settings file — including a settings file carried over from a PC install,
-  which is how a Deck could otherwise come up trying to render at a desktop monitor's
-  resolution.
+* **Starts at 1280x800**, the Deck's panel on every model, borderless — instead of
+  the desktop build's 1280x720 windowed. This is a **default, not a pin**: it applies
+  when there is no settings file yet (the first run), and from then on the RESOLUTION
+  and DISPLAY MODE rows in the in-game settings menu are yours — drop below native for
+  frame rate, or pick 1920x1080 when the Deck is docked to a 1080p screen (the row
+  lists the modes of the display the game is on). The v1.1.0 build before this one
+  pinned 1280x800 and the row did nothing; that pin is gone.
 
-  The cost of pinning it is worth knowing: **while that line is there, the RESOLUTION
-  row in the in-game settings menu does nothing.** If you want that row back — to drop
-  below native for more frame rate, say — open `cz_defaults.env` in a text editor and
-  delete the `CZ_VK_RES` line. Everything else in the settings menu (shadows, MSAA, FOV,
-  frame cap, display mode) works normally either way. The startup log says which is in
-  force: `internal resolution 1280x800 from CZ_VK_RES (env wins over ...)`.
+  If you carried a settings file over from a PC install and the game comes up at your
+  monitor's resolution, set it once in the settings menu; or set `CZ_VK_RES=1280x800`
+  in `cz_defaults.env` to pin it again (the startup log then says
+  `internal resolution 1280x800 from CZ_VK_RES (env wins over ...)`).
 * **It uses SteamOS's own C++ runtime** instead of carrying its own copy. The bundled
   copy is older than the one Mesa expects and could be reaching the AMD graphics driver
   ahead of it — a suspected cause of the crash, and the reason this build does not
@@ -85,7 +84,7 @@ prepare shaders, and it is easier to watch in a terminal.
 Once it runs in Desktop Mode: right-click `cz_runtime` -> *Add to Steam*, then switch
 to Game Mode and launch it from your library. Steam Input will treat it as a controller
 game. Do not set a launch resolution or a Steam per-game scaling option — this build
-already renders at the Deck's native 1280x800 and pins it.
+starts at the Deck's native 1280x800, and the in-game settings menu is where to change it.
 
 ## If it still crashes
 
@@ -164,9 +163,9 @@ window", "slow" — rather than "didn't work"; the log usually says the rest.
 * `tools/extract_stfs.py` — a reference unpacker; the runtime normally unpacks your
   package itself, this is for doing it by hand (`python3 tools/extract_stfs.py -h`).
 * `cz_defaults.env` — default settings applied when not set in your environment.
-  In this build it sets `CZ_LAUNCHER=0` (no launcher) and `CZ_VK_RES=1280x800` (the
-  resolution pin). Set the first back to `1` for the launcher; delete the second to let
-  the in-game resolution row work again.
+  In this build it sets `CZ_LAUNCHER=0` (no launcher). Set it back to `1` for the
+  launcher. Add `CZ_VK_RES=WxH` to pin the internal resolution (the in-game row then
+  does nothing while the line is there).
 
 The Vulkan loader is deliberately *not* bundled — your GPU driver supplies it.
 
