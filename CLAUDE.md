@@ -197,7 +197,13 @@ mask; trust the microcode's own swizzles.
     FOR EVERY SESSION SINCE 09-11 21:57 WAS A REGRESSION FROM e7a9e25 ("CZ_XLIVE_COOP=1
     implies hosting" put the host hook on the JOINER; a forced `session+0x98` made the
     title's sync-point sender defer the joiner's FINALIZE_START_LEVEL for ever — gotcha
-    575, fixed in b981df6, operator-verified). OWED: invites, a save-less joiner rule.
+    575, fixed in b981df6, operator-verified). **v1.1.0 IS PUBLISHED (2026-09-13,
+    tag `v1.1.0` = fede8e1): the night also fixed the FIVE-MINUTE SESSION END
+    (XSessionFlushStats 000B0026 unhandled -> E_FAIL -> the host closed the session),
+    the save-less joiner (dressed in row 17 on both sides), the silent voice endpoint
+    and the self-arming sign-in grace (both from Case West), and shipped F9/F8 BUG
+    REPORTS for the launcher's Issues tab (`host/bug_report.cpp`). Tested 10+ min on
+    two machines. OWED: invites, the military arrival with both players.**
     The performance hand-off is still `part118-kickoff.md` — PART 118 (the late afternoon of 2026-09-12, unattended, a
     16:00 deadline) GAVE EACH PIPELINE STAGE A PHYSICAL CORE OF ITS OWN: the PMU said the
     guest's Main Thread runs the same instructions at 17% more cycles with our renderer
