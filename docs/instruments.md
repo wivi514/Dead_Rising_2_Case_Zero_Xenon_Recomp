@@ -4535,18 +4535,61 @@ CZ_PM4_NO_REPLAY_RESTORE=1  THE CONTROL for player issue #3 (near actors shaded 
                           the shipped v1.1.0 behaviour. Counter: `tile-replay shader restores`
                           on the [vkprof] ring-latency line, 1.00/frame on the crowd.
                           phase5-notes §6fa.
+CZ_PM4_NO_TILE_OFFSET=1   THE CONTROL for the second half of player issue #3 (§6fa.1). By
+                          default a draw whose own PA_SC_WINDOW_OFFSET is 0 inside a tile
+                          replay — D3D's Clear(Z) after the near-actor prepass, an
+                          EDRAM-space rect — is placed at the tile being replayed (the last
+                          non-zero offset seen under the same bin select, per frame); this
+                          arm lets it land on the left half during both replays, the shipped
+                          v1.1.0 behaviour (the right tile's prepass depth then survives and
+                          the near zombie is opaque-dark right of the seam). Counter:
+                          `EDRAM-space draws given the tile's offset` on the [vkprof]
+                          ring-latency line, ~0.01-0.05/frame (near-actor frames only).
+CZ_VK_DEPTH_HALVES=<hex>  EVERY frame, the min/max depth, near-pixel count (<0.999) and
+                          column extents of each HALF of the depth snapshot resolved to that
+                          guest address (06BE4000 is the scene depth), plus the frame's
+                          early-prepass draw count. A readback stall a frame: diagnostic
+                          only. Self-triggers a full CZ_CAPTURE_KEY capture (picture, census,
+                          snapshots) on a SEAM CUT — a big near object touching column W/2-1
+                          on one side with nothing at W/2 on the other — at most 8 a run.
+                          Use with CZ_VK_SKIP_LATE_ACTOR=1 CZ_VK_SKIP_WORLD=1 so the depth is
+                          the clear plus the prepass alone. §6fa.1.
+CZ_VK_SKIP_DEPTHRECT=1    DIAGNOSTIC: drop the depth-only rect after each tile's prepass
+                          (prim 8, mode 5, RB_DEPTHCONTROL 0x76, mask 0). The positive
+                          control for the probe above: with it the prepass depth survives
+                          in both halves.
+CZ_VK_SKIP_LATE_ACTOR=1   DIAGNOSTIC: drop the near actors' late passes (mode-5 draws with a
+                          material PS and mask 0; EQUAL-depth no-z-write draws), so a black
+                          hole is where the early prepass blocked the world.
+CZ_VK_SKIP_WORLD=1        on top of the above: drop every colour-writing mode-4 draw with a
+                          tile scissor, so the tile's resolved depth is the clear plus the
+                          early prepass alone.
+CZ_VK_ONLY_PS / CZ_VK_SKIP_PS=<16-hex[,...]>  render only / all but the draws using those
+                          pixel shaders (full hashes; substring match). CZ_VK_SKIP_PS_DEPTHONLY=1
+                          narrows the skip to mode-5 draws. A shader shared across passes
+                          loses every role it plays (gotcha 581).
+CZ_VK_NO_A2C=1            THE CONTROL for alpha-to-mask as Vulkan alpha-to-coverage on the
+                          multisampled EDRAM (engaged when RB_COLORCONTROL bit 4 is set, the
+                          host target is multisampled and RB_SURFACE_INFO msaa != 0).
+                          Counters: `ALPHA-TO-MASK as Vulkan alpha-to-coverage on the MSAA
+                          EDRAM` / `declined`. Did not stop the hair flicker (#2).
 CZ_VK_DRAW_CENSUS_EVERY=N  a draw census (CZ_VK_DRAW_CENSUS=<file>) of every N-th frame,
                           unattended, one file per frame — for a defect only a roam reaches.
                           N=64 lines up with CZ_VK_FRAME_DUMP's period. The line now carries
                           wo= (window offset), sc= (scissor), cc=, aref=, vsc=/psc= (a hash of
                           each constant file) and psva=/vsva= (the microcode's source address
                           and size, 0 = inline), so two tile replays of one draw can be diffed.
+                          Also si=/ci=/di= (RB_SURFACE_INFO, COLOR_INFO, DEPTH_INFO), mc=
+                          (EDRAM mode), vc255=, vte=, vp= (the six viewport registers), and
+                          for a RECT LIST all three vertices (v0= v1= v2=) — a clear rect's
+                          extent is its vertex data, the viewport transform is off.
 CZ_VK_DRAW_CENSUS_MINVERTS=N  keep only draws of at least N indices in the census — a roam's
                           worth of whole censuses is gigabytes of HUD quads otherwise. A
                           filtered census is blind to what it filtered (§6fa's frame 28672).
 CZ_PM4_LOADTRACE_EVERY=N  on every N-th swap: every IM_LOAD/IM_LOAD_IMMEDIATE (stage, source
                           address, size, start, predicate, run/skip), every draw with the
-                          shader bindings it will use and its scissor, every INDIRECT_BUFFER,
+                          shader bindings it will use, its window offset, EDRAM mode,
+                          primitive and scissor, every INDIRECT_BUFFER,
                           and every other ring-level packet's opcode and first body dwords.
                           One frame in N costs nothing between samples, which is the point:
                           the full CZ_PM4_BIN_TRACE spends its budget on the boot.

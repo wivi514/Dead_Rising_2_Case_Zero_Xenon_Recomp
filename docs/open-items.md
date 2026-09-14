@@ -16,16 +16,24 @@ Next, in order:
     (`CZ_LEADERBOARD_FLUSH_S`, 8f23fb6); **#3** near actors shaded differently on the
     two halves of the screen — the tile replay inherited tile 0's last pixel shader into
     the early actor prepass; bindings restored per replay (`CZ_PM4_NO_REPLAY_RESTORE=1`
-    the control, phase5-notes §6fa, 3aee6a0). ALL THREE OWE THE OPERATOR'S EYE. Parked,
+    the control, phase5-notes §6fa, 3aee6a0) — REAL BUT INSUFFICIENT, the operator's
+    F9s still showed the seam; the second mechanism was D3D's Clear(Z) after the prepass,
+    an EDRAM-space rect with the window offset at 0 that landed on the LEFT half during
+    BOTH tile replays, so tile 1's prepass depth was never cleared (§6fa.1, 60c887f;
+    `CZ_PM4_NO_TILE_OFFSET=1` the control; measured 140 of 350 prepass frames right-only
+    -> 0 of 303). **#1** the gas-station roof (b37f8f7, the deck skip keyed on the
+    shader + its 32x32 DXT1 rather than an address) — OPERATOR-VERIFIED ("roof looks
+    perfect"). #6 and #4 verified headless/end-to-end; #3 owes the operator's eye on
+    60c887f. Parked,
     each needing a live capture: **#5** loud audio near the gas station after ~40 min
     (the loop fields log now — `CZ_XMA_DECODE_LOG=1` at the moment it happens, plus
     `CZ_AUDIO_TRACE`; the XMA loop mechanism itself measured sane, 7a922f5); **#2**
     Chuck's hair flickers at the nape (the three burst frames have the camera moving;
-    an F8 burst with the camera STILL is what can be diffed); **#1** the gas station
-    rooftop black from the safehouse zone (a lightmap/LOD-material shape like part 37's;
-    needs a frame dump from the operator's spot — the headless routes do not climb that
-    car). Also open from §6fa: frame 28672 (Chuck ghosted with the camera inside him) was
-    symmetric in the ≥300-vertex census, so a second mechanism may exist.
+    an F8 burst with the camera STILL is what can be diffed); ~~**#1** the gas station
+    rooftop~~ (fixed, above). #2's alpha-to-mask is now Vulkan alpha-to-coverage on the
+    MSAA EDRAM (`CZ_VK_NO_A2C=1` the control, ON by default in 60c887f) — hardware-faithful
+    and NOT the flicker: it persists at a 30 fps cap and with A2C; Xenia is clean. §6fa's
+    "second mechanism" (frame 28672) is answered by §6fa.1 — it was not in the registers.
 
 0z. **REBUILD THE WINDOWS RELEASE LEG WITH `timeBeginPeriod(1)` (part 118).** The
     shipped Windows binary never asks for the 1 ms timer; on a machine where nothing

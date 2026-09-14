@@ -22045,3 +22045,90 @@ frames with a per-tile shader difference; control 31 of 183. Two earlier arm run
 
 **Owed:** the operator's eye on the near-camera zombie at the seam; frame 28672's
 mechanism; whether the Chuck-inside-camera case is the same class.
+
+### §6fa.1 — The operator said the seam was still there, and the second mechanism was D3D's Clear(Z) with the window offset at zero (2026-09-14, later)
+
+The replay restore above is real and insufficient: the operator's F9s after it still
+showed the seam ("zombies seem better" but the near one still opaque-dark on the right,
+translucent on the left — *"the right half is wrong"*). Two diagnostic arms then
+partitioned the frame. `CZ_VK_SKIP_LATE_ACTOR=1` (drop the actor's late depth and
+EQUAL-blend passes) on the operator's game gave a **black zombie hole on the right half
+only** — the early prepass blocks the world in tile 1 and not in tile 0. Headless,
+`CZ_VK_SKIP_LATE_ACTOR=1 CZ_VK_SKIP_WORLD=1` leaves the resolved depth as the clear plus
+the early prepass alone, and a per-frame per-half probe of that depth
+(`CZ_VK_DEPTH_HALVES=06BE4000`: min/max, near-pixel count and column extents of each
+half, plus the frame's prepass draw count) showed the prepass depth surviving to the
+tile's end **in the right half only: 140 of 350 prepass frames right, 0 left**.
+
+The sampled snapshots had misled for a session: they showed depth "right only" on some
+frames and "left only" on others, which reads as an alternation until the probe runs on
+EVERY frame — then it is plainly near zombies drifting across the screen, and the
+question is which side loses an object that TOUCHES the seam. The probe's self-trigger
+(a big near object touching column 639 from one side with nothing at 640 on the other)
+captured eight such frames unattended, every one a hand or a head cut hard at x=640 with
+the LEFT half empty.
+
+**The census with all three rect-list vertices printed** then named the draw. The
+title's near-actor sequence inside the tiled buffer is:
+
+    Clear(target+Z)      rect (0,0)-(320,720) z=1, RB_DEPTHCONTROL 8777, mask F,
+                         RB_SURFACE_INFO pitch 320 / 4x  — tile 0 only (tile 1 is
+                         cleared by the resolve-clear bits)
+    early prepass        mode 5, ps_438c2af8 (null), LEQUAL + z-write, tile scissor
+    Clear(Z)             rect (0,0)-(320,720) z=1, RB_DEPTHCONTROL 0x76 (ALWAYS +
+                         z-write), mask 0, mode 5, pitch 320 / 4x, scissor unbounded,
+                         PA_SC_WINDOW_OFFSET = 0  — IN BOTH TILES
+    ps_34524bb6 x30      mode 4, mask 0, LEQUAL + z-write (small parts)
+    the world, the crowd
+    late actor passes    per-part depth (material PS, mode 5) + EQUAL blended colour
+
+A pitch-320 4x-MSAA surface and a pitch-640 2x-MSAA one have the SAME EDRAM footprint
+(640 samples a row, 1,440 rows), so that rect is a whole-tile depth clear to 1.0 — the
+title clears the prepass before the world draws. D3D emits it as an EDRAM-space
+operation: the window offset is set to 0 for the rect and the tile's offset (7D80 =
+−640) re-applied after it, which the load trace confirms — the offset writes are inside
+the replayed buffer, predicated by bin, and the ring between the tiles carries only
+`SET_BIN_SELECT`. On hardware EDRAM IS the current tile, so the rect wipes tile 1's
+prepass exactly as it wipes tile 0's, the world draws behind the near actor in both
+tiles, and the blended pass fades it over the crowd — the translucent look is the
+correct one. **Our EDRAM stand-in is full-width with tile 1 at x+640, so during tile
+1's replay the offset-0 rect covered the LEFT half a second time.** The right tile's
+prepass depth survived, rejected the world, and the blended pass composited onto the
+clear colour: opaque and dark.
+
+The comment at the renderer's window-coordinate tile-origin code had said, honestly,
+that its counter read zero over a whole boot because "every window-coordinate draw this
+title issues runs with the window offset at 0". That was the observation; the missing
+half was that a zero offset INSIDE a tile replay is not "no tile" but "this tile".
+
+**The fix (`gpu/pm4.cpp` at the draw, `gpu/pm4.h`, `gpu/vk_renderer.cpp`).** `Pm4Draw`
+carries `tileWindowOffset`: the last non-zero window offset seen on a draw under the
+same bin select (the predicated-tiling driver selects each tile's bins before its
+replay, so same select = same tile; the post chain re-selects every bin and the offset
+does not follow it), reset per frame. The renderer's window-coordinate path uses it
+whenever the draw's own offset is zero, undoing it the way it already undid a non-zero
+one. `CZ_PM4_NO_TILE_OFFSET=1` is the control; the count is on the `[vkprof] ring
+latency arms` line (`EDRAM-space draws given the tile's offset`, ~0.01-0.05/frame on
+the roam — only frames with a near actor carry the rect) and the renderer counter
+`draw: EDRAM-space draw inside a tile replay placed at the tile's origin`.
+
+**Measured, prepass-only arm + `CZ_VK_SKIP_PS=34524bb64374d20e`, 220 s a side, same
+route:** control (`CZ_PM4_NO_TILE_OFFSET=1`) 350 prepass frames, depth surviving
+right-only in 140 and left in 0; fix 303 prepass frames, surviving in neither half.
+With the rect itself skipped (`CZ_VK_SKIP_DEPTHRECT=1`) the prepass survives in both
+halves (163 left / 79 right), which is the positive control that the probe can see the
+left half at all.
+
+**What this closes and what it does not.** The two-mechanism shape §6fa left open
+(frame 28672 symmetric in the filtered census) is answered: the second mechanism is not
+in the draw list's registers at all — it is where a register-identical draw LANDS. The
+skipped-rect finding also explains the operator's `CZ_VK_SKIP_PS_DEPTHONLY` run
+("shadows move with the player, light passes through solid objects, zombies correct"):
+the null PS is also the shadow-caster shader and the clear shader, so that arm removed
+the cascades and the clears along with the prepass. Still owed: the operator's eye on
+the fixed build. Chuck's hair (#2) is a separate class and stays open — alpha-to-mask
+now spelled as Vulkan alpha-to-coverage on the multisampled EDRAM (`CZ_VK_NO_A2C=1` the
+control) did not stop it.
+
+**Case West:** the same D3D, the same tiling, the same Clear inside a bracket. Ship the
+tile offset there on day one, and the depth-halves probe with it.

@@ -6621,3 +6621,21 @@ From phase C part 18 (the frame rate — and none of it was work):
     The ≥300-vertex tile census read "identical" on a frame with a visible ghost; the
     draws that could explain it, if any, are the ones the filter dropped. Quote the filter
     beside the verdict, and re-run without it before calling a frame clean. (§6fa)
+579. **A zero is a coordinate, not an absence, when the frame of reference moves.** A
+    window offset of 0 inside a tile replay means "this tile's EDRAM", not "no tile";
+    the code that undid non-zero offsets read its own zero counter as proof it had
+    nothing to do. When an emulated resource is relocated per replay (EDRAM, a bank
+    window, a ring segment), every address that does not carry the relocation is
+    relative to the CURRENT one, and an honest "this never executes" comment is where to
+    look first. (§6fa.1)
+580. **Sample every frame before reading a pattern off sampled frames.** Depth "right
+    only" on one 64th-frame snapshot and "left only" on the next read as a per-frame
+    alternation; the same probe on every frame showed objects drifting across the
+    screen, and the defect was only visible as an object that touches the seam from one
+    side and is absent on the other. A period cannot be read off a stride longer than
+    it, and a spatial defect needs a spatial predicate. (§6fa.1)
+581. **A "skip this shader" arm removes every ROLE that shader plays.** The 9-dword null
+    pixel shader is the actor prepass, the shadow caster and the clear rect; skipping it
+    depth-only "fixed the zombies" and took the cascades and the clears with it, which
+    the operator saw as shadows following the player. Bisect by the draw's state (mode,
+    depth control, primitive, scissor), not by a shader shared across passes. (§6fa.1)
