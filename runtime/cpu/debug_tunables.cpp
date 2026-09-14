@@ -1487,6 +1487,124 @@ static void PumpPlayerPosCache(PPCContext& ctx, uint8_t* base)
     }
 }
 
+// ===================================================================================
+// THE FALL WATCH — is a Chuck falling out of the world, and since when?
+//
+// WHY THIS EXISTS (player issue #7, 2026-09-14). A co-op host reported that after a
+// level load with a partner attached, the partner "falls through the map and crashes".
+// The host's F9 report carried everything the runtime knew — and nothing in it said
+// where either Chuck WAS: the only evidence was a screenshot with the partner's marker
+// pointing DOWN through the host's own feet. The operator could not reproduce it on
+// the two test machines. So the next report has to answer the question by itself,
+// from the log alone, on whichever side files it.
+//
+// What it prints, on every build, at ten samples a second and a few LINES a minute:
+//   [pos]  player N at (x, y, z)         every 5 s while a level runs, both slots
+//   [fall] player N falling ...           1 s into a continuous descent, then every 2 s
+//   [fall] player N stopped ...           when the descent ends, with how far it went
+// A "descent" is a vertical speed under -2 units/s between consecutive samples with
+// no upward sample in between; Chuck's jump peaks well above that, so a jump prints
+// nothing and a drop from a roof prints one line — free fall from the tallest roof
+// in Still Creek ends inside a second. A player who is still descending after ten
+// seconds is not on the map.
+//
+// Slot 0 is the host's Chuck and slot 1 the joiner's on BOTH machines (session slot,
+// the way coop_outfit_default.cpp dresses him), so on the joiner the local player is
+// slot 1 and slot 0 is the replicated host. A slot with no player reads nothing and
+// says nothing. Reads only — the position fields are OUTPUTS of the physics body
+// (§6bn), so nothing here can move anyone. CZ_NO_FALL_WATCH=1 switches it off.
+namespace
+{
+struct FallSlot
+{
+    bool valid = false;
+    float pos[3] = {};
+    long long atMs = -1;
+    long long fallSinceMs = -1;      // -1 = not descending
+    float fallFrom[3] = {};
+    long long lastFallLineMs = -1;
+    long long lastPosLineMs = -1000000;
+};
+FallSlot g_fallSlots[2];
+constexpr float kFallSpeed = -2.0f;  // units/s; a walk down a ramp is nowhere near it
+}
+
+static void PumpFallWatch(PPCContext& ctx, uint8_t* base)
+{
+    static const bool off = getenv("CZ_NO_FALL_WATCH") != nullptr;
+    if (off)
+        return;
+    const long long now = DebugElapsedMs();
+    static long long lastSample = -1000;
+    if (now - lastSample < 100)
+        return;
+    lastSample = now;
+    for (uint32_t i = 0; i < 2; i++)
+    {
+        FallSlot& s = g_fallSlots[i];
+        float p[3];
+        PPCContext call = ctx;           // never the caller's — see PumpPlayerPosCache
+        if (!ReadPlayerPos(call, base, i, p))
+        {
+            if (s.valid && s.fallSinceMs >= 0)
+                fprintf(stderr, "[fall] player %u vanished while descending (last at "
+                                "%.1f, %.1f, %.1f after %.1f s of descent)\n", i,
+                        s.pos[0], s.pos[1], s.pos[2], (now - s.fallSinceMs) / 1000.0);
+            s = FallSlot{};
+            continue;
+        }
+        if (!s.valid)
+        {
+            s.valid = true;
+            memcpy(s.pos, p, sizeof p);
+            s.atMs = now;
+            s.lastPosLineMs = now;
+            fprintf(stderr, "[pos] player %u appeared at (%.1f, %.1f, %.1f)\n", i,
+                    p[0], p[1], p[2]);
+            continue;
+        }
+        const float dt = float(now - s.atMs) / 1000.0f;
+        const float vy = dt > 0 ? (p[1] - s.pos[1]) / dt : 0.f;
+        if (vy < kFallSpeed)
+        {
+            if (s.fallSinceMs < 0)
+            {
+                s.fallSinceMs = s.atMs;
+                memcpy(s.fallFrom, s.pos, sizeof s.pos);
+                s.lastFallLineMs = -1;
+            }
+            const long long forMs = now - s.fallSinceMs;
+            const bool due = (s.lastFallLineMs < 0 && forMs >= 1000) ||
+                             (s.lastFallLineMs >= 0 && now - s.lastFallLineMs >= 2000);
+            if (due)
+            {
+                s.lastFallLineMs = now;
+                fprintf(stderr, "[fall] player %u falling for %.1f s: from (%.1f, %.1f, "
+                                "%.1f) to (%.1f, %.1f, %.1f), %.1f units/s down%s\n", i,
+                        forMs / 1000.0, s.fallFrom[0], s.fallFrom[1], s.fallFrom[2],
+                        p[0], p[1], p[2], -vy,
+                        forMs >= 10000 ? " — OUT OF THE WORLD" : "");
+            }
+        }
+        else if (s.fallSinceMs >= 0)
+        {
+            const long long forMs = now - s.fallSinceMs;
+            if (forMs >= 1000)
+                fprintf(stderr, "[fall] player %u stopped after %.1f s, %.1f units below "
+                                "where it began, at (%.1f, %.1f, %.1f)\n", i,
+                        forMs / 1000.0, s.fallFrom[1] - p[1], p[0], p[1], p[2]);
+            s.fallSinceMs = -1;
+        }
+        if (now - s.lastPosLineMs >= 5000)
+        {
+            s.lastPosLineMs = now;
+            fprintf(stderr, "[pos] player %u at (%.1f, %.1f, %.1f)\n", i, p[0], p[1], p[2]);
+        }
+        memcpy(s.pos, p, sizeof p);
+        s.atMs = now;
+    }
+}
+
 // The pose capture's player half, read from the RENDER thread — so it serves the
 // cached value rather than making a guest call, and prints how old it is.
 extern "C" int CZ_DebugPlayerPos(float out[3], long long* ageMs)
@@ -1508,6 +1626,7 @@ void DebugTunables_PumpAutoChuck(PPCContext& ctx, uint8_t* base)
     PumpGuestDiagnosticsFromEnvironment(base);
     PumpAutoChuckFromEnvironment(ctx, base);
     PumpPlayerPosCache(ctx, base);
+    PumpFallWatch(ctx, base);
     PumpTeleportFromFile(ctx, base);
 }
 

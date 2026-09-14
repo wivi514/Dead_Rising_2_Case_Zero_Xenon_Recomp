@@ -56,6 +56,8 @@
 // this title does not read files.
 #include <algorithm>
 #include <atomic>
+#include <chrono>
+#include <thread>
 #include <cerrno>
 #include <cstdio>
 #include <cstring>
@@ -529,6 +531,20 @@ uint32_t NtCreateFile_x(be<uint32_t>* handleOut, uint32_t desiredAccess,
     if (n < 512 || (n & 63) == 0 || FileTrace())
         KLOG("NtCreateFile #%u '%s' -> handle %08X (%llu bytes%s)\n", n, guestPath.c_str(),
              handle, (unsigned long long)file->size, directory ? ", directory" : "");
+    // CZ_SLOW_ZONE_OPEN_MS=N — a DEV ARM that makes a LEVEL LOAD slow on purpose: every
+    // open of a zone archive (`.../environment/<level>/<level>_zNN.big`, forty opens a
+    // load) sleeps N ms on the opening thread, which is the guest's Main Thread. Player
+    // issue #7 (2026-09-14): a Windows host loaded Still Creek in 14.5 s where this box
+    // does it in ~1 s, and a co-op partner attached through that load ended up under
+    // the map. The same-box pair can only reproduce a slow host if one side is MADE
+    // slow; this is the knob. Off unless set, and never in a release configuration.
+    static const long slowZoneMs = [] {
+        const char* e = getenv("CZ_SLOW_ZONE_OPEN_MS");
+        return e ? strtol(e, nullptr, 10) : 0L;
+    }();
+    if (slowZoneMs > 0 && guestPath.find("environment") != std::string::npos &&
+        guestPath.find("_z") != std::string::npos)
+        std::this_thread::sleep_for(std::chrono::milliseconds(slowZoneMs));
     return STATUS_SUCCESS;
 }
 

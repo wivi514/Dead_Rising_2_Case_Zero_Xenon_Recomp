@@ -4464,3 +4464,34 @@ CZ_BUG_REPORT_MAX_MB=N     the folder's cap (default 256; and at most 40 capture
 The log line `[bugreport] F9: wrote <dir> (N files, K KiB)` is the receipt; the same
 text is a toast when the overlay is up. `CZ_GAME_VERSION` (CMake, `git describe` at
 configure) is the version the capture names.
+
+## The fall watch, and a slow load on purpose (player issue #7, 2026-09-14)
+
+Both from the first co-op bug report a player filed through the launcher: "loading into
+Still Creek in co-op makes the client fall through the map and crash". The host's F9
+capture carried the log, the machine and a screenshot with the partner's marker pointing
+DOWN through the host's feet — and nothing in the runtime said where either Chuck was.
+
+```
+[pos] / [fall]            ON EVERY BUILD, no switch needed. Both player slots (0 = the
+                          host's Chuck, 1 = the joiner's, on BOTH machines) are read ten
+                          times a second off the player object's position field (the
+                          getplayerinfo layout, §6bm; a read, never a call). Prints
+                          `[pos] player N at (x, y, z)` every 5 s, `[pos] player N
+                          appeared` when a slot fills, `[fall] player N falling for T s:
+                          from (...) to (...), V units/s down` one second into a
+                          continuous descent faster than 2 units/s and every 2 s after
+                          (with "OUT OF THE WORLD" past 10 s), and `[fall] player N
+                          stopped after T s, D units below where it began`. A jump prints
+                          nothing; a roof drop prints one line; a Chuck under the map
+                          prints one every 2 s until he is gone. Meant to be read out of
+                          a player's cz_runtime.log or F9 capture.
+CZ_NO_FALL_WATCH=1        off (the control; nothing else reads these fields)
+CZ_SLOW_ZONE_OPEN_MS=N    A DEV ARM: every open of a zone archive (`environment/*_zNN.big`,
+                          forty a level load) sleeps N ms on the loading thread, so N=300
+                          is a ~12 s level load on a box that does it in one — the
+                          reporter's Windows host took 14.5 s. It exists so a same-box
+                          co-op pair (tools/coop_pair_reload.sh) can have a SLOW host and
+                          a fast joiner, the shape the two test machines cannot make.
+                          Never in a release configuration.
+```
