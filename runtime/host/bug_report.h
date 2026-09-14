@@ -1,4 +1,4 @@
-// THE BUG-REPORT CAPTURE: F9 (one frame) or F8 (three frames over a second) writes a
+// THE BUG-REPORT CAPTURE: F9 (one frame) or F8 (twenty consecutive frames) writes a
 // directory the XenonLive launcher's Issues tab lists — the picture, the log for the
 // 60 s before the key and the 15 s after, and the machine (OS, CPU, GPU, driver, RAM,
 // the game's version and settings) — so a player's report arrives with everything a
@@ -31,7 +31,8 @@ void BugReport_Init();
 void BugReport_SetGpu(const char* device, const char* driver, uint32_t apiVersion);
 
 // The key. `trigger` is what the player pressed ("F9" / "F8"); `frames` how many
-// presented frames to keep (1, or 3 spaced ~half a second apart for F8). The report
+// presented frames to keep (1, or 20 consecutive for F8 — the report keeps what fits
+// its caps, the whole burst goes full-size to ../bursts/<name>/). The report
 // is written 15 s later by a worker thread; a press while one is in flight is folded
 // into it (the log window is what it is) and said so in the log.
 void BugReport_Request(const char* trigger, unsigned frames);

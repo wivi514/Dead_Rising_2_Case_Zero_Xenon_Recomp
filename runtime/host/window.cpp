@@ -68,7 +68,7 @@ void Host_RequestSnapDump()
 void Host_RequestBurstDump()
 {
     g_burstDumpPressed.store(true, std::memory_order_release);
-    BugReport_Request("F8", 3);
+    BugReport_Request("F8", 20);
 }
 
 // The window's pending follow-size, one word so a torn W/H pair cannot exist between
@@ -1232,7 +1232,7 @@ HostPadState ReadKeyboard()
         if (f8Down && !f8WasDown)
         {
             g_burstDumpPressed.store(true, std::memory_order_release);
-            BugReport_Request("F8", 3);
+            BugReport_Request("F8", 20);
         }
         f8WasDown = f8Down;
         const bool f9Down = keys[SDL_SCANCODE_F9] != 0;

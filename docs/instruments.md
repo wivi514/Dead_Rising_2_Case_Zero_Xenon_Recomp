@@ -4441,7 +4441,7 @@ tools/part118_campaign.sh / part118_campaign2.sh <bin> [N]   campaign 1 (stock /
 
 ## The bug-report capture (co-op part 6 follow-up, 2026-09-13; `host/bug_report.cpp`)
 
-**F9** (one frame) and **F8** (three frames, ~0.5 s apart) write a capture the XenonLive
+**F9** (one frame) and **F8** (twenty CONSECUTIVE presented frames — the report keeps what fits its 8 MiB, the whole burst lands full-size in `~/.config/XenonLive/bursts/<name>/`, for frame-to-frame diffs) write a capture the XenonLive
 launcher's Issues tab lists and can send: `screenshot.png` (+ `burst_2/3.png` for F8),
 `log.txt` (the stderr tee's ring — 60 s before the key, 15 s after; cut to its last
 3.5 MiB with a note), `system.txt` (OS, CPU, GPU + driver, Vulkan, RAM, resolution and
