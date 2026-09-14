@@ -427,6 +427,7 @@ struct XmaHostCtx
     std::vector<float> pcm;
     size_t pcmPos = 0;
     bool announced = false;
+    unsigned loopsLogged = 0;
     uint64_t packets = 0;
     uint64_t frames = 0;
     uint64_t starves = 0;
@@ -639,6 +640,17 @@ bool XmaDecodeOnePacket(unsigned i, uint32_t va, XmaHostCtx& hc, XmaCtx& c)
             {
                 const uint32_t lc = c.loopCount() - 1;
                 c.dw[0] = (c.dw[0] & ~(0xFFu << 12)) | (lc << 12);
+            }
+            if (XmaDecodeLog() && hc.loopsLogged < 3)
+            {
+                hc.loopsLogged++;
+                fprintf(stderr,
+                        "[xma] ctx%u LOOP #%u: in%d=%08X %u pkts (%u bits), read %u bits, "
+                        "loopCount %u, loopStart %u bits, loopEnd %u bits, dw1=%08X "
+                        "dw4=%08X\n",
+                        i, hc.loopsLogged, cur ? 1 : 0, inPtr, count,
+                        count * kXmaBitsPerPacket, c.inReadOffsetBits(), c.loopCount(),
+                        c.dw[3] & 0x3FFFFFF, c.dw[4] & 0x3FFFFFF, c.dw[1], c.dw[4]);
             }
             c.setInReadOffsetBits(0);    // rewind to the loop start; valid stays set
             XmaWriteDword(va, 0, c.dw[0]);
