@@ -204,6 +204,13 @@ mask; trust the microcode's own swizzles.
     and the self-arming sign-in grace (both from Case West), and shipped F9/F8 BUG
     REPORTS for the launcher's Issues tab (`host/bug_report.cpp`). Tested 10+ min on
     two machines. OWED: invites, the military arrival with both players.**
+    **AS OF 2026-09-14 THE OPERATOR'S SIX F9 REPORTS (`~/XenonLive/Player Issues/`)
+    HAVE BEEN WORKED: #6 (MASH on the pad in French), #4 (the PP board's 360 s flush
+    timer) and #3 (the tile replay inheriting tile 0's last pixel shader into the actor
+    prepass — `phase5-notes.md` §6fa, gotchas 576-578) are FIXED IN-TREE and owe the
+    operator's eye; #5 (loud audio, 40 min in), #2 (hair flicker) and #1 (black rooftop
+    from the safehouse zone) are PARKED with the capture each needs — `open-items.md` 0za.
+    None of it is in a published release yet.**
     The performance hand-off is still `part118-kickoff.md` — PART 118 (the late afternoon of 2026-09-12, unattended, a
     16:00 deadline) GAVE EACH PIPELINE STAGE A PHYSICAL CORE OF ITS OWN: the PMU said the
     guest's Main Thread runs the same instructions at 17% more cycles with our renderer
