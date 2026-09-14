@@ -7,6 +7,26 @@ NOT the cause is what stops the next session re-buying it.
 
 Next, in order:
 
+0za. **THE OPERATOR'S SIX F9 REPORTS OF 2026-09-13 (`~/XenonLive/Player Issues/#1-#6`),
+    worked 2026-09-14 in order of ease.** Fixed in-tree, each with its control arm:
+    **#6** the struggle prompt said MASH on the pad in French — the string device-follow
+    read str_en's offsets whatever bank loaded (898e35d); **#4** the PP leaderboard
+    "not synced" — the title writes a dirty stats cache once every 360 s and a refused
+    write waits the full six minutes again; the flush timer is 2 s now
+    (`CZ_LEADERBOARD_FLUSH_S`, 8f23fb6); **#3** near actors shaded differently on the
+    two halves of the screen — the tile replay inherited tile 0's last pixel shader into
+    the early actor prepass; bindings restored per replay (`CZ_PM4_NO_REPLAY_RESTORE=1`
+    the control, phase5-notes §6fa, 3aee6a0). ALL THREE OWE THE OPERATOR'S EYE. Parked,
+    each needing a live capture: **#5** loud audio near the gas station after ~40 min
+    (the loop fields log now — `CZ_XMA_DECODE_LOG=1` at the moment it happens, plus
+    `CZ_AUDIO_TRACE`; the XMA loop mechanism itself measured sane, 7a922f5); **#2**
+    Chuck's hair flickers at the nape (the three burst frames have the camera moving;
+    an F8 burst with the camera STILL is what can be diffed); **#1** the gas station
+    rooftop black from the safehouse zone (a lightmap/LOD-material shape like part 37's;
+    needs a frame dump from the operator's spot — the headless routes do not climb that
+    car). Also open from §6fa: frame 28672 (Chuck ghosted with the camera inside him) was
+    symmetric in the ≥300-vertex census, so a second mechanism may exist.
+
 0z. **REBUILD THE WINDOWS RELEASE LEG WITH `timeBeginPeriod(1)` (part 118).** The
     shipped Windows binary never asks for the 1 ms timer; on a machine where nothing
     else holds it (czamd tonight, and any Windows 11 game behind another window) every
