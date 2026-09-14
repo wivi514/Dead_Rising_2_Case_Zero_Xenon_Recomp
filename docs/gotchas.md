@@ -6604,3 +6604,20 @@ From phase C part 18 (the frame rate — and none of it was work):
     the commit of the last working run, not from the release that followed it. (co-op
     part 6)
 
+576. **A replayed command buffer is only the same stream twice if the executor enters it
+    in the same state both times.** This title's tile replay carries no pixel-shader load
+    before its first draws (D3D filtered it as redundant at record time), so tile 0 ran
+    the null prepass shader that was current before the bracket and tile 1 ran the last
+    material shader of tile 0 — one look per half of the screen (player issue #3). Anything
+    a recorded buffer INHERITS rather than sets is a per-replay variable; the 360's D3D
+    restores the state at BeginTiling for every tile, and so must a replay in a
+    recompiler (`CZ_PM4_NO_REPLAY_RESTORE=1` is the control). phase5-notes §6fa.
+577. **An instrument that changes WHEN it looks changes what it can see.** The full bin
+    trace found 0 mismatched frames in 2,414 and the sampled one 102 in 318 on the same
+    roam — the full trace's line budget was spent on the boot and never reached the era.
+    A trace with a budget needs an ARM (a frame, a select value), and the first question
+    about a clean trace is which frames it covered. (§6fa)
+578. **A filtered census is blind to what it filtered, and says so only if you make it.**
+    The ≥300-vertex tile census read "identical" on a frame with a visible ghost; the
+    draws that could explain it, if any, are the ones the filter dropped. Quote the filter
+    beside the verdict, and re-run without it before calling a frame clean. (§6fa)

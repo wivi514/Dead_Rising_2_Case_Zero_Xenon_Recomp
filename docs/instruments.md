@@ -4526,4 +4526,34 @@ CZ_LEADERBOARD_FORCE_WRITE=N  A DEV ARM: marks the cache dirty on the N-th updat
                           the whole chain (title -> queue -> server row) can be watched
                           headless without a save. Writes whatever the cache holds; the
                           server aggregates PP as MAX, so a low value changes no ranking.
+CZ_PM4_NO_REPLAY_RESTORE=1  THE CONTROL for player issue #3 (near actors shaded differently
+                          on the two halves of the screen). By default a ring-level indirect
+                          buffer that runs a SECOND time in a frame — the title's tile replay —
+                          begins with the shader bindings its FIRST run began with, which is
+                          what the 360's D3D restores at every tile; this arm lets tile 1
+                          inherit tile 0's last pixel shader into the early actor prepass,
+                          the shipped v1.1.0 behaviour. Counter: `tile-replay shader restores`
+                          on the [vkprof] ring-latency line, 1.00/frame on the crowd.
+                          phase5-notes §6fa.
+CZ_VK_DRAW_CENSUS_EVERY=N  a draw census (CZ_VK_DRAW_CENSUS=<file>) of every N-th frame,
+                          unattended, one file per frame — for a defect only a roam reaches.
+                          N=64 lines up with CZ_VK_FRAME_DUMP's period. The line now carries
+                          wo= (window offset), sc= (scissor), cc=, aref=, vsc=/psc= (a hash of
+                          each constant file) and psva=/vsva= (the microcode's source address
+                          and size, 0 = inline), so two tile replays of one draw can be diffed.
+CZ_VK_DRAW_CENSUS_MINVERTS=N  keep only draws of at least N indices in the census — a roam's
+                          worth of whole censuses is gigabytes of HUD quads otherwise. A
+                          filtered census is blind to what it filtered (§6fa's frame 28672).
+CZ_PM4_LOADTRACE_EVERY=N  on every N-th swap: every IM_LOAD/IM_LOAD_IMMEDIATE (stage, source
+                          address, size, start, predicate, run/skip), every draw with the
+                          shader bindings it will use and its scissor, every INDIRECT_BUFFER,
+                          and every other ring-level packet's opcode and first body dwords.
+                          One frame in N costs nothing between samples, which is the point:
+                          the full CZ_PM4_BIN_TRACE spends its budget on the boot.
+CZ_PM4_BIN_TRACE_FRAME=N  holds CZ_PM4_BIN_TRACE until swap N (it also traces IM_LOADs now,
+                          and DRAW lines carry f=<swap>).
+CZ_PM4_BIND_CHECK=1       at every draw, the pixel-shader binding is compared with the last
+                          PS load packet the walk saw; a disagreement prints the last 24
+                          type-3 opcodes. Read 0 disagreements on the roam — the walk is
+                          faithful to the stream; §6fa's divergence is in the stream.
 ```

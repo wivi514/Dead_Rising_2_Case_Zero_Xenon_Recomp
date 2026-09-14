@@ -21976,3 +21976,72 @@ binary read **+0.8621 pinned**. Fixed, and gotcha 552 is the general form: **a s
 number is the mild failure of an environment-dependent gate; convicting an innocent change
 is the severe one.**
 
+
+## §6fa — Player issue #3: a near actor shaded differently on each half of the screen — the tile replay inherits the pixel shader (2026-09-14)
+
+The report (the operator's F9 #3, v1.1.0): a zombie close to the camera is drawn
+translucent on the left half of the screen and opaque-dark on the right, with a hard
+vertical edge at the screen centre. Reproduced headless on the AutoChuck roam (frames
+17472, 18688 and 28672 of three separate runs, found by ranking the frame dumps on the
+column difference at x=639/640 — the tile seam). It is not always the same side: frame
+28672 has Chuck opaque on the left and ghosted on the right.
+
+**What differs between the tiles is one thing.** A per-frame draw census was written for
+every 64th frame (`CZ_VK_DRAW_CENSUS_EVERY`, with the window offset, scissor,
+RB_COLORCONTROL, RB_ALPHA_REF, a hash of each constant file and the microcode source
+address added to the line so two tile replays can be read side by side), and the two
+tile replays of a ghost frame were diffed draw by draw. Every register, both constant
+files, every texture binding and every vertex stream agree at every draw — except the
+**pixel shader of the first 9-18 draws of the tiled command buffer**: the near actors'
+early depth prepass (mask 0, LEQUAL, z-write, alpha test GEQUAL 0). Tile 0 runs them
+with `ps_438c2af8`, the 9-dword null shader; tile 1 runs them with `ps_888605c4` (or
+`1f77180a`, `d4ca3040`, `1d1b2b50`), the last material shader of tile 0's main pass. The
+sampled shader-load trace (`CZ_PM4_LOADTRACE_EVERY`) says why: the tiled buffer
+(`INDIRECT_BUFFER 1C05F260`, 31,430 dwords) carries **no IM_LOAD for the pixel shader
+before those draws** — the D3D runtime filtered it as redundant when the buffer was
+recorded, because the shadow pass's null shader was current — and the ring between tile
+0's last buffer and tile 1's first is exactly one `SET_BIN_SELECT`. So the prepass runs
+with whatever shader the replay STARTS with.
+
+**Why that is the ghost.** The frame's order in the tiled buffer is: near-actor prepass
+(mask 0, LEQUAL, z-write) → the world and the crowd (opaque) → the near actors again
+(mask 0, z-write, `ps_8d886578`) → the near actors' colour pass (EQUAL, no z-write,
+blend SRC_ALPHA/INV_SRC_ALPHA — the fade). The early prepass's alpha test is what
+decides whether a fading actor's depth is in the buffer when the world draws behind it:
+with the null shader (alpha = interpolator 0, which the prepass VS exports as zero) the
+actor's early depth lands one way, with a material shader (alpha from its own
+constants and textures, here the 1x1 dummy) another — and where the early depth is
+written the world behind is rejected and the actor's blended colour pass lands on the
+clear colour instead of on the crowd. One tile, one shader, one look.
+
+**The fix (`gpu/pm4.cpp`, the INDIRECT_BUFFER case).** The 360's D3D restores the GPU
+state at `BeginTiling` for every tile, so the intended binding is the first replay's.
+The executor keeps, per frame, the shader bindings in force when each ring-level
+indirect buffer first ran, and restores them when the same buffer runs again in that
+frame (a re-entry after a stall inside the buffer is a resume, not a replay, and is left
+alone). Bindings only: the census measured everything else identical.
+`CZ_PM4_NO_REPLAY_RESTORE=1` is the control; the engagement counter is on the `[vkprof]
+ring latency arms` line (`tile-replay shader restores`, exactly 1.00/frame on the crowd).
+
+**Measured on the roam, 150 s an arm, a census every 64th frame:** fix 0 of 181 tiled
+frames with a per-tile shader difference; control 31 of 183. Two earlier arm runs read
+0 of 116 and 0 of 162 against 15-35% for the shipped behaviour.
+
+**Three things learned on the way, each a gotcha (576-578):**
+
+1. **A trace that slows the walk hid the defect.** The full bin trace
+   (`CZ_PM4_BIN_TRACE`, a `fprintf` per packet) showed 0 mismatched frames in 2,414 —
+   because its line budget ran out before the roam reached the era, not because the
+   walk's pace mattered. The sampled trace (one frame in N, no per-packet cost) showed
+   102 of 318. An instrument that changes WHEN it looks changes what it can see.
+2. **A filtered census answers only the question its filter asked.** The
+   ≥300-vertex census was symmetric on frame 28672 (Chuck ghosted with the camera
+   inside him) — the second mechanism there, if there is one, lives in draws under 300
+   vertices or outside the draw list, and is NOT closed by this section.
+3. **The state a replay starts with is part of the recorded stream's contract.** A
+   command buffer replayed twice is only the same stream twice if the executor's state
+   is the same at both entries; anything the buffer inherits rather than sets is a
+   per-replay variable. Case West replays the same way — the fix is on its list.
+
+**Owed:** the operator's eye on the near-camera zombie at the seam; frame 28672's
+mechanism; whether the Chuck-inside-camera case is the same class.

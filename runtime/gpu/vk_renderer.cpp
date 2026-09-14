@@ -100,6 +100,18 @@ constexpr uint32_t kSharedTessGrid = 280;
 // 4x MSAA — the only configuration in which our sample-per-sample dither is the right
 // emulation. The last free dword before the 1D alias table at 288.
 constexpr uint32_t kSharedAlphaToMask = 284;
+
+// FNV-1a over a dword block, for the draw census's constant-file columns.
+static uint32_t CensusHash(const uint32_t* words, size_t count)
+{
+    uint32_t h = 2166136261u;
+    for (size_t i = 0; i < count; i++)
+    {
+        h ^= words[i];
+        h *= 16777619u;
+    }
+    return h;
+}
 constexpr uint32_t kSharedTex1D = 288;
 constexpr uint32_t kSharedPosScale = 352;
 constexpr uint32_t kSharedPosOffset = 360;
@@ -24138,7 +24150,13 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
             ? snprintf(psbindLine, sizeof psbindLine,
                        "draw %llu verts=%u prim=%u vs=%016llx ps=%016llx mask=%X "
                        "blend=%08X po=%u/%g/%g su=%08X dc=%08X sr=%08X cl=%08X ucp=%g/%g/%g/%g"
-                       " xf=%d bEff=%.4f n0=%.4f n1=%.4f n3=%.4f",
+                       " xf=%d bEff=%.4f n0=%.4f n1=%.4f n3=%.4f"
+                       // THE TILE (player issue #3): the window offset and scissor say
+                       // which half of the screen this draw is a replay for, so two
+                       // copies of one draw can be read side by side when only one of
+                       // them looks right. RB_COLORCONTROL and RB_ALPHA_REF beside them
+                       // because the blend/alpha inputs are what such a pair differs in.
+                       " wo=%08X sc=%08X/%08X cc=%08X aref=%g vsc=%08X psc=%08X psva=%08X/%u vsva=%08X/%u",
                        (unsigned long long)R->drawsThisFrame, draw.indexCount, draw.primType,
                        (unsigned long long)vsBind.hash, (unsigned long long)psBind.hash,
                        regs[xenos::kRbColorMask] & 0xF, regs[xenos::kRbBlendControl0],
@@ -24191,7 +24209,20 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
                        // re-examining before a line of shader work is done for it.
                        F32(regs[xenos::kPaClUcp0X]), F32(regs[xenos::kPaClUcp0X + 1]),
                        F32(regs[xenos::kPaClUcp0X + 2]), F32(regs[xenos::kPaClUcp0X + 3]),
-                       xfForm, xfB, xfN0, xfN1, xfN3)
+                       xfForm, xfB, xfN0, xfN1, xfN3,
+                       regs[xenos::kPaScWindowOffset], regs[xenos::kPaScWindowScissorTl],
+                       regs[xenos::kPaScWindowScissorBr], regs[xenos::kRbColorControl],
+                       F32(regs[xenos::kRbAlphaRef]),
+                       // A hash of each constant file (VS c0..255, PS c0..255): the
+                       // blend state can match between two tile replays while the
+                       // ALPHA the shader emits does not, and the alpha comes from here.
+                       CensusHash(&regs[xenos::kAluConstantBase], 256 * 4),
+                       CensusHash(&regs[xenos::kAluConstantBase + 256 * 4], 256 * 4),
+                       // Where each microcode was loaded FROM (0 = inline in the
+                       // packet), so a tile replay binding a different shader for
+                       // the same draw can be told apart as "same address, different
+                       // bytes" versus "a different load".
+                       psBind.ucodeVa, psBind.sizeDwords, vsBind.ucodeVa, vsBind.sizeDwords)
         : psbind ? snprintf(psbindLine, sizeof psbindLine,
                             "[psbind] frame=%llu ps=%016llx mask=%X blend=%08X",
                             (unsigned long long)R->frame,
@@ -24736,7 +24767,12 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
         }
         if (drawCensus)
         {
-            if (R->drawCensusFile)
+            // CZ_VK_DRAW_CENSUS_MINVERTS=N keeps a periodic census (the _EVERY arm)
+            // to the draws big enough to be a body or a floor; a roam's worth of
+            // whole censuses is gigabytes of HUD quads otherwise.
+            static const uint32_t censusMinVerts = Env("CZ_VK_DRAW_CENSUS_MINVERTS")
+                ? uint32_t(strtoul(Env("CZ_VK_DRAW_CENSUS_MINVERTS"), nullptr, 10)) : 0u;
+            if (R->drawCensusFile && draw.indexCount >= censusMinVerts)
             {
                 fprintf(R->drawCensusFile, "%s\n", psbindLine);
                 ++R->drawCensusLines;
@@ -30549,7 +30585,16 @@ void DoSwapImpl(uint8_t* base, uint32_t frontBuffer, uint32_t width, uint32_t he
     // frame, and a press with no destination SAYS SO rather than doing nothing visible —
     // an instrument that silently declines is the failure shape this project keeps paying
     // for (gotchas 7, 151).
-    const bool snapKey = Host_ConsumeSnapDumpPressed();
+    bool snapKey = Host_ConsumeSnapDumpPressed();
+    // CZ_VK_DRAW_CENSUS_EVERY=N — a census of every N-th frame, unattended, for the
+    // defects that only a ROAM reaches (player issue #3 reproduced on frame 17472 of an
+    // AutoChuck run that nobody could have pressed F9 on). Aligned with the frame dump's
+    // own period so a dumped picture and a census share a frame number. The press's
+    // whole path is reused: it arms the NEXT frame, so N-1 is the frame that trips it.
+    static const uint64_t censusEvery =
+        Env("CZ_VK_DRAW_CENSUS_EVERY") ? strtoull(Env("CZ_VK_DRAW_CENSUS_EVERY"), nullptr, 10) : 0;
+    if (censusEvery && ((R->frame + 1) % censusEvery) == 0)
+        snapKey = true;
     bool snapKeyNow = snapKey;   // see the CZ_CAPTURE_KEY note at the dump
     // The SAME press also arms the per-draw census for the NEXT frame — next, not this
     // one, because this frame's draws are already recorded by the time a present is
@@ -31201,16 +31246,21 @@ void DoSwapImpl(uint8_t* base, uint32_t frontBuffer, uint32_t width, uint32_t he
             lastEager = p.eagerTicks;
             lastMidwalk += dMidwalk;
             lastHeldFast = p.heldFastTicks;
+            static uint64_t lastReplayRestores = 0;
+            const uint64_t dReplay = Pm4_ReplayRestores() - lastReplayRestores;
+            lastReplayRestores += dReplay;
             fprintf(stderr,
                     "[vkprof]   ring latency arms: eager ticks %llu of %llu (%.1f%%) | "
                     "mid-walk rptr stores %llu (%.1f/frame) | held-fast naps %llu "
-                    "(%.1f/frame)\n",
+                    "(%.1f/frame) | tile-replay shader restores %llu (%.2f/frame)\n",
                     (unsigned long long)dEager, (unsigned long long)dTicks,
                     dTicks ? 100.0 * double(dEager) / double(dTicks) : 0.0,
                     (unsigned long long)dMidwalk,
                     frames ? double(dMidwalk) / double(frames) : 0.0,
                     (unsigned long long)dHeldFast,
-                    frames ? double(dHeldFast) / double(frames) : 0.0);
+                    frames ? double(dHeldFast) / double(frames) : 0.0,
+                    (unsigned long long)dReplay,
+                    frames ? double(dReplay) / double(frames) : 0.0);
 
             // Part 107 item 2: the Draw Thread's fence wait, parked. Every episode
             // is classified, so "the park never engaged" (all readyAtEntry / spin) and

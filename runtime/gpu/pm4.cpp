@@ -525,6 +525,16 @@ bool LooksLikeUcode(const uint8_t* p, uint32_t sizeDwords)
 // The currently bound pair. Index 0 = vertex, 1 = pixel, matching the type field the
 // packet itself carries.
 Pm4ShaderBinding g_boundShaders[2];
+// Tile replays whose shader bindings had drifted and were restored (see the
+// INDIRECT_BUFFER case). The engagement gate for the player-issue-#3 fix.
+std::atomic<uint64_t> g_replayRestores{ 0 };
+// CZ_PM4_BIND_CHECK=1 (player issue #3): at every draw, the pixel-shader binding is
+// compared against the last PS load packet the walk SAW — a disagreement means a load
+// was skipped, refused or overwritten between the load and the draw, and the trail of
+// the last 24 type-3 opcodes says by what.
+const bool g_bindCheck = getenv("CZ_PM4_BIND_CHECK") != nullptr;
+struct LastPsLoad { uint32_t opcode = 0, va = 0, size = 0; bool pred = false, ran = false; } g_lastPsLoad;
+uint32_t g_opTrail[24]; uint32_t g_opTrailN = 0;
 
 // CZ_SHADER_DUMP=<dir> — write one file per distinct microcode blob, named by the same
 // hash the renderer looks up. This is how the SPIR-V cache is built: the dump is taken
@@ -1869,9 +1879,14 @@ uint32_t ExecutePacket(uint8_t* base, const Source& fetch, uint32_t pos, uint32_
         static const char* armMaskEnv = getenv("CZ_PM4_BIN_TRACE_ARMMASK");
         static const uint64_t armSelect = armEnv ? strtoull(armEnv, nullptr, 16) : 0;
         static const uint64_t armMask = armMaskEnv ? strtoull(armMaskEnv, nullptr, 16) : 0;
-        static bool armed = !armEnv && !armMaskEnv;
+        // CZ_PM4_BIN_TRACE_FRAME=N holds it until swap N (player issue #3's era
+        // begins a minute into a roam, past any line budget spent from boot).
+        static const char* armFrameEnv = getenv("CZ_PM4_BIN_TRACE_FRAME");
+        static const uint64_t armFrame = armFrameEnv ? strtoull(armFrameEnv, nullptr, 10) : 0;
+        static bool armed = !armEnv && !armMaskEnv && !armFrameEnv;
         if (!armed && ((armEnv && g_binSelect == armSelect) ||
-                       (armMaskEnv && g_binMask == armMask)))
+                       (armMaskEnv && g_binMask == armMask) ||
+                       (armFrameEnv && g_frames.load(std::memory_order_relaxed) >= armFrame)))
             armed = true;
         if (armed && left > 0)
         {
@@ -1892,14 +1907,30 @@ uint32_t ExecutePacket(uint8_t* base, const Source& fetch, uint32_t pos, uint32_
                 fprintf(stderr, "[pm4bin] %-15s %08X%s\n", what, fetch(pos + 1),
                         predicated ? "   (SKIPPED)" : "");
             }
+            else if (opcode == 0x27 || opcode == 0x2B)
+            {
+                // The shader loads too (player issue #3): a tile replay that draws
+                // with the previous tile's pixel shader is a load that was skipped
+                // or never issued, and only a trace in stream order can say which.
+                left--;
+                fprintf(stderr, "[pm4bin]     %s %s va=%08X size=%u pred=%u mask=%016llX "
+                                "select=%016llX -> %s\n",
+                        opcode == 0x27 ? "IM_LOAD" : "IM_LOAD_IMM",
+                        (fetch(pos + 1) & 3) == 0 ? "VS" : "PS",
+                        opcode == 0x27 ? (fetch(pos + 1) & ~3u) : 0u,
+                        fetch(pos + 2) & 0xFFFF, header & 1,
+                        (unsigned long long)g_binMask, (unsigned long long)g_binSelect,
+                        predicated ? "SKIP" : "run");
+            }
             else if (opcode == 0x22 || opcode == 0x36)
             {
                 left--;
                 const uint32_t tl = g_regs[xenos::kPaScWindowScissorTl];
                 const uint32_t br = g_regs[xenos::kPaScWindowScissorBr];
                 fprintf(stderr,
-                        "[pm4bin]     DRAW pred=%u mask=%016llX select=%016llX "
+                        "[pm4bin]     DRAW f=%llu pred=%u mask=%016llX select=%016llX "
                         "scissor=%u,%u..%u,%u -> %s\n",
+                        (unsigned long long)g_frames.load(std::memory_order_relaxed),
                         header & 1, (unsigned long long)g_binMask,
                         (unsigned long long)g_binSelect,
                         tl & 0x7FFF, (tl >> 16) & 0x7FFF, br & 0x7FFF, (br >> 16) & 0x7FFF,
@@ -1911,6 +1942,78 @@ uint32_t ExecutePacket(uint8_t* base, const Source& fetch, uint32_t pos, uint32_
     if (g_binCensus && (opcode == 0x22 || opcode == 0x36))
         BinCensusRecord(g_binMask, g_binSelect, predicated);
 
+    // CZ_PM4_LOADTRACE_EVERY=N: on every N-th swap, every shader load and every draw
+    // with the binding it will use, in stream order — cheap enough (one frame in N)
+    // not to slow the walk, which the full bin trace does and which HIDES the
+    // player-issue-#3 race (a slow walk never reproduces it).
+    static const uint64_t loadTraceEvery = getenv("CZ_PM4_LOADTRACE_EVERY")
+        ? strtoull(getenv("CZ_PM4_LOADTRACE_EVERY"), nullptr, 10) : 0;
+    if (loadTraceEvery && (g_frames.load(std::memory_order_relaxed) % loadTraceEvery) == 0)
+    {
+        if (opcode == 0x27 || opcode == 0x2B)
+            fprintf(stderr, "[ldtrace] f=%llu d=%d %s %s va=%08X size=%u start=%u pred=%u -> %s\n",
+                    (unsigned long long)g_frames.load(std::memory_order_relaxed), depth,
+                    opcode == 0x27 ? "IM_LOAD" : "IM_LOAD_IMM",
+                    (fetch(pos + 1) & 3) == 0 ? "VS" : "PS",
+                    opcode == 0x27 ? (fetch(pos + 1) & ~3u) : 0u, fetch(pos + 2) & 0xFFFF,
+                    fetch(pos + 2) >> 16, header & 1, predicated ? "SKIP" : "run");
+        else if (opcode == 0x22 || opcode == 0x36)
+        {
+            const uint32_t tl = g_regs[xenos::kPaScWindowScissorTl];
+            const uint32_t br = g_regs[xenos::kPaScWindowScissorBr];
+            fprintf(stderr, "[ldtrace] f=%llu d=%d DRAW sc=%u,%u..%u,%u ps=%016llx/%08X/%u "
+                            "vs=%016llx pred=%u -> %s\n",
+                    (unsigned long long)g_frames.load(std::memory_order_relaxed), depth,
+                    tl & 0x7FFF, (tl >> 16) & 0x7FFF, br & 0x7FFF, (br >> 16) & 0x7FFF,
+                    (unsigned long long)g_boundShaders[1].hash, g_boundShaders[1].ucodeVa,
+                    g_boundShaders[1].sizeDwords, (unsigned long long)g_boundShaders[0].hash,
+                    header & 1, predicated ? "SKIP" : "run");
+        }
+        else if (opcode == 0x3F || opcode == 0x37)
+            fprintf(stderr, "[ldtrace] f=%llu d=%d INDIRECT_BUFFER addr=%08X size=%u\n",
+                    (unsigned long long)g_frames.load(std::memory_order_relaxed), depth,
+                    fetch(pos + 1), fetch(pos + 2) & 0xFFFFF);
+        else if (depth == 0)
+        {
+            // Every other RING-level packet, with its first body dwords: what the
+            // driver emits between two tile replays is the whole question.
+            fprintf(stderr, "[ldtrace] f=%llu d=0 op=%02X n=%u pred=%u b0=%08X b1=%08X b2=%08X -> %s\n",
+                    (unsigned long long)g_frames.load(std::memory_order_relaxed), opcode,
+                    bodyCount, header & 1, bodyCount > 0 ? fetch(pos + 1) : 0u,
+                    bodyCount > 1 ? fetch(pos + 2) : 0u, bodyCount > 2 ? fetch(pos + 3) : 0u,
+                    predicated ? "SKIP" : "run");
+        }
+    }
+    if (g_bindCheck)
+    {
+        g_opTrail[g_opTrailN++ % 24] = (opcode << 8) | (predicated ? 1 : 0) | (uint32_t(header & 1) << 1);
+        if ((opcode == 0x27 || opcode == 0x2B) && (fetch(pos + 1) & 3) == 1)
+            g_lastPsLoad = { opcode, opcode == 0x27 ? (fetch(pos + 1) & ~3u) : 0u,
+                             fetch(pos + 2) & 0xFFFF, (header & 1) != 0,
+                             !(predicated && !noPredication) };
+        if ((opcode == 0x22 || opcode == 0x36) && !(predicated && !noPredication) &&
+            g_lastPsLoad.ran && (g_boundShaders[1].sizeDwords != g_lastPsLoad.size ||
+                                 (g_lastPsLoad.opcode == 0x27 &&
+                                  g_boundShaders[1].ucodeVa != PhysToVa(g_lastPsLoad.va))))
+        {
+            static std::atomic<uint32_t> n{ 0 };
+            if (n.fetch_add(1) < 24)
+            {
+                fprintf(stderr, "[pm4] BIND CHECK: draw with PS %016llx (va=%08X size=%u) "
+                                "but the last PS load was %s va=%08X size=%u (pred=%d); trail:",
+                        (unsigned long long)g_boundShaders[1].hash, g_boundShaders[1].ucodeVa,
+                        g_boundShaders[1].sizeDwords,
+                        g_lastPsLoad.opcode == 0x27 ? "IM_LOAD" : "IM_LOAD_IMM", g_lastPsLoad.va,
+                        g_lastPsLoad.size, g_lastPsLoad.pred);
+                for (uint32_t i = 0; i < 24; i++)
+                {
+                    const uint32_t t = g_opTrail[(g_opTrailN + i) % 24];
+                    fprintf(stderr, " %02X%s", t >> 8, (t & 1) ? "s" : ((t & 2) ? "p" : ""));
+                }
+                fprintf(stderr, "\n");
+            }
+        }
+    }
     if (predicated)
     {
         if (opcode == 0x22 || opcode == 0x36)
@@ -2421,6 +2524,64 @@ uint32_t ExecutePacket(uint8_t* base, const Source& fetch, uint32_t pos, uint32_
                                 "-> addr=%08X size=%u (bodyCount=%u)\n",
                                 header, body(0), body(1), addr, size, bodyCount);
                 }
+                // TILE REPLAYS BEGIN WITH THE STATE THE FIRST REPLAY BEGAN WITH
+                // (player issue #3, "zombies close to the camera are not shaded
+                // correctly on the right side of the screen").
+                //
+                // This title renders the scene in two tiles by replaying one recorded
+                // command buffer per tile (§6f). Its early actor prepass — the first
+                // draws of that buffer, mask 0, alpha test GEQUAL 0 — carries NO pixel
+                // shader load, because the D3D runtime filtered it as redundant when
+                // the buffer was RECORDED: the 9-dword null pixel shader of the shadow
+                // pass was current. So the prepass runs with whatever pixel shader is
+                // bound when the replay STARTS. For tile 0 that is the null shader;
+                // for tile 1 it is the last material shader of tile 0's main pass,
+                // whose alpha output goes through the same alpha test with a different
+                // value — and a near actor's early depth comes out different per tile,
+                // so the world behind it is rejected in one tile and drawn in the
+                // other, and the actor's blended colour pass lands on the clear colour
+                // there. The per-tile draw census (CZ_VK_DRAW_CENSUS_EVERY) showed
+                // exactly those 9-18 prepass draws differing and nothing else, in
+                // 15-35% of roam frames; the operator's screenshot is the same shape.
+                //
+                // The 360's D3D restores the GPU state at BeginTiling for every tile,
+                // so the intended binding is the FIRST replay's. This keeps, per frame,
+                // the shader bindings in force when each ring-level indirect buffer
+                // first ran, and restores them when the same buffer runs again — the
+                // bindings only, because the census measured every register and both
+                // constant files identical between the tiles at every draw. A re-entry
+                // after a stall inside the buffer is a resume, not a replay, and is
+                // left alone. Measured: 0 of 116 and 0 of 162 tiled frames asymmetric
+                // with this, 15-35% without. CZ_PM4_NO_REPLAY_RESTORE=1 is the control.
+                static const bool noReplayRestore = getenv("CZ_PM4_NO_REPLAY_RESTORE") != nullptr;
+                if (!noReplayRestore && depth == 0 && !g_stallPlan.pending)
+                {
+                    struct FirstRun { uint32_t addr; Pm4ShaderBinding vs, ps; };
+                    static std::vector<FirstRun> firstRuns;
+                    static uint64_t firstRunsFrame = ~0ull;
+                    const uint64_t fr = g_frames.load(std::memory_order_relaxed);
+                    if (fr != firstRunsFrame)
+                    {
+                        firstRunsFrame = fr;
+                        firstRuns.clear();
+                    }
+                    bool replay = false;
+                    for (const FirstRun& f : firstRuns)
+                        if (f.addr == addr)
+                        {
+                            replay = true;
+                            if (g_boundShaders[0].hash != f.vs.hash ||
+                                g_boundShaders[1].hash != f.ps.hash)
+                            {
+                                g_boundShaders[0] = f.vs;
+                                g_boundShaders[1] = f.ps;
+                                g_replayRestores.fetch_add(1, std::memory_order_relaxed);
+                            }
+                            break;
+                        }
+                    if (!replay && firstRuns.size() < 256)
+                        firstRuns.push_back({ addr, g_boundShaders[0], g_boundShaders[1] });
+                }
                 if (size && (addr & 0x1FFFFFFFu) + uint64_t(size) * 4 <= 0x20000000ull)
                 {
                     if (g_ibVerify)
@@ -2886,6 +3047,7 @@ void Pm4_SetRptrPublishSlot(uint32_t va)
     g_rptrPublishSlot.store(va, std::memory_order_relaxed);
 }
 uint64_t Pm4_RptrMidwalkStores() { return g_rptrMidwalkStores.load(); }
+uint64_t Pm4_ReplayRestores() { return g_replayRestores.load(); }
 uint64_t Pm4_FenceRegressionCount() { return g_fenceRegressions.load(); }
 
 // The census accessors. Under the atomic arm the globals are the live counters; by

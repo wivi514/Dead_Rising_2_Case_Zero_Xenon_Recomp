@@ -173,6 +173,9 @@ void Pm4_SetFenceWord(uint32_t va);
 // Pm4_RptrMidwalkStores is the engagement counter.
 void Pm4_SetRptrPublishSlot(uint32_t va);
 uint64_t Pm4_RptrMidwalkStores();
+// Tile replays whose shader bindings were restored to the first replay's (player
+// issue #3). Zero on a tiled route with the default arm is a defect.
+uint64_t Pm4_ReplayRestores();
 uint64_t Pm4_FenceRegressionCount();
 
 // The microcode bound by the last IM_LOAD/IM_LOAD_IMMEDIATE for a stage. `hash` is
