@@ -35,6 +35,18 @@ Next, in order:
     and NOT the flicker: it persists at a 30 fps cap and with A2C; Xenia is clean. §6fa's
     "second mechanism" (frame 28672) is answered by §6fa.1 — it was not in the registers.
 
+0zb. **JOIN A FRIEND: the title's own path is two title bugs deep and PARKED (2026-09-14).**
+   The operator asked for Case West logs to "properly implement" it; none exist (Xenia
+   has no Live layer, Case West has no friend-join of its own). The native path
+   (friends screen X → search-by-id → the invite machine → the PressStart screen's
+   GameInvites handler) was run on a same-box pair (`tools/coop_pair_friends.sh
+   NATIVE=1`): the invite record's xuids are the wrong way round and the handler's
+   fallback is a null dereference (worked around under `CZ_COOP_FRIENDS_INVITEINFO=1`),
+   and the machine's second GameInvites is posted when no screen takes it (unread:
+   what the PressStart handler's second handling should start). Shipped behaviour
+   unchanged: the part-5 filtered search, which LOOKS like a random search. Cheapest
+   improvement: rename the search dialog's text for a friend join. `coop-plan.md` Part 7.
+
 0z. **REBUILD THE WINDOWS RELEASE LEG WITH `timeBeginPeriod(1)` (part 118).** The
     shipped Windows binary never asks for the 1 ms timer; on a machine where nothing
     else holds it (czamd tonight, and any Windows 11 game behind another window) every

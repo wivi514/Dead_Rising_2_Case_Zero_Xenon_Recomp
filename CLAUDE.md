@@ -42,7 +42,7 @@ the part a future Case West port will reuse verbatim:
 
 ## Transferable gotchas
 
-**THE FULL NUMBERED LEDGER IS `docs/gotchas.md` — 575 entries, and every "gotcha N"
+**THE FULL NUMBERED LEDGER IS `docs/gotchas.md` — 583 entries, and every "gotcha N"
 reference in this repo and in the docs resolves there.** It was split out of this file
 on 2026-08-08, when this file reached 308 KB and was being loaded into every session
 whole. Read it **before making a measurement claim, adding an instrument, believing a
@@ -215,7 +215,11 @@ mask; trust the microcode's own swizzles.
     579-581, `CZ_PM4_NO_TILE_OFFSET=1` the control, 60c887f; owes the operator's eye).
     #5 (loud audio, 40 min in) and #2 (hair flicker — Xenia clean; alpha-to-coverage
     now ON and not the cause) are PARKED — `open-items.md` 0za. None of it is in a
-    published release yet.**
+    published release yet. THE SAME EVENING, "JOIN A FRIEND": no Case West log of it can
+    exist (Xenia has no Live layer); the TITLE'S OWN friend-join path was run on a
+    same-box pair (`tools/coop_pair_friends.sh NATIVE=1`) and is two title bugs deep
+    (`coop-plan.md` Part 7, gotchas 582-583, open-item 0zb); the shipped part-5
+    filtered search is unchanged and merely LOOKS like a random search.**
     The performance hand-off is still `part118-kickoff.md` — PART 118 (the late afternoon of 2026-09-12, unattended, a
     16:00 deadline) GAVE EACH PIPELINE STAGE A PHYSICAL CORE OF ITS OWN: the PMU said the
     guest's Main Thread runs the same instructions at 17% more cycles with our renderer

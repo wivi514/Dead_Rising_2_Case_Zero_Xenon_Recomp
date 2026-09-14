@@ -1360,6 +1360,8 @@ bool XliveSession_Dispatch(uint32_t message, void* buffer, uint32_t bufferLength
         pending.sessionId = sessionId;
         pending.resultsPtr = msg->searchResultsPtr.get();
         pending.resultsSize = msg->resultsBufferSize.get();
+        KLOG("[xlive] XSessionSearchByID %016llX (the friends screen's join, or an invite)\n",
+             (unsigned long long)sessionId);
         pending.ticket = Live().GetSessionDetails(sessionId);
         *result = Begin(std::move(pending));
         return true;

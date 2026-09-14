@@ -6639,3 +6639,15 @@ From phase C part 18 (the frame rate — and none of it was work):
     depth-only "fixed the zombies" and took the cascades and the clears with it, which
     the operator saw as shadows following the player. Bisect by the draw's state (mode,
     depth control, primitive, scissor), not by a shader shared across passes. (§6fa.1)
+
+582. **A title's feature that its menus never reached is untested code.** Case Zero cut
+    the JoinGame screen; everything under it — the friends-screen join, the invite
+    machine, the PressStart handler — shipped with a null dereference the compiler
+    folded from undefined behaviour after a null check, and an invite record filled the
+    wrong way round. Before "implementing it properly", ask whether the shipped title
+    ever ran it. (coop-plan.md Part 7)
+583. **An event dispatched to a screen tree lands on whoever is the target THAT frame.**
+    The invite machine posts its second GameInvites the frame the frontend state flips,
+    the PressStart screen has already handed the top-level target to the main menu, and
+    the sink answers `handled=0` with no error anywhere. Trace the dispatcher's result,
+    not the poster: the poster cannot tell. (coop-plan.md Part 7)

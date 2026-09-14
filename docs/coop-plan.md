@@ -619,6 +619,118 @@ behaviour are proven, the trigger is impossible in normal play, and it is one en
 disable. The `[fallguard]` / `[fall]` log lines confirm it the next time a client hits the
 race in the wild — ask a reporter for the CLIENT's `cz_runtime.log`.
 
+## Part 7: the title's OWN friend join, run to its end and parked (2026-09-14)
+
+**The question:** the operator — *"Is there logs of Case West that we can use so we
+properly implement join a friend from the main menu in Case Zero? Because for now it
+act like it randomly search a game when we try to join a friend."* **The answer: no
+such log exists anywhere and none can.** Every Xenia capture of either title is a solo
+run and Xenia has no Live layer (`grep XSession` over A1/A5 is 0; Case West's capture
+index says the same). Case West's runtime has no friend-join of its own — its
+`XliveSession_SetSearchHostFilter` is ours imported back, with zero callers — and the
+`cw_runtime.log`s on this box are the HOST side of sessions. What exists is our own
+laptop joiner log (`~/DR2CZ-troubleshooting/coop/laptop_joiner_diag_0912.log`), and it
+shows the complaint with a signature: one attempt has `JOIN FRIENDS: opening the
+title's friends screen` followed by `session search: any joinable session` and a plain
+`SEARCHING_FOR_HOST_SESSION` with **no `friends screen: joining` line** (the X never
+reached our hook and the player fell back to the LIVE row); the next attempt has the
+filtered search finding the friend's session. **Both look identical on screen** — the
+same "unsaved progress" dialog, the same slot pick, the same "searching" — because the
+part-5 row IS the JOIN XBOX LIVE GAME search, filtered to one host.
+
+So the title's own path was run instead, on a same-box headless pair
+(`tools/coop_pair_friends.sh`; the two test accounts were made friends on the
+operator's server for it — `wivi514` and `Chuck Greene` 0x30), fifteen runs, under
+`CZ_COOP_FRIENDS_NATIVE=1` (X on the friends screen goes to the title's handler,
+traced; OFF by default, the part-5 filtered search stays the shipped behaviour).
+
+### What the title's friend join is (read from the image, then watched running)
+
+`join_session_or_accept_invite` (friends screen X, 0x824DCC54) → friends interface
+vt[25] has-invite? / vt[27] join → matchmaking vt[38] `sub_825C4290` (queues a
+command with the friend entry; `0x82A57BFC` set = refuse) → `sub_825C3950(R, entry)`
+→ `sub_82553D18(session, record, friendXuid, selfXuid)` → **session vt[8]
+`sub_825CD500(session, sessionInfo, ?, friendXuid, selfXuid)`**: stores the two xuids
+at session+0x328/+0x330, refuses with *"MM Session is unclear when calling search
+session by id"* if +0x110 is set, and enters **LIVE_STATE_SEARCHING_FOR_HOST_SESSION_BY_ID
+(6)** → `XSessionSearchByID` with the friend's session XNKID from the friends
+enumerator (`XONLINE_FRIEND` +0x1C, which `xlive_social.cpp` already fills) — answered
+by our kernel (`0x000B001B` → `GetSessionDetails`; a KLOG names it now). Then the
+title runs **cFESynchronizer's INVITE machine** (`UpdateInvite`, `sub_824BC7D8`,
+state at +0x80): 1 RECEIVED_INVITE → 2 (wait for game state 3) → 3
+QUITING_ONLINE_GAME (transition to `PressStart`) → 4 SWITCH_PROFILE_LOADING (posts a
+**`GameInvites`** event {7, hash, 0} to the frontend manager's sink, manager+0xC0) →
+5 (waits for frontend state 0xE) → 6 GETTING_DETAIL (matchmaking vt[46]; a
+`LIVE_STATE_GET_SESSION_SLOT_NUM` search-by-id) → 7 GETTING_INVITE_TYPE (vt[47] → the
+type into `0x82A59CD4→+0x10`) → 8 SWITCH_PROFILE_LOADING_DONE (posts `GameInvites`
+AGAIN) → 9 CHAR_LOADING (prints, and waits for someone else to clear it). A friend
+join is, by design, a synthesised accepted invite.
+
+The `GameInvites` handler is the **PressStart screen's** (`sub_82501880`, vt[9] of
+0x82073994; its vt[8] `sub_824D83F0` is the START handler): it takes the online object
+`R` (= `*(0x82AD6E90)`→vt[9], vtable 0x8208CBE0), asks `R->vt[13]()` for the local
+player whose xuid equals the invite record's **invitee** (`R+0x130`), calls
+`SetActiveUser(pad)` and `sub_824BEAF8(gameSessionOwner, pad)`, and sets `this+0x21`.
+`R+0x130..0x183` is the title's copy of `X_INVITE_INFO` (0x54 bytes: invitee, inviter,
+title id, XSESSION_INFO, fromGameInvite), and its only writer is `sub_825C78F0` — the
+`XN_LIVE_INVITE_ACCEPTED` → `XInviteGetAcceptedInfo` path — plus the search-by-id
+completion for this join.
+
+### Two defects in the shipped title on that path, and the port's arms for them
+
+1. **The invitee slot holds the FRIEND.** The state-6 completion copies
+   session+0x328 (friend) into `R+0x130` and +0x330 (self) into `R+0x138`, so
+   `vt[13]` finds no local player, and the handler's else branch (`vt[14]` = the
+   local player matching +0x138, i.e. us — found) then **dereferences the null it
+   just tested** (0x82501BBC: `lwz r11,0(r30)` with r30 = 0 and `this` folded to 0 —
+   the compiler's treatment of undefined behaviour after a null check). On the
+   console this is a crash too; the JoinGame screen was cut from Case Zero, so the path
+   never ran there. `CZ_COOP_FRIENDS_INVITEINFO=1` swaps the two xuids when the
+   handler runs with `vt[13]` null and `vt[14]` set — the record the console's guide
+   delivers for "join session in progress" — and the flow proceeds: `SetActiveUser`,
+   states 5-9 (runs 6+).
+2. **The second `GameInvites` is posted to nobody.** State 8 posts the moment the
+   frontend state reads 0xE, and by then the PressStart screen has handed the sink's
+   top-level target to the main menu (`TitleScreen`, vtable 0x820739E0, handles
+   Achievements/OnLeaderBoard, not GameInvites): the sink reports `handled=0`
+   (`sub_827F01B8` traced), the machine sits in CHAR_LOADING, and the only thing that
+   ever took the event was the PressStart screen coming back after the 100 s idle
+   timeout (run 11: `handled` at 211 s, then nothing). Re-dispatching it every frame
+   (built in) is not taken by anyone at frontend state 0xE; handing it to the surviving
+   PressStart object directly (`CZ_COOP_FRIENDS_DIRECT=1`, run 15) is "handled" without
+   `SetActiveUser` and still starts nothing. **What the second handling is supposed to
+   do — presumably open GameSelect in an invite mode and join from the record's
+   XSESSION_INFO — is the unread half**, and it is where this stops.
+3. (Port-side, fixed for good) **`GameplayFlow::Enter` armed a HOST request on the
+   invited joiner** — the title's own Enter hosts whenever IS-COOP is set and the
+   session is not live (see "The lever"), and so did our hook's reading of it. The
+   hook now asks `CoopFriends_InviteState()` (the machine's +0x80) and leaves a
+   running invite alone; the title's own Enter still hosts (run 7: `host-requested
+   byte = 1` after it), which says the console joins BEFORE the level load, i.e. the
+   invite flow must reach the join from the second `GameInvites`, not after loading.
+
+### Where this leaves "join a friend"
+
+* **Shipped behaviour is unchanged**: JOIN FRIENDS → the title's friends screen → X →
+  the part-5 filtered search (`ONLY the session hosted by <xuid>`). It is not a random
+  search; it looks like one. When the X never reaches the hook (attempt 1 on the
+  laptop) the player is left on a friends list that did nothing and backs out into the
+  LIVE row, which IS a random search — the two are told apart in the log by the
+  `friends screen: joining` line.
+* **The native path is 60% run and documented**; finishing it means reading what the
+  PressStart handler does on its second `GameInvites` (the `this+0x21` branch and
+  `sub_824BEAF8`'s consumer, `gameSessionOwner+0x40`) and getting that to fire at
+  frontend state 0xE. It would replace the slot-picker-plus-search with a
+  profile-switch-plus-slot-picker; the player would see `Press Start` flash by. Not
+  obviously better, and two title bugs deep — parked as `open-items.md` 0zb.
+* **A cheap UX fix on the shipped path** is to say what is happening: the search
+  dialog's "Searching for host session" could read "Joining <friend>'s game" — a string
+  edit in the .bcs (the table is rebuildable since part 92).
+
+**Harness:** `tools/coop_pair_friends.sh` (`NATIVE=1` for the arms). Fifteen logs in
+`~/DR2CZ-troubleshooting/coop-native/`. The joiner's press timing: the title screen
+accepts START ~30 s in, so `START,NONE,NONE,A,NONE,DOWN,A,NONE,DOWN,A,NONE,NONE,X`.
+
 ## Online tunables (dataflow-bound, gotcha 241)
 
 Loader `sub_824A2470`; bank based at 0x82A57xxx. The knobs we will want:

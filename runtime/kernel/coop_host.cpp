@@ -250,6 +250,8 @@ const char* WhyNotHosting(PPCContext& ctx, uint8_t* base, const Objects& o, char
 // SYNCPOINT_TYPE_GAMESTATE_FINALIZE_START_LEVEL forever — the infinite loading
 // of co-op part 6, a regression from "CZ_XLIVE_COOP=1 implies hosting", which
 // put this hook on the joiner for the first time (docs/coop-plan.md part 6).
+uint32_t CoopFriends_InviteState();   // coop_friends.cpp: cFESynchronizer's invite state, 0 = idle
+
 PPC_FUNC(sub_82537FA0)
 {
     if (HostRequested())
@@ -268,12 +270,18 @@ PPC_FUNC(sub_82537FA0)
         // that has never armed holds the ctor's values there.
         const uint32_t mm = o.sessionInfo ? o.sessionInfo + 0x1C : 0;
         const bool joinInfo = mm && !LoadU8(base, mm) && LoadU32(base, mm + 4) == 1;
-        if (o.session && (live || joinInfo))
+        // The third reading: the invite machine is running (a friends-screen
+        // join or an accepted invite, coop_friends.cpp) — it joins after the
+        // level is up, and a host request armed here would create a session
+        // of our own instead.
+        const uint32_t inviting = CoopFriends_InviteState();
+        if (o.session && (live || joinInfo || inviting))
         {
-            fprintf(stderr, "[coop] GameplayFlow::Enter: session %08X %s%s — IS-COOP left "
+            fprintf(stderr, "[coop] GameplayFlow::Enter: session %08X %s%s%s — IS-COOP left "
                             "at %u, no host request to arm (loading-prev-game byte %u)\n",
                     o.session, live ? "is already live" : "",
                     joinInfo ? (live ? ", and the mm_info is a JOIN's" : "carries a JOIN's mm_info") : "",
+                    inviting ? " — the invite machine is running (a join)" : "",
                     LoadU8(base, o.session + kSessionIsCoopByte), LoadU8(base, o.session + 0x92));
         }
         else if (o.session)

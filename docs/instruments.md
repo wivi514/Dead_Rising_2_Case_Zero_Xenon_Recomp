@@ -4242,6 +4242,18 @@ CZ_COOP_JOIN_PROMPT=0  THE CONTROL ARM for the host's "<player> wants to join yo
                    =0 restores the shipped behaviour, where the session-details handler
                    posts a synthetic "Yes" in game states 5/6 and the join goes through
                    unasked. Inert until a session has a pending client
+CZ_COOP_FRIENDS_NATIVE=1  X on the title's friends screen goes to the TITLE'S OWN join
+                   handler instead of the part-5 filtered search: search-by-id, the
+                   invite machine (cFESynchronizer::UpdateInvite) and both GameInvites
+                   dispatches traced (`[coop] ...`). OFF by default — the path has two
+                   title-side defects (coop-plan.md Part 7). Diagnostic; not a player arm
+CZ_COOP_FRIENDS_INVITEINFO=1  with the above: swap the invite record's invitee/inviter
+                   xuids (R+0x130/+0x138) when the PressStart handler would otherwise
+                   dereference null — the console guide's record shape. Gets the machine
+                   to CHAR_LOADING
+CZ_COOP_FRIENDS_DIRECT=1  with the above: hand the machine's second GameInvites to the
+                   surviving PressStart screen object directly when the sink took it
+                   nowhere. "Handled", starts nothing — kept as the last experiment run
 CZ_COOP_CALL_TRACE=1  every step of both host-side routes from "a client is pending"
                    to the confirm: the details handler's state word and branch, the
                    synthetic Yes arriving at the game session's event handler, the
