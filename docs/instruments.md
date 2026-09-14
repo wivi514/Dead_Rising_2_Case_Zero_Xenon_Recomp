@@ -4507,4 +4507,23 @@ CZ_SLOW_ZONE_OPEN_MS=N    A DEV ARM: every open of a zone archive (`environment/
                           co-op pair (tools/coop_pair_reload.sh) can have a SLOW host and
                           a fast joiner, the shape the two test machines cannot make.
                           Never in a release configuration.
+CZ_LEADERBOARD_FLUSH_S=N  THE FIX for player issue #4 (the PP board "does not sync"), ON by
+                          default at 2. The title's stats cache (cStatsCache) writes a dirty
+                          PP board at most once every 360 s — the float at 0x8207BFE0, its
+                          only two readers being the constructor and the per-frame update —
+                          and a write refused while a level loads (the session is busy)
+                          waits the whole six minutes again. The cache is only dirtied by a
+                          save or a menu load, so 2 s gates nothing a player did not ask
+                          for. `=360` is the title's own cadence (the control).
+                          cpu/leaderboard_flush.cpp
+CZ_LEADERBOARD_TRACE=1    the chain: CacheStat(board), the per-frame update (every 30 s and
+                          on every dirty flip), WriteBoard's result, and
+                          cMsGameSession::WriteStats with the session state (+0x1E8: 2 =
+                          single-player write, 3 = queued on the in-game session), the HW MM
+                          live state and the pending count. Then `stats: view 4` is the
+                          000B0025 the kernel decoded and `queued stats` is libxlive's queue.
+CZ_LEADERBOARD_FORCE_WRITE=N  A DEV ARM: marks the cache dirty on the N-th update call, so
+                          the whole chain (title -> queue -> server row) can be watched
+                          headless without a save. Writes whatever the cache holds; the
+                          server aggregates PP as MAX, so a low value changes no ranking.
 ```
