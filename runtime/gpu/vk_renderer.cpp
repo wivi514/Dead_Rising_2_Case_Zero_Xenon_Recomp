@@ -3429,6 +3429,9 @@ bool LoadShaderMeta(const std::filesystem::path& path, ShaderMeta& meta)
 // draw quietly using the previous draw's blend mode.
 constexpr uint32_t kPassDrawId = 1u << 0;
 constexpr uint32_t kPassRtShadow = 1u << 1;
+// bit 2: the draw's RB_COLORCONTROL alpha-to-mask bit, honoured as Vulkan
+// alpha-to-coverage on the multisampled EDRAM (player issue #2, the hair flicker).
+constexpr uint32_t kPassAlphaToCoverage = 1u << 2;
 
 struct PipelineKey
 {
@@ -5856,6 +5859,11 @@ struct Renderer
     // CZ_VK_DRAW_CENSUS — the frame whose every draw is being listed, and the file it
     // goes to. Zero means disarmed, which is every frame until F9 is pressed.
     uint64_t drawCensusFrame = 0;
+    // CZ_VK_DEPTH_HALVES: the probe saw a seam cut on this frame and wants the full
+    // capture (picture, census, every snapshot) of the next frame it can arm.
+    bool depthHalvesTrigger = false;
+    uint64_t depthHalvesLastTrigger = 0;
+    unsigned depthHalvesTriggers = 0;
     uint64_t capturePictureFrame = 0;   // CZ_CAPTURE_KEY: write this frame's picture
     // THE EDGE-TRIGGERED PRESENT READBACK (part 76, item 1). Frames up to and including
     // this number take the present readback even in the swapchain arm; zero means never,
@@ -5971,6 +5979,10 @@ struct Renderer
 
     uint64_t frame = 0;
     uint64_t drawsThisFrame = 0;
+    // Near-actor early prepass draws (mode 5, the null pixel shader, a tile scissor)
+    // this frame — the CZ_VK_DEPTH_HALVES probe prints it so "no depth in either half"
+    // can be told apart from "no near actor this frame".
+    uint32_t prepassDrawsThisFrame = 0, lastPrepassDraws = 0;
     // The previous frame's final count — the only complete denominator available
     // mid-frame, and what tells an instrument firing at draw N whether N is early.
     uint64_t lastFrameDraws = 0;
@@ -12434,6 +12446,11 @@ static PipelineBuildResult BuildPipelineObject(const PipelineKey& key, const Sha
     // attachments). The RT trace/factor pipelines below have their own 1x state —
     // they render into single-sample images and RT is refused under MSAA anyway.
     ms.rasterizationSamples = R->msaaSamples;
+    // The guest's alpha-to-mask, natively (see kPassAlphaToCoverage). Never on the
+    // draw-ID pass: an index painted at fractional coverage is a different index.
+    ms.alphaToCoverageEnable =
+        ((key.passFlags & kPassAlphaToCoverage) && !(key.passFlags & kPassDrawId))
+            ? VK_TRUE : VK_FALSE;
 
     // RB_DEPTHCONTROL: stencil_enable:1, z_enable:1, z_write_enable:1, ?:1,
     // zfunc:3 @4, backface_enable:1 @7.
@@ -14203,6 +14220,8 @@ void BeginFrame()
     }
     R->lastFrameDraws = R->drawsThisFrame;
     R->drawsThisFrame = 0;
+    R->lastPrepassDraws = R->prepassDrawsThisFrame;
+    R->prepassDrawsThisFrame = 0;
     // The scene-camera pick is PER FRAME. Left latched, it would hold the largest draw
     // of the whole RUN, so a .pose would carry a camera from some frame minutes earlier
     // while looking exactly like this frame's — a stale value that announces nothing
@@ -23142,7 +23161,29 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
                 Count(msg);
             }
         }
-        else if (!noAlphaTest && (cc & 0x10))
+        // ALPHA-TO-MASK AS VULKAN ALPHA-TO-COVERAGE (player issue #2, 2026-09-14).
+        // Since part 93 the EDRAM is a real multisampled image (msaa=2 in
+        // cz_settings.txt by default), so the hardware feature has a native spelling:
+        // the fragment's alpha becomes a sample-coverage mask and the resolve
+        // averages it. Chuck's hair is 96 such draws a frame (A2M + alpha test GREATER),
+        // and with the mask declined the strands were a hard alpha test popping in and
+        // out of pixel coverage as the head idles — a one-frame dropout flicker on
+        // every burst, absent on Xenia, which honours the mask. Gated on the host
+        // target really being multisampled AND the guest surface being multisampled
+        // (RB_SURFACE_INFO msaa != 0), because coverage over one sample is just a
+        // second alpha test. The shader-side dither (CZ_VK_A2M_MODE, the part-46 arm
+        // caches) is the single-sample stand-in and is unaffected. CZ_VK_NO_A2C=1 is
+        // the control.
+        static const bool noA2c = EnvOn("CZ_VK_NO_A2C");
+        if (!noAlphaTest && !noA2c && (cc & 0x10) && R->msaaSamples != VK_SAMPLE_COUNT_1_BIT &&
+            ((regs[xenos::kRbSurfaceInfo] >> 16) & 3) != 0)
+        {
+            key.passFlags |= kPassAlphaToCoverage;
+            COUNT("draw: ALPHA-TO-MASK as Vulkan alpha-to-coverage on the MSAA EDRAM");
+        }
+        if (!noAlphaTest && (cc & 0x10) && !(key.passFlags & kPassAlphaToCoverage) && (cc & 0x8))
+            COUNT("draw: ALPHA-TO-MASK declined (single-sample host or guest surface)");
+        else if (!noAlphaTest && (cc & 0x10) && !(cc & 0x8))
         {
             // A2M with the alpha test DISABLED. The clip is the only channel we have
             // for it, and the shader only compiles the clip when this key bit is set,
@@ -23203,6 +23244,72 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
             if (skip && strstr(skip, hex))
             {
                 Count("draw: filtered out (CZ_VK_SKIP_VS)");
+                return;
+            }
+        }
+        // CZ_VK_SKIP_LATE_ACTOR=1 — DIAGNOSTIC (player issue #3): drop the near
+        // actors' LATE passes — the per-part depth-only draws with a material pixel
+        // shader (mode 5, not the null shader) and the EQUAL-depth blended colour
+        // passes — so the resolved depth at the tile's end is the EARLY prepass plus
+        // the world, and the picture shows a black hole wherever the early prepass
+        // blocked the world and nothing at all where it did not.
+        static const bool skipLateActor = EnvOn("CZ_VK_SKIP_LATE_ACTOR");
+        if (skipLateActor)
+        {
+            const uint32_t mc = regs[0x2208] & 7;
+            const uint32_t dcv = regs[xenos::kRbDepthControl];
+            const bool depthOnlyMaterial =
+                mc == 5 && psBind.hash != 0x438c2af84c78a133ull &&
+                (regs[xenos::kRbColorMask] & 0xF) == 0;
+            const bool equalBlend = ((dcv >> 4) & 7) == 2 && !((dcv >> 2) & 1);
+            if (depthOnlyMaterial || equalBlend)
+            {
+                Count("draw: filtered out (CZ_VK_SKIP_LATE_ACTOR)");
+                return;
+            }
+            // CZ_VK_SKIP_WORLD=1 on top: drop every colour-writing tile draw as well,
+            // so the tile's resolved depth is the clear plus the early prepass alone.
+            static const bool skipWorld = EnvOn("CZ_VK_SKIP_WORLD");
+            const uint32_t scBr = regs[xenos::kPaScWindowScissorBr];
+            if (skipWorld && mc == 4 && (regs[xenos::kRbColorMask] & 0xF) != 0 &&
+                (scBr == 0x02D00280u || scBr == 0x02D00500u))
+            {
+                Count("draw: filtered out (CZ_VK_SKIP_WORLD)");
+                return;
+            }
+        }
+        // CZ_VK_SKIP_DEPTHRECT=1 — DIAGNOSTIC (player issue #3): drop the depth-only
+        // rect that follows each tile's early actor prepass (prim 8, mode 5,
+        // RB_DEPTHCONTROL 0x76 = ALWAYS + z-write, mask 0, z = 1.0 over the whole
+        // tile). If the prepass depth survives to the tile's end with this skipped and
+        // not without, that rect is what wipes it.
+        static const bool skipDepthRect = EnvOn("CZ_VK_SKIP_DEPTHRECT");
+        if (skipDepthRect && draw.primType == 8 && (regs[0x2208] & 7) == 5 &&
+            regs[xenos::kRbDepthControl] == 0x76)
+        {
+            Count("draw: filtered out (CZ_VK_SKIP_DEPTHRECT)");
+            return;
+        }
+        // ...and the same two by PIXEL shader (player issue #3's bisection: the
+        // early actor prepass is a pixel-shader-identified pass). CZ_VK_SKIP_PS_DEPTHONLY
+        // narrows the skip to depth-only draws (RB_MODECONTROL mode 5), so a shader
+        // shared between a prepass and a colour pass loses only the prepass.
+        static const char* onlyPs = Env("CZ_VK_ONLY_PS");
+        static const char* skipPs = Env("CZ_VK_SKIP_PS");
+        static const bool skipPsDepthOnly = EnvOn("CZ_VK_SKIP_PS_DEPTHONLY");
+        if (onlyPs || skipPs)
+        {
+            char hex[24];
+            snprintf(hex, sizeof hex, "%016llx", (unsigned long long)psBind.hash);
+            if (onlyPs && !strstr(onlyPs, hex))
+            {
+                Count("draw: filtered out (CZ_VK_ONLY_PS)");
+                return;
+            }
+            if (skipPs && strstr(skipPs, hex) &&
+                (!skipPsDepthOnly || (regs[0x2208] & 7) == 5))
+            {
+                Count("draw: filtered out (CZ_VK_SKIP_PS)");
                 return;
             }
         }
@@ -24180,7 +24287,7 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
                        // copies of one draw can be read side by side when only one of
                        // them looks right. RB_COLORCONTROL and RB_ALPHA_REF beside them
                        // because the blend/alpha inputs are what such a pair differs in.
-                       " wo=%08X sc=%08X/%08X cc=%08X aref=%g vsc=%08X psc=%08X psva=%08X/%u vsva=%08X/%u",
+                       " wo=%08X sc=%08X/%08X cc=%08X aref=%g vsc=%08X psc=%08X psva=%08X/%u vsva=%08X/%u si=%08X ci=%08X di=%08X mc=%X vc255=(%g,%g,%g,%g) vte=%X vp=(%g,%g,%g,%g,%g,%g)",
                        (unsigned long long)R->drawsThisFrame, draw.indexCount, draw.primType,
                        (unsigned long long)vsBind.hash, (unsigned long long)psBind.hash,
                        regs[xenos::kRbColorMask] & 0xF, regs[xenos::kRbBlendControl0],
@@ -24246,7 +24353,24 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
                        // packet), so a tile replay binding a different shader for
                        // the same draw can be told apart as "same address, different
                        // bytes" versus "a different load".
-                       psBind.ucodeVa, psBind.sizeDwords, vsBind.ucodeVa, vsBind.sizeDwords)
+                       psBind.ucodeVa, psBind.sizeDwords, vsBind.ucodeVa, vsBind.sizeDwords,
+                       // The SURFACES: RB_SURFACE_INFO, RB_COLOR_INFO, RB_DEPTH_INFO and
+                       // RB_MODECONTROL's mode — which EDRAM tiles a draw writes, and
+                       // whether it is a depth-only pass (5) or a colour one (4).
+                       regs[xenos::kRbSurfaceInfo], regs[xenos::kRbColorInfo],
+                       regs[xenos::kRbDepthInfo], regs[0x2208] & 7,
+                       // VS c255: the prepass vertex shader's kill switch (§6fa follow-up
+                       // — `abs(vertexIndex) >= c255.x` feeds the position's w).
+                       F32(regs[xenos::kAluConstantBase + 255 * 4]),
+                       F32(regs[xenos::kAluConstantBase + 255 * 4 + 1]),
+                       F32(regs[xenos::kAluConstantBase + 255 * 4 + 2]),
+                       F32(regs[xenos::kAluConstantBase + 255 * 4 + 3]),
+                       // The viewport transform: a depth range collapsed to the far
+                       // plane is one way a title parks a pass.
+                       regs[xenos::kPaClVteCntl], F32(regs[xenos::kPaClVportXScale]),
+                       F32(regs[xenos::kPaClVportXOffset]), F32(regs[xenos::kPaClVportYScale]),
+                       F32(regs[xenos::kPaClVportYOffset]), F32(regs[xenos::kPaClVportZScale]),
+                       F32(regs[xenos::kPaClVportZOffset]))
         : psbind ? snprintf(psbindLine, sizeof psbindLine,
                             "[psbind] frame=%llu ps=%016llx mask=%X blend=%08X",
                             (unsigned long long)R->frame,
@@ -24293,6 +24417,26 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
             psbindAt += snprintf(psbindLine + psbindAt, sizeof psbindLine - psbindAt,
                                  " va=%08X v0=%g/%g/%g", sva, double(v[0]),
                                  double(v[1]), double(v[2]));
+            // A RECT LIST's extent is its vertex data — D3D's clears are rect draws
+            // with the viewport transform OFF (vte=300) and XY already in pixels — so
+            // the other two vertices are printed too (stride from the fetch constant).
+            const uint32_t stride = a.strideDwords * 4;
+            if (draw.primType == 8 && stride >= 12 && GuestRangeOk(sva, stride * 2 + 12))
+            {
+                for (int vi = 1; vi < 3; vi++)
+                {
+                    const uint32_t* q = reinterpret_cast<const uint32_t*>(base + sva + stride * vi);
+                    float w[3];
+                    for (int k = 0; k < 3; k++)
+                    {
+                        const uint32_t d = __builtin_bswap32(q[k]);
+                        memcpy(&w[k], &d, 4);
+                    }
+                    psbindAt += snprintf(psbindLine + psbindAt, sizeof psbindLine - psbindAt,
+                                         " v%d=%g/%g/%g", vi, double(w[0]), double(w[1]),
+                                         double(w[2]));
+                }
+            }
             break;
         }
     }
@@ -25267,7 +25411,21 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
         // it must not be credited with anything, and the counter is what says so
         // (gotcha 151). It stays because the alternative is rediscovering the rule the
         // next time a title puts a window-coordinate draw inside a tile.
-        const uint32_t wo = regs[xenos::kPaScWindowOffset];
+        // ...AND IT EXECUTES NOW (player issue #3, 2026-09-14): the counter below was
+        // zero because the one window-coordinate draw this title puts INSIDE a tile
+        // — D3D's Clear(Z) after the near-actor prepass, a rect over the whole tile
+        // with the window offset reset to ZERO for the duration of the clear — carries
+        // no offset of its own. On hardware it covers whichever tile is in EDRAM; here
+        // it landed on the left half of the stand-in during BOTH replays, so the right
+        // tile's prepass depth was never cleared, the world behind the near zombie was
+        // rejected there, and its blended colour pass composited onto the clear colour:
+        // opaque and dark on the right of the seam, translucent (correct) on the left.
+        // The executor names the tile (`tileWindowOffset`); the offset is undone the
+        // same way. CZ_PM4_NO_TILE_OFFSET=1 is the control arm.
+        const uint32_t wo = regs[xenos::kPaScWindowOffset] ? regs[xenos::kPaScWindowOffset]
+                                                            : draw.tileWindowOffset;
+        if (!regs[xenos::kPaScWindowOffset] && draw.tileWindowOffset)
+            COUNT("draw: EDRAM-space draw inside a tile replay placed at the tile's origin");
         auto signed15 = [](uint32_t v) {
             return int32_t(v & 0x7FFF) - int32_t((v & 0x4000) ? 0x8000 : 0);
         };
@@ -26856,6 +27014,10 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
     }
     ++R->drawsThisFrame;
     ++R->drawsThisPass;
+    if ((regs[0x2208] & 7) == 5 && psBind.hash == 0x438c2af84c78a133ull &&
+        (regs[xenos::kPaScWindowScissorBr] == 0x02D00280u ||
+         regs[xenos::kPaScWindowScissorBr] == 0x02D00500u))
+        ++R->prepassDrawsThisFrame;
     // Unconditional, and it costs exactly what the line above it costs. Gating it on the
     // instrument would put a static-init guard load on the per-draw path, which is the
     // shape part 76 had to take back off it (gotcha 453).
@@ -30619,6 +30781,11 @@ void DoSwapImpl(uint8_t* base, uint32_t frontBuffer, uint32_t width, uint32_t he
         Env("CZ_VK_DRAW_CENSUS_EVERY") ? strtoull(Env("CZ_VK_DRAW_CENSUS_EVERY"), nullptr, 10) : 0;
     if (censusEvery && ((R->frame + 1) % censusEvery) == 0)
         snapKey = true;
+    if (R->depthHalvesTrigger)
+    {
+        R->depthHalvesTrigger = false;
+        snapKey = true;
+    }
     bool snapKeyNow = snapKey;   // see the CZ_CAPTURE_KEY note at the dump
     // The SAME press also arms the per-draw census for the NEXT frame — next, not this
     // one, because this frame's draws are already recorded by the time a present is
@@ -30830,6 +30997,22 @@ void DoSwapImpl(uint8_t* base, uint32_t frontBuffer, uint32_t width, uint32_t he
                         hi = std::max(hi, d);
                     }
                     const double span = hi > lo ? (hi - lo) : 1.0;
+                    // The two halves' own ranges as well — a tile question (player
+                    // issue #3) is a per-half question, and the stretch hides the
+                    // absolute value entirely.
+                    {
+                        const size_t rowBytes = size_t(snap.image.width) * 4;
+                        double lo0 = 1e30, hi0 = -1e30, lo1 = 1e30, hi1 = -1e30;
+                        for (size_t i = 0; i < n; i += 4)
+                        {
+                            const double d = readNorm(i);
+                            const bool right = (i % rowBytes) >= rowBytes / 2;
+                            if (right) { lo1 = std::min(lo1, d); hi1 = std::max(hi1, d); }
+                            else       { lo0 = std::min(lo0, d); hi0 = std::max(hi0, d); }
+                        }
+                        fprintf(stderr, "[vksnap] depth %s: all %.6f..%.6f | left %.6f..%.6f | "
+                                        "right %.6f..%.6f\n", path, lo, hi, lo0, hi0, lo1, hi1);
+                    }
                     for (size_t i = 0; i < n; i += 4)
                     {
                         const uint8_t g = uint8_t(255.0 * (readNorm(i) - lo) / span);
@@ -30851,6 +31034,83 @@ void DoSwapImpl(uint8_t* base, uint32_t frontBuffer, uint32_t width, uint32_t he
         fprintf(stderr, "[vk] dumped %zu resolve snapshots to %s%s\n",
                 R->snapshots.size(), snapDir,
                 wroteOne ? "" : "  — NONE OF THEM WERE WRITTEN");
+    }
+
+    // CZ_VK_DEPTH_HALVES=<guest addr> — EVERY frame, the min/max depth of each half of
+    // that depth snapshot, one line a frame. A sampled dump (every 64th frame) showed the
+    // near-actor prepass's depth landing in the LEFT half on one sample and the RIGHT on
+    // the next (player issue #3), and a period cannot be read off a 64-frame stride. A
+    // readback stall a frame: diagnostic only.
+    static const uint32_t depthHalvesAddr =
+        Env("CZ_VK_DEPTH_HALVES") ? uint32_t(strtoul(Env("CZ_VK_DEPTH_HALVES"), nullptr, 16)) : 0;
+    if (depthHalvesAddr)
+    {
+        for (const auto& [dest, snap] : R->snapshots)
+        {
+            if ((dest & 0x1FFFFFFF) != depthHalvesAddr || !snap.fromDepth)
+                continue;
+            const size_t n = size_t(snap.image.width) * snap.image.height * 4;
+            if (n > R->readback.size)
+                continue;
+            RunImmediate([&](VkCommandBuffer cb) {
+                Image& img = const_cast<Image&>(snap.image);
+                Barrier(cb, img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_ASPECT_DEPTH_BIT);
+                VkBufferImageCopy c{};
+                c.imageSubresource = { VK_IMAGE_ASPECT_DEPTH_BIT, 0, 0, 1 };
+                c.imageExtent = { img.width, img.height, 1 };
+                vkCmdCopyImageToBuffer(cb, img.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                                       R->readback.buffer, 1, &c);
+                Barrier(cb, img, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_ASPECT_DEPTH_BIT);
+            });
+            const bool isFloat = R->depth.format == VK_FORMAT_D32_SFLOAT_S8_UINT;
+            const size_t rowBytes = size_t(snap.image.width) * 4;
+            double lo0 = 1e30, hi0 = -1e30, lo1 = 1e30, hi1 = -1e30;
+            size_t near0 = 0, near1 = 0;
+            // The column extent of the near pixels on each side: an object straddling the
+            // seam populates column W/2-1 on the left AND W/2 on the right; one that
+            // stops dead at the seam on one side is the tile defect.
+            long colMin0 = 1 << 30, colMax0 = -1, colMin1 = 1 << 30, colMax1 = -1;
+            for (size_t i = 0; i < n; i += 4)
+            {
+                double d;
+                if (isFloat) { float fv; memcpy(&fv, R->readback.mapped + i, 4); d = fv; }
+                else { uint32_t v; memcpy(&v, R->readback.mapped + i, 4); d = double(v & 0xFFFFFFu) / 16777215.0; }
+                const long col = long((i % rowBytes) / 4);
+                if ((i % rowBytes) >= rowBytes / 2)
+                {
+                    lo1 = std::min(lo1, d); hi1 = std::max(hi1, d);
+                    if (d < 0.999) { ++near1; colMin1 = std::min(colMin1, col); colMax1 = std::max(colMax1, col); }
+                }
+                else
+                {
+                    lo0 = std::min(lo0, d); hi0 = std::max(hi0, d);
+                    if (d < 0.999) { ++near0; colMin0 = std::min(colMin0, col); colMax0 = std::max(colMax0, col); }
+                }
+            }
+            fprintf(stderr, "[vkdepth] f%06llu %08X prepass=%u left %.6f..%.6f (%zu px <0.999, cols %ld..%ld) | right "
+                            "%.6f..%.6f (%zu px <0.999, cols %ld..%ld)\n",
+                    (unsigned long long)R->frame, depthHalvesAddr,
+                    R->prepassDrawsThisFrame ? R->prepassDrawsThisFrame : R->lastPrepassDraws,
+                    lo0, hi0, near0,
+                    near0 ? colMin0 : -1, colMax0, lo1, hi1, near1, near1 ? colMin1 : -1, colMax1);
+            // A CUT: a big near object touching the seam on one side with the other side
+            // not touching it. Arm the full capture of a coming frame (the cut lasts
+            // frames), at most 8 a run, 200 frames apart.
+            const bool cutR = near1 > 2000 && colMin1 == long(snap.image.width / 2) &&
+                              colMax0 != long(snap.image.width / 2 - 1);
+            const bool cutL = near0 > 2000 && colMax0 == long(snap.image.width / 2 - 1) &&
+                              colMin1 != long(snap.image.width / 2);
+            if ((cutR || cutL) && R->depthHalvesTriggers < 8 &&
+                R->frame > R->depthHalvesLastTrigger + 200)
+            {
+                R->depthHalvesTrigger = true;
+                R->depthHalvesLastTrigger = R->frame;
+                ++R->depthHalvesTriggers;
+                fprintf(stderr, "[vkdepth] f%06llu SEAM CUT (%s side empty) — capturing the "
+                                "frame after next\n",
+                        (unsigned long long)R->frame, cutR ? "left" : "right");
+            }
+        }
     }
 
     static const uint64_t statsEvery =
@@ -31270,13 +31530,16 @@ void DoSwapImpl(uint8_t* base, uint32_t frontBuffer, uint32_t width, uint32_t he
             lastEager = p.eagerTicks;
             lastMidwalk += dMidwalk;
             lastHeldFast = p.heldFastTicks;
-            static uint64_t lastReplayRestores = 0;
+            static uint64_t lastReplayRestores = 0, lastTileOffsetDraws = 0;
             const uint64_t dReplay = Pm4_ReplayRestores() - lastReplayRestores;
             lastReplayRestores += dReplay;
+            const uint64_t dTileOff = Pm4_TileOffsetDraws() - lastTileOffsetDraws;
+            lastTileOffsetDraws += dTileOff;
             fprintf(stderr,
                     "[vkprof]   ring latency arms: eager ticks %llu of %llu (%.1f%%) | "
                     "mid-walk rptr stores %llu (%.1f/frame) | held-fast naps %llu "
-                    "(%.1f/frame) | tile-replay shader restores %llu (%.2f/frame)\n",
+                    "(%.1f/frame) | tile-replay shader restores %llu (%.2f/frame) | "
+                    "EDRAM-space draws given the tile's offset %llu (%.2f/frame)\n",
                     (unsigned long long)dEager, (unsigned long long)dTicks,
                     dTicks ? 100.0 * double(dEager) / double(dTicks) : 0.0,
                     (unsigned long long)dMidwalk,
@@ -31284,7 +31547,9 @@ void DoSwapImpl(uint8_t* base, uint32_t frontBuffer, uint32_t width, uint32_t he
                     (unsigned long long)dHeldFast,
                     frames ? double(dHeldFast) / double(frames) : 0.0,
                     (unsigned long long)dReplay,
-                    frames ? double(dReplay) / double(frames) : 0.0);
+                    frames ? double(dReplay) / double(frames) : 0.0,
+                    (unsigned long long)dTileOff,
+                    frames ? double(dTileOff) / double(frames) : 0.0);
 
             // Part 107 item 2: the Draw Thread's fence wait, parked. Every episode
             // is classified, so "the park never engaged" (all readyAtEntry / spin) and

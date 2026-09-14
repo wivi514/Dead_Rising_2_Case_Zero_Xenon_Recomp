@@ -528,6 +528,7 @@ Pm4ShaderBinding g_boundShaders[2];
 // Tile replays whose shader bindings had drifted and were restored (see the
 // INDIRECT_BUFFER case). The engagement gate for the player-issue-#3 fix.
 std::atomic<uint64_t> g_replayRestores{ 0 };
+std::atomic<uint64_t> g_tileOffsetDraws{ 0 };
 // CZ_PM4_BIND_CHECK=1 (player issue #3): at every draw, the pixel-shader binding is
 // compared against the last PS load packet the walk SAW — a disagreement means a load
 // was skipped, refused or overwritten between the load and the draw, and the trail of
@@ -1961,9 +1962,11 @@ uint32_t ExecutePacket(uint8_t* base, const Source& fetch, uint32_t pos, uint32_
         {
             const uint32_t tl = g_regs[xenos::kPaScWindowScissorTl];
             const uint32_t br = g_regs[xenos::kPaScWindowScissorBr];
-            fprintf(stderr, "[ldtrace] f=%llu d=%d DRAW sc=%u,%u..%u,%u ps=%016llx/%08X/%u "
+            fprintf(stderr, "[ldtrace] f=%llu d=%d DRAW wo=%08X mode=%u prim=%u sc=%u,%u..%u,%u ps=%016llx/%08X/%u "
                             "vs=%016llx pred=%u -> %s\n",
                     (unsigned long long)g_frames.load(std::memory_order_relaxed), depth,
+                    g_regs[xenos::kPaScWindowOffset], g_regs[0x2208] & 7,
+                    opcode == 0x22 ? (fetch(pos + 2) & 0x3F) : (fetch(pos + 1) & 0x3F),
                     tl & 0x7FFF, (tl >> 16) & 0x7FFF, br & 0x7FFF, (br >> 16) & 0x7FFF,
                     (unsigned long long)g_boundShaders[1].hash, g_boundShaders[1].ucodeVa,
                     g_boundShaders[1].sizeDwords, (unsigned long long)g_boundShaders[0].hash,
@@ -2136,6 +2139,33 @@ uint32_t ExecutePacket(uint8_t* base, const Source& fetch, uint32_t pos, uint32_
             else if (d.indexed)
             {
                 d.indexed = false; // a DMA draw with no address is not one we can honour
+            }
+            // The tile's window offset for an EDRAM-space draw (see Pm4Draw). The
+            // predicated-tiling driver selects each tile's bins before replaying the
+            // buffer, so "same bin select as the last offset-carrying draw" is "same
+            // tile"; the post chain re-selects every bin and is left alone. Per frame,
+            // so a stale tile-1 offset cannot reach the next frame's tile 0.
+            // CZ_PM4_NO_TILE_OFFSET=1 is the control arm.
+            {
+                static const bool noTileOffset = getenv("CZ_PM4_NO_TILE_OFFSET") != nullptr;
+                static uint32_t tileOffset = 0;
+                static uint64_t tileSelect = 0, tileFrame = ~0ull;
+                const uint64_t fr = g_frames.load(std::memory_order_relaxed);
+                const uint32_t wo = g_regs[xenos::kPaScWindowOffset];
+                if (fr != tileFrame)
+                {
+                    tileFrame = fr;
+                    tileOffset = 0;
+                }
+                if (wo)
+                {
+                    tileOffset = wo;
+                    tileSelect = g_binSelect;
+                }
+                d.tileWindowOffset =
+                    (!noTileOffset && !wo && tileOffset && g_binSelect == tileSelect) ? tileOffset : 0;
+                if (d.tileWindowOffset)
+                    g_tileOffsetDraws.fetch_add(1, std::memory_order_relaxed);
             }
             if (split::g_on)
             {
@@ -3048,6 +3078,7 @@ void Pm4_SetRptrPublishSlot(uint32_t va)
 }
 uint64_t Pm4_RptrMidwalkStores() { return g_rptrMidwalkStores.load(); }
 uint64_t Pm4_ReplayRestores() { return g_replayRestores.load(); }
+uint64_t Pm4_TileOffsetDraws() { return g_tileOffsetDraws.load(); }
 uint64_t Pm4_FenceRegressionCount() { return g_fenceRegressions.load(); }
 
 // The census accessors. Under the atomic arm the globals are the live counters; by

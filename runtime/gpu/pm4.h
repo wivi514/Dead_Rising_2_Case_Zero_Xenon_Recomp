@@ -176,6 +176,9 @@ uint64_t Pm4_RptrMidwalkStores();
 // Tile replays whose shader bindings were restored to the first replay's (player
 // issue #3). Zero on a tiled route with the default arm is a defect.
 uint64_t Pm4_ReplayRestores();
+// Draws handed a tile window offset because their own was zero inside a tile replay
+// (player issue #3's depth rect). Printed beside the replay restores.
+uint64_t Pm4_TileOffsetDraws();
 uint64_t Pm4_FenceRegressionCount();
 
 // The microcode bound by the last IM_LOAD/IM_LOAD_IMMEDIATE for a stage. `hash` is
@@ -216,6 +219,14 @@ struct Pm4Draw
     // Both readings are carried so an arm can switch between them in one binary.
     uint32_t indexEndianTop;
     uint32_t indexSizeDword;
+    // THE TILE THIS DRAW IS A REPLAY FOR when its own PA_SC_WINDOW_OFFSET is zero
+    // (player issue #3). D3D's Clear inside a tiling bracket is an EDRAM-space rect: it
+    // sets the window offset to 0, draws, and re-applies the tile's offset — so on
+    // hardware the rect covers the tile being replayed, and in our full-size EDRAM
+    // stand-in it must land where that tile lives. This is the last non-zero window
+    // offset seen on a draw under the SAME bin select (the tile's predication era);
+    // zero outside a tile replay and for the first tile.
+    uint32_t tileWindowOffset;
 };
 void Pm4_SetDrawSink(void (*sink)(uint8_t* base, const Pm4Draw&));
 
