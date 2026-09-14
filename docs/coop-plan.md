@@ -532,6 +532,58 @@ partner needs the title's own dismount when the helicopter goes.
 - A save-less joiner: seed from `default/` or refuse with a message.
 - Docs for the Windows release leg (open item 0z) now that the joiner fix is in.
 
+## Player issue #7: the partner under the map after a host level load (OPEN, 2026-09-14)
+
+The first co-op bug report filed through the launcher (`~/XenonLive/Player Issues/#7`):
+*"Loading into still creek in coop makes the client falls through the map and crashes"*.
+Host: Windows 10 LTSC, Ryzen 9 9900X, GTX 1660 Ti, 1080p windowed, **fps cap 30**, v1.1.0.
+Client: unknown machine, no log. The operator could not reproduce it on the two test
+machines. What the host's F9 capture establishes, read against the operator's own logs:
+
+1. **It is a level load ON THE HOST with the client attached, not the join.** The 60 s
+   before F9: gameplay with a live session (`XGI 8001 = 2`, the mouse captured), then
+   `loading.big` at −20 s, all ten `prologue_zNN.big` and `Prologue.txt` at −5 s — a full
+   level load that took **14.5 s** (this box: ~1 s). No `closesocket` until after F9, so
+   the client stayed connected through it. The screenshot at F9 is LV 1, $2,000, 0 killed,
+   "Find Katey Zombrex", Chuck at the junkyard gate — the game's initial checkpoint —
+   with the partner's marker (name, health bar, an arrow pointing DOWN) at the host's own
+   feet: the client's replicated position is directly below the host. So the host restarted
+   or reloaded to the start with the partner in the session.
+2. **The client died ~8 s after the host's load finished**: `closesocket(1005)`,
+   `closesocket(1006)` at +3 s after F9, then the title's own re-host (`host request
+   armed ... online ready says no` → `hosting session <new id>`), which is what the host
+   does after its last client drops (coop_host17 shows the same sequence on a joiner loss).
+   The endpoint takes ~10 s of silence to error, so the client process most likely died
+   around the moment the host came back from its load — i.e. during the client's own
+   level-start handshake (FINALIZE_START_LEVEL / READY_FOR_PLAY).
+3. **The shape the test machines never made: a joiner FASTER than the host.** Every
+   operator session had this box hosting (1 s loads) and the laptop joining; the reverse
+   pair (laptop host) lost the joiner to the endpoint timeout before the load even began
+   (part 6's military arrival). The operator's live re-test on 2026-09-14 (three reloads
+   with the laptop attached, AppImage host) did not reproduce it. A Windows host at 14.5 s
+   against a client that loads in a few seconds is a client waiting ~10 s at its level
+   start with the host silent.
+
+What was built (commit 8576104) so the next report answers the question by itself:
+
+- **The fall watch, on every build** (`[pos]`/`[fall]`, `docs/instruments.md`): both
+  player slots' positions, ten samples a second off the player object's position field,
+  printed every 5 s and on every second of a continuous descent. A player's
+  `cz_runtime.log` or F9 capture now says where each Chuck appeared and whether he fell.
+- **`CZ_SLOW_ZONE_OPEN_MS=N`**, a dev arm that makes a level load slow on purpose, and
+  **`tools/coop_pair_reload.sh`**: the same-box pair with a slow host that jumps to a new
+  case (F2) after the joiner is in — a host reload with a client attached, headless.
+
+The candidates, to be read off the joiner's `[pos] player 1 appeared at (...)` line:
+(a) the joiner's Chuck placed at the ZERO vector (a level start whose per-player restore
+table — `sub_821AE578` reads `*(*0x82A59CD4)[0]+8` as "use saved positions" and copies
+five words per player index — is flagged but empty for player 1) — if the junkyard sits
+near the level origin, y=0 is under its floor; (b) placed at the host's position while the
+joiner's zone collision is not resident (a teleport before streaming); (c) the joiner's
+simulation running through the wait with no floor. The client's log is owed either way:
+ask the reporter for the CLIENT's `cz_runtime.log` (next to its `assets/`) — the crash
+block is in it — and what the host did just before (restart? died and reloaded? a save).
+
 ## Online tunables (dataflow-bound, gotcha 241)
 
 Loader `sub_824A2470`; bank based at 0x82A57xxx. The knobs we will want:
