@@ -23000,20 +23000,44 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
     // wrong, covering surface), which could only ever be a smooth 32x32; the real
     // full-detail floor was under it the whole time (proven by discarding this draw, which
     // reveals fine gravel matching Xenia — docs/black-rooftop). Skipping this exact
-    // signature reveals it. `CZ_VK_NO_DECK_SKIP=1` is the control arm; `CZ_VK_GRAVEL_ADDR`
-    // overrides the address (0 disables). This retires part 94's injection (now dead: the
-    // draw it painted never runs on the deck). The signature is deck-specific — d7182b only
-    // ever binds this recycled 32x32 — so other d7182b surfaces are untouched.
+    // signature reveals it. `CZ_VK_NO_DECK_SKIP=1` is the control arm. This retires part
+    // 94's injection (now dead: the draw it painted never runs on the deck). The signature
+    // is deck-specific — d7182b only ever binds this recycled 32x32 — so other d7182b
+    // surfaces are untouched.
+    //
+    // THE ADDRESS IS NOT PART OF THE SIGNATURE (player issue #1, 2026-09-14). Part 96
+    // pinned the recycled texture's address (0E522000) into the match, and the operator
+    // reported the same roof black again — seen from the SAFEHOUSE zone, where the
+    // title's recycled slot for it is a different address; two later roam censuses of
+    // Still Creek itself had it at 0E492000 (1,403 of 1,403 d7182b draws, one binding),
+    // so the pin was failing there too on any session whose allocation order differed.
+    // The shader plus the 32x32 DXT1 in slot 0 is the whole identity, and the address the
+    // draw binds is printed once per distinct value so a skip that lands on something
+    // new is visible in the log. `CZ_VK_GRAVEL_ADDR=<hex>` restores a pinned match.
     {
         static const bool noDeckSkip = getenv("CZ_VK_NO_DECK_SKIP") != nullptr;
         static const uint32_t deckAddr = []{ const char* e = getenv("CZ_VK_GRAVEL_ADDR");
-            return e ? uint32_t(strtoul(e, nullptr, 16)) : 0x0E522000u; }();
-        if (!noDeckSkip && deckAddr && psBind.hash == 0xd7182b2fb8f8c474ull)
+            return e ? uint32_t(strtoul(e, nullptr, 16)) : 0u; }();
+        if (!noDeckSkip && psBind.hash == 0xd7182b2fb8f8c474ull)
         {
             const xenos::TextureFetch dt = xenos::DecodeTextureFetch(regs, 0);
             if (dt.format == xenos::kFmt_DXT1 && dt.width == 32 && dt.height == 32 &&
-                (dt.address & 0x1FFFFFFFu) == (deckAddr & 0x1FFFFFFFu))
+                (!deckAddr || (dt.address & 0x1FFFFFFFu) == (deckAddr & 0x1FFFFFFFu)))
             {
+                static uint32_t seenAddr[8];
+                static unsigned seenN = 0;
+                bool seen = false;
+                for (unsigned i = 0; i < seenN && i < 8; i++)
+                    seen = seen || seenAddr[i] == dt.address;
+                if (!seen)
+                {
+                    if (seenN < 8)
+                        seenAddr[seenN] = dt.address;
+                    seenN++;
+                    fprintf(stderr, "[vk] gas-station deck: skipping ps_d7182b over its 32x32 "
+                                    "DXT1 at %08X (part 96; CZ_VK_NO_DECK_SKIP=1 is the control)\n",
+                            dt.address);
+                }
                 Count("draw: gas-station deck d7182b covering-surface skipped — reveals "
                       "f20be397 gravel (part 96)");
                 return;
