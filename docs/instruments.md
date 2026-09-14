@@ -4487,6 +4487,19 @@ DOWN through the host's feet — and nothing in the runtime said where either Ch
                           prints one every 2 s until he is gone. Meant to be read out of
                           a player's cz_runtime.log or F9 capture.
 CZ_NO_FALL_WATCH=1        off (the control; nothing else reads these fields)
+[fallguard]               THE FIX for player issue #7, ON by default. Also on the engine
+                          thread (sub_825F9CF0, the one place a write to the player's
+                          position sticks — a per-frame write to the four fields
+                          setplayerpos touches pins the player against gravity AND walking,
+                          138/138 HELD in test; §6bn's one-shot was overwritten). For the
+                          LOCAL player (index 0) only: captures the spawn, and if he drops
+                          >1.5 units below it WITHOUT ever having been grounded — the
+                          collision-not-resident co-op fall, never a legitimate move — pins
+                          him at spawn and probes every 1.5 s until the floor arrives, then
+                          releases. A player who stands for 0.75 s is marked grounded and is
+                          never touched again (every real fall is a fall AFTER grounding).
+                          Regression-clean over a full Still Creek exploration (0 false
+                          fires, normal movement). CZ_NO_FALL_GUARD=1 is the control
 CZ_SLOW_ZONE_OPEN_MS=N    A DEV ARM: every open of a zone archive (`environment/*_zNN.big`,
                           forty a level load) sleeps N ms on the loading thread, so N=300
                           is a ~12 s level load on a box that does it in one — the

@@ -584,6 +584,41 @@ simulation running through the wait with no floor. The client's log is owed eith
 ask the reporter for the CLIENT's `cz_runtime.log` (next to its `assets/`) — the crash
 block is in it — and what the host did just before (restart? died and reloaded? a save).
 
+### The fix that shipped: the fall guard (2026-09-14)
+
+The operator's call once the crash was understood: *"the crash from falling off the map is
+not that important because the user shouldn't be able to fall out the map so let's fix why
+he fall through the ground."* The root cause is a race (client gravity beats zone-collision
+residency) that neither the operator nor a headless pair could trigger on demand, so the fix
+is a **symptom guard that engages only in the one situation that is never legitimate** — a
+player who drops below his spawn without ever having been grounded.
+
+Two things were established first, by measurement:
+
+1. **A per-frame write to the player's position on an engine thread PINS him** — against
+   gravity and against walking input (`CZ_HOLD_PLAYER_TEST`, 138/138 `HELD` with AutoChuck
+   trying to move him). §6bn's finding that "the body re-imposes" is true only for a
+   ONE-SHOT write; a continuous write on the `sub_825F9CF0` engine-thread hook wins. This
+   is the linchpin the safety net needed and the reason it is buildable at all.
+2. **The guard does not false-fire.** A full AutoChuck exploration of Still Creek (ledges,
+   stairs, curbs, 35 distinct positions) produced 0 `[fallguard]` pins and 0 `OUT OF THE
+   WORLD` — because a legitimate fall is always a fall AFTER being grounded, and the guard
+   only ever acts on a player who has NEVER grounded since spawning.
+
+`runtime/cpu/debug_tunables.cpp` `PumpFallGuard`: for the LOCAL player (index 0 — the host's
+fall watch showed 0 = local, 1 = the remote joiner, so on the client index 0 is the client's
+own Chuck), capture the spawn; if he stands 0.75 s → grounded, never touched again; if he
+drops >1.5 below spawn first → pin at spawn, probe every 1.5 s (stop writing 150 ms and
+look), release when the floor catches him. ON by default (`CZ_NO_FALL_GUARD=1` is the
+control), because it acts only in the pathological case.
+
+**What is NOT yet verified, stated plainly:** the end-to-end catch of the *actual* co-op
+fall. The map always has a floor in single-player, so a faithful "fall past spawn with no
+floor" cannot be staged locally; the pin/probe/release primitive and the no-false-fire
+behaviour are proven, the trigger is impossible in normal play, and it is one env flag to
+disable. The `[fallguard]` / `[fall]` log lines confirm it the next time a client hits the
+race in the wild — ask a reporter for the CLIENT's `cz_runtime.log`.
+
 ## Online tunables (dataflow-bound, gotcha 241)
 
 Loader `sub_824A2470`; bank based at 0x82A57xxx. The knobs we will want:

@@ -88,6 +88,7 @@
 #include <cstdlib>
 #include <cctype>
 #include <cstring>
+#include <cmath>
 #include <sys/stat.h>
 #include <string>
 #include <vector>
@@ -2829,11 +2830,205 @@ extern "C" uint32_t CZ_DebugWritePlayerObject(FILE* f, uint32_t bytes)
 // thing, which is the only version of this that cannot be wrong about the thread.
 //
 // The cost is a load and a branch on a hot function; it is guarded by a plain bool that
+// ===================================================================================
+// THE FALL GUARD — a player who spawns without a floor is held at his spawn until the
+// ground streams in, instead of dropping through the world.
+//
+// WHY THIS EXISTS (player issue #7, 2026-09-14). A co-op CLIENT loading into Still Creek
+// sometimes lands below the map: the host's own bug-report screenshot shows the partner's
+// marker pointing straight DOWN at the host's feet — same X/Z as the host, Y falling. The
+// mechanism is a race the client loses on a slow load: the player is placed at the host's
+// position (synced) and becomes gravity-active BEFORE that zone's collision
+// (cZoneManager::LoadCollisionForZone / MERGED_COLLISION.big) is resident, so there is no
+// floor under him yet and he free-falls through where it will be. When the collision wins
+// the race he stands (measured: a working join placed the client at Y=3.2); when the load
+// lags — the reporter's 14.5 s host — he falls out of the world and the game can crash.
+// It is a race, so it cannot be reproduced on demand; the guard fixes the SYMPTOM the
+// operator named ("the user shouldn't be able to fall out the map") regardless of the
+// exact timing, and it engages ONLY in the one situation that is never legitimate.
+//
+// HOW IT WORKS. On the engine thread (this is the sub_825F9CF0 hook, the one place a
+// write to the player's position sticks — proven: a per-frame write to the four fields
+// setplayerpos touches pins the player against both walking and gravity, 138/138 HELD in
+// an AutoChuck run, where §6bn's ONE-SHOT write was overwritten by the Havok body). For
+// each local player (the class at kKnownPlayerVtable; a remote puppet is a different
+// class and is skipped) it captures the spawn position, and:
+//   * if the player STANDS for 0.75 s after spawning, he is marked grounded and the guard
+//     never touches him again this location — every legitimate fall (jumping off a roof)
+//     is a fall AFTER being grounded, so it is untouched;
+//   * if instead he DROPS more than 1.5 units below spawn without ever having been
+//     grounded — the bug, and nothing else — he is pinned at the spawn position until the
+//     floor arrives. It probes every 1.5 s (stops writing for 150 ms and looks): if he
+//     still falls, the floor is not there yet, snap back; if he holds, the floor caught
+//     him — release and mark grounded.
+// A big move from spawn while grounded (a level change / teleport) re-arms it at the new
+// spot. Reads and writes only; no guest calls except a throttled player lookup. Default
+// ON because it acts only in the pathological case; CZ_NO_FALL_GUARD=1 is the control.
+namespace
+{
+struct FallGuardSlot
+{
+    bool have = false;
+    uint32_t obj = 0;
+    long long lookupMs = -100000;
+    float spawn[3] = {};
+    bool everGrounded = false;
+    bool holding = false;
+    long long appearMs = 0;
+    long long stateMs = 0;
+    long long holdStartMs = 0;
+    long long probeUntilMs = -1;      // >=0 while a probe is open (writing suspended)
+    long long nextProbeMs = 0;
+    bool loggedHold = false;
+};
+FallGuardSlot g_fallGuard[1];   // index 0 only: the LOCAL player (index 1 is the
+                                //   remote puppet, driven by replication — never fight it)
+
+constexpr float kFallLimit = 1.5f;        // drop below spawn that means "through the floor"
+constexpr float kProbeDrop = 0.3f;        // still-falling threshold at a probe's end
+constexpr long long kGroundedAfterMs = 750;
+constexpr long long kProbeIntervalMs = 1500;
+constexpr long long kProbeMs = 150;
+constexpr long long kStateTickMs = 30;
+constexpr long long kLookupEveryMs = 500;
+constexpr float kReArmDistSq = 100.f * 100.f;   // a move this far re-captures the spawn
+}
+
+static void ReadVec(uint8_t* base, uint32_t obj, uint32_t off, float out[3])
+{
+    for (int i = 0; i < 3; i++)
+    {
+        const uint32_t b = PPC_LOAD_U32(obj + off + uint32_t(i) * 4);
+        std::memcpy(&out[i], &b, 4);
+    }
+}
+
+static void PumpFallGuard(PPCContext& ctx, uint8_t* base)
+{
+    static const bool off = getenv("CZ_NO_FALL_GUARD") != nullptr;
+    if (off)
+        return;
+    const long long now = DebugElapsedMs();
+    // Index 0 is the local player on every machine — the host's fall watch showed 0 = local,
+    // 1 = the remote joiner, so on the client index 0 is the client's own (falling) Chuck.
+    for (uint32_t idx = 0; idx < 1; idx++)
+    {
+        FallGuardSlot& g = g_fallGuard[idx];
+        // Refresh the object pointer occasionally (the lookup makes guest calls); between
+        // refreshes reuse it, revalidated by its vtable every firing so a freed/reused
+        // slot is simply skipped rather than written.
+        if (!g.obj || PPC_LOAD_U32(g.obj) != kKnownPlayerVtable || now - g.lookupMs > kLookupEveryMs)
+        {
+            PPCContext call = ctx;
+            const uint32_t o = LookupPlayerObject(call, base, idx);
+            g.lookupMs = now;
+            if (o && PPC_LOAD_U32(o) == kKnownPlayerVtable)
+                g.obj = o;
+            else { g.obj = 0; g.have = false; g.holding = false; continue; }
+        }
+        const uint32_t obj = g.obj;
+
+        // The pin: while holding and not mid-probe, re-assert the spawn position every
+        // firing (that is what beats the physics body).
+        if (g.holding && !(g.probeUntilMs >= 0 && now < g.probeUntilMs))
+        {
+            uint32_t bits[3];
+            for (int i = 0; i < 3; i++)
+                std::memcpy(&bits[i], &g.spawn[i], 4);
+            for (uint32_t poff : {0x1Cu, 0x250u, 0x620u, 0x638u})
+                for (int i = 0; i < 3; i++)
+                    PPC_STORE_U32(obj + poff + uint32_t(i) * 4, bits[i]);
+        }
+
+        // The state machine runs at ~30 Hz; the pin above runs every firing.
+        if (now - g.stateMs < kStateTickMs)
+            continue;
+        g.stateMs = now;
+
+        float cur[3];
+        ReadVec(base, obj, 0x1C, cur);
+
+        if (!g.have)
+        {
+            if (cur[0] == 0.f && cur[1] == 0.f && cur[2] == 0.f)
+                continue;                       // pre-placement origin; wait for a real spot
+            g.have = true;
+            std::memcpy(g.spawn, cur, sizeof g.spawn);
+            g.everGrounded = false;
+            g.holding = false;
+            g.appearMs = now;
+            continue;
+        }
+
+        if (g.everGrounded)
+        {
+            // Re-arm at a new location (level change / teleport), so the guard protects
+            // every fresh spawn, not just the first.
+            const float dx = cur[0]-g.spawn[0], dz = cur[2]-g.spawn[2];
+            if (!g.holding && (dx*dx + dz*dz) > kReArmDistSq)
+            {
+                std::memcpy(g.spawn, cur, sizeof g.spawn);
+                g.everGrounded = false;
+                g.appearMs = now;
+            }
+            continue;
+        }
+
+        if (g.holding)
+        {
+            if (g.probeUntilMs >= 0)
+            {
+                if (now >= g.probeUntilMs)          // probe just closed — read the verdict
+                {
+                    g.probeUntilMs = -1;
+                    if (cur[1] < g.spawn[1] - kProbeDrop)
+                        g.nextProbeMs = now + kProbeIntervalMs;   // still falling; hold on
+                    else
+                    {
+                        g.holding = false;          // the floor caught him
+                        g.everGrounded = true;
+                        fprintf(stderr, "[fallguard] player %u: floor arrived after %.1f s, "
+                                        "released at (%.1f, %.1f, %.1f)\n", idx,
+                                (now - g.holdStartMs) / 1000.0, cur[0], cur[1], cur[2]);
+                    }
+                }
+            }
+            else if (now >= g.nextProbeMs)          // open a probe: stop pinning briefly
+            {
+                g.probeUntilMs = now + kProbeMs;
+            }
+            continue;
+        }
+
+        // Not yet grounded, not holding: decide.
+        if (cur[1] < g.spawn[1] - kFallLimit)
+        {
+            g.holding = true;
+            g.holdStartMs = now;
+            g.nextProbeMs = now + kProbeIntervalMs;
+            g.probeUntilMs = -1;
+            if (!g.loggedHold)
+            {
+                g.loggedHold = true;
+                fprintf(stderr, "[fallguard] player %u fell %.1f below spawn with no floor "
+                                "(through the ground) — pinning at spawn (%.1f, %.1f, %.1f) "
+                                "until collision loads; CZ_NO_FALL_GUARD=1 disables\n", idx,
+                        g.spawn[1] - cur[1], g.spawn[0], g.spawn[1], g.spawn[2]);
+            }
+        }
+        else if (now - g.appearMs > kGroundedAfterMs)
+        {
+            g.everGrounded = true;                  // stood on the floor: guard off here
+        }
+    }
+}
+
 // is false in every run that has not asked for a teleport.
 extern "C" PPC_FUNC(__imp__sub_825F9CF0);
 PPC_FUNC(sub_825F9CF0)
 {
     __imp__sub_825F9CF0(ctx, base);
+    PumpFallGuard(ctx, base);
     if (!g_teleportPending)
         return;
     // r3 now holds the context this thread was asked for. Zero means the slot is empty
