@@ -214,6 +214,15 @@ std::string VfsResolveExisting(const std::string& guestPath)
                 KLOG("VFS: '%s' served from the KB-PROMPT overlay -> %s "
                      "(CZ_NO_KB_PROMPTS=1 restores the pad glyphs)\n",
                      guestPath.c_str(), patched.c_str());
+                // The string device-follow must read the bank that LOADED, not
+                // str_en's (player issue #6: a French player's bank shares
+                // en's id table but not its offsets, so no string ever swapped).
+                {
+                    const std::string fn = fs::path(patched).filename().string();
+                    if (fn.rfind("str_", 0) == 0 && fn.size() > 8 &&
+                        fn.compare(fn.size() - 4, 4, ".bcs") == 0)
+                        NativeKbm_NoteStringBank(patched);
+                }
                 std::lock_guard lock(g_mutex);
                 g_resolved.emplace(guestPath, patched);
                 return patched;

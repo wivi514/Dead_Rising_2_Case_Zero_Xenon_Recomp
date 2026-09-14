@@ -4,6 +4,7 @@
 // every address in it comes from. CZ_NO_NATIVE_KBM=1 is the whole-feature arm.
 
 #include <cstdint>
+#include <string>
 
 struct PPCContext;
 
@@ -53,6 +54,13 @@ void NativeKbm_MoveKeys(uint32_t wasdMask);
 // chips, by swapping the decoded glyph texels in guest memory (the renderer's
 // content guard re-uploads). Cheap when the device is unchanged.
 void NativeKbm_NoteDeviceInput(bool pad);
+
+// The VFS reports which str_<lang>.bcs it served from the KB-PROMPT overlay, so
+// the string device-follow can read THAT bank's offsets rather than str_en's:
+// the six banks share one id table (the locator finds any of them) but not
+// their string offsets, so a French player's MASH never followed the pad
+// (player issue #6). Called once per bank open, from the VFS resolve.
+void NativeKbm_NoteStringBank(const std::string& hostPath);
 
 // Synthetic pad-button bits for the PC-options panel pump (imports.cpp): the
 // guest Visuals screen is driven by pad-0 BUTTON bits, which the reduced merge

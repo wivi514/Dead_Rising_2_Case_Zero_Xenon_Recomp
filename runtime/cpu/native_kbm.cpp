@@ -88,6 +88,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <deque>
+#include <filesystem>
 #include <fstream>
 #include <mutex>
 #include <set>
@@ -1155,9 +1156,29 @@ std::vector<uint8_t> g_bankFp;       // first 64 bytes: the in-memory locator
 std::vector<uint8_t> g_bankHdr;      // first 4096: hit confirmation / stale check
 std::vector<uint32_t> g_bankAddrs;
 
+// The bank the VFS actually served (see NativeKbm_NoteStringBank); empty until
+// the title opens one, in which case the loader falls back to str_en.
+std::mutex g_servedBankMutex;
+std::string g_servedBank;
+std::string g_loadedBank;    // what LoadStrSwap last read (worker-thread only)
+
 bool LoadStrSwap()
 {
-    const auto path = HostPaths::Root() / "assets/game_kbm/data/frontend/str_en.bcs";
+    std::string served;
+    {
+        std::lock_guard lock(g_servedBankMutex);
+        served = g_servedBank;
+    }
+    g_loadedBank = served;
+    g_swapStrings.clear();
+    g_bankAddrs.clear();
+    const auto path = served.empty()
+        ? (HostPaths::Root() / "assets/game_kbm/data/frontend/str_en.bcs").string()
+        : served;
+    const bool isEnglish =
+        std::filesystem::path(path).filename().string() == "str_en.bcs";
+    fprintf(stderr, "[kbm] string-follow: reading %s (%s)\n", path.c_str(),
+            served.empty() ? "no bank served yet - assuming en" : "the bank the VFS served");
     std::ifstream f(path, std::ios::binary | std::ios::ate);
     if (!f)
         return false;
@@ -1180,8 +1201,13 @@ bool LoadStrSwap()
         { "PRESS ENTER",            "PRESS ENTER\0",  "PRESS START\0",  12 },
         { "grapple tutorial",       "A / D KEYS ",    "LEFT STICK ",    11 },
     };
+    // The three English-literal wordings exist only in str_en (the generator
+    // leaves the other five banks' PRESS START / LEFT STICK untranslated), so
+    // they are searched only there; a non-English bank carries only id 4049.
     for (const Pair& p : pairs)
     {
+        if (!isEnglish)
+            break;
         size_t count = 0;
         const uint8_t* hit = nullptr;
         const uint8_t* from = bank.data();
@@ -1527,6 +1553,20 @@ void DeviceWorker(uint8_t* base)
         // gigabytes on EVERY flip whenever one glyph stayed unlocated, and
         // alternating devices in play turned that into a constant memory storm
         // — the operator's sub-30-fps report.
+        // The bank the title loaded can arrive AFTER the worker started (the
+        // first input landed before the frontend opened str_<lang>.bcs): re-read
+        // the wordings from the served bank, and let the scan below relocate it.
+        {
+            std::string served;
+            {
+                std::lock_guard lock(g_servedBankMutex);
+                served = g_servedBank;
+            }
+            if (!served.empty() && served != g_loadedBank && !LoadStrSwap())
+                fprintf(stderr, "[kbm] string-follow: %s missing/bad — prompt "
+                                "WORDING stays as booted (art still follows)\n",
+                        served.c_str());
+        }
         size_t wrote = 0, strWrote = 0, stale = 0;
         swapAll(wrote, strWrote, stale);
         bool anyMissing = !g_swapStrings.empty() && g_bankAddrs.empty();
@@ -1569,6 +1609,12 @@ void DeviceWorker(uint8_t* base)
 }
 } // namespace
 
+void NativeKbm_NoteStringBank(const std::string& hostPath)
+{
+    std::lock_guard lock(g_servedBankMutex);
+    g_servedBank = hostPath;
+}
+
 void NativeKbm_NoteDeviceInput(bool pad)
 {
     if (!NativeKbm_Active())
@@ -1589,7 +1635,7 @@ void NativeKbm_NoteDeviceInput(bool pad)
                 return;
             }
             if (!LoadStrSwap())
-                fprintf(stderr, "[kbm] string-follow: kbm str_en.bcs missing/bad "
+                fprintf(stderr, "[kbm] string-follow: kbm str_<lang>.bcs missing/bad "
                                 "— prompt WORDING stays as booted (art still "
                                 "follows)\n");
             std::thread(DeviceWorker, g_memory.base).detach();
