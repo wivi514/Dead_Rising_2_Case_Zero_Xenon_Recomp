@@ -219,7 +219,14 @@ mask; trust the microcode's own swizzles.
     exist (Xenia has no Live layer); the TITLE'S OWN friend-join path was run on a
     same-box pair (`tools/coop_pair_friends.sh NATIVE=1`) and is two title bugs deep
     (`coop-plan.md` Part 7, gotchas 582-583, open-item 0zb); the shipped part-5
-    filtered search is unchanged and merely LOOKS like a random search.**
+    filtered search is unchanged and merely LOOKS like a random search.
+    2026-09-15: the operator VERIFIED #1/#3/#4/#6 and the launcher localization;
+    v1.1.1 (tag = 626e438 + notes) has its three Linux artifacts built and gated in
+    `~/Release/Case Zero/1.1.1/` — the Windows zip and the GitHub draft are OWED
+    (czwin was off). THE NEXT SESSION'S WORK IS `docs/lighting-plan-part119.md`:
+    "interiors are really dark compared to the 360" — start at its §2, the
+    post-tone-map transfer (hardware loads a NON-identity display gamma ramp this
+    runtime has never read; `tools/xtr_gamma_ramp.py` prints it from any capture).**
     The performance hand-off is still `part118-kickoff.md` — PART 118 (the late afternoon of 2026-09-12, unattended, a
     16:00 deadline) GAVE EACH PIPELINE STAGE A PHYSICAL CORE OF ITS OWN: the PMU said the
     guest's Main Thread runs the same instructions at 17% more cycles with our renderer
