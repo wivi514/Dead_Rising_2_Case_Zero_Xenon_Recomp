@@ -1,7 +1,7 @@
 # Release notes — v1.1.1
 
 **This is the text to paste into the GitHub Release body.** Binaries are the tag
-`v1.1.1` = the commit this file was added in; the hashes below are the artifacts
+`v1.1.1` (626e438 + this notes commit); the hashes below are the artifacts
 built at that tag on 2026-09-15 (the Linux three that day; the Windows zip from the
 same tag when the build machine is back — its hash is filled in when it exists).
 
