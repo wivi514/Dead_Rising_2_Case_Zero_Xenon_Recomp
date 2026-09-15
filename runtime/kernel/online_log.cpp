@@ -111,9 +111,20 @@ PPC_FUNC(sub_8255B968)
     __imp__sub_8255B968(ctx, base);
 }
 
+// coop_outfit_default.cpp: the host has just received the joiner's
+// FLOW_COMMAND_READY_FOR_PLAY — the joiner has finished loading.
+void CoopOutfit_OnJoinerReadyForPlay();
+
 PPC_FUNC(sub_8255B910)
 {
     OnlineLogLine(ctx, base, int(ctx.r4.u32) + 1, "*");
+    // The flow-command receive handler (sub_8257CDD0) names every command it takes
+    // through this print — `\t%s` from 0x8257CE74 with the name-table entry — and
+    // FLOW_COMMAND_READY_FOR_PLAY (0x8207B308) arriving here is the one moment the
+    // host knows the joiner's level is up. Cheaper and more honest than parsing the
+    // packet again: the title already did, and this is what it says.
+    if (uint32_t(ctx.lr) == 0x8257CE78 && ctx.r6.u32 == 0x8207B308)
+        CoopOutfit_OnJoinerReadyForPlay();
     __imp__sub_8255B910(ctx, base);
 }
 

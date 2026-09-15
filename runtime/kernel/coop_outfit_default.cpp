@@ -71,6 +71,7 @@ bool PieceEmpty(uint8_t* base, uint32_t save, uint32_t part)
 // outfit pick worked from.
 bool g_pendingDefault = false;
 bool g_hostDressPending = false;
+bool g_hostDressArmedByReady = false;   // the 1 s timer is running (READY_FOR_PLAY seen)
 uint32_t g_hostDressSlot = 1;
 std::chrono::steady_clock::time_point g_hostDressAt{};
 // THE HOST'S HALF. The row applier dresses the joiner's own Chuck but broadcasts
@@ -149,15 +150,42 @@ void CoopOutfit_OnReportPiece(PPCContext& ctx, uint8_t* base, uint32_t clothing,
     // exactly as they did on the joiner at level start: the remote player's clothing
     // loader is not up yet. The joiner's own dressing works from GameplayFlow::Enter,
     // which the host does not pass again; so the host applies it from its per-frame
-    // hook once the joiner has been in the game for a while.
+    // hook ONE SECOND AFTER THE JOINER SAYS HE HAS FINISHED LOADING — his
+    // FLOW_COMMAND_READY_FOR_PLAY, seen by online_log.cpp as the receive handler
+    // names it (CoopOutfit_OnJoinerReadyForPlay). The first form of this was a fixed
+    // 10 s from the report, and a player told the operator his guest, on a slower
+    // machine, loaded after that and spawned invisible: the dress had landed on a
+    // player that did not exist yet. Should the ready command never arrive (it
+    // always has), a 45 s fallback still dresses him.
     (void)mgr;
     g_hostDressSlot = slot;
-    g_hostDressAt = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+    g_hostDressAt = std::chrono::steady_clock::now() + std::chrono::seconds(45);
     g_hostDressPending = true;
+    g_hostDressArmedByReady = false;
     fprintf(stderr, "[outfit] the other player's outfit report is EMPTY (no save on his side): "
-                    "slot %u will be dressed in row %u (OUTFIT_DEFAULT_UNDER) here in 10 s, the "
-                    "same row his own machine applies (CZ_NO_DEFAULT_OUTFIT=1 is the control)\n",
+                    "slot %u will be dressed in row %u (OUTFIT_DEFAULT_UNDER) here 1 s after his "
+                    "READY_FOR_PLAY (45 s at the latest), the same row his own machine applies "
+                    "(CZ_NO_DEFAULT_OUTFIT=1 is the control)\n",
             slot, kDefaultUnderRow);
+}
+
+// online_log.cpp: the host has just received the joiner's FLOW_COMMAND_READY_FOR_PLAY.
+// Called for every one of them (a level reload sends it again); it only moves a
+// pending dress forward, so the fallback timer above is what runs otherwise.
+void CoopOutfit_OnJoinerReadyForPlay()
+{
+    if (!g_hostDressPending || g_hostDressArmedByReady)
+    {
+        // Said once per join even when nothing is pending: the line that proves the
+        // trigger fires on a real session, which a dressed joiner cannot show.
+        fprintf(stderr, "[outfit] the other player is READY_FOR_PLAY (his level is up); nothing "
+                        "to dress — he has his own outfit\n");
+        return;
+    }
+    g_hostDressArmedByReady = true;
+    g_hostDressAt = std::chrono::steady_clock::now() + std::chrono::seconds(1);
+    fprintf(stderr, "[outfit] the other player is READY_FOR_PLAY (his level is up): dressing slot "
+                    "%u in 1 s\n", g_hostDressSlot);
 }
 
 // Per frame (the game session's Update hook in coop_host.cpp): the host's deferred dress.

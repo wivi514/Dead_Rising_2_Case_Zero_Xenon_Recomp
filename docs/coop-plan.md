@@ -731,6 +731,31 @@ completion for this join.
 `~/DR2CZ-troubleshooting/coop-native/`. The joiner's press timing: the title screen
 accepts START ~30 s in, so `START,NONE,NONE,A,NONE,DOWN,A,NONE,DOWN,A,NONE,NONE,X`.
 
+## Part 8: the save-less guest is dressed 1 s after HIS level is up (2026-09-15)
+
+A player told the operator his guest, on a slower machine, loaded after the host had
+already dressed him and spawned invisible. Part 6's host-side dress was a fixed 10 s
+from the guest's empty outfit report; the row applier's events land on a player that
+does not exist yet and are dropped (the same thing part 6 saw at 3 s). The moment the
+host KNOWS the guest's level is up is the guest's `FLOW_COMMAND_READY_FOR_PLAY`: the
+flow-command receive handler `sub_8257CDD0` names every command it takes through the
+online log's `\t%s` print (`sub_8255B910` from 0x8257CE74, the name-table entry
+0x8207B308 for this one), and `online_log.cpp` already hooks that print. It now calls
+`CoopOutfit_OnJoinerReadyForPlay()` on that (lr 0x8257CE78, r6 0x8207B308), which
+moves the pending dress to 1 s from then; the report-time arm is a 45 s fallback. The
+2026-09-12 two-machine log (`issue7/slowhost_0914_003403.log`) shows the order the
+trigger relies on: EMPTY report → CONNMESH → FINALIZE_START_LEVEL → `READY_FOR_PLAY`
+received → (the old 10 s dress landed after it there) → `RESULT_HOST_SUCCESS`.
+
+**Verification owed:** the same-box pair could not complete a join today (both
+`coop_pair_reload.sh` runs reached `LOGIN_STATE_CONNECTED` and then lost the peer
+link after ~2 min with the path flapping between 192.168.0.58, 100.85.0.1 and
+10.2.0.2 — a VPN interface is up on this box; the 09-14 pair run had not joined either).
+The trigger's site is read from the image and from that real log; a two-machine
+session with a save-less guest is the test, and its host log must show `the other
+player is READY_FOR_PLAY (his level is up): dressing slot 1 in 1 s` followed by the
+`SetPart` lines.
+
 ## Online tunables (dataflow-bound, gotcha 241)
 
 Loader `sub_824A2470`; bank based at 0x82A57xxx. The knobs we will want:

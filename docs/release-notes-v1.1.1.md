@@ -41,6 +41,11 @@ unpacked game data and shader cache are reused.
 - **Co-op: the partner falling through the map after the host loads a level** — a
   client that spawns before its floor exists is now held at the spawn point instead of
   dropping through it.
+- **Co-op: an invisible second player when the guest loads slowly** — a guest with no
+  save is dressed by the host in Chuck's default outfit; that used to happen ten
+  seconds after the guest joined, and a guest still loading at that moment got
+  nothing. The host now dresses the guest one second after the guest reports its
+  level is up, however long the load takes.
 - **The launcher window and the in-game PC settings panel follow the SUBTITLES
   language** (English, French, Italian, Spanish; Japanese and Korean show those two
   menus in English — the game's own text is localized either way). The launcher

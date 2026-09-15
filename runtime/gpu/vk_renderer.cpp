@@ -31052,8 +31052,12 @@ void DoSwapImpl(uint8_t* base, uint32_t frontBuffer, uint32_t width, uint32_t he
             const size_t n = size_t(snap.image.width) * snap.image.height * 4;
             if (n > R->readback.size)
                 continue;
+            // A named reference, not the structured binding: the release leg's clang
+            // 15 refuses a structured binding captured by a lambda (C++20 P1091,
+            // which it does not implement); the dev box's clang 22 accepts it.
+            const Image& snapImage = snap.image;
             RunImmediate([&](VkCommandBuffer cb) {
-                Image& img = const_cast<Image&>(snap.image);
+                Image& img = const_cast<Image&>(snapImage);
                 Barrier(cb, img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_ASPECT_DEPTH_BIT);
                 VkBufferImageCopy c{};
                 c.imageSubresource = { VK_IMAGE_ASPECT_DEPTH_BIT, 0, 0, 1 };
