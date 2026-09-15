@@ -32,7 +32,9 @@ import xtr  # noqa: E402
 
 
 def read_ramp(path):
-    data = open(path, 'rb').read()
+    # mmap, not read(): B2 is 8 GiB and the record is in the first few KB of every
+    # capture (the writer snapshots the ramp at trace start), so this returns at once.
+    data, _hdr = xtr.open_trace(path)
     n = len(data)
     for off, cid in xtr.walk(data, n):
         if cid != 11:

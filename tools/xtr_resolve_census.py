@@ -37,6 +37,12 @@ RB_COPY_CONTROL bit layout (the fields this tool reads):
     bit  9      depth clear after copy
     bits 20..21 copy_command
 
+PART 119 ADDED THE FORMAT PAIR AND THE SWAP. Per destination it also prints the
+EDRAM source's RB_COLOR_INFO format (1 = k_8_8_8_8_GAMMA, a PWL encode on write) and
+RB_COPY_DEST_INFO's format / number / exp_bias / endian, plus the XE_SWAP packet's front
+buffer and whether anything resolved there. That is how "is the front buffer gamma
+encoded" was answered (no: rt 0, dest 6, endian 0, in every capture — phase5-notes §6fb).
+
 USAGE
     xtr_resolve_census.py <trace.xtr> [--limit-packets N]
 """
@@ -59,6 +65,27 @@ RB_COPY_CONTROL = 0x2318
 RB_COPY_DEST_BASE = 0x2319
 RB_COPY_DEST_PITCH = 0x231A
 RB_COPY_DEST_INFO = 0x231B
+RB_COLOR_INFO = 0x2001
+XE_SWAP = 0x64
+
+# RB_COLOR_INFO bits 16..19: the EDRAM render-target format (ColorRenderTargetFormat).
+# 1 is k_8_8_8_8_GAMMA — the pixel shader's output is PWL-gamma ENCODED on write, so a
+# resolve of that target copies out gamma-encoded bytes. Part 119: this field decides
+# whether the front buffer the swap presents is linear or encoded, and until then
+# nothing in this repo had ever printed it for the resolve that IS the frame.
+RT_FORMAT = {0: "8_8_8_8", 1: "8_8_8_8_GAMMA", 2: "2_10_10_10", 3: "2_10_10_10_FLOAT",
+             4: "16_16", 5: "16_16_16_16", 6: "16_16_FLOAT", 7: "16_16_16_16_FLOAT",
+             10: "2_10_10_10_AS_10_10_10_10", 12: "2_10_10_10_FLOAT_AS_16_16_16_16",
+             14: "32_FLOAT", 15: "32_32_FLOAT"}
+# RB_COPY_DEST_INFO: endian:3 @0, array:1 @3, slice:3 @4, format:6 @7 (a TEXTURE
+# format code, k_8_8_8_8 = 6), number:3 @13, exp_bias:6 @16 (signed), swap:1 @24.
+DEST_FORMAT = {2: "8", 3: "1_5_5_5", 4: "5_6_5", 6: "8_8_8_8", 7: "2_10_10_10",
+               10: "8_8", 14: "8_8_8_8_A", 24: "16", 25: "16_16", 26: "16_16_16_16",
+               30: "16_FLOAT", 31: "16_16_FLOAT", 32: "16_16_16_16_FLOAT",
+               36: "32_FLOAT", 37: "32_32_FLOAT", 38: "32_32_32_32_FLOAT",
+               62: "2_10_10_10_FLOAT"}
+NUMBER_FORMAT = {0: "unorm", 1: "snorm", 2: "uint", 3: "sint", 4: "float",
+                 6: "float(ieee)"}
 PA_SC_WINDOW_SCISSOR_TL = 0x2081
 PA_SC_WINDOW_SCISSOR_BR = 0x2082
 
@@ -89,6 +116,11 @@ def census(path, limit_packets=None):
     by_dest = collections.defaultdict(lambda: collections.Counter())
     dest_extent = {}
     dest_clear = collections.defaultdict(collections.Counter)
+    # The FORMAT PAIR at each destination: (RB_COLOR_INFO format of the EDRAM source,
+    # RB_COPY_DEST_INFO format/number/exp_bias of the memory destination). A
+    # destination that sees more than one pair is printed with all of them.
+    dest_fmt = collections.defaultdict(collections.Counter)
+    swaps = []
     # The order the destinations are first seen in — a frame's dependency chain
     # reads far better in stream order than sorted by count.
     first_seen = {}
@@ -140,6 +172,11 @@ def census(path, limit_packets=None):
                     regs[index + i - 2] = word(off, i)
             continue
 
+        if opcode == XE_SWAP:
+            # VdSwap's body: 'SWAP', front buffer, width, height (see pm4.cpp 0x64).
+            if count >= 5 and word(off, 1) == 0x53574150:
+                swaps.append((word(off, 2), word(off, 3), word(off, 4)))
+            continue
         if opcode not in DRAW_OPCODES:
             continue
         draws += 1
@@ -162,6 +199,13 @@ def census(path, limit_packets=None):
                              tl & 0x7FFF, (tl >> 16) & 0x7FFF,
                              br & 0x7FFF, (br >> 16) & 0x7FFF)
         dest_clear[dest][((control >> 8) & 1, (control >> 9) & 1)] += 1
+        info = regs.get(RB_COPY_DEST_INFO, 0)
+        cinfo = regs.get(RB_COLOR_INFO, 0)
+        exp_bias = (info >> 16) & 0x3F
+        if exp_bias >= 32:
+            exp_bias -= 64
+        dest_fmt[dest][((cinfo >> 16) & 0xF, (info >> 7) & 0x3F, (info >> 13) & 7,
+                        exp_bias, info & 7)] += 1
         first_seen.setdefault(dest, resolves)
 
     dt = time.time() - t0
@@ -185,6 +229,23 @@ def census(path, limit_packets=None):
         srcs = " ".join(f"{k}={v:,}" for k, v in by_dest[dest].most_common())
         print(f"  {dest:08X}  {w:5}x{h:<4}  {x0:5},{y0:<4}..{x1:5},{y1:<4}  "
               f"{clears:>8}  {sum(by_dest[dest].values()):9,}   {srcs}")
+
+    print()
+    print("by destination, the FORMAT PAIR — the EDRAM source's RB_COLOR_INFO format and")
+    print("RB_COPY_DEST_INFO's texture format / number / exp_bias / endian (part 119):")
+    for dest in sorted(first_seen, key=lambda d: first_seen[d]):
+        for (rt, df, num, eb, en), c in dest_fmt[dest].most_common():
+            print(f"  {dest:08X}  rt={rt:2} {RT_FORMAT.get(rt, '?'):<16} "
+                  f"dest={df:2} {DEST_FORMAT.get(df, '?'):<12} "
+                  f"num={NUMBER_FORMAT.get(num, num):<6} exp_bias={eb:+d} endian={en}"
+                  f"  x{c:,}")
+
+    print()
+    print(f"XE_SWAP packets: {len(swaps):,}")
+    for fb, w, h in sorted(set(swaps)):
+        srcs = " ".join(f"{k}={v:,}" for k, v in by_dest.get(fb & 0x1FFFFFFF, {}).items())
+        print(f"  front buffer {fb:08X}  {w}x{h}  "
+              f"{'RESOLVED here: ' + srcs if srcs else 'no resolve to this address'}")
 
 
 def main():
