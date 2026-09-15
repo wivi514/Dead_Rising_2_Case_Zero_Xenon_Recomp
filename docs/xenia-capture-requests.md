@@ -452,3 +452,32 @@ AND the texture bytes hardware sampled; `tools/xtr_draw_bindings.py` reads both.
   content should be.
 * If they MATCH ours -> the tiny-texture content is legitimate and the defect is in
   our sampling of it (and the census's fetch fields for that draw become the diff).
+
+## Round N — NIGHT interiors (part 119, 2026-09-15): the one capture the lighting question needs
+
+**Why.** The operator's report is "interiors are really dark compared to the console,
+especially at night." Every hardware interior on disk (R2 w4/w6/w7, R4 01-08) is DAYTIME,
+so nothing can say whether hardware's night interiors are as dark as ours. Ours are BLACK:
+the safehouse garage pinned to 22h reads mean luma 5.8, median 0, the walls carry nothing
+and the lamp over the door that glows by day lights nothing (`~/DR2CZ-troubleshooting/
+part119/`). Whether that is the title (a night this dark by design) or us (a night
+lightmap / local-light term we drop) is exactly one hardware frame away.
+
+**What.** On Xenia, full game, after Katey has her Zombrex (so the clock can pass 19:00
+without ending the game), at NIGHT (any hour 20:00-05:00; note the in-game clock):
+1. `F4` single-frame trace + frame-locked PNG in the **safehouse garage** (the spawn
+   room, facing the door — the spot in `part119/safehouse_tod_*.png`);
+2. the same in **one town interior with lamps** (the pawnshop or Uncle Bill's) — and
+   **one street** under a streetlight, for the exterior side of "especially at night".
+3. The same three spots on OUR build, F9 with `CZ_VK_SNAP_DUMP` armed, standing still,
+   at the same in-game hour (`CZ_DEBUG_FLAGS="DISABLE TIME OF DAY"` + `tools/guest_poke.py
+   <pid> <base> 82A578D0 f32:<hour>` pins ours to any hour without touching the mission
+   clock — poking the mission clock past 19:00 ends the game; part 119 learned that the
+   hard way).
+
+**What it answers.** `xtr_frame_extract.py` on (1) gives hardware's night front buffer
+median; ours at the same spot is `CZ_VK_SNAP_DUMP`'s front buffer. Within a few levels =
+the title is this dark and the report is a display/transfer question (§6fb §4). Ours
+darker = a scene term, and `xtr_draw_bindings.py` + `xtr_draw_constants.py` on ONE wall
+draw of the garage (its lightmap slots, its light constants, the loop constants) against
+ours is the part-27 method, now with the night frame that makes the missing term visible.

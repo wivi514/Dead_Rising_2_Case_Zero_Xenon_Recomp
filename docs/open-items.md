@@ -35,6 +35,21 @@ Next, in order:
     Rec.709-encoded signal) is unknown and not measurable from here. The F9s are still
     the number: they say whether our FRONT BUFFER differs from hardware's; everything
     after the front buffer is the display chain, on both sides.
+    **"Especially at NIGHT" (operator, later that evening) — and OUR NIGHT INTERIORS ARE
+    BLACK, reproducibly and headlessly:** `CZ_DEBUG_FLAGS="DISABLE TIME OF DAY"` pins the
+    lighting hour to the guest float `0x82A578D0` (hours; the flag was part 27's "night"
+    because that float is 0.0 = midnight), and `tools/guest_poke.py` sets any hour without
+    touching the mission clock (poking the clock object past 19:00 ends the game — Katey's
+    deadline — found the hard way). The safehouse garage: mean luma 24.7 at 8h, 28.2 at
+    13h, **2.8 at 19h, 5.8 at 22h**, exposure at its 0.10 floor from 19h; x8 amplified,
+    Chuck carries a blue ambient and a rim, the walls nothing, and the lamp over the
+    door lights nothing (`~/DR2CZ-troubleshooting/part119/safehouse_*`). Every hardware
+    interior on disk is daytime, so **the capture that decides is a NIGHT one on both
+    sides** — `docs/xenia-capture-requests.md` "Round N — NIGHT interiors". Candidates
+    if hardware is brighter, in order: a night lightmap set (`w_day_night`,
+    `DayNightTransition`, `w_daynight_slate` in the image) we do not bind or blend; the
+    local-light term (constants or a light texture) the sun-lit day hides; the exposure
+    floor (`gLumRangeLow`) being reached where hardware's scene is brighter.
 
 0za. **THE OPERATOR'S SIX F9 REPORTS OF 2026-09-13 (`~/XenonLive/Player Issues/#1-#6`),
     worked 2026-09-14 in order of ease.** Fixed in-tree, each with its control arm:
