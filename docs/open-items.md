@@ -7,6 +7,28 @@ NOT the cause is what stops the next session re-buying it.
 
 Next, in order:
 
+0zc. **"INTERIORS ARE TOO DARK" (operator, 2026-09-15) — THE TRANSFER CURVE IS MEASURED
+    AND IT GOES THE OTHER WAY; THE DECIDING NUMBER IS THE OPERATOR'S.** Part 119 ran
+    `docs/lighting-plan-part119.md` §2 (`phase5-notes.md` §6fb): the front buffer is
+    plain 8_8_8_8 (no GAMMA encode anywhere in the frame); Xenia's screenshots are
+    exactly hardware's front buffer through the display ramp (closed to ±1-6 levels on
+    the eight R4 frames, `tools/xtr_frame_extract.py`); the ramp is Direct3D's
+    `rec709_encode(srgb_decode(x))` for the type-2 answer to `VdGetCurrentDisplayGamma`
+    (identity for type 1) and it DARKENS — median −14 outdoors, x0.5 in the three R2
+    interiors. The ramp is now captured off the ring and applied at present under
+    `CZ_VK_GAMMA_RAMP=1` (OFF: it can only darken). What decides whether any renderer
+    defect exists: **the operator's F9 with `CZ_VK_SNAP_DUMP` at w4 (Uncle Bill's
+    bathroom), w7 (Barnyard Bonanza) and R4 spot 03**, compared with hardware's front
+    buffer medians 30.2 / 29.3 / 74.0 — and the answers to two questions: which
+    reference ("Xbox 360") they compared against (Xenia, or a console — and on which
+    display), and whether their console profile has the Visuals GAMMA meter raised.
+    **The gamma meter is measured INERT here** (the constant `gFinalGammaParameters`
+    from global `0x829EDCF4`, poked 2.0/0.5/1.0 live: mean luma 26.0/25.1/25.3) — a
+    player who raised it on the console sees lifted interiors this port cannot follow,
+    twice over (part 60 removed the screen; the constant does nothing). Finding the
+    pass that consumes it (which draw, which shader, does it run at 1.0) is the first
+    §3 item if the F9s say our front buffer is darker than hardware's.
+
 0za. **THE OPERATOR'S SIX F9 REPORTS OF 2026-09-13 (`~/XenonLive/Player Issues/#1-#6`),
     worked 2026-09-14 in order of ease.** Fixed in-tree, each with its control arm:
     **#6** the struggle prompt said MASH on the pad in French — the string device-follow

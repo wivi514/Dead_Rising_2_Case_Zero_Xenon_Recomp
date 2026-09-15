@@ -22132,3 +22132,190 @@ control) did not stop it.
 
 **Case West:** the same D3D, the same tiling, the same Clear inside a bracket. Ship the
 tile offset there on day one, and the depth-halves probe with it.
+
+## §6fb — "Interiors are too dark": the picture after the tone map, measured against hardware's own front buffer (part 119, 2026-09-15)
+
+The operator's report closing v1.1.1: *"Lighting is different in Case Zero compared to
+the Case Zero on Xbox 360, interiors are really dark compared to what it was on Xbox
+360."* `docs/lighting-plan-part119.md` §2 named the cheapest hypothesis with an oracle
+— the transfer curve AFTER the tone map: a `k_8_8_8_8_GAMMA` front buffer we never
+decode, and a display gamma ramp we never read — and this section is what running it
+found. Every number below was measured; nothing in it is argued from documentation.
+
+### 1. The front buffer is PLAIN 8_8_8_8. Hypothesis A's first half is refuted.
+
+`tools/xtr_resolve_census.py` now prints, per destination, the FORMAT PAIR — the EDRAM
+source's `RB_COLOR_INFO` format and `RB_COPY_DEST_INFO`'s texture format / number format /
+exp_bias / endian — plus the `XE_SWAP` packet's front buffer. Over the three captures the
+plan named (`Big_buck_hardware_store_03`, `w4_bathroom`, `w1_spawn`):
+
+| destination class | RB_COLOR_INFO fmt | copy dest | count / frame |
+|---|---|---|---|
+| every colour resolve incl. the front buffer `04BDC000` | **0 = k_8_8_8_8** | 6 = 8_8_8_8, unorm, exp_bias 0 | 34-40 |
+| the luminance chain | 6 = 16_16_FLOAT | 30 = 16_FLOAT | 10 |
+| one 5_6_5 in the bathroom | 0 | 4 = 5_6_5 | 1 |
+
+`k_8_8_8_8_GAMMA` (1) appears on **zero** resolves in any of the three frames, and the swap
+presents `04BDC000` 1280x720 — resolved once a frame from colour0, format pair (0, 6),
+endian 0. There is no PWL encode anywhere in this title's frame; what the resolve wrote
+is what the swap shows, modulo the ramp.
+
+### 2. Xenia's screenshots ARE table[front buffer] — closed to a level on eight frames
+
+Xenia (BSD-3-Clause; `src/xenia/gpu/command_processor.cc`, `d3d12_command_processor.cc`
+`IssueSwap`, `shaders/apply_gamma_table.xesli`, read as a structural reference on
+2026-09-15 and the licence recorded here as the plan asked) applies the 256-entry
+`DC_LUT_30_COLOR` table for an 8-bit front buffer and the PWL table for `2_10_10_10`,
+chosen by the swap texture's format, as `out = table[uint(in * 255 + 0.5)] / 1023`, per
+channel, blue in bits 0:9, green 10:19, red 20:29. Its default table is identity ("what
+games set when starting with the sRGB (return value 1) VdGetCurrentDisplayGamma").
+
+The capture holds hardware's front buffer: this Xenia build records no resolve output as
+a `MemoryWrite` (every `MemoryWrite` in R2/R4 is a 4- or 12-byte fence), but the title
+samples the PREVIOUS frame's front buffer early in each frame and that upload is a
+3,768,320-byte `MemoryRead` at the swap address (1280 x 736 tiled rows x 4). It is a
+tiled `k_8_8_8_8` with endian 0 — the dword is `0xAARRGGBB` little-endian. B2, the
+continuous gameplay stream, holds that read ONCE (the texture cache uploads a texture
+once), so the single-frame captures are the only per-spot front buffers we have.
+
+`tools/xtr_frame_extract.py` untiles it, applies the capture's own `GammaRamp` record and
+compares against the PNG (histograms; the R4 PNGs are frame-locked, the R2 PNGs are
+snips of a later frame and w6's is the whole Xenia window):
+
+| capture | fb median luma | ramp(fb) median | Xenia png median | ramp(fb) − png | fb − png |
+|---|---|---|---|---|---|
+| Big_buck_01 | 64.4 | 48.7 | 49.2 | −0.5 | +15.2 |
+| Big_buck_02 | 79.1 | 63.8 | 58.1 | +5.7 | +21.1 |
+| Big_buck_03 | 74.0 | 58.5 | 59.7 | −1.2 | +14.3 |
+| Big_buck_04 | 65.2 | 49.4 | 52.4 | −3.0 | +12.8 |
+| Big_buck_05 | 61.7 | 45.9 | 47.6 | −1.8 | +14.1 |
+| Big_buck_06 | 58.9 | 43.0 | 38.6 | +4.5 | +20.3 |
+| Big_buck_07 | 72.2 | 56.6 | 56.0 | +0.7 | +16.3 |
+| Big_buck_08 | 65.8 | 50.0 | 50.3 | −0.3 | +15.4 |
+| w4_bathroom (interior) | 30.2 | 15.5 | 23.3 (other frame) | — | — |
+| w6_register_door (interior) | 41.6 | 26.0 | (whole window) | — | — |
+| w7_slotmachine (interior) | 29.3 | 14.9 | 21.9 (other frame) | — | — |
+
+Ramped, the residual is within a few levels on every frame-locked pair (the crowd moved
+between the two frames on 02 and 06); unramped, the front buffer is 13-21 levels
+BRIGHTER than the PNG. **Xenia's output is the front buffer through the ramp and nothing
+else** — and the ramp DARKENS: −14 levels at the outdoor median, and it HALVES the
+median in the three interiors (30 → 15.5, 42 → 26, 29 → 15). The bathroom triptych
+(`xtr_frame_extract.py --ppm/--ramped-ppm`) shows it plainly: the raw front buffer is a
+lighter, flatter picture than the PNG; ramped, it is the PNG.
+
+### 3. Where the table comes from: Direct3D, `VdGetCurrentDisplayGamma`, and a curve with a name
+
+`tools/gdis.py` on the image. The table is not the game's; it is the statically linked
+Direct3D runtime's, built once at device creation:
+
+* `sub_8284D860` is D3D's 256-entry `SetGammaRamp` writer: `DC_LUT_RW_MODE=0`,
+  `RW_INDEX=0`, `WRITE_EN_MASK=7`, then per entry one type-0 write of
+  `DC_LUT_30_COLOR` (the three 16-bit channels of a `D3DGAMMARAMP` packed `>> 6` into
+  10:10:10) followed by a **COND_WRITE (0x45, function 7 = always) that sets
+  `DC_LUT_RW_INDEX = i + 1`** — hardware's auto-increment, emulated in software, so the
+  index register is always current when the colour write lands. B1 carries exactly this
+  at packets 468-987, once per boot; `DC_LUTA_CONTROL` (0x1930) is then written to 0
+  every frame. `sub_8284D958` is the PWL twin (128 entries, `DC_LUT_PWL_DATA`), used for
+  10-bit front buffers — not this title's.
+* `sub_8284DA48` builds the DEFAULT ramp: identity (`i * 0x3FF / 0xFF << 6`), then
+  `sub_8284D740` pushes it through a 1024-entry correction table from `sub_8284D5C0`,
+  which calls **`VdGetCurrentDisplayGamma(&type, &power)`** and, per entry `x = i/1023`:
+  `y = srgb_decode(x)` (`sub_8284D460(x, 1)`: `x > 0.04045 ? ((x + 0.055) / 1.055)^2.4 :
+  x / 12.92`), then by type — **1: `srgb_encode(y)` = identity; 2:
+  `rec709_encode(y)`** (`sub_8284D510(y, 0)`: `y >= 0.018 ? 1.099 y^0.45 − 0.099 : 4.5 y`);
+  3: `pow(y, k / power)` — clamped to 10 bits. Checked against the capture's table: 32/255
+  → srgb_decode 0.01444 → 4.5x = 0.065 → **66**/1023; 128/255 → 0.2158 → 0.452 → **462**.
+  Both exact. So hardware's ramp is `rec709_encode(srgb_decode(x))`: **sRGB-encoded
+  content re-encoded for a Rec.709 television**, which is what a type-2 display answer
+  asks for.
+* Our `VdGetCurrentDisplayGamma_x` returns type 2 / 2.2222 — copied from Xenia's
+  `kernel_display_gamma_type` config, which is where Xenia's own darker picture comes
+  from. A console reporting **type 1 (sRGB) loads IDENTITY** and shows the front buffer
+  as resolved — which is what this runtime has always presented. The title itself never
+  calls `SetGammaRamp`: its three callers (`82841ee0`, `828470e0`, `828496ec`) are all
+  inside D3D. The game's Visuals "Gamma" meter is a different thing (§5).
+
+### 4. Built: the DC_LUT capture and the present-time ramp, as an arm — and why it is OFF
+
+`gpu/pm4.cpp` now assembles the 256-entry table from the ring (`DC_LUT_30_COLOR` under
+the current `RW_INDEX` and `WRITE_EN_MASK`; PWL/SEQ_COLOR writes counted and announced
+as not modelled; a version counter; the range added to `RegRunHasSideEffects` so a bulk
+run through 0x1921-0x1930 takes the per-dword path), and `Pm4_GammaRampSnapshot` hands
+it to the renderer. `gpu/gamma_ramp.hlsl` (committed as `gamma_ramp_spv.h` through
+`tools/build_rt_shaders.sh`) is one full-screen triangle: Load the presented image at
+the fragment's pixel, look each channel up in a 1 KB uniform buffer, write it to an
+image of the presented size that then feeds BOTH the readback and the swapchain blit —
+so every picture instrument sees what the screen sees, exactly as Xenia's screenshots
+do. **`CZ_VK_GAMMA_RAMP=1` engages it; unset is the exact pre-part-119 path.**
+
+Gates, on the shipped binary at 1280x720 headless:
+* the table our runtime assembles from the title's own ring writes is **byte-identical
+  to the captures'**: `[vk] gamma ramp: NON-identity table loaded (version 256, load #1,
+  0 PWL writes not modelled): [32]=66/66/66 [64]=193/193/193 [128]=462/462/462`;
+* the GPU pass equals the Python reference (`lut[fb] * 255 / 1023`, rounded) on the
+  static logo frames to **mean |diff| 0.19 and 0.83 levels**, i.e. rounding;
+* applied on 10,834 of 10,839 presents (the five before the load, counted by name);
+* the null pair: arm unset, **1,409 of 1,409 logo-era frames hash-identical** to the
+  previous binary's run until the two boots' timing diverged (gotcha 75);
+* `CZ_VK_VALIDATION=1`: the arm adds **zero** messages (the four
+  `VUID-VkGraphicsPipelineCreateInfo-topology-08773` lines are in the control too and
+  predate this part).
+
+**It ships OFF, and the reason is the measurement, not caution.** If our front buffer
+matched hardware's, our default picture would be BRIGHTER than Xenia's — 14 levels at the
+outdoor median, 2x in the interiors — and Xenia's picture is the one its type-2 config
+asks for; a console answering type 1 shows exactly what we show. The report is that ours
+is DARKER. A transfer curve that goes the other way cannot be the mechanism of that
+report. **The number that now decides everything is the one §2.3 of the plan asked for
+and this session could not take: OUR front buffer against hardware's at a matched
+interior** — the operator's F9 with `CZ_VK_SNAP_DUMP` standing at w4 (Uncle Bill's
+bathroom), w7 (Barnyard Bonanza) and R4 spot 03, against the fb medians above
+(30.2 / 29.3 / 74.0). Headlessly the only interior reachable is the safehouse garage,
+where our frame reads median 19.8 unramped and 8.8 ramped against E4's 7.5 — but E4 is
+the fade-in's first frame and a different camera, so that is consistent-with, not a
+measurement. The kill criterion of the plan is recast: **if our interior front buffer is
+within a few levels of hardware's, there is no lighting defect in this renderer and the
+difference is the display's transfer** (Xenia type 2 vs console type 1 vs whatever the
+operator's TV and monitor do) — an operator-side setting question, with this arm as the
+Xenia-matching option; **if ours is darker than 30.2 at w4 by more than a handful of
+levels, the defect is upstream of the front buffer** and §3/§4 of the plan are live.
+
+### 5. The Visuals "Gamma" meter: measured to do NOTHING here, and its mechanism is half named
+
+Part 60 wrote *"gamma genuinely does nothing in our runtime"* and removed the screen
+without saying why. It is a shader constant, not the display ramp: `sub_827C2A20(this,
+float gamma)` builds `float4(gamma, 0, 0, 0)`, binds it to the named constant
+`gFinalGammaParameters` (string at `820B40C8`, handle cached at `82AD08C4`) and dispatches
+a post pass (`82796AA0(..., 0xA)`). Every one of its five callers loads the gamma from the
+global **`0x829EDCF4`** (initial 1.0), whose only writer is the settings-apply function
+`sub_824C19xx` (settings struct +0x20 → the global) — i.e. the Visuals meter's value, out
+of the profile.
+
+Poked live in a headless safehouse park (`tools/guest_poke.py`, `process_vm_writev`
+into the guest global, no stall), frame mean luma over ~1,500 frames
+each: **1.0 → 26.1, 2.0 → 26.0, 0.5 → 25.1, back to 1.0 → 25.3**, draw count 1,090-1,100
+throughout. The constant has no effect on our picture. Not yet known: whether the pass
+runs at all in our frame, and whether hardware's does at gamma 1.0 (the profile default;
+the captures cannot say what the operator's console profile holds). This matters to the
+report in one specific way: **a player who raised the Gamma meter on their console sees
+lifted shadows in interiors and nothing outdoors — the report's exact shape — and this
+port cannot follow, twice over** (the screen is gone, and the constant is inert).
+`open-items.md` 0zc.
+
+### 6. What this part did NOT do, stated so it is not re-bought
+
+* It did not compare our interior front buffer to hardware's (needs the operator's F9s
+  at the three spots; §5 of the plan).
+* It did not decide whether the ramp SHOULD be on: that is a display question the
+  measurement cannot settle from here (§4 above), and the operator's three-way eye test
+  (default / `CZ_VK_GAMMA_RAMP=1` / their console) is the gate.
+* It did not touch the tone map, exposure, lightmaps or local lights (§3/§4 of the
+  plan); the only §3 item taken is the gamma constant's null, above.
+* Sync validation was not run on the arm (it is OFF by default and uses the tracked
+  `Barrier` helper only); run `tools/part117_gates.sh` with `CZ_VK_GAMMA_RAMP=1` before
+  it is ever defaulted on.
+
+**Case West:** same D3D runtime, same `sub_8284D5C0` shape, same Vd stub — the ramp
+capture and the arm transfer verbatim; the `xtr_resolve_census.py` format-pair block
+and `xtr_frame_extract.py` are the first two tools to run on its captures.

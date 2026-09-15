@@ -163,3 +163,37 @@ wrong turns live.
 - Do not compare against Xenia's png as a pixel diff; the screenshots were taken on a
   return trip (camera and clock differ). Histograms and medians, or the front buffer
   inside the `.xtr`.
+
+## §7. Execution record (part 119, 2026-09-15) — §2 RUN; the transfer goes the OTHER WAY
+
+Read `phase5-notes.md` §6fb for the measurements. In the plan's own terms:
+
+* **§2.1 answered: the front buffer is PLAIN `k_8_8_8_8`** (rt format 0, dest format 6,
+  unorm, endian 0) in all three captures, and no resolve in the frame is
+  `k_8_8_8_8_GAMMA`. Hypothesis A's first half is refuted; only the ramp remained.
+  `tools/xtr_resolve_census.py` prints the format pair and the swap now.
+* **§2.2 done, licence recorded** (Xenia BSD-3-Clause, structural reference: the swap
+  applies the 256-entry table for an 8-bit front buffer as `table[uint(x*255+0.5)]/1023`).
+* **§2.3 half done.** Hardware's front buffer is in each single-frame capture as the
+  title's own `MemoryRead` of the previous frame (`tools/xtr_frame_extract.py`); Xenia's
+  PNG = ramp(front buffer) to ±1-6 levels on all eight R4 frames. **The other half — OUR
+  front buffer at the same spot — needs the operator's F9s** (§5), which is unchanged.
+* **§2.4 built:** `CZ_VK_GAMMA_RAMP=1` (pm4.cpp DC_LUT capture + `gpu/gamma_ramp.hlsl`
+  at present), with the printed table and the counters the plan asked for. The control
+  arm is the DEFAULT, because the ramp darkens and the report is "too dark" — the plan's
+  polarity was wrong: **skipping the ramp makes us BRIGHTER than Xenia, not darker.**
+* **§2.5 gates:** (b) the GPU pass equals the Python reference to rounding; (d) the null
+  pair holds (1,409/1,409 logo frames). (a) E3 is a normalised correlation and cannot
+  read a transfer curve; not run. (c) is the operator's.
+* **§3, one item taken:** `gFinalGammaParameters` is the Visuals meter's constant, from
+  global `0x829EDCF4`; a live poke (`tools/guest_poke.py`) moves nothing in our frame.
+  Which pass consumes it and whether it runs is the first §3 question if the F9s say
+  our front buffer is darker than hardware's (`open-items.md` 0zc).
+* **§4 untouched.**
+
+**The kill criterion is recast.** If the operator's interior front buffer is within a few
+levels of hardware's (30.2 at w4, 29.3 at w7), this renderer has no lighting defect and the
+difference is the DISPLAY — Xenia's type-2 ramp, a console's type-1 identity, the TV vs
+the monitor, or a raised Gamma meter on the console — with `CZ_VK_GAMMA_RAMP=1` the
+Xenia-matching option. If ours is darker by more than that, §3 then §4 are live and the
+number says by how much.

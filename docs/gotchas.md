@@ -6651,3 +6651,27 @@ From phase C part 18 (the frame rate — and none of it was work):
     the PressStart screen has already handed the top-level target to the main menu, and
     the sink answers `handled=0` with no error anywhere. Trace the dispatcher's result,
     not the poster: the poster cannot tell. (coop-plan.md Part 7)
+584. **A screenshot from an emulator is its OUTPUT, not the guest's frame.** Every
+    picture gate in this port compared against Xenia PNGs that carry the display gamma
+    ramp Xenia applies at swap; hardware's front buffer inside the same `.xtr` is 13-21
+    luma levels brighter than the PNG at the median. The oracle for "what did the title
+    render" is the bytes in the capture; the PNG is the oracle for "what did the
+    emulator show". Say which one a comparison used. (phase5-notes §6fb)
+585. **A register with no reader is not a no-op — check what the last write stood in
+    for.** DC_LUT_30_COLOR landed in one `g_regs` slot 256 times a boot, last write
+    wins, for 118 parts; the whole display ramp was in the ring the whole time. Grep the
+    register file for indices that are written and never read (the Xenia
+    `register_table.inc` names are the list). (phase5-notes §6fb §3-4)
+586. **A kernel stub's answer can choose a curve the title bakes into the picture.**
+    `VdGetCurrentDisplayGamma` returning type 2 makes Direct3D load a Rec.709
+    re-encoding of sRGB content as the display ramp; type 1 makes it identity. Both are
+    "correct"; they are pictures for two displays. A stub copied from an emulator's
+    config inherits the emulator's look, and "darker/brighter than the console" can be
+    a settings question before it is a renderer one. (phase5-notes §6fb §3)
+587. **"It does nothing" is a measurement to take, not a note to leave.** Part 60 wrote
+    that the Visuals gamma meter does nothing here and removed the screen; part 119
+    measured it (a live poke of its global: null) and found the report's exact shape
+    — lifted interiors, nothing outdoors — is what a raised meter produces on a console
+    and this port cannot follow. A dead control the original had is a defect with a
+    user-visible symptom, and it costs one poke to confirm. (phase5-notes §6fb §5,
+    open-items 0zc; `tools/guest_poke.py`)

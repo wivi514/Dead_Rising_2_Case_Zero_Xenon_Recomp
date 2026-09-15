@@ -223,10 +223,20 @@ mask; trust the microcode's own swizzles.
     2026-09-15: the operator VERIFIED #1/#3/#4/#6 and the launcher localization;
     v1.1.1 (tag = 626e438 + notes) has its three Linux artifacts built and gated in
     `~/Release/Case Zero/1.1.1/` — the Windows zip and the GitHub draft are OWED
-    (czwin was off). THE NEXT SESSION'S WORK IS `docs/lighting-plan-part119.md`:
-    "interiors are really dark compared to the 360" — start at its §2, the
-    post-tone-map transfer (hardware loads a NON-identity display gamma ramp this
-    runtime has never read; `tools/xtr_gamma_ramp.py` prints it from any capture).**
+    (czwin was off). ~~THE NEXT SESSION'S WORK IS `docs/lighting-plan-part119.md`~~
+    — **PART 119 RAN ITS §2 (2026-09-15 afternoon; `phase5-notes.md` §6fb, plan §7,
+    open-items 0zc, gotchas 584-587) AND THE TRANSFER GOES THE OTHER WAY: the front
+    buffer is plain 8_8_8_8 (no GAMMA encode in the frame); Xenia's PNGs are hardware's
+    front buffer through Direct3D's display ramp (`rec709_encode(srgb_decode(x))` for
+    the type-2 `VdGetCurrentDisplayGamma` our stub copies from Xenia; identity for type
+    1), closed to ±1-6 levels on the eight R4 frames; and that ramp DARKENS (−14 median
+    outdoors, x0.5 in interiors) — so skipping it, as we always have, makes us BRIGHTER
+    than Xenia, not darker. The ramp is captured off the ring now and
+    `CZ_VK_GAMMA_RAMP=1` applies it at present (OFF). The Visuals GAMMA meter is
+    measured INERT here (`tools/guest_poke.py`). THE DECIDING NUMBER IS THE OPERATOR'S:
+    F9 + `CZ_VK_SNAP_DUMP` at w4 / w7 / R4-03 against hardware's front-buffer medians
+    30.2 / 29.3 / 74.0, plus which "360" they compared to and whether its Gamma meter is
+    raised (0zc).**
     The performance hand-off is still `part118-kickoff.md` — PART 118 (the late afternoon of 2026-09-12, unattended, a
     16:00 deadline) GAVE EACH PIPELINE STAGE A PHYSICAL CORE OF ITS OWN: the PMU said the
     guest's Main Thread runs the same instructions at 17% more cycles with our renderer
