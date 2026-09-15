@@ -28,6 +28,13 @@ Next, in order:
     twice over (part 60 removed the screen; the constant does nothing). Finding the
     pass that consumes it (which draw, which shader, does it run at 1.0) is the first
     §3 item if the F9s say our front buffer is darker than hardware's.
+    **The reference, from the operator (2026-09-15 evening): an Xbox SERIES X running
+    the title through BACKWARD COMPATIBILITY, Gamma meter at default.** So the meter is
+    ruled out, and "the 360" is the Xbox One/Series BC emulator's presentation on a TV —
+    whether that emulator honours the DC_LUT ramp (and what the TV then does with a
+    Rec.709-encoded signal) is unknown and not measurable from here. The F9s are still
+    the number: they say whether our FRONT BUFFER differs from hardware's; everything
+    after the front buffer is the display chain, on both sides.
 
 0za. **THE OPERATOR'S SIX F9 REPORTS OF 2026-09-13 (`~/XenonLive/Player Issues/#1-#6`),
     worked 2026-09-14 in order of ease.** Fixed in-tree, each with its control arm:
