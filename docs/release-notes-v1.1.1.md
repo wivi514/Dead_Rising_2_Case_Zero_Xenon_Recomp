@@ -1,5 +1,7 @@
 # Release notes — v1.1.1
 
+**ON HOLD (operator, 2026-09-15): v1.1.1 ships WITH the lighting fix (`docs/lighting-plan-part119.md`). The artifacts and hashes below are a staging build at a LOCAL tag that will move; re-tag, rebuild all four legs and refresh every hash before this text is used.**
+
 **This is the text to paste into the GitHub Release body.** Binaries are the tag
 `v1.1.1` (626e438 + this notes commit); the hashes below are the artifacts
 built at that tag on 2026-09-15 (the Linux three that day; the Windows zip from the
