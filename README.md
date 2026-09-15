@@ -39,7 +39,10 @@ project is not affiliated with, or endorsed by, Capcom or Microsoft.
    The first run sets everything up by itself under a progress bar: it unpacks
    your package, prepares the game's 1,367 shaders (~10 seconds), and generates
    the menu and prompt assets from your data. Later launches go straight into
-   the game.
+   the game. The launcher's **SUBTITLES** row picks the game's language, and the
+   launcher and the in-game PC settings panel follow it (English, French,
+   Italian, Spanish; Japanese and Korean menus stay in English — the game's own
+   text is localized either way).
 
 If anything needed is missing, the game tells you exactly what and where — it
 never fails with a blank screen on purpose. A `README.md` inside the bundle has

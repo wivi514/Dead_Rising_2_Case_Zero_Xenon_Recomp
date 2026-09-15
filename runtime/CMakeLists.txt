@@ -396,6 +396,7 @@ add_executable(cz_runtime
     host/stfs_extract.cpp            # release E (§2.3 step 2): the in-process unpack
     host/overlay_gen.cpp             # release-github §0: first-run overlay generation
     host/settings.cpp                # part 60: the PC options screen's persistent store
+    host/ui_strings.cpp              # the launcher's and settings panel's strings in the subtitle language
     host/window.cpp                  # phase 3; compiles to stubs without CZ_HAVE_SDL
     host/png_icon.cpp                # the window icon from the player's own X_IMAGEID_GAME.PNG
     host/log_file.cpp                # part 105: stderr tee'd to cz_runtime.log beside the root

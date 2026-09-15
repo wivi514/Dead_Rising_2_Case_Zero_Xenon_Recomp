@@ -201,6 +201,7 @@ int Host_DisplayModeList(uint32_t*, int) { return 0; }
 #include "../kernel/xlive_overlay_glue.h"
 #include "png_icon.h"
 #include "settings.h"
+#include "ui_strings.h"
 #include "../cpu/native_kbm.h"
 #include "stfs_extract.h"
 #include <filesystem>
@@ -660,6 +661,12 @@ const char* Glyph(char c)
         case '/': return "00001000100001000100010001000010000";
         case '>': return "10000010000010000010001000100010000";
         case '<': return "00001000100010001000001000001000001";
+        case '(': return "00010001000100010001000100001000010";
+        case ')': return "01000001000001000010000100001000100";
+        case '\'': return "00100001000010000000000000000000000";
+        case '+': return "00000001000010011111001000010000000";
+        case '*': return "00000010101011100111010101000000000";
+        case ',': return "00000000000000000000000000110000100";
         default:  return nullptr;
     }
 }
@@ -712,19 +719,19 @@ void EmitSettingsOverlay(int w, int h, Rect&& rect)
         }
     };
 
-    text(panelX + 20, panelY + 16, "PC SETTINGS", 3, 245, 235, 200);
+    text(panelX + 20, panelY + 16, UiText(UiStr::PcSettings), 3, 245, 235, 200);
     // The hint line follows the ACTIVE input path: with the native keyboard on,
     // the panel is driven by arrows/Enter/Esc/X (NativeKbm_PanelButtons) and the
     // words say so — "B CLOSE" on a keyboard screen was the operator's report.
     text(panelX + 20, panelY + 46,
-         NativeKbm_Active()
-             ? "UP/DOWN ROW   LEFT/RIGHT CHANGE   X APPLY   ESC CLOSE"
-             : "UP/DOWN ROW   LEFT/RIGHT CHANGE   X APPLY   B CLOSE",
+         NativeKbm_Active() ? UiText(UiStr::PanelHintKeyboard)
+                            : UiText(UiStr::PanelHintPad),
          2, 160, 160, 170);
 
-    static const char* kModeNames[] = { "WINDOW", "BORDERLESS", "FULLSCREEN" };
-    static const char* kOnOff[] = { "OFF", "ON" };
-    static const char* kTiers[] = { "LOW", "MEDIUM", "HIGH" };
+    // Labels and value names in the game's subtitle language (ui_strings.h).
+    const char* kModeNames[] = { UiText(UiStr::Window), UiText(UiStr::Borderless),
+                                 UiText(UiStr::Fullscreen) };
+    const char* kOnOff[] = { UiText(UiStr::Off), UiText(UiStr::On) };
     const uint32_t scale = Settings_RenderScale();
     // The Resolution row shows the PENDING value when one exists (stepped but not
     // yet applied — part 91's apply-button flow), starred so "shown" and "running"
@@ -743,7 +750,8 @@ void EmitSettingsOverlay(int w, int h, Rect&& rect)
     }
     // The frame cap's display name. Values come from the validated set in
     // settings.cpp, so the fallback only fires on a hand-edited file mid-run.
-    char capName[8] = "OFF";
+    char capName[16];
+    snprintf(capName, sizeof capName, "%s", UiText(UiStr::Off));
     if (const int cap = Settings_FpsCap(); cap > 0)
         snprintf(capName, sizeof capName, "%d", cap);
     // The FOV row shows "OG" at 0 — the plan's language for "exactly the game's own
@@ -760,8 +768,9 @@ void EmitSettingsOverlay(int w, int h, Rect&& rect)
     // On a device without ray query the RT values are not offered at all: the row
     // stops at HIGH and the footer says why. Better than showing values that
     // refuse to move (the gamma-slider rule) when the whole class is unavailable.
-    static const char* kShadowRow[] = { "LOW",    "MEDIUM",    "HIGH",
-                                        "RT LOW", "RT MEDIUM", "RT HIGH" };
+    const char* kShadowRow[] = { UiText(UiStr::Low),   UiText(UiStr::Medium),
+                                 UiText(UiStr::High),  UiText(UiStr::RtLow),
+                                 UiText(UiStr::RtMedium), UiText(UiStr::RtHigh) };
     // WHEN THE RT RUNGS ARE NOT OFFERED, SHOW THE RASTER TIER, not the stored RT one.
     // `Settings_ShadowRow()` reports `2 + rtShadows` whenever a saved `cz_settings.txt`
     // carries a non-zero RT tier, so a file written while the rungs existed would print
@@ -783,16 +792,17 @@ void EmitSettingsOverlay(int w, int h, Rect&& rect)
     const bool msaaPending = msaaRun && (msaaSet ? msaaSet : 1) != msaaRun;
     char msaaName[8];
     snprintf(msaaName, sizeof msaaName, "%s%s",
-             msaaSet == 0 ? "OFF" : msaaSet == 2 ? "2X" : "4X", msaaPending ? " *" : "");
+             msaaSet == 0 ? UiText(UiStr::Off) : msaaSet == 2 ? "2X" : "4X",
+             msaaPending ? " *" : "");
     const char* rows[8][2] = {
-        { "RESOLUTION", resName },
-        { "DISPLAY MODE", kModeNames[int(Settings_DisplayMode()) % 3] },
-        { "VSYNC", kOnOff[Settings_VSync() ? 1 : 0] },
-        { "SHADOW", kShadowRow[shadowRow % 6] },
-        { "MSAA", msaaName },
-        { "FRAME CAP", capName },
-        { "FIELD OF VIEW", fovName },
-        { "MOUSE SENS", sensName },
+        { UiText(UiStr::Resolution), resName },
+        { UiText(UiStr::DisplayMode), kModeNames[int(Settings_DisplayMode()) % 3] },
+        { UiText(UiStr::VSync), kOnOff[Settings_VSync() ? 1 : 0] },
+        { UiText(UiStr::Shadow), kShadowRow[shadowRow % 6] },
+        { UiText(UiStr::Msaa), msaaName },
+        { UiText(UiStr::FrameCap), capName },
+        { UiText(UiStr::FieldOfView), fovName },
+        { UiText(UiStr::MouseSens), sensName },
     };
     const int sel = Settings_OverlaySelection();
     for (int i = 0; i < 8; ++i)
@@ -818,18 +828,13 @@ void EmitSettingsOverlay(int w, int h, Rect&& rect)
     // the player needs telling what X does — and the resolution note otherwise says
     // LIVE, because it is (part 91: applied at the frame boundary on the X press).
     text(panelX + 20, panelY + panelH - 30,
-         resPending
-             ? "PRESS X TO APPLY THE NEW RESOLUTION"
-         : msaaPending
-             ? "MSAA APPLIES AT THE NEXT LAUNCH"
-         : rtWhy == 3
-             ? "RESOLUTION: X APPLIES LIVE - RT SHADOWS ARE OFF IN THIS BUILD"
-         : rtWhy == 1
-             ? "RESOLUTION: X APPLIES LIVE - NO RAY QUERY: RT UNAVAILABLE"
-         : rtWhy == 2
-             ? "RESOLUTION: X APPLIES LIVE - NO RT SHADER CACHE: SEE THE LOG"
-             : (scale > 1 ? "RESOLUTION: X APPLIES LIVE - SHADOW: LIVE"
-                          : "RESOLUTION: X APPLIES LIVE - SHADOW INERT AT 720P"),
+         resPending  ? UiText(UiStr::FooterApplyResolution)
+         : msaaPending ? UiText(UiStr::FooterMsaaNextLaunch)
+         : rtWhy == 3  ? UiText(UiStr::FooterRtOff)
+         : rtWhy == 1  ? UiText(UiStr::FooterNoRayQuery)
+         : rtWhy == 2  ? UiText(UiStr::FooterNoRtCache)
+         : (scale > 1  ? UiText(UiStr::FooterShadowLive)
+                       : UiText(UiStr::FooterShadowInert)),
          2, resPending ? 255 : 150, resPending ? 220 : 140, resPending ? 120 : 120);
 }
 
@@ -1932,7 +1937,7 @@ bool Host_RunLauncher()
     auto drawProgress = [&](const std::string& line, float f) {
         SDL_SetRenderDrawColor(ren, 20, 22, 26, 255);
         SDL_RenderClear(ren);
-        LauncherText(ren, 24, 24, "INSTALLING", 3, 245, 235, 200);
+        LauncherText(ren, 24, 24, UiText(UiStr::Installing), 3, 245, 235, 200);
         LauncherText(ren, 24, 80, line, 2, 160, 160, 170);
         const int bx = 24, by = 130, bw = 720 - 48, bh = 22;
         SDL_SetRenderDrawColor(ren, 70, 70, 80, 255);
@@ -1950,6 +1955,13 @@ bool Host_RunLauncher()
     int sel = 0;
     std::string notice;
     bool play = false, quit = false;
+    {
+        static const char* kNames[] = { "", "English", "", "", "French", "Spanish",
+                                        "Italian" };
+        fprintf(stderr, "[launcher] labels in %s (the SUBTITLES language, id %d; Japanese "
+                        "and Korean read as English — the bitmap font is Latin-only)\n",
+                kNames[UiTextLanguage()], Settings_Language());
+    }
     while (!play && !quit)
     {
         // ---- state read fresh every frame, through the same API the game uses ----
@@ -1962,10 +1974,17 @@ bool Host_RunLauncher()
         snprintf(fpsBuf, sizeof fpsBuf, "%d", Settings_FpsCap());
         char fovBuf[16];
         snprintf(fovBuf, sizeof fovBuf, "+%d", Settings_Fov());
-        static const char* kShadowNames[] = { "LOW", "MEDIUM", "HIGH" };
-        static const char* kMsaaNames[] = { "OFF", "2X", "4X" };
+        // Every label and value name comes from ui_strings.h in the SUBTITLES
+        // row's language, read each frame so stepping that row re-labels the
+        // launcher at once. (The language NAMES themselves stay in their own
+        // language, as a language picker should.)
+        const char* kShadowNames[] = { UiText(UiStr::Low), UiText(UiStr::Medium),
+                                       UiText(UiStr::High) };
+        const char* kMsaaNames[] = { UiText(UiStr::Off), "2X", "4X" };
         const int msaaIdx = Settings_Msaa() == 0 ? 0 : Settings_Msaa() == 2 ? 1 : 2;
-        static const char* kDispNames[] = { "WINDOW", "BORDERLESS", "FULLSCREEN" };
+        const char* kDispNames[] = { UiText(UiStr::Window), UiText(UiStr::Borderless),
+                                     UiText(UiStr::Fullscreen) };
+        const char* kOnOff[] = { UiText(UiStr::Off), UiText(UiStr::On) };
         // The six Xbox language IDs whose banks the disc carries, in the order
         // MEASURED in part 99 (CZ_LANGUAGE=N + CZ_FILE_TRACE: each ID opens
         // exactly its own str_XX.bcs; 3 and 8 fall back to en, so they are not
@@ -1980,16 +1999,16 @@ bool Host_RunLauncher()
                 langIdx = i;
         struct Row { const char* label; std::string value; };
         const Row rows[] = {
-            { "PLAY", installed ? "" : "(GAME NOT INSTALLED YET)" },
-            { "DISPLAY MODE", kDispNames[int(Settings_DisplayMode()) % 3] },
-            { "RESOLUTION", resBuf },
-            { "VSYNC", Settings_VSync() ? "ON" : "OFF" },
-            { "SHADOWS", kShadowNames[Settings_ShadowTier() % 3] },
-            { "MSAA", kMsaaNames[msaaIdx] },
-            { "FPS CAP", Settings_FpsCap() ? fpsBuf : "OFF" },
-            { "FOV", Settings_Fov() ? fovBuf : "DEFAULT" },
-            { "SUBTITLES", kLangNames[langIdx] },
-            { "SKIP INTRO LOGOS", Settings_SkipIntroLogos() ? "ON" : "OFF" },
+            { UiText(UiStr::Play), installed ? "" : UiText(UiStr::NotInstalledYet) },
+            { UiText(UiStr::DisplayMode), kDispNames[int(Settings_DisplayMode()) % 3] },
+            { UiText(UiStr::Resolution), resBuf },
+            { UiText(UiStr::VSync), kOnOff[Settings_VSync() ? 1 : 0] },
+            { UiText(UiStr::Shadows), kShadowNames[Settings_ShadowTier() % 3] },
+            { UiText(UiStr::Msaa), kMsaaNames[msaaIdx] },
+            { UiText(UiStr::FpsCap), Settings_FpsCap() ? fpsBuf : UiText(UiStr::Off) },
+            { UiText(UiStr::Fov), Settings_Fov() ? fovBuf : UiText(UiStr::Default) },
+            { UiText(UiStr::Subtitles), kLangNames[langIdx] },
+            { UiText(UiStr::SkipIntroLogos), kOnOff[Settings_SkipIntroLogos() ? 1 : 0] },
         };
         constexpr int kRows = int(sizeof(rows) / sizeof(rows[0]));
 
@@ -1997,8 +2016,7 @@ bool Host_RunLauncher()
         SDL_SetRenderDrawColor(ren, 20, 22, 26, 255);
         SDL_RenderClear(ren);
         LauncherText(ren, 24, 20, "DEAD RISING 2 - CASE ZERO", 3, 245, 235, 200);
-        LauncherText(ren, 24, 52, "UP/DOWN SELECT   LEFT/RIGHT CHANGE   ENTER PLAY", 2,
-                     130, 130, 140);
+        LauncherText(ren, 24, 52, UiText(UiStr::LauncherHint), 2, 130, 130, 140);
         for (int i = 0; i < kRows; ++i)
         {
             const int y = 96 + i * 34;
@@ -2029,16 +2047,14 @@ bool Host_RunLauncher()
         lastValue = rows[sel].value;
 
         const std::string foot = notice.empty()
-            ? (installed ? "GAME INSTALLED"
-                         : "DROP YOUR XBLA PACKAGE FILE ONTO THIS WINDOW TO INSTALL")
+            ? (installed ? UiText(UiStr::GameInstalled) : UiText(UiStr::DropPackage))
             : notice;
         LauncherText(ren, 24, 96 + kRows * 34 + 14, foot, 2, 160, 160, 170);
         // The control hint names the pad only when one is attached, so a
         // keyboard-only machine is not told about buttons it does not have.
         LauncherText(ren, 24, 96 + kRows * 34 + 36,
-                     g_controller ? "ARROWS / D-PAD MOVE   ENTER / A SELECT   "
-                                    "ESC / B QUIT"
-                                  : "ARROWS MOVE   ENTER SELECT   ESC QUIT",
+                     g_controller ? UiText(UiStr::ControlsPad)
+                                  : UiText(UiStr::ControlsKeyboard),
                      2, 120, 120, 130);
         SDL_RenderPresent(ren);
 
@@ -2121,7 +2137,7 @@ bool Host_RunLauncher()
             const std::string m = magic;
             if (m != "LIVE" && m != "CON " && m != "PIRS")
             {
-                notice = "NOT AN XBOX 360 PACKAGE - IT BEGINS \"" + m + "\"";
+                notice = std::string(UiText(UiStr::NotAPackage)) + "\"" + m + "\"";
                 break;
             }
             // Copy it into assets/package (the layout's contract: your package,
@@ -2130,24 +2146,24 @@ bool Host_RunLauncher()
             const auto pkgDir = HostPaths::Package() / "dropped";
             std::filesystem::create_directories(pkgDir, ec);
             const auto pkgDest = pkgDir / std::filesystem::path(dropped).filename();
-            drawProgress("COPYING PACKAGE...", 0.1f);
+            drawProgress(UiText(UiStr::CopyingPackage), 0.1f);
             std::filesystem::copy_file(dropped, pkgDest,
                 std::filesystem::copy_options::overwrite_existing, ec);
             if (ec)
             {
-                notice = "COULD NOT COPY THE PACKAGE IN: " + ec.message();
+                notice = std::string(UiText(UiStr::CouldNotCopy)) + ec.message();
                 break;
             }
             std::string err;
             const bool ok = StfsExtract::Extract(pkgDest, HostPaths::Game(), err,
                 [&](uint64_t done, uint64_t total) {
                     char l[64];
-                    snprintf(l, sizeof l, "UNPACKING - %u OF %u MB",
+                    snprintf(l, sizeof l, UiText(UiStr::Unpacking),
                              unsigned(done >> 20), unsigned(total >> 20));
                     drawProgress(l, total ? float(double(done) / double(total)) : 1.f);
                 });
-            notice = ok ? "INSTALLED - PRESS ENTER TO PLAY"
-                        : "INSTALL FAILED: " + err.substr(0, 48);
+            notice = ok ? std::string(UiText(UiStr::InstalledPressEnter))
+                        : std::string(UiText(UiStr::InstallFailed)) + err.substr(0, 48);
             break;
         }
         case SDL_CONTROLLERDEVICEADDED:
