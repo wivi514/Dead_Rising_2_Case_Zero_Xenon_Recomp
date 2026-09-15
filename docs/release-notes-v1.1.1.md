@@ -81,7 +81,7 @@ unpacked game data and shader cache are reused.
 
 | file | sha256 |
 |---|---|
-| `CaseZeroRecomp-linux-x86_64.tar.zst` | `TBD` |
-| `CaseZeroRecomp-linux-x86_64.AppImage` | `TBD` |
-| `CaseZeroRecomp-steamdeck-x86_64.tar.gz` | `TBD` |
+| `CaseZeroRecomp-linux-x86_64.tar.zst` | `3b9da849d97f56d31348da7e933271a31cd3c5526760468fc35b5280a0cbd7e0` |
+| `CaseZeroRecomp-linux-x86_64.AppImage` | `383170ea90e6dfdbeb5f22e77ea38ea5318f5b4ddd3b42db6b63eb86dfcb5efc` |
+| `CaseZeroRecomp-steamdeck-x86_64.tar.gz` | `2073c4f8345bce16bdfb5e73ebdebe43ab0b15a89d52a9c1f5f145e7271e9374` |
 | `CaseZeroRecomp-windows-x86_64.zip` | `TBD — built from the same tag when the Windows machine is back` |
