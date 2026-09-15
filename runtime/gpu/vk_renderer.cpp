@@ -7,6 +7,7 @@
 #include "shader_translator.h"
 #include "drawid_ps_spv.h"
 #include "null_ps_spv.h"
+#include "gamma_ramp_spv.h"
 #include "rt_factor_spv.h"
 #include "rt_shadow_spv.h"
 #include "xenos.h"
@@ -29052,6 +29053,332 @@ void VkRenderer_DrawQueued(uint8_t* base, const Pm4Draw& draw, const uint32_t* r
 
 namespace {
 
+// ===================================================================================
+// THE DISPLAY GAMMA RAMP AT PRESENT (part 119) — `CZ_VK_GAMMA_RAMP=1`, an ARM, off.
+//
+// Hardware routes the 8-bit front buffer through the display controller's 256-entry
+// LUT on the way to the screen, and this title loads a NON-identity one at boot
+// (pm4.cpp captures it at DC_LUT_30_COLOR; `tools/xtr_gamma_ramp.py` prints the same
+// table out of any R2/R4 capture). Xenia applies it at swap, so every Xenia screenshot
+// this project has ever compared against is table[front buffer] — verified to within a
+// level on the eight R4 frames by `tools/xtr_frame_extract.py`. This runtime has always
+// presented the front buffer as resolved, i.e. the picture a type-1 (sRGB) display
+// would show, because Direct3D loads IDENTITY for that answer to
+// VdGetCurrentDisplayGamma and rec709_encode(srgb_decode(x)) for the type-2 answer
+// our stub (and Xenia's config) gives. Both are "correct"; they are pictures for two
+// different displays.
+//
+// So this pass is the Xenia-equivalent output, built as an arm so the operator can
+// hold it next to the default and next to a console — and it is OFF because the ramp
+// DARKENS (median luma -14 outdoors, x0.5 in the R2 interiors) while the report it was
+// built to investigate says ours is already too dark. docs/phase5-notes.md §6fb.
+//
+// One full-screen triangle, the front buffer Loaded per pixel, the table in a 1 KB
+// uniform buffer, into an image of the presented size that then feeds both the
+// readback (so every picture instrument sees what the screen sees) and the swapchain
+// blit. Nothing in the scene is touched; `CZ_VK_GAMMA_RAMP` unset is the exact
+// pre-part-119 path (a null pair at the menu is gate (d) of the plan).
+// ===================================================================================
+namespace gammaramp
+{
+bool g_on = false;
+bool g_failed = false;
+VkDescriptorSetLayout g_setLayout = VK_NULL_HANDLE;
+VkPipelineLayout g_pipeLayout = VK_NULL_HANDLE;
+VkPipeline g_pipe = VK_NULL_HANDLE;
+VkDescriptorPool g_pool = VK_NULL_HANDLE;
+VkDescriptorSet g_sets[kMaxFramesInFlight] = {};
+Buffer g_ubo[kMaxFramesInFlight];
+uint32_t g_uboVersion[kMaxFramesInFlight] = {};
+Image g_out;
+uint32_t g_table[256];
+uint32_t g_version = 0;        // the pm4 table version this copy holds; 0 = none
+uint64_t g_loads = 0;          // distinct tables seen — the "ramp loads per run" counter
+uint64_t g_applied = 0;
+
+bool Init()
+{
+    if (g_pipe)
+        return true;
+    if (g_failed)
+        return false;
+    VkDescriptorSetLayoutBinding b[2]{};
+    b[0].binding = 0;
+    b[0].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+    b[0].descriptorCount = 1;
+    b[0].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+    b[1].binding = 1;
+    b[1].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    b[1].descriptorCount = 1;
+    b[1].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+    VkDescriptorSetLayoutCreateInfo li{ VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO };
+    li.bindingCount = 2;
+    li.pBindings = b;
+    if (vkCreateDescriptorSetLayout(R->device, &li, nullptr, &g_setLayout) != VK_SUCCESS)
+    {
+        g_failed = true;
+        return false;
+    }
+    VkDescriptorPoolSize ps[2] = {
+        { VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, kMaxFramesInFlight },
+        { VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, kMaxFramesInFlight },
+    };
+    VkDescriptorPoolCreateInfo pci{ VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO };
+    pci.maxSets = kMaxFramesInFlight;
+    pci.poolSizeCount = 2;
+    pci.pPoolSizes = ps;
+    if (vkCreateDescriptorPool(R->device, &pci, nullptr, &g_pool) != VK_SUCCESS)
+    {
+        g_failed = true;
+        return false;
+    }
+    for (uint32_t i = 0; i < kMaxFramesInFlight; ++i)
+    {
+        VkDescriptorSetAllocateInfo ai{ VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO };
+        ai.descriptorPool = g_pool;
+        ai.descriptorSetCount = 1;
+        ai.pSetLayouts = &g_setLayout;
+        if (vkAllocateDescriptorSets(R->device, &ai, &g_sets[i]) != VK_SUCCESS ||
+            !CreateBuffer(g_ubo[i], sizeof g_table, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+                          VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+                              VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                          false, nullptr) ||
+            !g_ubo[i].mapped)
+        {
+            g_failed = true;
+            return false;
+        }
+    }
+    VkPipelineLayoutCreateInfo pli{ VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO };
+    pli.setLayoutCount = 1;
+    pli.pSetLayouts = &g_setLayout;
+    if (vkCreatePipelineLayout(R->device, &pli, nullptr, &g_pipeLayout) != VK_SUCCESS)
+    {
+        g_failed = true;
+        return false;
+    }
+    auto makeModule = [&](const uint32_t* words, size_t bytes) {
+        VkShaderModuleCreateInfo mi{ VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO };
+        mi.codeSize = bytes;
+        mi.pCode = words;
+        VkShaderModule m = VK_NULL_HANDLE;
+        vkCreateShaderModule(R->device, &mi, nullptr, &m);
+        return m;
+    };
+    VkShaderModule vs = makeModule(kGammaRampVsSpv, sizeof kGammaRampVsSpv);
+    VkShaderModule fs = makeModule(kGammaRampPsSpv, sizeof kGammaRampPsSpv);
+    if (!vs || !fs)
+    {
+        g_failed = true;
+        return false;
+    }
+    VkPipelineShaderStageCreateInfo stages[2]{};
+    stages[0].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    stages[0].stage = VK_SHADER_STAGE_VERTEX_BIT;
+    stages[0].module = vs;
+    stages[0].pName = "VsMain";
+    stages[1].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    stages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT;
+    stages[1].module = fs;
+    stages[1].pName = "PsMain";
+    VkPipelineVertexInputStateCreateInfo vi{
+        VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO
+    };
+    VkPipelineInputAssemblyStateCreateInfo ia{
+        VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO
+    };
+    ia.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+    VkPipelineViewportStateCreateInfo vp{
+        VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO
+    };
+    vp.viewportCount = 1;
+    vp.scissorCount = 1;
+    VkPipelineRasterizationStateCreateInfo rs{
+        VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO
+    };
+    rs.polygonMode = VK_POLYGON_MODE_FILL;
+    rs.cullMode = VK_CULL_MODE_NONE;
+    rs.lineWidth = 1.0f;
+    VkPipelineMultisampleStateCreateInfo ms{
+        VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO
+    };
+    ms.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+    VkPipelineDepthStencilStateCreateInfo ds{
+        VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO
+    };
+    VkPipelineColorBlendAttachmentState cba{};
+    cba.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
+                         VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+    VkPipelineColorBlendStateCreateInfo cb{
+        VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO
+    };
+    cb.attachmentCount = 1;
+    cb.pAttachments = &cba;
+    VkDynamicState dyn[2] = { VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR };
+    VkPipelineDynamicStateCreateInfo dsi{
+        VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO
+    };
+    dsi.dynamicStateCount = uint32_t(std::size(dyn));   // never hardcode the count
+    dsi.pDynamicStates = dyn;
+    const VkFormat cf = VK_FORMAT_R8G8B8A8_UNORM;
+    VkPipelineRenderingCreateInfo pri{ VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO };
+    pri.colorAttachmentCount = 1;
+    pri.pColorAttachmentFormats = &cf;
+    VkGraphicsPipelineCreateInfo gp{ VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO };
+    gp.pNext = &pri;
+    gp.stageCount = 2;
+    gp.pStages = stages;
+    gp.pVertexInputState = &vi;
+    gp.pInputAssemblyState = &ia;
+    gp.pViewportState = &vp;
+    gp.pRasterizationState = &rs;
+    gp.pMultisampleState = &ms;
+    gp.pDepthStencilState = &ds;
+    gp.pColorBlendState = &cb;
+    gp.pDynamicState = &dsi;
+    gp.layout = g_pipeLayout;
+    const VkResult r =
+        vkCreateGraphicsPipelines(R->device, R->pipeCache, 1, &gp, nullptr, &g_pipe);
+    vkDestroyShaderModule(R->device, vs, nullptr);
+    vkDestroyShaderModule(R->device, fs, nullptr);
+    if (r != VK_SUCCESS)
+    {
+        fprintf(stderr, "[vk] gamma ramp: pipeline creation failed (%d) — the arm is "
+                        "IDLE and the front buffer is presented as resolved\n",
+                int(r));
+        g_failed = true;
+        return false;
+    }
+    return true;
+}
+
+// Ramp `source` (the image about to be presented, `w` x `h` host pixels) into the pass's
+// own image and return it, or nullptr when the arm is off, no table has been loaded
+// yet, or the pass cannot run — every one of which is counted, because a present that
+// silently skipped the ramp is indistinguishable from one that applied identity.
+Image* Apply(Image& source, uint32_t w, uint32_t h)
+{
+    static const bool on = EnvOn("CZ_VK_GAMMA_RAMP");
+    if (!on)
+        return nullptr;
+    uint32_t fresh[256];
+    const uint32_t v = Pm4_GammaRampSnapshot(fresh);
+    if (v == 0)
+    {
+        Count("gamma ramp: no DC_LUT table loaded yet, presented as resolved");
+        return nullptr;
+    }
+    if (v != g_version)
+    {
+        memcpy(g_table, fresh, sizeof g_table);
+        g_version = v;
+        ++g_loads;
+        // The INSTRUMENT: print what was decoded, not just that it was. Entry i unpacks
+        // as (r, g, b) 10-bit; identity would read i * 1023 / 255, and hardware's table
+        // for this title reads 66/193/462 at 32/64/128 — a wrong 10:10:10 decode cannot
+        // hide behind "applied" when the numbers are on the line.
+        auto rgb = [&](uint32_t i) {
+            const uint32_t e = g_table[i];
+            return std::array<uint32_t, 3>{ (e >> 20) & 0x3FF, (e >> 10) & 0x3FF, e & 0x3FF };
+        };
+        bool identity = true;
+        for (uint32_t i = 0; i < 256 && identity; ++i)
+        {
+            const auto e = rgb(i);
+            const uint32_t ideal = i * 1023 / 255;
+            for (uint32_t c = 0; c < 3; ++c)
+                if (e[c] + 2 < ideal || e[c] > ideal + 2)
+                    identity = false;
+        }
+        const auto e0 = rgb(0), e32 = rgb(32), e64 = rgb(64), e128 = rgb(128), e255 = rgb(255);
+        fprintf(stderr,
+                "[vk] gamma ramp: %s table loaded (version %u, load #%llu, %llu PWL writes "
+                "not modelled): [0]=%u/%u/%u [32]=%u/%u/%u [64]=%u/%u/%u [128]=%u/%u/%u "
+                "[255]=%u/%u/%u of 1023 (identity would be 0 128 257 513 1023)\n",
+                identity ? "IDENTITY" : "NON-identity", v, (unsigned long long)g_loads,
+                (unsigned long long)Pm4_GammaRampWrites(true), e0[0], e0[1], e0[2], e32[0],
+                e32[1], e32[2], e64[0], e64[1], e64[2], e128[0], e128[1], e128[2], e255[0],
+                e255[1], e255[2]);
+    }
+    if (!Init())
+    {
+        Count("gamma ramp: pass unavailable, presented as resolved");
+        return nullptr;
+    }
+    if (!w || !h)
+        return nullptr;
+    if (g_out.width != w || g_out.height != h)
+    {
+        RetireImage(g_out);
+        if (!CreateImage(g_out, w, h, VK_FORMAT_R8G8B8A8_UNORM,
+                         VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
+                             VK_IMAGE_USAGE_SAMPLED_BIT,
+                         VK_IMAGE_ASPECT_COLOR_BIT))
+        {
+            Count("gamma ramp: output image creation FAILED, presented as resolved");
+            g_out = Image{};
+            return nullptr;
+        }
+    }
+    const uint32_t slot = R->frameSlot;
+    if (g_uboVersion[slot] != g_version)
+    {
+        memcpy(g_ubo[slot].mapped, g_table, sizeof g_table);
+        g_uboVersion[slot] = g_version;
+    }
+    // The set is rewritten every present: the source is a different image on the
+    // fallback frames, and a set is only ever rebound after its slot's fence retired.
+    VkDescriptorImageInfo di{};
+    di.imageView = source.view;
+    di.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    VkDescriptorBufferInfo bi{ g_ubo[slot].buffer, 0, sizeof g_table };
+    VkWriteDescriptorSet wr[2]{};
+    wr[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    wr[0].dstSet = g_sets[slot];
+    wr[0].dstBinding = 0;
+    wr[0].descriptorCount = 1;
+    wr[0].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+    wr[0].pImageInfo = &di;
+    wr[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    wr[1].dstSet = g_sets[slot];
+    wr[1].dstBinding = 1;
+    wr[1].descriptorCount = 1;
+    wr[1].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    wr[1].pBufferInfo = &bi;
+    vkUpdateDescriptorSets(R->device, uint32_t(std::size(wr)), wr, 0, nullptr);
+
+    Barrier(R->cmd, source, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+            VK_IMAGE_ASPECT_COLOR_BIT);
+    Barrier(R->cmd, g_out, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+            VK_IMAGE_ASPECT_COLOR_BIT);
+    VkRenderingAttachmentInfo att{ VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO };
+    att.imageView = g_out.view;
+    att.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    att.loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+    att.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+    VkRenderingInfo ri{ VK_STRUCTURE_TYPE_RENDERING_INFO };
+    ri.renderArea = { { 0, 0 }, { w, h } };
+    ri.layerCount = 1;
+    ri.colorAttachmentCount = 1;
+    ri.pColorAttachments = &att;
+    vkCmdBeginRendering(R->cmd, &ri);
+    VkViewport vpp{ 0.0f, 0.0f, float(w), float(h), 0.0f, 1.0f };
+    VkRect2D sc{ { 0, 0 }, { w, h } };
+    vkCmdSetViewport(R->cmd, 0, 1, &vpp);
+    vkCmdSetScissor(R->cmd, 0, 1, &sc);
+    vkCmdBindPipeline(R->cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, g_pipe);
+    vkCmdBindDescriptorSets(R->cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, g_pipeLayout, 0, 1,
+                            &g_sets[slot], 0, nullptr);
+    vkCmdDraw(R->cmd, 3, 1, 0, 0);
+    vkCmdEndRendering(R->cmd);
+    // The main path's state cache now describes bindings this pass replaced.
+    R->bound = {};
+    ++g_applied;
+    Count("gamma ramp: applied at present");
+    return &g_out;
+}
+} // namespace gammaramp
+
 // The shared swap body — everything from "record the front buffer" to the frame
 // stats line. The PM4 feed calls it from the XE_SWAP packet, the D3D feed from the
 // Swap hook; the two callers gate on g_d3dMode so exactly one is live per run.
@@ -29667,6 +29994,12 @@ void DoSwapImpl(uint8_t* base, uint32_t frontBuffer, uint32_t width, uint32_t he
                           1, &rv);
         Count("swap: EDRAM fallback resolved for present (CZ_VK_MSAA)");
     }
+    // The display gamma ramp (part 119, `CZ_VK_GAMMA_RAMP=1`): the image the readback
+    // and the swapchain blit consume is the RAMPED one when the arm is on, so every
+    // picture instrument downstream sees what the screen sees — which is what Xenia's
+    // screenshots are. Unset, `present` is `source` and nothing below changes.
+    Image* rampedPresent = gammaramp::Apply(source, width0, height0);
+    Image& present = rampedPresent ? *rampedPresent : source;
 
     // WHETHER THE READBACK STILL HAPPENS AT ALL. In the CZ_VK_SWAPCHAIN arm the window
     // gets its pixels from the swapchain blit below and nothing needs them in host
@@ -29769,12 +30102,12 @@ void DoSwapImpl(uint8_t* base, uint32_t frontBuffer, uint32_t width, uint32_t he
         // armed that the run did not mean to arm, which is exactly the defect part 76
         // found in `play_session.sh`.
         GpuSeg _g(kGpReadback);
-        Barrier(R->cmd, source, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+        Barrier(R->cmd, present, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
                 VK_IMAGE_ASPECT_COLOR_BIT);
         VkBufferImageCopy copy{};
         copy.imageSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 };
         copy.imageExtent = { width0, height0, 1 };
-        vkCmdCopyImageToBuffer(R->cmd, source.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+        vkCmdCopyImageToBuffer(R->cmd, present.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
                                rec.present.buffer, 1, &copy);
     }
     // The swapchain blit goes LAST in the command buffer, after the readback copy when
@@ -29795,7 +30128,7 @@ void DoSwapImpl(uint8_t* base, uint32_t frontBuffer, uint32_t width, uint32_t he
         // The letterbox clear, the aspect-fit blit and the F4 overlay — all of it, because
         // "the present" is one region as far as a fix is concerned.
         GpuSeg _g(kGpPresent);
-        RecordSwapchainBlit(source, width0, height0);
+        RecordSwapchainBlit(present, width0, height0);
     }
     else if (R->wantSwapchain)
         Count("swap: no acquire (CZ_VK_NO_SUBMIT or nothing recorded) — nothing presented");

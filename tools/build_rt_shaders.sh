@@ -4,6 +4,9 @@
 #   runtime/gpu/rt_shadow.hlsl -> rt_shadow_spv.h   the route (a) atlas trace (part 64)
 #   runtime/gpu/rt_factor.hlsl -> rt_factor_spv.h   the route (b) screen-space shadow
 #                                                   factor (part 65)
+#   runtime/gpu/gamma_ramp.hlsl -> gamma_ramp_spv.h  the display gamma ramp at present
+#                                                   (part 119; needs no ray query, but
+#                                                   one script builds every internal pass)
 #
 # WHY A COMMITTED GENERATED HEADER rather than a build-time compile: the runtime
 # build must not depend on DXC. The only DXC on this machine lives inside the
@@ -53,3 +56,4 @@ PYEOF
 
 build_pass rt_shadow kRtShadow
 build_pass rt_factor kRtFactor
+build_pass gamma_ramp kGammaRamp

@@ -129,6 +129,13 @@ struct Pm4VsPaletteWrites
 };
 Pm4VsPaletteWrites Pm4_TakeVsPaletteWrites();  // returns and RESETS (the consume)
 uint32_t Pm4_VsPaletteHighWater();             // highest reg ever written; never reset
+// The display controller's 256-entry gamma LUT as the title loaded it through the ring
+// (DC_LUT_30_COLOR, blue 0:9 / green 10:19 / red 20:29; part 119). Returns the table's
+// VERSION: 0 = never loaded, otherwise the count of colour writes so far, so a consumer
+// re-snapshots only when it changes. `Pm4_GammaRampWrites(true)` counts the PWL /
+// SEQ_COLOR writes this runtime does not model.
+uint32_t Pm4_GammaRampSnapshot(uint32_t out[256]);
+uint64_t Pm4_GammaRampWrites(bool pwl);
 uint32_t Pm4_Cursor();
 uint32_t Pm4_ScratchAddr();
 uint32_t Pm4_ScratchUmsk();

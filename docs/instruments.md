@@ -4612,3 +4612,22 @@ CZ_PM4_BIND_CHECK=1       at every draw, the pixel-shader binding is compared wi
                           type-3 opcodes. Read 0 disagreements on the roam — the walk is
                           faithful to the stream; §6fa's divergence is in the stream.
 ```
+CZ_VK_GAMMA_RAMP=1        THE DISPLAY GAMMA RAMP AT PRESENT (part 119) — the 256-entry
+                          DC_LUT_30_COLOR table the title's Direct3D loads through the ring
+                          at boot (pm4.cpp assembles it; `Pm4_GammaRampSnapshot`), applied
+                          to the presented image by one full-screen pass
+                          (`gpu/gamma_ramp.hlsl`) before BOTH the readback and the swapchain
+                          blit, so every picture instrument sees what the screen sees. This
+                          is exactly what Xenia does at swap, so with it on our PPMs are
+                          comparable to Xenia's PNGs directly. OFF by default: the table is
+                          `rec709_encode(srgb_decode(x))` — it DARKENS (median −14 outdoors,
+                          x0.5 in interiors) and the report it was built for says ours is
+                          already too dark (phase5-notes §6fb §4). Prints once:
+                          `[vk] gamma ramp: NON-identity table loaded (version N, load #k,
+                          P PWL writes not modelled): [0]= [32]= [64]= [128]= [255]=` — the
+                          decoded entries, so a wrong 10:10:10 unpack cannot hide behind
+                          "applied" (this title: 0 / 66 / 193 / 462 / 1023, byte-identical
+                          to the captures). Counters: `gamma ramp: applied at present`,
+                          `... no DC_LUT table loaded yet`, `... pass unavailable`. Unset is
+                          the exact pre-part-119 path (null pair: 1,409/1,409 logo frames
+                          hash-identical).
