@@ -236,7 +236,15 @@ mask; trust the microcode's own swizzles.
     measured INERT here (`tools/guest_poke.py`). THE DECIDING NUMBER IS THE OPERATOR'S:
     F9 + `CZ_VK_SNAP_DUMP` at w4 / w7 / R4-03 against hardware's front-buffer medians
     30.2 / 29.3 / 74.0, plus which "360" they compared to and whether its Gamma meter is
-    raised (0zc).**
+    raised (0zc). AND THE NIGHT SESSION OF 2026-09-16 ANSWERED IT: the reference is a
+    Series X in BC, meter at default; with `tools/xenia_poke.py` stepping Xenia's clock
+    through dusk, HARDWARE(XENIA)'S REAL NIGHT IS AS BLACK AS OURS (fb 6.4 mean / 0
+    median, exposure at its 0.100 floor) while a 360 on YouTube and the Series X show a
+    readable room — the term is one both emulators share. **THE LIVE PLAN IS
+    `docs/lighting-plan-part120.md`**: the exposure controller's night keyframes
+    (+0x70..+0x7C of the `DayNightTransition` object) and its luminance readback first;
+    `CZ_VK_GAMMA_RAMP_FIRST=1` is the Xenia-picture arm (a second, darker table loads
+    ~2 min in here — §3 there). §6fb.1, gotcha 588.**
     The performance hand-off is still `part118-kickoff.md` — PART 118 (the late afternoon of 2026-09-12, unattended, a
     16:00 deadline) GAVE EACH PIPELINE STAGE A PHYSICAL CORE OF ITS OWN: the PMU said the
     guest's Main Thread runs the same instructions at 17% more cycles with our renderer
