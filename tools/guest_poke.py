@@ -11,6 +11,7 @@ reports). It settled the Visuals gamma constant in one park: 0x829EDCF4 poked to
 
     tools/guest_poke.py <pid> <host base hex> <guest va hex> f32:2.0
     tools/guest_poke.py <pid> <host base hex> <guest va hex> u32:0x3F800000
+    tools/guest_poke.py <pid> <host base hex> <guest va hex> u8:1              # one flag byte
     tools/guest_poke.py <pid> <host base hex> <guest va hex> read:16      # hex + f32 + f16
 
 The host base is the `runtime: guest memory at 0x...` line of the run's log. The value
@@ -50,7 +51,11 @@ def main():
             print('  f32 BE:', ' '.join(f'{struct.unpack(">f", b[i:i+4])[0]:.6g}' for i in range(0, n - 3, 4)))
         print('  f16 BE:', ' '.join(f'{struct.unpack(">e", b[i:i+2])[0]:.6g}' for i in range(0, n - 1, 2)))
         return
-    payload = struct.pack('>f', float(val)) if kind == 'f32' else struct.pack('>I', int(val, 0))
+    # u8 exists because the debug-flag table is one byte per flag and a u32 poke of
+    # `DISABLE TIME OF DAY` (0x82A57CAA) also zeroes its three neighbours.
+    payload = (struct.pack('>f', float(val)) if kind == 'f32'
+               else struct.pack('>B', int(val, 0)) if kind == 'u8'
+               else struct.pack('>I', int(val, 0)))
 
     buf = ctypes.create_string_buffer(payload)
     loc = iovec(ctypes.cast(buf, ctypes.c_void_p), len(payload))
@@ -58,8 +63,8 @@ def main():
     n = libc.process_vm_writev(pid, ctypes.byref(loc), 1, ctypes.byref(rem), 1, 0)
     if n != len(payload):
         sys.exit(f'process_vm_writev wrote {n}: errno {ctypes.get_errno()}')
-    rb = ctypes.create_string_buffer(4)
-    loc2 = iovec(ctypes.cast(rb, ctypes.c_void_p), 4)
+    rb = ctypes.create_string_buffer(len(payload))
+    loc2 = iovec(ctypes.cast(rb, ctypes.c_void_p), len(payload))
     libc.process_vm_readv(pid, ctypes.byref(loc2), 1, ctypes.byref(rem), 1, 0)
     print(f'wrote {va:08X} = {payload.hex()}; read back {rb.raw.hex()}')
 
