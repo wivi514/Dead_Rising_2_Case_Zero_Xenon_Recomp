@@ -1,11 +1,12 @@
 # Release notes — v1.1.1
 
-**ON HOLD (operator, 2026-09-15): v1.1.1 ships WITH the lighting fix (`docs/lighting-plan-part119.md`). The artifacts and hashes below are a staging build at a LOCAL tag that will move; re-tag, rebuild all four legs and refresh every hash before this text is used.**
+**QA BUILD (2026-09-16): NOT PUBLISHED. The operator QAs the artifacts in
+`~/Release/Case Zero/1.1.1/` before the tag is pushed and the GitHub draft made.**
 
 **This is the text to paste into the GitHub Release body.** Binaries are the tag
-`v1.1.1` (626e438 + this notes commit); the hashes below are the artifacts
-built at that tag on 2026-09-15 (the Linux three that day; the Windows zip from the
-same tag when the build machine is back — its hash is filled in when it exists).
+`v1.1.1` (c57465a + this notes commit — re-tagged after the night/interior exposure fix
+landed; the 2026-09-15 staging build at 626e438 is superseded); the hashes below are
+the artifacts built at that tag on 2026-09-16, all four legs.
 
 **The release is frozen at the tag**: if any artifact is EVER rebuilt, refresh its hash
 below before attaching.
@@ -26,6 +27,13 @@ unpacked game data and shader cache are reused.
 
 ### Fixed
 
+- **Night and interiors were far too dark** — the safehouse and shops at night were
+  black where an Xbox shows a dim, readable room, and interiors by day were dimmer than
+  they should be. The game's auto-exposure reads its scene-brightness measurement back
+  from the GPU, and this port never delivered it, so the exposure sat at its minimum
+  all day long. It adapts now, as it does on a console — interiors are brighter by day
+  as well as by night. (Xenia has the same defect with its default settings, which is
+  why every comparison against it agreed.)
 - **Zombies opaque on the right half of the screen** — a zombie close to the camera
   at screen centre drew translucent-dark on the left half and solid dark on the right,
   with a hard vertical edge between. Two things in how the Xbox's two rendering tiles
@@ -83,7 +91,7 @@ unpacked game data and shader cache are reused.
 
 | file | sha256 |
 |---|---|
-| `CaseZeroRecomp-linux-x86_64.tar.zst` | `3b9da849d97f56d31348da7e933271a31cd3c5526760468fc35b5280a0cbd7e0` |
-| `CaseZeroRecomp-linux-x86_64.AppImage` | `383170ea90e6dfdbeb5f22e77ea38ea5318f5b4ddd3b42db6b63eb86dfcb5efc` |
-| `CaseZeroRecomp-steamdeck-x86_64.tar.gz` | `2073c4f8345bce16bdfb5e73ebdebe43ab0b15a89d52a9c1f5f145e7271e9374` |
-| `CaseZeroRecomp-windows-x86_64.zip` | `TBD — built from the same tag when the Windows machine is back` |
+| `CaseZeroRecomp-linux-x86_64.tar.zst` | `TBD — rebuilt at the new tag` |
+| `CaseZeroRecomp-linux-x86_64.AppImage` | `TBD — rebuilt at the new tag` |
+| `CaseZeroRecomp-steamdeck-x86_64.tar.gz` | `TBD — rebuilt at the new tag` |
+| `CaseZeroRecomp-windows-x86_64.zip` | `TBD — rebuilt at the new tag` |
