@@ -221,3 +221,18 @@ Both are Blue Castle engine facts, not Case Zero facts:
   keyframe `Time`s per-anim to 1,2,3…, serve the variant archive as its own VFS
   layer behind a toggle. `runtime/cpu/boot_skip.cpp`'s header carries the three
   refuted mechanisms so Case West does not rebuild them.
+
+## Part 120 addendum — the resolve the CPU reads (Case West MUST carry this)
+
+The engine's auto-exposure reads its luminance chain's final 1x1 `16_FLOAT` resolve back
+on the CPU (`sub_825D65A8` here; the same code is in Case West and in the full DR2 — the
+PC build does it on the GPU with `LuminanceToExposure.bcp` instead). A renderer that
+serves resolves from host images and never writes them back — the design both ports
+share — hands that read a stale word, and the exposure collapses to the lighting
+table's minimum at every hour. `phase5-notes.md` §6fc; the write-back in `DoResolve` /
+`RetireOldestFrame` (`CZ_VK_NO_RESOLVE_WRITEBACK=1` the control) transfers verbatim,
+and so does the diagnosis method: `tools/d3d9_disasm.py` on DR2 PC's shader bank for the
+engine's math, `tools/guest_poke.py ... read:N` for the live table
+(`0x82A5B1F0` + 0x20C/0x210/0x214 here — re-derive for CW), and the Xenia config check
+(`readback_resolve`) before believing an emulator agreement (gotcha 590).
+

@@ -22345,3 +22345,109 @@ both emulators share and hardware does not** — the exposure controller's night
 first (its keyframes are `Start_/End_ExposureMinimum/Maximum` at +0x70..+0x7C of the
 `DayNightTransition` object, `sub_823C29F0`; the controller reads the luminance chain
 back from a 16_FLOAT resolve no draw samples). Gotcha 588.
+
+## §6fc — Part 120: the night was the EXPOSURE CONTROLLER reading a resolve nobody wrote back (2026-09-16)
+
+**The mechanism, in one line: the title's auto-exposure reads its luminance chain's 1x1
+`16_FLOAT` resolve back on the CPU with a plain `lwz`; this renderer never wrote a resolve
+into guest memory, the operator's Xenia canary runs `readback_resolve = "none"`, so on
+both emulators the controller read a stale word, took its `lum == 0 -> 1.0` sentinel (or
+a leftover 0.5), and drove the exposure to the lighting table's MINIMUM at every hour of
+the day — 0.35 in the safehouse by day, 0.10 at night. A console just reads the memory
+the GPU wrote.** Gotcha 588's "term both emulators share" is named, and it is not a
+GPU term at all.
+
+### 1. The lighting table is a CSV on the disc, and the night keyframe is wide
+
+`docs/lighting-plan-part120.md` §1 step 1 asked for the night keyframes. They are DATA:
+`prologue.csv` in `data/datafile.big` (path `data/shaders/settings/<zone>.csv`, the
+`_gas.csv` variant is DR2's green-gas event and Case Zero has none), a `name,0..23`
+table of 24 hourly columns parsed by `sub_82599CD8` into 24 keyframe objects of 0x290
+bytes (constructor `sub_825ABFF0`, vtable `0x82060FD8`; the field map is derived from
+the parser and printed in this part's transcript — `+0x20C mExposureMinimum, +0x210
+mExposureMaximum, +0x214 mDesiredLuminance, +0x1C0 mTransitionRate`, the tone-map
+parameters `mMiddleGray`/`mLwhite`/`mLumScale` at +0x48..+0x64 are NOT in the CSV).
+`sub_825B4CF0` interpolates the hour into ONE global current block at **`0x82A5B1F0`**
+(so `0x82A5B3FC / 0x82A5B400 / 0x82A5B404` are the live min / max / desired), and the
+exposure itself lives at **`0x829DEBF4`**. Night (19h-4h): **min 0.1, max 1.5, desired
+0.03**; 8h: 0.35 / 1.5 / 0.095. The range is wide; the controller was choosing the
+floor — branch (b) of the plan.
+
+### 2. The controller, decoded on both platforms
+
+`sub_825D6D18` (the 360 CPU) and DR2 PC's `LuminanceToExposure.bcp` (DX9 bytecode,
+read with the new `tools/d3d9_disasm.py` out of the Steam install's
+`deadrising-ps.big`) compute the same thing:
+
+    lum = max(readback, 0.01)                       ; 360 only: readback == 0 -> lum = 1.0
+    E'  = clamp(E * (1 + rate * (desired / lum - 1)), min, max)     ; rate 0.02 / frame
+
+The steady state is **measured luminance == desired**, not `E = desired/lum`: the
+luminance chain reads the POST-exposure HDR-encoded scene buffer, so the loop closes
+through the material shaders' `colour * pc(14).w`. The PC build reads the luminance and
+the previous exposure as TEXTURES on the GPU; the 360 build reads the 1x1 with
+`sub_825D65A8` — RT-table entry 349 (`UserTexture`, 1x1), `lwz` of its memory pointer,
+`lha` of the high half (the 8-in-16 resolve endian has already made the half big-endian),
+a hand-written half->float, and `0 -> 1.0`. The pointer is a VIRTUAL address in the
+0xA0000000 view (`B97CE000`); the resolve's `RB_COPY_DEST_BASE` is the physical
+`197CE000`. Gotcha 267, third time.
+
+### 3. The chain, and why our 8-bit EDRAM is adequate for it (measured, not assumed)
+
+`LT-LumAvgInit360` (`ps_0a443678bf8fd691`) decodes the scene's HDR encoding per pixel —
+`x^2 <= 0.5 ? 1 - sqrt(1 - 2x^2) : 8x^2 - 3`, range 0..5 — and dots it with the luma
+weights into a 16_16_FLOAT target; `LT-LumReduce` (`ps_5f9e5794a5138d84`) is a point
+sample that halves by bilinear filtering down 640x360 -> ... -> 5x2 -> 2x1 -> 1x1. Our
+EDRAM stand-in is R8G8B8A8_UNORM, so every stage is quantised to 1/255 and clamped at
+1.0. Decoding our own scene snapshot on the CPU with the shader's math and comparing the
+clamped and unclamped means: **garage 8h: 0.0265 vs 0.0265, 0.00% of pixels above 1;
+outdoors at 6,400 draws by day: 0.0791 vs 0.0791, 0.00% above 1, max 0.91.** The chain's
+own values agree (640x360 stage 20.1/255 = 0.0788 against the CPU's 0.0791; the 1x1 ends
+at 23/255 = 0.090, the tail's coarse downsample) — the same tail hardware runs. The
+clamp is a stated limitation for a scene with many pixels above 1.0 (none seen yet) and
+the quantisation for a scene whose steady-state luminance is under ~0.02 — where E is at
+its ceiling regardless. A float EDRAM for these passes is the correct future fix and a
+renderer-wide change (a colour-format dimension in `PipelineKey`, a second EDRAM image,
+float snapshots); it was not bought on a null.
+
+### 4. Built: the resolve write-back, and what it did to the picture
+
+`DoResolve` now records, for a COLOUR resolve of a surface of at most 64 pixels whose
+destination format is `16_FLOAT` (30) or `8_8_8_8` (6), a copy of the resolved window
+into the frame slot's `wb` buffer; `RetireOldestFrame` writes it into guest memory after
+the fence, through `PhysToVa`, with the destination's endian swap, the UNORM channel
+re-encoded as a half at its bucket centre (`(R + 0.5) / 255`, so a black bucket does not
+hand the controller its "no data" zero). ~4 surfaces a frame, 213k over a 200 s boot,
+zero declines. `CZ_VK_NO_RESOLVE_WRITEBACK=1` is the same-binary control arm (the
+renderer of parts 5-119). Validation: nothing new (the standing 08773 tally only).
+
+| where (pinned hour) | E before | E after | mean luma before -> after |
+|---|---|---|---|
+| safehouse garage, midnight | 0.10 (floor) | **1.50 (max)** | 5.8 / median 0 -> **32.1 / median 18** |
+| safehouse garage, 8h | 0.35 (floor) | **1.50 (max)** | 24.7 -> **52.5** |
+| Still Creek, military camp, day, 6,400 draws | 0.24 (floor) | **0.33 (converged: lum 0.090 vs desired 0.091)** | 88 |
+
+The midnight garage frame (`/var/tmp/cz120/run6/latest_midnight.png`) is a dim blue
+room with readable walls — the operator's description of the Series X. The 8h frame is
+bright, Chuck's shirt near clipping, which is what a 1.5 exposure on a 0.0265 scene
+does; whether hardware's day garage looks like that is the operator's eye (§6 below).
+
+### 5. Xenia is not an oracle for this, and one config line makes it one
+
+Every memory record in the R7 traces of a given size carries identical bytes (the same
+md5 at `1D35F000`, `1D361000`, `1D562000`), so the capture cannot say what Xenia's CPU
+read at the 1x1 — and it does not matter: the canary's `xenia-canary.config.toml` has
+`readback_resolve = "none"` ("fast" = one frame late like ours, "full" = a GPU stall).
+Hardware(Xenia)'s exposure walk (0.386 -> 0.243 -> 0.100 through dusk) is the table's
+minimum interpolated across the hour, the same curve ours drew. **The oracle test the
+operator can run in five minutes: `readback_resolve = "fast"`, the night garage; the
+prediction is `pc(14).w` off its 0.100 floor towards 1.5 and a readable room.**
+`docs/xenia-capture-requests.md` Round O.
+
+### 6. Owed
+
+The operator's eye on both frames against the Series X (the night room should now match;
+the day garage is the open question — brighter than before, at the table's ceiling);
+then the Uncle Bill's / Bob's spots of §6fb.1. The Gamma meter (plan §4) is untouched:
+with the exposure right it may not be needed. v1.1.1 was on hold for this
+(`reminder-verify-issue3-fix` memory): rebuild all legs after the eye test.

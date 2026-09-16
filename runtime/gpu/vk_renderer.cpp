@@ -5215,6 +5215,32 @@ struct FrameSlot
     // recorded, and checked against `frame` at the retire — see the check for why an
     // md5-shaped canary could not do this job.
     uint64_t pixelFrame = ~0ull;
+
+    // RESOLVES THE CPU READS (part 120). The title's exposure controller reads its
+    // luminance chain's final 1x1 16_FLOAT resolve back with a plain `lwz` of the
+    // destination address (`sub_825D65A8`), and this renderer never wrote a resolve back
+    // to guest memory — so the guest read 0, took the `lum == 0 -> 1.0` sentinel, and the
+    // exposure collapsed to the lighting table's minimum at every hour of the day (0.35 in
+    // the safehouse by day, 0.10 at night: the black night interiors of open-item 0zc).
+    // Xenia with `readback_resolve = "none"` — the operator's canary — does the same, which
+    // is why hardware(Xenia) agreed with us and a real console did not.
+    //
+    // The bytes for the frame's tiny colour resolves are copied into `wb` in the frame's
+    // own command buffer and written into guest memory at the retire, after the fence —
+    // the earliest moment the value exists. See DoResolve for the rule and the encoding.
+    struct GuestWriteback
+    {
+        uint32_t dest = 0;      // RB_COPY_DEST_BASE
+        uint32_t w = 0, h = 0;  // guest pixels copied (the pass's window)
+        uint32_t pitch = 0;     // the destination surface's pitch, in pixels
+        uint32_t hw = 0, hh = 0;// host pixels copied (the snapshot is resolution-scaled)
+        uint32_t destFmt = 0;   // RB_COPY_DEST_INFO format (30 = 16_FLOAT, 6 = 8_8_8_8)
+        uint32_t endian = 0;    // RB_COPY_DEST_INFO endian (1 = 8-in-16, 2 = 8-in-32)
+        VkDeviceSize offset = 0;// into `wb`
+    };
+    std::vector<GuestWriteback> writebacks;
+    Buffer wb;
+    VkDeviceSize wbUsed = 0;
 };
 // Two is the whole design: the CPU records one frame while the GPU executes one. Deeper
 // pipelining buys nothing here and costs a whole arena each — the GPU is 16.5 ms against
@@ -15394,6 +15420,10 @@ void PresentSwapchain()
 // is that it collapses towards zero in a crowd while `submitCall` and every draw-path
 // column stay where they were. If `fenceWait` does not move, the frames are not
 // overlapping and nothing else in the profile is worth reading.
+// The guest memory base, learned from the first resolve that records a write-back
+// (DoResolve is handed it; the retire is not).
+static uint8_t* g_guestBase = nullptr;
+
 int RetireOldestFrame()
 {
     // Slots are used strictly in ring order, so when the frame just submitted is `s` the
@@ -15421,6 +15451,99 @@ int RetireOldestFrame()
         vkWaitForFences(R->device, 1, &fs.fence, VK_TRUE, UINT64_MAX);
         g_fenceWaitNs += CycNow() - tFence;
     }
+    // THE RESOLVES THE CPU READS land in guest memory here (part 120; see
+    // FrameSlot::GuestWriteback). After the fence, so the bytes are the GPU's, and on this
+    // thread, which is the one that executes every other guest-visible store of the
+    // stream. RB_COPY_DEST_BASE is a PHYSICAL address and the CPU reads the surface
+    // through the 0xA0000000 view (`UserTexture` entry 349 of the title's RT table held
+    // B97CE000 for a resolve to 197CE000) — the first build of this wrote to
+    // `base + phys`, which in our map is a different page, and the controller went on
+    // reading its stale 0.5 (gotcha 267, the third time it has cost a part).
+    // The host pixel is R8G8B8A8_UNORM whatever the guest asked for (our EDRAM
+    // stand-in has one colour format), so a 16_FLOAT destination gets the UNORM channel
+    // re-encoded as a half at its BUCKET CENTRE — (R + 0.5) / 255 for R < 255 — rather
+    // than at R / 255: the chain's real destination is a float16 that never reads exactly
+    // zero for a lit scene, and the title's controller special-cases zero as "no data"
+    // (lum = 1.0), so a black bucket handed over as 0.0 would pin the exposure to its
+    // FLOOR in exactly the scenes where it should be at its ceiling. The quantisation
+    // itself (1/255 of the chain's range) is a stated limitation of the 8-bit EDRAM, not
+    // of this path.
+    if (!fs.writebacks.empty() && g_guestBase)
+    {
+        auto halfOf = [](float f) -> uint16_t {
+            uint32_t u;
+            memcpy(&u, &f, 4);
+            const uint32_t sign = (u >> 16) & 0x8000u;
+            int32_t exp = int32_t((u >> 23) & 0xFF) - 127 + 15;
+            uint32_t mant = u & 0x7FFFFFu;
+            if (exp <= 0)
+            {
+                if (exp < -10)
+                    return uint16_t(sign);
+                mant |= 0x800000u;
+                const uint32_t shift = uint32_t(14 - exp);
+                return uint16_t(sign | (mant >> shift));
+            }
+            if (exp >= 31)
+                return uint16_t(sign | 0x7C00u);
+            return uint16_t(sign | (uint32_t(exp) << 10) | (mant >> 13));
+        };
+        for (const auto& g : fs.writebacks)
+        {
+            const uint8_t* px = fs.wb.mapped + g.offset;
+            for (uint32_t y = 0; y < g.h; ++y)
+                for (uint32_t x = 0; x < g.w; ++x)
+                {
+                    // The host pixel a guest pixel maps to under the resolution scale.
+                    const uint32_t hx = std::min(g.hw - 1, x * g.hw / std::max(1u, g.w));
+                    const uint32_t hy = std::min(g.hh - 1, y * g.hh / std::max(1u, g.h));
+                    const uint8_t* p = px + (VkDeviceSize(hy) * g.hw + hx) * 4;
+                    // Tiny surfaces only: pixel (0,0) is at offset 0 of a tiled surface
+                    // as well as of a linear one, and the CPU consumer reads only that.
+                    // The rest of the window is laid out LINEARLY at the surface pitch,
+                    // which is exact for a linear surface and a stated approximation
+                    // for a tiled one.
+                    const uint32_t idx = y * g.pitch + x;
+                    if (g.destFmt == 30)
+                    {
+                        const float v = p[0] == 255 ? 1.0f : (float(p[0]) + 0.5f) / 255.0f;
+                        const uint16_t hv = halfOf(v);
+                        uint8_t* dst = g_guestBase + PhysToVa(g.dest) + idx * 2;
+                        if (g.endian == 1)
+                        {
+                            dst[0] = uint8_t(hv >> 8);
+                            dst[1] = uint8_t(hv);
+                        }
+                        else
+                        {
+                            dst[0] = uint8_t(hv);
+                            dst[1] = uint8_t(hv >> 8);
+                        }
+                    }
+                    else
+                    {
+                        uint8_t* dst = g_guestBase + PhysToVa(g.dest) + idx * 4;
+                        if (g.endian == 2)
+                        {
+                            dst[0] = p[3];
+                            dst[1] = p[2];
+                            dst[2] = p[1];
+                            dst[3] = p[0];
+                        }
+                        else
+                        {
+                            dst[0] = p[0];
+                            dst[1] = p[1];
+                            dst[2] = p[2];
+                            dst[3] = p[3];
+                        }
+                    }
+                }
+            Count("resolve: bytes written back to guest memory");
+        }
+    }
+    fs.writebacks.clear();
+    fs.wbUsed = 0;
     // THE TIMESTAMPS FOR THIS SLOT ARE NOW GUARANTEED AVAILABLE — its fence has just been
     // waited on. Read them WITHOUT VK_QUERY_RESULT_WAIT_BIT: if they are somehow not ready
     // the read is skipped rather than stalling, because an instrument that blocks to
@@ -27794,6 +27917,61 @@ void DoResolve(uint8_t* base, const uint32_t* regs)
             // samples this surface, and the layout it expects is the one the
             // descriptor was written with.
             }
+            // WRITE THE BYTES BACK FOR THE SURFACES THE CPU READS (part 120). The rule is
+            // deliberately narrow — a COLOUR resolve of a surface of at most 64 pixels,
+            // copied whole, in a destination format we can encode — because it is the
+            // luminance chain's tail (5x2, 2x1, 1x1 16_FLOAT) and the two 1x1 8_8_8_8
+            // surfaces beside it that the title's CPU reads, and writing a full-size
+            // surface back would be the tiling round trip the Snapshot comment declines.
+            // The copy is recorded HERE, into this frame's command buffer, and the guest
+            // memory store happens at the retire once the fence says the pixels exist.
+            // `CZ_VK_NO_RESOLVE_WRITEBACK=1` is the same-binary control arm: the renderer
+            // of parts 5-119, in which the exposure sat on its floor.
+            static const bool noWriteback = EnvOn("CZ_VK_NO_RESOLVE_WRITEBACK");
+            // `w`/`h` are the destination SURFACE (RB_COPY_DEST_PITCH: 32x1 for the
+            // 1x1, since a pitch is padded to a tile) and `copyW`/`copyH` the window the
+            // pass rendered (8x1 there): the copied window is what gets written, at
+            // the surface's pitch.
+            if (!fromDepth && !noWriteback && uint64_t(w) * h <= 64 && dstX == 0 &&
+                dstY == 0 && copyW && copyH)
+            {
+                const uint32_t destFmt = (regs[xenos::kRbCopyDestInfo] >> 7) & 0x3F;
+                const uint32_t destEndian = regs[xenos::kRbCopyDestInfo] & 7;
+                FrameSlot& slot = R->frames[R->frameSlot];
+                const uint32_t hw = RZx(copyW), hh = RZ(copyH);
+                const VkDeviceSize need = VkDeviceSize(hw) * hh * 4;
+                if (destFmt != 30 && destFmt != 6)
+                    Count("resolve: write-back declined (destination format not encoded)");
+                else if (slot.wbUsed + need > slot.wb.size)
+                    Count("resolve: write-back declined (staging full)");
+                else
+                {
+                    GpuSeg _gwb(kGpResolveCopy);
+                    Barrier(R->cmd, it->second.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                            aspect);
+                    VkBufferImageCopy c{};
+                    c.bufferOffset = slot.wbUsed;
+                    c.imageSubresource = { aspect, 0, 0, 1 };
+                    c.imageExtent = { hw, hh, 1 };
+                    vkCmdCopyImageToBuffer(R->cmd, it->second.image.image,
+                                           VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                                           slot.wb.buffer, 1, &c);
+                    g_guestBase = base;
+                    FrameSlot::GuestWriteback g;
+                    g.dest = dest;
+                    g.w = copyW;
+                    g.h = copyH;
+                    g.pitch = w;
+                    g.hw = hw;
+                    g.hh = hh;
+                    g.destFmt = destFmt;
+                    g.endian = destEndian;
+                    g.offset = slot.wbUsed;
+                    slot.writebacks.push_back(g);
+                    slot.wbUsed += (need + 15) & ~VkDeviceSize(15);
+                    Count("resolve: write-back to guest memory recorded");
+                }
+            }
             {
             GpuSeg _gb2(kGpResolveBarrier);
             Barrier(R->cmd, it->second.image, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
@@ -28535,6 +28713,15 @@ bool InitCommon()
                           VK_BUFFER_USAGE_TRANSFER_DST_BIT, ReadbackMemoryProps(), false))
         {
             fprintf(stderr, "[vk] present readback buffer %u allocation FAILED\n", i);
+            return false;
+        }
+        // The guest write-back staging (part 120): a few tiny surfaces a frame, 4 bytes a
+        // host pixel; 64 KB is ~40 of them at a 4x resolution scale. A frame that needs
+        // more declines the rest and counts it.
+        if (!CreateBuffer(R->frames[i].wb, 64 * 1024, VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                          ReadbackMemoryProps(), false))
+        {
+            fprintf(stderr, "[vk] resolve write-back buffer %u allocation FAILED\n", i);
             return false;
         }
     }

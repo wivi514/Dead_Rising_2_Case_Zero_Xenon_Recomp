@@ -6683,4 +6683,38 @@ From phase C part 18 (the frame rate — and none of it was work):
     When the emulator IS the oracle, keep one hardware-only reference (a video, a
     photo of the console) in the loop and re-ask the closed items against it.
     (phase5-notes §6fb.1, lighting-plan-part120.md)
+589. **"We do not write resolves back to guest memory" is a stated gap until a title
+    READS one — and this one reads its exposure from a 1x1.** The Snapshot design
+    (serve a resolve from the host image, never round-trip it) was right for every
+    consumer that is a texture fetch and silently wrong for the one consumer that is a
+    `lwz`: the exposure controller's luminance readback. The symptom was 115 parts of a
+    picture at the lighting table's minimum exposure, filed under "the night is
+    designed dark". Grep the image for readers of resolve destinations (an RT-table
+    entry whose memory pointer is dereferenced by the CPU) before trusting that gap.
+    (phase5-notes §6fc)
+590. **An emulator's config can be the shared term.** Xenia's `readback_resolve` defaults
+    to "none": its CPU never sees a resolve either, so "hardware(Xenia) agrees with us"
+    was two implementations of the same omission. When both arms of a comparison are
+    emulators, list the oracle's own switches that touch the subsystem before calling
+    the agreement a fact about the console. (phase5-notes §6fc §5)
+591. **The PC port is a readable second implementation of the same engine.** DR2 PC's
+    shaders are DX9 bytecode with constant tables and (Steam build) debug symbols; a
+    150-line disassembler (`tools/d3d9_disasm.py`) turned "what does the controller
+    compute" from a PowerPC decode into eleven lines of assembly with variable names,
+    and its lighting CSVs carry the same schema as the 360's. Ask the PC build first
+    for any question about the engine's MATH; ask the 360 image only for what the
+    console does differently (here: the CPU readback and its zero sentinel).
+    (phase5-notes §6fc §2)
+592. **A physical address the GPU wrote to is not the address the CPU reads it from
+    (gotcha 267, third occurrence).** `RB_COPY_DEST_BASE` is physical; the title's
+    RT-table pointer is the 0xA0000000 view; in this flat map those are different
+    pages. The first write-back wrote `base + phys` and the controller kept reading its
+    stale 0.5 — found only because a live read of the table entry printed the pointer.
+    `PhysToVa` exists; use it for every guest-memory STORE the renderer makes.
+    (phase5-notes §6fc §2)
+593. **A frame dump under the scratchpad is a RAM leak at 9 MB/s.** `CZ_VK_FRAME_DUMP`
+    at ~200 fps headless filled the last 7.7 GB of the 32 GB tmpfs in a quarter of an
+    hour and took the Bash tool with it (bare `echo` exit 1). The Write tool still
+    works when Bash does not — emptying five PPMs bought the room to `pkill`. Dumps go
+    to disk (`/var/tmp`), never `/tmp`. (memory `tmp-is-a-ram-tmpfs`)
 

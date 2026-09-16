@@ -57,6 +57,17 @@ Next, in order:
     is the plan: the exposure controller's night keyframes and its luminance readback
     first, a dropped float16 term second, and — whatever they find — the title's own
     Gamma meter made to work and put back in the options (§4 there).**
+    **PART 120 (2026-09-16) FOUND IT AND FIXED IT IN-TREE (`phase5-notes.md` §6fc): the
+    title's auto-exposure READS ITS 1x1 LUMINANCE RESOLVE BACK ON THE CPU, this renderer
+    never wrote a resolve into guest memory (a stated gap since phase 5), and the
+    operator's Xenia canary runs `readback_resolve = "none"` — so both emulators handed
+    the controller its `lum == 0 -> 1.0` sentinel and it sat on the table's MINIMUM at
+    every hour (night 0.10, day 0.35). Tiny colour resolves are written back now
+    (`CZ_VK_NO_RESOLVE_WRITEBACK=1` the control): midnight garage 5.8 -> 32.1 mean luma
+    at exposure 1.5 (the table's ceiling), 8h garage 24.7 -> 52.5, outdoors converged at
+    0.33 against a 0.24 floor. OWED: the operator's eye on the night AND the day garage
+    against the Series X, and the Xenia oracle (`readback_resolve = "fast"`, capture
+    request Round O). The Gamma meter (§4) waits on that verdict.**
 
 0za. **THE OPERATOR'S SIX F9 REPORTS OF 2026-09-13 (`~/XenonLive/Player Issues/#1-#6`),
     worked 2026-09-14 in order of ease.** Fixed in-tree, each with its control arm:

@@ -1,5 +1,18 @@
 # Part 120 plan — the NIGHT is black on both emulators and not on hardware: the exposure controller
 
+**EXECUTED 2026-09-16 (part 120) — `phase5-notes.md` §6fc is the record.** §1's branch
+was (b) and the term is not a GPU term: the title's controller reads its 1x1 luminance
+resolve back on the CPU (`sub_825D65A8` -> `sub_825D6D18`), this renderer never wrote a
+resolve into guest memory, and the operator's Xenia runs `readback_resolve = "none"`.
+The keyframes are `prologue.csv` (night min 0.1 / max 1.5 / desired 0.03); the
+controller formula is the same on DR2 PC's `LuminanceToExposure.bcp` (read with
+`tools/d3d9_disasm.py`). Built: the tiny-resolve write-back in `DoResolve` /
+`RetireOldestFrame` (`CZ_VK_NO_RESOLVE_WRITEBACK=1` the control). Midnight garage
+mean luma 5.8 -> 32.1, exposure 0.10 -> 1.50 (the ceiling). §2 is not needed; §3 is
+unchanged; §4 (the Gamma meter) is deferred until the operator has seen the new picture.
+Owed: the operator's eye (night AND day garage), and the Xenia oracle
+(`readback_resolve = "fast"`, capture request Round O).
+
 **Written 2026-09-16, 02:00, at the end of part 119's operator session. Read
 `phase5-notes.md` §6fb and `Xenia logs/R7_night/R7_NOTES.md` first — every number
 below is from them.** Part 119's plan (`lighting-plan-part119.md`) is executed; its

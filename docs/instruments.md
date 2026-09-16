@@ -4612,6 +4612,21 @@ CZ_PM4_BIND_CHECK=1       at every draw, the pixel-shader binding is compared wi
                           type-3 opcodes. Read 0 disagreements on the roam — the walk is
                           faithful to the stream; §6fa's divergence is in the stream.
 ```
+CZ_VK_NO_RESOLVE_WRITEBACK=1  THE CONTROL ARM FOR THE EXPOSURE FIX (part 120). By default a
+                   COLOUR resolve of a surface of at most 64 pixels in a `16_FLOAT` or
+                   `8_8_8_8` destination — the luminance chain's 5x2 / 2x1 / 1x1 tail
+                   and the two 1x1 8_8_8_8 surfaces beside it — has its pixels copied
+                   into the frame slot's `wb` buffer and WRITTEN INTO GUEST MEMORY at the
+                   retire, after the fence, through `PhysToVa` with the destination's
+                   endian swap. The title's auto-exposure reads the 1x1 with a `lwz`
+                   (`sub_825D65A8`) and had been reading a stale word for 119 parts, so
+                   its exposure sat on the lighting table's minimum (night 0.10, day
+                   0.35). With this arm set the renderer is parts 5-119's: the black
+                   night, the dim day garage. Counters: `resolve: write-back to guest
+                   memory recorded` (~4 a frame) and `... declined (...)` (0 seen); the
+                   UNORM channel goes out as a half at its BUCKET CENTRE, `(R+0.5)/255`,
+                   because the controller special-cases 0 as "no data" (`phase5-notes.md`
+                   §6fc §4)
 CZ_VK_GAMMA_RAMP=1        THE DISPLAY GAMMA RAMP AT PRESENT (part 119) — the 256-entry
                           DC_LUT_30_COLOR table the title's Direct3D loads through the ring
                           at boot (pm4.cpp assembles it; `Pm4_GammaRampSnapshot`), applied

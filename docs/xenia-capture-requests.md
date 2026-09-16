@@ -492,3 +492,26 @@ the title is this dark and the report is a display/transfer question (§6fb §4)
 darker = a scene term, and `xtr_draw_bindings.py` + `xtr_draw_constants.py` on ONE wall
 draw of the garage (its lightmap slots, its light constants, the loop constants) against
 ours is the part-27 method, now with the night frame that makes the missing term visible.
+
+## Round O — the exposure readback ORACLE (part 120, 2026-09-16): one config line, five minutes
+
+**Round N is ANSWERED and its conclusion retracted in part:** the night is as black on
+Xenia as on ours because BOTH read the exposure controller's 1x1 luminance resolve back
+from memory nobody wrote (`phase5-notes.md` §6fc) — this renderer by design (the
+Snapshot gap), Xenia by configuration: the canary's `xenia-canary.config.toml` (in
+`C:\Users\wivi5\Desktop\xenia-canary\build\bin\Windows\Release\`) has
+`readback_resolve = "none"`. So Round N's captures are hardware(Xenia) WITH the defect,
+which is why they matched ours to the digit.
+
+**The request.** Set `readback_resolve = "fast"` (one frame late, no GPU stall — the same
+timing our write-back has; `"full"` stalls and is not needed), launch (`schtasks /run /tn
+cz_xenia`), load the safehouse save, `python C:\cz\xenia_poke.py hour 22`, F4 at the
+garage spot of `R7_night/garage_night`, then `hour 8` and F4 again at the same spot.
+**Predictions, pre-registered:** `xtr_draw_constants.py` reads `pc(14).w` climbing off
+0.100 towards **1.5** (the table's ceiling: `prologue.csv` night max) within a few
+seconds of the pin, and the front buffer's median leaves 0 for the ~18 ours reads at
+midnight; by day the garage sits at 1.5 as well (ours: 52.5 mean luma). If Xenia with
+readback stays at 0.100, the write-back is not the whole term and §6fc is wrong about
+Xenia — say so in the notes. Put the traces in `Xenia logs/R8_readback/` with the same
+notes layout as R7. Then set it back to "none" or leave it: the canary's comment says
+some titles render worse with it, and this one is now known to render RIGHT with it.
