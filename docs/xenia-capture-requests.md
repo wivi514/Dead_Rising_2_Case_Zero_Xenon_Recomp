@@ -475,6 +475,17 @@ without ending the game), at NIGHT (any hour 20:00-05:00; note the in-game clock
    clock — poking the mission clock past 19:00 ends the game; part 119 learned that the
    hard way).
 
+**Five minutes, not an hour (2026-09-16).** `tools/xenia_poke.py` (on czwin at
+`C:\cz\xenia_poke.py`, python 3.12 there) writes the same two globals into the RUNNING
+Xenia — `DISABLE TIME OF DAY` held ON and the pinned hour — so no Zombrex and no clock:
+launch Xenia to the spot (a save in the safehouse is enough), then over ssh
+`python C:\cz\xenia_poke.py hour 22` (holds; `off` releases), and press F4. Tested
+against a live Xenia: guest base found at 0x100000000, flag/hour written and read back,
+and the F4 trace + PNG then carry the pinned lighting exactly as ours do. Item 3's
+`guest_poke.py` is the same poke on our side, so both arms are pinned to the SAME hour.
+`schtasks /run /tn cz_xenia` launches Xenia on the operator's desktop from ssh
+(`launch_cz_xenia.bat`), the way `cz_play` launches ours.
+
 **What it answers.** `xtr_frame_extract.py` on (1) gives hardware's night front buffer
 median; ours at the same spot is `CZ_VK_SNAP_DUMP`'s front buffer. Within a few levels =
 the title is this dark and the report is a display/transfer question (§6fb §4). Ours
