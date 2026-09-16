@@ -289,3 +289,9 @@ One single-frame F4 trace at the far gas-sign viewpoint (`gas_station_sign.xtr`,
 81 MB, trace #13691) + frame-locked 1280x720 PNG + full session shader dump
 (291 distinct: 236 PS + 55 VS). Fulfills capture request R6; the analysis and the
 fix it produced are `docs/phase5-notes.md` §6co (small packed textures).
+
+## R7_night (2026-09-16, ~01:12) — three pinned-NIGHT single-frame traces + PNGs
+`garage_day`, `garage_night`, `unclebills_night` — the safehouse garage by day and
+pinned to 22:00 (via `tools/xenia_poke.py`, which writes the title's DISABLE TIME OF DAY
+flag + pinned hour into the running Xenia), and Uncle Bill's shop floor pinned to 22:00.
+Notes and numbers: `R7_night/R7_NOTES.md`. Hardware's pinned night is as black as ours.
