@@ -369,6 +369,7 @@ def main():
                         length = tiled_footprint(t, bpp)
                         blob = mem.read(t['addr'], length)
                         if blob:
+                            os.makedirs(args.out, exist_ok=True)
                             p = os.path.join(args.out, 'tex_%08X_%ux%u_f%u.bin'
                                              % (t['addr'], t['w'], t['h'], t['fmt']))
                             open(p, 'wb').write(blob)
