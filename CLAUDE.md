@@ -251,9 +251,10 @@ mask; trust the microcode's own swizzles.
     colour resolves are WRITTEN BACK now (`CZ_VK_NO_RESOLVE_WRITEBACK=1` the control):
     midnight garage mean luma 5.8 -> 32.1 at exposure 1.5, day garage 24.7 -> 52.5,
     outdoors converged at 0.33. `phase5-notes.md` §6fc, gotchas 589-593, capture
-    request Round O (`readback_resolve = "fast"` on Xenia is the oracle). OWED: THE
-    OPERATOR'S EYE on the night AND the day garage against the Series X, then the
-    v1.1.1 rebuild (all four legs) that was on hold for this.** `CZ_VK_GAMMA_RAMP_FIRST=1`
+    request Round O (`readback_resolve = "fast"` on Xenia is the oracle). **THE NIGHT IS
+    OPERATOR-VERIFIED (19:00 pinned in the safehouse, 02:50: "Yeah this is it").**
+    OWED: their eye on the DAY garage, then the v1.1.1 rebuild (all four legs) that
+    was on hold for this.** `CZ_VK_GAMMA_RAMP_FIRST=1`
     is still the Xenia-picture arm (§3 of the plan). §6fb.1, gotcha 588.
     The performance hand-off is still `part118-kickoff.md` — PART 118 (the late afternoon of 2026-09-12, unattended, a
     16:00 deadline) GAVE EACH PIPELINE STAGE A PHYSICAL CORE OF ITS OWN: the PMU said the

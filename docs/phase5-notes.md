@@ -22444,10 +22444,12 @@ operator can run in five minutes: `readback_resolve = "fast"`, the night garage;
 prediction is `pc(14).w` off its 0.100 floor towards 1.5 and a readable room.**
 `docs/xenia-capture-requests.md` Round O.
 
-### 6. Owed
+### 6. Owed — and the night is OPERATOR-VERIFIED
 
-The operator's eye on both frames against the Series X (the night room should now match;
-the day garage is the open question — brighter than before, at the table's ceiling);
+**2026-09-16, 02:50: the operator, in the safehouse with the lighting pinned to 19:00
+on the shipped binary (`tools/guest_poke.py ... 82A57CAA u8:1`, `82A578D0 f32:19`):
+*"Yeah this is it."*** The night matches their Series X reference. Still owed: their eye
+on the DAY garage (brighter than before, at the table's ceiling);
 then the Uncle Bill's / Bob's spots of §6fb.1. The Gamma meter (plan §4) is untouched:
 with the exposure right it may not be needed. v1.1.1 was on hold for this
 (`reminder-verify-issue3-fix` memory): rebuild all legs after the eye test.

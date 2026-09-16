@@ -65,7 +65,8 @@ Next, in order:
     every hour (night 0.10, day 0.35). Tiny colour resolves are written back now
     (`CZ_VK_NO_RESOLVE_WRITEBACK=1` the control): midnight garage 5.8 -> 32.1 mean luma
     at exposure 1.5 (the table's ceiling), 8h garage 24.7 -> 52.5, outdoors converged at
-    0.33 against a 0.24 floor. OWED: the operator's eye on the night AND the day garage
+    0.33 against a 0.24 floor. **THE NIGHT IS OPERATOR-VERIFIED the same night (19:00
+    pinned in the safehouse: "Yeah this is it").** OWED: their eye on the DAY garage
     against the Series X, and the Xenia oracle (`readback_resolve = "fast"`, capture
     request Round O). The Gamma meter (§4) waits on that verdict.**
 
