@@ -50,6 +50,13 @@ Next, in order:
     `DayNightTransition`, `w_daynight_slate` in the image) we do not bind or blend; the
     local-light term (constants or a light texture) the sun-lit day hides; the exposure
     floor (`gLumRangeLow`) being reached where hardware's scene is brighter.
+    **THE NIGHT SESSION (2026-09-16, §6fb.1, `R7_night/R7_NOTES.md`): HARDWARE(XENIA)'S
+    REAL NIGHT IS AS BLACK AS OURS — fb 6.4 mean / 0 median, exposure at the 0.100
+    floor through dusk — AND A 360 ON YOUTUBE PLUS THE SERIES X SHOW A READABLE ROOM.
+    The mechanism is something both emulators share; `docs/lighting-plan-part120.md`
+    is the plan: the exposure controller's night keyframes and its luminance readback
+    first, a dropped float16 term second, and — whatever they find — the title's own
+    Gamma meter made to work and put back in the options (§4 there).**
 
 0za. **THE OPERATOR'S SIX F9 REPORTS OF 2026-09-13 (`~/XenonLive/Player Issues/#1-#6`),
     worked 2026-09-14 in order of ease.** Fixed in-tree, each with its control arm:

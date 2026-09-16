@@ -6675,3 +6675,12 @@ From phase C part 18 (the frame rate — and none of it was work):
     and this port cannot follow. A dead control the original had is a defect with a
     user-visible symptom, and it costs one poke to confirm. (phase5-notes §6fb §5,
     open-items 0zc; `tools/guest_poke.py`)
+588. **Two emulators agreeing is not hardware.** Every picture comparison this port made
+    for 119 parts was against Xenia; part 119 closed our night frame against Xenia's to
+    the digit and both are black where a console and a YouTube 360 show a readable
+    room. A term both emulators evaluate the same way — here the exposure readback
+    from a resolve no draw samples — is invisible to that comparison by construction.
+    When the emulator IS the oracle, keep one hardware-only reference (a video, a
+    photo of the console) in the loop and re-ask the closed items against it.
+    (phase5-notes §6fb.1, lighting-plan-part120.md)
+

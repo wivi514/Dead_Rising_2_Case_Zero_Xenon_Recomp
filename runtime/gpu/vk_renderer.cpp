@@ -29268,7 +29268,14 @@ Image* Apply(Image& source, uint32_t w, uint32_t h)
         Count("gamma ramp: no DC_LUT table loaded yet, presented as resolved");
         return nullptr;
     }
-    if (v != g_version)
+    // CZ_VK_GAMMA_RAMP_FIRST=1: keep the FIRST table the title loaded and ignore later
+    // loads. Our runtime sees a SECOND, darker table ~2 minutes into a boot (D3D's
+    // mode-change path re-applying a stored ramp, `sub_828470A0`; [128] = 305 against
+    // the first load's 462) that no Xenia gameplay capture carries — so the first table
+    // is the Xenia-equivalent picture and the second is what the operator called "too
+    // intense". Which one hardware runs with is an open question (phase5-notes §6fb).
+    static const bool firstOnly = EnvOn("CZ_VK_GAMMA_RAMP_FIRST");
+    if (v != g_version && !(firstOnly && g_version != 0))
     {
         memcpy(g_table, fresh, sizeof g_table);
         g_version = v;

@@ -22319,3 +22319,29 @@ port cannot follow, twice over** (the screen is gone, and the constant is inert)
 **Case West:** same D3D runtime, same `sub_8284D5C0` shape, same Vd stub — the ramp
 capture and the arm transfer verbatim; the `xtr_resolve_census.py` format-pair block
 and `xtr_frame_extract.py` are the first two tools to run on its captures.
+
+### §6fb.1 — The operator's night session (2026-09-16, 01:10-01:50): the night is black on BOTH emulators and readable on hardware
+
+`Xenia logs/R7_night/R7_NOTES.md` is the record; `docs/lighting-plan-part120.md` the
+successor plan. In one session, with `tools/xenia_poke.py` pinning Xenia's lighting hour
+and then stepping its mission clock (Katey dosed, so 19:00 did not end the game):
+
+* Hardware(Xenia) front buffer in the safehouse garage: day 19.8-21.9 mean; **real night
+  6.4 mean / 0 median / p90 3.8**; the exposure scalar 0.386 → 0.243 → **0.100** through
+  dusk. Ours at 19:00 with Katey in the room, through Xenia's own ramp: 1.7 mean / 0.
+  The draw lists of day and night are the same 99 shader pairs, same texture formats.
+* Two YouTube frames of a 360 at the same two places (the garage with Katey, Bob's
+  Fish 'n Hunt), and the operator's Series X in backward compatibility: dim, blue,
+  READABLE. Not a black-lift artefact — the emulated frame holds zeros where those
+  frames hold wall texture.
+* `CZ_VK_GAMMA_RAMP=1` in the junkyard, the operator: "contrast is too intense" — and
+  that run had switched to a SECOND table our runtime loads ~2 min into a boot
+  (`[128]=305` against the first load's 462; `sub_828470A0`, a D3D device vtable method
+  re-applying a stored ramp) which no Xenia gameplay capture carries.
+  `CZ_VK_GAMMA_RAMP_FIRST=1` holds the first (Xenia's) table.
+
+**So part 119's hypothesis is refuted as the mechanism and the subject moves to what
+both emulators share and hardware does not** — the exposure controller's night floor
+first (its keyframes are `Start_/End_ExposureMinimum/Maximum` at +0x70..+0x7C of the
+`DayNightTransition` object, `sub_823C29F0`; the controller reads the luminance chain
+back from a 16_FLOAT resolve no draw samples). Gotcha 588.
