@@ -4,9 +4,12 @@
 `~/Release/Case Zero/1.1.1/` before the tag is pushed and the GitHub draft made.**
 
 **This is the text to paste into the GitHub Release body.** Binaries are the tag
-`v1.1.1` (c57465a + this notes commit — re-tagged after the night/interior exposure fix
+`v1.1.1` (8efd9d1 + this hashes commit — re-tagged after the night/interior exposure fix
 landed; the 2026-09-15 staging build at 626e438 is superseded); the hashes below are
-the artifacts built at that tag on 2026-09-16, all four legs.
+the artifacts built at that tree on 2026-09-16, all four legs: Linux tarball + AppImage
+(clean-container gate PASSED at the glibc 2.35 floor), Steam Deck (gate PASSED with the
+system C++ runtime permitted, as that build is shaped), Windows (staged-exe gate OK,
+XenonLive 1034bcc / launcher overlay 761de27 on both platforms).
 
 **The release is frozen at the tag**: if any artifact is EVER rebuilt, refresh its hash
 below before attaching.
@@ -91,7 +94,7 @@ unpacked game data and shader cache are reused.
 
 | file | sha256 |
 |---|---|
-| `CaseZeroRecomp-linux-x86_64.tar.zst` | `TBD — rebuilt at the new tag` |
-| `CaseZeroRecomp-linux-x86_64.AppImage` | `TBD — rebuilt at the new tag` |
-| `CaseZeroRecomp-steamdeck-x86_64.tar.gz` | `TBD — rebuilt at the new tag` |
-| `CaseZeroRecomp-windows-x86_64.zip` | `TBD — rebuilt at the new tag` |
+| `CaseZeroRecomp-linux-x86_64.tar.zst` | `af35e7fb10a1456cfd144a31ada8eb446b5ae4ac3c0067a2ac92484faee5513e` |
+| `CaseZeroRecomp-linux-x86_64.AppImage` | `9b65f0464d4a2266f451afdd13dbbf7659c79fa28b1a0c4a3d966e69822de0dd` |
+| `CaseZeroRecomp-steamdeck-x86_64.tar.gz` | `496d21d01cb11cf7b9078e8cbb2981801128326d55ff49ce347d8091ec879977` |
+| `CaseZeroRecomp-windows-x86_64.zip` | `2aaff352a5f3aa252d6df0e721808b4fd2d26b3678625a5e9286b4f6bae6da44` |
