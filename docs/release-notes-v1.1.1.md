@@ -1,7 +1,8 @@
 # Release notes — v1.1.1
 
-**QA BUILD (2026-09-16): NOT PUBLISHED. The operator QAs the artifacts in
-`~/Release/Case Zero/1.1.1/` before the tag is pushed and the GitHub draft made.**
+**DRAFT ON GITHUB (2026-09-17): tag `v1.1.1` pushed, the draft release carries the four
+artifacts + SHA256SUMS and this text below the rule as its body; the operator reads and
+publishes it on GitHub. The Windows zip downloaded from the draft hashes OK.**
 
 **This is the text to paste into the GitHub Release body.** Binaries are the tag
 `v1.1.1` (8efd9d1 + this hashes commit — re-tagged after the night/interior exposure fix
