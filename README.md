@@ -1,5 +1,7 @@
 # Dead Rising 2: Case Zero — Native PC Port
 
+**To play with online feature download it from the [XenonLive launcher](https://github.com/wivi514/XenonLive_Launcher)**
+
 Play **Dead Rising 2: Case Zero** (Capcom / Blue Castle Games, 2010 — the Xbox
 360 exclusive prologue to Dead Rising 2) natively on your Windows or Linux PC.
 
@@ -77,7 +79,7 @@ game folder at any time without losing progress.
 - **Two-player online co-op** (v1.1.0), the mode the Xbox build carried in its
   code and never showed: JOIN CO-OP GAME on the main menu, a friends list to
   join from, and the host asked before anyone comes in — over
-  [XenonLive](https://github.com/wivi514/XenonLive), through its
+  [XenonLive](https://github.com/wivi514/XenonLive_Launcher), through its
   [launcher](https://github.com/wivi514/XenonLive_Launcher). The military
   arrival at the end of the game is single-player for now: the second player
   is dropped there rather than crash the host (a fix is in progress).
