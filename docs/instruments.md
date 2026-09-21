@@ -4254,6 +4254,37 @@ CZ_COOP_FRIENDS_INVITEINFO=1  with the above: swap the invite record's invitee/i
 CZ_COOP_FRIENDS_DIRECT=1  with the above: hand the machine's second GameInvites to the
                    surviving PressStart screen object directly when the sink took it
                    nowhere. "Handled", starts nothing — kept as the last experiment run
+CZ_ITEM_TRACE=N    WHICH BIKE PART, OUT OF WHOSE HANDS (player issue #9,
+                   runtime/kernel/coop_items.cpp). The Case 0-4 bike decides which part
+                   was placed from the item in the SELECTED inventory slot of the player
+                   at `missionActionCtx + 0x10` — not from an argument, from a field —
+                   so "the client placed a part and the wrong one ticked off" is either
+                   the wrong player index or a differently-ordered replica inventory.
+                   =1 prints: `mission update context player index is now N` (one line
+                   per distinct value, and THE POSITIVE CONTROL — it runs every frame
+                   for every mission trigger, so a silent run still proves the hooks
+                   alive); `TriggerFire ... playerIdx %d ... lr` (which of the three
+                   call sites fired); `Event subtype 0: player %d trigger %08X` (the
+                   broadcast event, the one path carrying a player index across the
+                   link); `SetChuckState 61 TryPlaceItem` with EVERY player slot's
+                   actor, self-index, selected slot and whole 12-slot inventory by name
+                   hash; and `RaiseMissionEvent` — the part the title decided. =2 adds
+                   every Chuck state and every mission event. Name hashes reverse with
+                   `tools/name_hash.py --lookup <hex>`. `tools/coop_pair_items.sh` is
+                   the two-instance harness; a solo run reads player index 0 for ever,
+                   which is correct and says nothing. Per-event; inert without it
+CZ_COOP_TRIGGER_PLAYER=1  THE CANDIDATE FIX for player issue #9, OFF by default.
+                   A mission trigger's fire (`sub_823B0068`) is handed the player index
+                   that triggered it and every mission action then IGNORES it, reading
+                   `missionActionCtx + 0x10` instead — a field measured at 0 for a whole
+                   co-op session on the host. With this on, the field follows the
+                   argument for the duration of the fire and is restored afterwards, so
+                   the action acts as the player who actually triggered it. PREDICTION:
+                   with two players at the Case 0-4 bike, the part the CLIENT places is
+                   the part that ticks off. Off because the mechanism has one half
+                   measured, not two, and because other mission actions read the same
+                   field against `world+0x80` (the local player) — pair it with
+                   CZ_ITEM_TRACE=1 and run the same placement both ways
 CZ_COOP_CALL_TRACE=1  every step of both host-side routes from "a client is pending"
                    to the confirm: the details handler's state word and branch, the
                    synthetic Yes arriving at the game session's event handler, the

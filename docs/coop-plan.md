@@ -773,6 +773,187 @@ Loader `sub_824A2470`; bank based at 0x82A57xxx. The knobs we will want:
 These are the debug knobs — `online_net_sim_*` for shaking out desyncs, and the
 systemlink pair is the LAN path Case West dropped but Case Zero kept.
 
+## Player issue #9: the client places a bike part and the WRONG part ticks off (OPEN, 2026-09-21)
+
+`~/XenonLive/Player Issues/#9 - Dead Rising 2_ Case Zero - pokisal`, filed
+2026-09-18 against `v1.1.0-39-g8efd9d1`: *"Key Items desynced and replaced — after the
+Client used a key item on the bike most key items were either missing or replaced with
+other key items."* The reporter's screenshot is the Case 0-4 HUD in the safehouse
+garage with both Chucks standing at the bike, two of the five part slots ticked. The
+F8 log is the plain host log: no `[crash]`, no `closesocket`, both players' `[pos]`
+within two metres of each other, and nothing else — the capture predates every
+instrument this section adds.
+
+### What the title does, read out of the image
+
+Case 0-4's bike is one mission trigger and one mission action. `missions.txt`:
+
+```
+cMissionDefinition PrologueBikeParts          # ParentMission = PrologueCase0-4
+    cMissionLevelReady PrologueBikeParts-Start
+        cMissionOnTrigger ExamineBike1
+            InteractButton = "true"   Radius = "5"   Location = "-270.054,4.089,-61.046"
+            cMissionSetChuckState TryPlaceItem  { ChuckState = "61" }
+```
+
+Chuck state **61** lands at `0x8240AF7C` inside `sub_82409900`
+(`cMissionSetChuckState::Execute`), and the whole decision is five hash compares:
+
+```
+playerIdx = *(u32*)(actionCtx + 0x10)                 // NOT an argument — a FIELD
+actor     = sub_8247B020(world->0x7C, playerIdx)      // the user-player array, 0..3
+inv       = sub_8215D330(world->0x78->0x30, actor)    // that actor's inventory block
+item      = *(u32*)(inv + inv->0x68 * 8 + 4)          // the SELECTED slot
+switch (item->0x100) {                                // GetItemDefHashname()
+    hash("WheelPawn")        -> raise "WheelPawnPlaced"
+    hash("HandleBar")        -> raise "HandleBarPlaced"
+    hash("GasolineCanister") -> raise "GasCanPlaced"
+    hash("BikeEngine")       -> raise "FuelTankPlaced"
+    hash("BikeForks")        -> raise "BikeForksPlaced"
+    default                  -> raise "NoPartsPlaced"
+}
+```
+
+The five objectives of `PrologueCase0-4` listen for exactly those five event strings,
+in the HUD's slot order (wheel, handlebar, gas can, fuel tank, forks). **The mapping
+itself cannot desync** — it is the same table on both machines, hashed from the same
+image, by the same `h = h*33 ^ (signed char)c` (`tools/name_hash.py` is that hash in
+Python, and reverses any hash in a trace against `items.txt`). So "the wrong part
+ticked off" means the code read the wrong ITEM, and there are only two ways:
+
+1. **the wrong `playerIdx`** — the machine that ran the action resolved the part out
+   of the OTHER Chuck's hands; or
+2. **the right player, a different inventory** — the two machines disagree about
+   `inv->0x68` or about which item sits in that slot for the replicated player.
+
+They predict different logs, which is what the instrument below is shaped around.
+
+### Why (1) is the standing suspicion: two sibling triggers disagree
+
+`cMissionOnTrigger::Update` (`sub_823E79B8`) and `cMissionOnTriggerCuboid::Update`
+(`sub_823E7C48`) are the same routine twice. Both loop `r27/r28 = 0..3` over the user
+players, test each one's position against the volume, and fire. **They do not fire
+with the same thing:**
+
+| | fires `sub_823B0068(trigger, X)` with |
+|---|---|
+| `sub_823E7C48` cuboid | `X = r28` — **the loop index, i.e. the player who is inside** |
+| `sub_823E79B8` sphere | `X = *(u32*)(updateCtx + 0x10)` — a FIELD of the mission update context |
+
+`ExamineBike1` is a sphere trigger. And `sub_823B0068`'s argument is what ends up in
+the action context the state-61 code reads. A solo run measured that field: it is
+**0 and never changes** (`CZ_ITEM_TRACE=1`, prologue route, 2026-09-21) — correct with
+one player and silent about two. If it is still 0 on the host while the partner is the
+one in the volume, every bike part either player places is resolved out of **player
+0's** hands, which is exactly "it gives other key item completed instead of the one
+that was given" and also explains "most key items missing or replaced" (the host's own
+key item is consumed each time).
+
+Not yet established, and stated as such: which of the three callers of `sub_823B0068`
+actually fires for an `InteractButton` trigger. The sphere `Update` explicitly skips
+its own auto-fire when the trigger's `+0x5B` is set (`InteractButton`), so the live
+path is probably the third caller, `sub_82245650` — the broadcast-event listener,
+whose subtype 0 carries a player index at `event+0x14` and a trigger at `event+0x18`.
+The instrument prints the caller's `lr`, so one co-op session names the path.
+
+### And the argument the fire is given is DEAD
+
+Following the fire down settles what mechanism (1) would have to be. `sub_823B0068`:
+
+```
+ctx = sub_823A4768(trigger)          // = mission->0x104, the mission ACTION CONTEXT
+trigger->vt[0x2C](trigger, ctx->0x1C /*world*/, ctx, playerIndex, 0)
+```
+
+`vt[0x2C]` is `sub_823A4878` — the vtable fragment ending in `cMissionOnTrigger::Update`
+at `0x8204E81C` puts it at `+0x2C` of a table based at `0x8204E7D4`, immediately above
+the `missionontrigger.cpp` string — and `sub_823A4878` is the action-list walk: for
+each action node, `node->vt[0x1C](node, world, ctx, playerIndex)`.
+
+**`cMissionSetChuckState::Execute` does not read that fourth argument.** Its prologue
+is `r31 = world; r4 = *(u32*)(ctx + 0x10)`, and state 61 uses only those two. So the
+player index threaded from the trigger to the action is discarded, and the part is
+resolved out of the hands of whoever `ctx->0x10` names.
+
+Measured on a real co-op host (`tools/coop_pair_items.sh`, 2026-09-21, host
+`coop=1 isHost=1`, hooks confirmed alive): **`ctx->0x10` is 0 and never changes.**
+If the client's interact reaches the host through the broadcast event with
+`event+0x14 == 1`, the host still places whatever **player 0** — its own Chuck — is
+holding. That is the reported defect exactly, including "most key items missing":
+each placement eats the host's key item.
+
+The joiner half of that pair did not land (its `[coop] JOIN attempt N` loop never
+left IDLE after the title printed *"Lost connection with server"*; the search DID
+find 2 sessions, so this is the join path being flaky on a same-box pair and not the
+measurement). **The host-side reading stands on its own; the joiner-side reading is
+owed.**
+
+### The candidate fix, built and OFF: `CZ_COOP_TRIGGER_PLAYER=1`
+
+The minimal shape is to stop the argument being dead: before the fire runs, write the
+player index the fire was given into `ctx->0x10`, and restore it afterwards
+(`runtime/kernel/coop_items.cpp`). It is one store, scoped to the fire, and it makes
+the mission action act as the player who actually triggered it — which is what the
+cuboid sibling's spelling already implies the engine meant.
+
+**The prediction, pre-registered:** with two players at the bike, the client places a
+part and *that* part ticks off; without the arm, the host's own held item ticks off.
+Off by default because the mechanism has one half measured, not two, and because the
+same field is read by other mission actions (`sub_823A9450`, `sub_823AC018` compare it
+against `world->0x80`, the local player) — changing it changes them too, and that
+needs an operator's eye on ordinary single-player missions before it ships.
+
+### The instrument: `CZ_ITEM_TRACE=1` (`runtime/kernel/coop_items.cpp`)
+
+Off by default, every hook a straight pass-through when off, none on the frame path.
+It prints, with the raw `coop=` / `isHost=` session bytes beside each line so the side
+is evidence and not a label:
+
+- `mission update context player index is now N` — one line per distinct value, from
+  `cMissionOnTrigger::Update`. **This is also the positive control**: it runs every
+  frame for every mission trigger in a level, so a run that prints nothing else has
+  still shown the hooks alive (gotcha 30).
+- `TriggerFire trigger %08X playerIdx %d ... lr %08X` — the fire, and which of the
+  three call sites it came from.
+- `Event subtype 0: player %d trigger %08X` — the broadcast event, the one path that
+  carries a player index across the link.
+- `SetChuckState 61 TryPlaceItem ... -> playerIdx %d` followed by **every player
+  slot's actor, self-index, selected slot and whole 12-slot inventory with name
+  hashes** — the two candidate mechanisms side by side, diffable line for line
+  between the host's log and the client's.
+- `RaiseMissionEvent %08X (%s)` — the answer: which part the title decided.
+
+`CZ_ITEM_TRACE=2` adds every Chuck state and every mission event, not just the bike's.
+
+### The harness: `tools/coop_pair_items.sh`
+
+A same-box host+joiner pair (the part-3 recipe, the two XenonLive identities), both
+with the trace on, both driven by AutoChuck so neither is a statue. It needs no bike
+and no bike parts: with two Chucks in one level, the context-index line alone settles
+mechanism (1). `CASE=3` jumps the host to Case 0-4, the safehouse garage where the
+bike is; `CASE=1` is Case 0-2, outdoors.
+
+### What is owed
+
+- **The two-player reading.** Either fix the same-box pair's join (it found the host's
+  session and then sat in IDLE) or — better, because it is the reporter's own
+  hardware and the reporter has already reproduced it once — ask pokisal to run both
+  machines with `CZ_ITEM_TRACE=1`, place one part as the client, and hand back both
+  `cz_runtime.log`s. The three lines that answer it are `TriggerFire ... arg playerIdx
+  N, action context %08X says M`, the `SetChuckState 61` block with every inventory,
+  and `RaiseMissionEvent`.
+- **Then the A/B**: the same placement with `CZ_COOP_TRIGGER_PLAYER=1`. Same binary,
+  one variable.
+- It is a title bug either way (Case Zero shipped without co-op, and `TryPlaceItem`
+  and the bike are Case Zero-only content, so this pair was never run with two
+  players), so the fix belongs in the port.
+- Unrelated but found on the way, and owed its own check: `PumpFallGuard`
+  (`runtime/cpu/debug_tunables.cpp`) guards **index 0 only**, on the comment "index 0
+  is the local player on every machine". The `[pos]` lines of the 2026-09-14 pair
+  disagree — host and joiner print the SAME two positions for indices 0 and 1, so the
+  index is a session slot and slot 0 is the host's Chuck on both machines. If that is
+  right, the issue-#7 fall guard has never protected a joiner.
+
 ## Plan, in order
 
 1. **DONE** — `CZ_ONLINE_LOG`.

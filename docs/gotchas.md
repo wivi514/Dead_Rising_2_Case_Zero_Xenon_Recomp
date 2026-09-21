@@ -6718,3 +6718,36 @@ From phase C part 18 (the frame rate — and none of it was work):
     works when Bash does not — emptying five PPMs bought the room to `pkill`. Dumps go
     to disk (`/var/tmp`), never `/tmp`. (memory `tmp-is-a-ram-tmpfs`)
 
+594. **A hook-only translation unit dies silently when the runtime becomes a static
+    library.** Every `runtime/kernel/coop_*.cpp` exists only to define a STRONG
+    `PPC_FUNC(sub_XXXXXXXX)` over the weak alias `ppc_image` provides; nothing in the
+    runtime calls them by name — the title does, through the recompiler's dispatch
+    table. Move those files out of the executable into `libcasezero_core.a` (the
+    Unity-plugin split) and a normal archive scan pulls in NOTHING from them: the
+    weak originals stay, the link is green, `--smoke` passes, the game runs, and every
+    fix in them is absent. Measured, not feared: `strings cz_runtime` found
+    CZ_OUTFIT_TRACE, CZ_ITEM_TRACE and every `[coop]` message missing from the
+    executable, and `nm -a` listed no `coop_*.cpp` among its objects. Whole-archive
+    the runtime library the same way `ppc_image` already is — and the existing
+    three-token spelling does NOT compose: CMake de-duplicates repeated link options,
+    so a second `-Wl,--whole-archive ... -Wl,--no-whole-archive` collapses and leaves
+    the archive OUTSIDE the first pair. Use one token:
+    `-Wl,--whole-archive,$<TARGET_FILE:lib>,--no-whole-archive`. (coop-plan.md,
+    player issue #9)
+595. **Two sibling implementations of one class are a free oracle on each other.**
+    `cMissionOnTrigger::Update` and `cMissionOnTriggerCuboid::Update` are the same
+    routine twice — same player loop, same containment test, same skip on the
+    interact-button flag — and they disagree in exactly one instruction: the cuboid
+    fires with the LOOP INDEX (the player who is inside), the sphere fires with a
+    FIELD of the mission update context. Diffing the pair named a candidate mechanism
+    for a co-op bug in minutes where reading either one alone reads as correct. The
+    same shape found the Case Zero release byte (coop_transport.cpp) against Case
+    West. (coop-plan.md, player issue #9)
+596. **A player INDEX is only meaningful with its index space named.** This repo's own
+    comments disagree: `PumpFallWatch` says slot 0 is the host's Chuck on both
+    machines, `PumpFallGuard` says index 0 is the local player on every machine, and
+    both use the same lookup (`sub_8247B020` on `t + 0x7C`). The 2026-09-14 pair logs
+    settle it — host and joiner print the SAME positions for 0 and 1, so it is a
+    session slot — which means the guard written for issue #7 guards the wrong Chuck
+    on a joiner. Write the space, not just the number, next to every index a trace
+    prints. (coop-plan.md, player issue #9)
