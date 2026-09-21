@@ -48,7 +48,8 @@
   "vs_eae0f9b607fcbe92": {"stages": "palette@8,direct@4", "blend": "95:9:5:6:3210"},
   "vs_f7670fed3445a192": {"stages": "direct@8"},
   "vs_fa161b0fde7aa4d5": {"stages": "direct@8"},
-  "vs_fbbf888642aea141": {"stages": "palette@8", "blend": "95:9:5:6:3210"}
+  "vs_fbbf888642aea141": {"stages": "palette@8", "blend": "95:9:5:6:3210"},
+  "vs_fc8d9cff71390c1c": {"stages": "direct@8"}
  },
  "unclassified": ["vs_04b95b92edc1f0b8", "vs_0c8d82e80fcbc321", "vs_1a5c0f400bc10522", "vs_2067afd582adcbef", "vs_24e60d91249e6d04", "vs_2bb07e52c0b797f4", "vs_310821473ed77265", "vs_3244e12ae6987c8b", "vs_32dad2e4546585ec", "vs_34dc4f85053a2672", "vs_39942752000f0549", "vs_3cad095fd374dce0", "vs_45b575daed8c4d6f", "vs_481fc5dc5d6e77d8", "vs_539ea9e08aa83f0c", "vs_53a2263a731848e2", "vs_6275e3ccc26c48c9", "vs_66b5a3ac0956affc", "vs_6b7293051e6db738", "vs_735e7fcd838297b3", "vs_7c4412189c78a2d7", "vs_80b9611a08d9ae9a", "vs_898e80c6b3609791", "vs_8bb7e189d92e3def", "vs_8ed00911a7bc1eb1", "vs_8fbfbd385a6ae211", "vs_999c61e792bdcd67", "vs_99a7b6115ec51e83", "vs_9b2a04d14979309d", "vs_a0236a84fbf0c69c", "vs_a1b7fe1228a63d5b", "vs_a21fd6e69803b598", "vs_a443c40d4027915b", "vs_a4ae7c2b7c1818c4", "vs_b0a58d6e792fa548", "vs_b542a58eefeea8bc", "vs_bfb1aeb4f69e8752", "vs_bfe0f3f3d11eacce", "vs_c17bbebf65383249", "vs_c8e86dffb37149dd", "vs_cb7c5eb41489a916", "vs_cdb77abcbe9bab06", "vs_cddd8bf714deda0a", "vs_d34782b5c8ddf527", "vs_d6aceb8914b9cbe9", "vs_e02b03fa7cc87826", "vs_e785034972bebe3c", "vs_e86e70248d763bbe", "vs_ea929d7d399f0420", "vs_ebc4da6ca88e254d", "vs_ed11ed6ed071b1d5", "vs_efe5c633ec44cfd6", "vs_f2ef2d2f8de976d0", "vs_f7261c4b129fcdc5", "vs_fda03f2287ec351c", "vs_fee59116c2aedc40"]
 }

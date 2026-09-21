@@ -46,6 +46,9 @@ int BuildFromDisc(const std::filesystem::path& psBank,
 // is left alone.
 // A finished pixel pass with no vertex-pass marker (or a marker stamped with a different
 // recipe file size) is owed the vertex pass, when `recipes` exists.
+// And a cache built under a different TRANSLATE-TIME recipe than this build emits is
+// owed a pass whatever its markers say (`shader_recipe.txt`, player issue #10): the
+// module names are unchanged, so nothing else can tell that every one of them is stale.
 bool WantedAtBoot(const std::filesystem::path& cacheDir,
                   const std::filesystem::path& recipes = {});
 } // namespace ShaderPrebuild

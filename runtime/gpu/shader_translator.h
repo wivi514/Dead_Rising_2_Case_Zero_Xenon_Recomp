@@ -31,6 +31,31 @@ struct Result
     std::string hlsl;            // the intermediate, kept because it is the debuggable one
 };
 
+// THE TRANSLATE-TIME RECIPE (player issue #10, 2026-09-21).
+//
+// A cached module is not just a function of its microcode — it is a function of the
+// microcode AND the preprocessor defines the HLSL was compiled with. That second half
+// was invisible for eighteen parts: the clip-plane epilogue that makes zombie slicing
+// work (part 57) lives behind `XE_USER_CLIP_PLANES`, every operator play session
+// selected a cache built with it (tools/play_session.sh), and every RELEASE built its
+// own cache here with no defines at all. Census: 0 of 104 vertex shaders in
+// assets/shader_spv declared BuiltIn ClipDistance against 104 of 104 in
+// assets/shader_spv_clip. So no player has ever had user clip planes, and a sliced
+// zombie rendered as TWO WHOLE BODIES — exactly the part-56 symptom part 57 fixed.
+//
+// The cure for the class, not just the instance: the recipe is part of the cache's
+// identity, stamped into the cache directory, and a cache whose stamp does not match
+// this build is rebuilt (shader_prebuild.h). Anything added here that changes a
+// module's bytes must change RecipeId() too, or players keep the old bytes for ever.
+//
+// CZ_NO_CLIP_SHADERS=1 drops the epilogue: the same-binary control arm for the fix,
+// and the escape hatch for a device without `shaderClipDistance`.
+bool ClipPlanesWanted();
+
+// A short, stable line naming the recipe this build translates under, e.g. "clip=1".
+// Written into the cache as `shader_recipe.txt` and compared on every boot.
+std::string RecipeId();
+
 // Translate one shader's raw Xenos microcode. `name` is the runtime's cache key,
 // "vs_<hash16>" / "ps_<hash16>" — the hash's low 16 bits become XE_SHADER_TAG, the
 // identity each module carries so an instrument can paint a colour a decoder can turn

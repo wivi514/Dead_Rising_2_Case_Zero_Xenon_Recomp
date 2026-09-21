@@ -112,12 +112,29 @@ SAFE_FLAGS="${FLAGS:-CHUCK GOD MODE,DISABLE DEATH SEQUENCE,ZOMBIES IGNORE ALL HU
 if [ -n "${SAFE:-}" ]; then
     extra+=(CZ_DEBUG_MENU=1 "CZ_DEBUG_FLAGS=$SAFE_FLAGS")
 fi
+# THESE THREE ARE ARMS, AND A PLAYER GETS NONE OF THEM. Read that sentence before using
+# this script to judge how the game looks: an operator verdict taken here is a verdict on
+# THIS configuration, not on the artifact. Player issue #10 is what that costs — the
+# clip-plane cache selected on this line was the zombie-slicing fix, it was verified by
+# the operator in part 58, and because `cz_defaults.env` ships neither CZ_SHADER_SPV nor
+# CZ_DXC_DEFINES it reached no player for eighteen parts (gotcha 598, §6fd).
+#
+# The clip half of that is now the shipped default and no longer needs an override; what
+# is left here is the a2m foliage arm, which has NOT been through that promotion and is
+# still a divergence. So the line announces itself below rather than being silent, and
+# PLAIN=1 is what a picture verdict about the release should use.
 if [ -z "${PLAIN:-}" ]; then
     extra+=("CZ_SHADER_SPV=$ROOT/assets/shader_spv_clip_a2m" CZ_VK_A2M_ANY_SURFACE=1 CZ_VK_A2M_MODE=1)
 fi
 
 echo "==================================================================="
 echo "  PLAY SESSION — no profiler, no frame stats, no debug menu"
+if [ -z "${PLAIN:-}" ]; then
+    echo "  NOT AS SHIPPED: a2m foliage cache + CZ_VK_A2M_ANY_SURFACE=1 CZ_VK_A2M_MODE=1"
+    echo "                  (arms no player has; use PLAIN=1 to judge the release)"
+else
+    echo "  as shipped:     no cache override, no arms"
+fi
 echo "  cap:  CZ_FPS_CAP=$FPS   (vblank period $((1000/(2*FPS))) ms, ceiling $((1000/FPS)) ms)"
 # The internal resolution is NOT 1280x720 by default and this line used to say it was: with
 # no RES the renderer takes it from `assets/save/cz_settings.txt` (res_w/res_h, currently

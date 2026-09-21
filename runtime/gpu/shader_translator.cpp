@@ -58,12 +58,33 @@
 #include <cctype>
 #include <cstdio>
 #include <fstream>
+#include <cstdlib>
 #include <cstring>
 #include <mutex>
 #include <thread>
 
 namespace ShaderTranslator
 {
+// THE TRANSLATE-TIME RECIPE. See shader_translator.h for the eighteen parts this was
+// invisible for. Read once: the answer must be the same for every shader in a cache,
+// and a cache half-built under one recipe and half under another is the defect this
+// whole mechanism exists to make impossible.
+bool ClipPlanesWanted()
+{
+    static const bool wanted = []() {
+        const char* off = getenv("CZ_NO_CLIP_SHADERS");
+        return !(off && *off && strcmp(off, "0") != 0);
+    }();
+    return wanted;
+}
+
+std::string RecipeId()
+{
+    // Deliberately terse and deliberately NOT a hash: a player reporting a wrong
+    // picture can read this file, and a developer bisecting can write it by hand.
+    return std::string("clip=") + (ClipPlanesWanted() ? "1" : "0");
+}
+
 namespace
 {
 static inline uint32_t bits(uint32_t v, uint32_t lo, uint32_t n)
@@ -842,6 +863,14 @@ static bool CompileSpirv(const std::string& hlsl, bool isVs, uint32_t tag,
         L"-Qstrip_debug",
         L"-D", Widen("XE_SHADER_TAG=" + std::to_string(tag)),
     };
+    // USER CLIP PLANES, ON BY DEFAULT since player issue #10 (see shader_translator.h
+    // for why this was not always so). The epilogue is emitted only in the VERTEX
+    // stage — measured, not assumed: assets/shader_spv_clip against assets/shader_spv
+    // is 345 of 345 pixel modules byte-identical and 104 of 104 vertex modules
+    // different — so the define is passed only for a vs_ translation and a pixel
+    // module's bytes are provably unchanged by this commit.
+    if (isVs && ShaderTranslator::ClipPlanesWanted())
+        args.insert(args.end(), { L"-D", L"XE_USER_CLIP_PLANES=1" });
     // CZ_DXC_DEFINES passthrough, same contract as the shell pipeline: extra
     // whitespace-separated tokens, so an arm cache can be built from the same
     // translator into a second directory.

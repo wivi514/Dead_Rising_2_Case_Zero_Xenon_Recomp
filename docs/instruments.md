@@ -2805,26 +2805,54 @@ CZ_BURST_CENSUS=0  decline the burst's PER-DRAW CENSUS (part 57; default ON with
 
 ## User clip planes (part 57 — the zombie-slicing mechanism)
 
+**ON BY DEFAULT SINCE PLAYER ISSUE #10 (2026-09-21).** It was a second-cache arm for
+eighteen parts, which meant every operator session had it (`tools/play_session.sh`
+selects `assets/shader_spv_clip_a2m`) and no RELEASE ever did — 0 of 104 vertex modules
+in the shipped cache declared `ClipDistance` — so a player's sliced zombie rendered as
+two whole bodies. `phase5-notes.md` §6fd, gotchas 597-598.
+
 ```
-XE_USER_CLIP_PLANES  a SHADER-CACHE arm like XE_ALPHA_TO_MASK: build with
-                   CZ_DXC_DEFINES="-D XE_USER_CLIP_PLANES=1", select with
-                   CZ_SHADER_SPV. Every vertex shader gains a guarded epilogue that
+CZ_NO_CLIP_SHADERS=1  build the cache WITHOUT the clip epilogue — the control arm for
+                   the whole mechanism, and the escape hatch for a device that lacks
+                   `shaderClipDistance` (which is REQUIRED while the recipe says clip;
+                   the refusal names this variable). Changing it changes the cache's
+                   RECIPE, so the next boot drops the vertex half and rebuilds it: this
+                   is one variable, not a variable plus a manual rebuild.
+                   assets/shader_spv_noclip is the pre-fix cache, kept as a ready-made
+                   arm for CZ_SHADER_SPV.
+cz_runtime --shader-cache-status [dir]
+                   the cache's stamped recipe, the recipe THIS build emits, its module
+                   counts, and whether a first-run pass is owed. The instrument for the
+                   half of the invalidation that decides whether a rebuild is ever
+                   reached — the half that, unobserved, is how the shipped build kept
+                   stale modules for eighteen parts. A player's log line for "is your
+                   cache current?".
+XE_USER_CLIP_PLANES  the define itself, now passed by default for every vs_ translation
+                   by BOTH implementations (runtime/gpu/shader_translator.cpp and
+                   tools/build_shader_spv.sh — they must agree or the D.2 byte-identity
+                   gate reads a config difference as a translator defect). Every vertex shader gains a guarded epilogue that
                    dots the RAW exported clip-space position (before the window->NDC
                    fold) against six plane equations at SharedConstants+2080 and
                    exports them as ClipDistance[6] — Vulkan has no fixed-function user
                    clip planes, so the VS must compute them. Null-checked: without the
                    define the rebuilt cache is byte-identical; with it all 104 VS
                    differ and declare the ClipDistance builtin, all 335 PS unchanged.
-                   assets/shader_spv_clip is stock+clip; assets/shader_spv_clip_a2m is
-                   the operator's a2m foliage cache + clip, the one a play session
-                   should select (one change per experiment).
+                   VERTEX-ONLY, measured: assets/shader_spv_clip against the pre-fix
+                   assets/shader_spv is 345 of 345 PIXEL modules byte-identical and 104
+                   of 104 vertex modules different. That is what lets a recipe change
+                   drop the vertex half alone rather than rebuild 1,367 modules.
+                   assets/shader_spv IS the clip cache now; assets/shader_spv_noclip is
+                   what it used to be; assets/shader_spv_clip_a2m is the operator's a2m
+                   foliage cache + clip.
 CZ_VK_NO_CLIP_PLANES=1  stop publishing the plane equations — the same-cache control
                    arm. The shared block is zeroed per draw and a zero plane dots to 0,
                    which Vulkan KEEPS, so unpublished planes clip nothing by
                    construction.
 CZ_VK_CLIP_POISON=1  publish plane 0 = (0,0,0,-1) on EVERY draw: dot = -w, negative for
-                   every visible vertex. On a clip cache the picture must VANISH
-                   (menus included); on the stock cache it must change NOTHING. The
+                   every visible vertex. The picture must VANISH (menus included) — and
+                   since issue #10 that is true of the STOCK cache, which is the one-run
+                   check that a build really ships the epilogue. Under
+                   CZ_NO_CLIP_SHADERS=1 it must change NOTHING. The
                    positive control that proves the whole chain (feature bit, constant
                    plumbing, epilogue) without needing a sliced zombie (gotcha 30).
                    Counters: `draw: user clip plane N published` per plane index,

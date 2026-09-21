@@ -315,11 +315,47 @@ static bool Exists(const std::filesystem::path& p)
     std::error_code ec;
     return std::filesystem::exists(p, ec);
 }
+
+// THE RECIPE STAMP (player issue #10). `shader_recipe.txt` in the cache directory
+// records the translate-time defines the modules in it were built with — the half of a
+// cache's identity that the FNV-1a name hash does not cover. Without it, changing a
+// define fixes the picture for a fresh install and changes nothing for everyone who
+// already played, because every module's file name is still there and still "already in
+// the cache".
+//
+// Missing is not the same as empty: a pre-issue-#10 cache has no stamp at all, and that
+// is exactly the population that needs rebuilding.
+static std::string ReadStamp(const std::filesystem::path& cacheDir)
+{
+    std::ifstream f(cacheDir / "shader_recipe.txt");
+    if (!f)
+        return {};
+    std::string line;
+    std::getline(f, line);
+    while (!line.empty() && (line.back() == '\r' || line.back() == ' '))
+        line.pop_back();
+    return line;
+}
+
+// Does this cache carry modules built under a DIFFERENT recipe than this build emits?
+// Only ever true of a cache the first-run pass itself built: a developer cache assembled
+// from dumps has no `disc_prebuild.done` and is never touched, the same rule
+// WantedAtBoot already applies to growing one.
+static bool StampStale(const std::filesystem::path& cacheDir)
+{
+    if (!Exists(cacheDir / "disc_prebuild.done"))
+        return false;
+    return ReadStamp(cacheDir) != ShaderTranslator::RecipeId();
+}
 } // namespace
 
 bool WantedAtBoot(const std::filesystem::path& cacheDir, const std::filesystem::path& recipes)
 {
     std::error_code ec;
+    // A cache built under an older translate-time recipe is owed a pass whatever else
+    // is true of it — the modules are all present and all wrong (player issue #10).
+    if (StampStale(cacheDir))
+        return true;
     if (Exists(cacheDir / "disc_prebuild.done"))
     {
         // The pixel pass is finished. The vertex pass (part 102) is a later addition
@@ -398,6 +434,38 @@ int BuildFromDisc(const std::filesystem::path& psBank,
 
     std::error_code ec;
     std::filesystem::create_directories(cacheDir, ec);
+
+    // RECIPE CHANGE = THROW THE STALE MODULES AWAY. Everything below resumes by
+    // skipping names the cache already holds, so without this step a cache built under
+    // an older recipe would report itself complete and keep serving the old bytes for
+    // ever — which is precisely how eighteen parts of shipped builds had no user clip
+    // planes (shader_translator.h).
+    //
+    // ONLY THE VERTEX HALF, and that is a measurement rather than an assumption:
+    // assets/shader_spv_clip against assets/shader_spv is 345 of 345 pixel modules
+    // BYTE-IDENTICAL and 104 of 104 vertex modules different, because the one define
+    // in the recipe today is emitted in the vertex epilogue alone. A future define that
+    // changes a pixel module must widen this to ps_* as well — and if it does not, the
+    // symptom is this exact defect again, one stage over.
+    if (StampStale(cacheDir))
+    {
+        const std::string was = ReadStamp(cacheDir);
+        unsigned dropped = 0;
+        for (const auto& e : std::filesystem::directory_iterator(cacheDir, ec))
+        {
+            const std::string fn = e.path().filename().string();
+            if (fn.rfind("vs_", 0) != 0)
+                continue;
+            if (std::filesystem::remove(e.path(), ec))
+                ++dropped;
+        }
+        std::filesystem::remove(cacheDir / "vs_recipes.done", ec);
+        fprintf(stderr, "[prebuild] this cache was built under shader recipe '%s' and "
+                        "this build translates '%s' — dropped %u stale vertex file(s); "
+                        "they are rebuilt below\n",
+                was.empty() ? "(unstamped, pre-2026-09-21)" : was.c_str(),
+                ShaderTranslator::RecipeId().c_str(), dropped);
+    }
     { std::ofstream m(cacheDir / "disc_prebuild.started"); m << psBank.string() << "\n"; }
 
     // Resume = skip what a previous pass already wrote. The pair is the unit: a .spv
@@ -481,6 +549,14 @@ int BuildFromDisc(const std::filesystem::path& psBank,
     {
         std::ofstream m(cacheDir / "disc_prebuild.done");
         m << pixelCount << " shaders from " << psBank.string() << "\n";
+        // Stamped only on SUCCESS, and only once every failure is gone: a stamp over a
+        // half-rebuilt cache would tell the next boot there is nothing left to do.
+        // The deliberate consequence: a pass that keeps failing re-drops and retries the
+        // vertex half on every boot rather than settling into a half-current cache.
+        // That is the right trade — a translator that cannot translate is a louder
+        // problem than the work it repeats.
+        { std::ofstream r(cacheDir / "shader_recipe.txt");
+          r << ShaderTranslator::RecipeId() << "\n"; }
         if (vertexPass)
         {
             // Refused recipes are NOT failures of this pass — they are a disc whose

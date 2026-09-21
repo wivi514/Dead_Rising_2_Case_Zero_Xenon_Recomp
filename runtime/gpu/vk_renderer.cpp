@@ -7701,8 +7701,16 @@ static const FeatureReq kFeatureReqs[] = {
             "CZ_VK_RT_COVERAGE cannot report sample counts without it"),
     CZ_FEAT(Core, VkPhysicalDeviceFeatures, pipelineStatisticsQuery, false,
             "CZ_VK_GPU_STATS (the per-pass vertex/fragment invocation census) needs it"),
+    // REQUIRED since player issue #10, because the cache this build makes always
+    // carries the epilogue. It was optional while clip planes were a second-cache arm,
+    // and "optional" meant a device that lacks it would have built pipelines from
+    // modules declaring a capability it does not have. `required` is computed at the
+    // walk below rather than pinned here, so CZ_NO_CLIP_SHADERS=1 — which builds the
+    // cache WITHOUT the epilogue — takes the requirement away with it.
     CZ_FEAT(Core, VkPhysicalDeviceFeatures, shaderClipDistance, false,
-            "an XE_USER_CLIP_PLANES shader cache cannot run without it"),
+            "the shader cache's vertex modules export ClipDistance for the guest's user "
+            "clip planes (the zombie-slicing mechanism). Set CZ_NO_CLIP_SHADERS=1 to "
+            "rebuild the cache without them; slicing will show two whole bodies again"),
     CZ_FEAT(Core, VkPhysicalDeviceFeatures, fillModeNonSolid, false,
             "no consumer: every pipeline's polygonMode is FILL"),
     CZ_FEAT(Core, VkPhysicalDeviceFeatures, depthClamp, false,
@@ -7737,17 +7745,23 @@ static void EvaluateRequirements(const DeviceCaps& c, VkPhysicalDeviceFeatures2&
     for (const FeatureReq& r : kFeatureReqs)
     {
         const bool have = FeatHave(c, r) == VK_TRUE;
+        // One feature's requirement follows a build-time decision rather than the
+        // table: shaderClipDistance is required exactly when this build translates the
+        // clip epilogue into the cache's vertex modules (shader_translator.h).
+        const bool required =
+            r.required || (!strcmp(r.name, "shaderClipDistance") &&
+                           ShaderTranslator::ClipPlanesWanted());
         if (have)
             FeatSlot(r.where, r.offset, reqF2, req12, req13) = VK_TRUE;
-        else if (r.required)
+        else if (required)
             missing.push_back(r.name);
         if (listAll)
             fprintf(stderr, "%s   %-48s %-8s %s — %s\n", tag, r.name,
-                    have ? "present" : "ABSENT", r.required ? "REQUIRED" : "optional",
+                    have ? "present" : "ABSENT", required ? "REQUIRED" : "optional",
                     r.why);
         else if (!have)
             fprintf(stderr, "%s device lacks %s (%s) — %s\n", tag, r.name,
-                    r.required ? "REQUIRED" : "optional", r.why);
+                    required ? "REQUIRED" : "optional", r.why);
     }
 }
 
@@ -25247,11 +25261,19 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
     // both copies rendered whole ("they just get a double").
     //
     // The distances are computed by the VERTEX SHADER (Vulkan has no fixed-function
-    // planes), so this publish does nothing until a cache built with
-    // CZ_DXC_DEFINES="-D XE_USER_CLIP_PLANES=1" is selected via CZ_SHADER_SPV — the
-    // same second-cache arm pattern as XE_ALPHA_TO_MASK. On the default cache the
-    // constants are simply never read. CZ_VK_NO_CLIP_PLANES=1 stops the publish, the
-    // same-cache control arm.
+    // planes), so this publish does nothing unless the cache's vertex modules were
+    // translated with XE_USER_CLIP_PLANES.
+    //
+    // THAT USED TO BE A SECOND-CACHE ARM AND IT COST A SHIPPED DEFECT. Until player
+    // issue #10 (2026-09-21) the epilogue lived only in assets/shader_spv_clip_a2m,
+    // which every operator play session selected and no release ever built — so for
+    // eighteen parts the shipped game published these constants and never read them,
+    // and a sliced zombie rendered as two whole bodies. It is the translator's DEFAULT
+    // now (shader_translator.h); CZ_NO_CLIP_SHADERS=1 builds the cache without it and
+    // is the control arm for the whole mechanism.
+    //
+    // CZ_VK_NO_CLIP_PLANES=1 stops the publish instead, which is the finer arm: same
+    // cache, same modules, every plane reads (0,0,0,0) = KEEP.
     {
         static const bool noClipPlanes = EnvOn("CZ_VK_NO_CLIP_PLANES");
         // THE POSITIVE CONTROL (gotcha 30). A clip plane only fires on a draw the

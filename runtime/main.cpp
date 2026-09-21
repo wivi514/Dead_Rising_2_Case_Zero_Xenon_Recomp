@@ -324,6 +324,45 @@ int main(int argc, char** argv)
                                              HostPaths::VsRecipes());
     }
 
+    // The shader cache's translate-time recipe, and the boot decision that depends on
+    // it (player issue #10). Without this the only observable half of the mechanism is
+    // the rebuild itself — and the half that decides whether a rebuild is ever REACHED
+    // would have no instrument at all, which is how the defect it fixes survived
+    // eighteen parts. It also answers a support question off a player's log: a cache
+    // stamped with anything but this build's recipe is a cache full of stale modules.
+    if (argc > 1 && strcmp(argv[1], "--shader-cache-status") == 0)
+    {
+        HostPaths::Report();
+        const std::filesystem::path dir =
+            argc > 2 ? std::filesystem::path(argv[2]) : HostPaths::ShaderCache();
+        std::string stamped;
+        {
+            std::ifstream f(dir / "shader_recipe.txt");
+            if (f)
+                std::getline(f, stamped);
+        }
+        std::error_code ec;
+        unsigned vs = 0, ps = 0;
+        for (const auto& e : std::filesystem::directory_iterator(dir, ec))
+        {
+            const std::string fn = e.path().filename().string();
+            if (e.path().extension() != ".spv")
+                continue;
+            (fn.rfind("vs_", 0) == 0 ? vs : ps)++;
+        }
+        const bool wanted = ShaderPrebuild::WantedAtBoot(dir, HostPaths::VsRecipes());
+        printf("cache            %s\n", dir.string().c_str());
+        printf("modules          %u vertex, %u pixel\n", vs, ps);
+        printf("stamped recipe   %s\n",
+               stamped.empty() ? "(none — built before 2026-09-21, or a developer cache)"
+                               : stamped.c_str());
+        printf("this build makes %s\n", ShaderTranslator::RecipeId().c_str());
+        printf("first-run pass   %s\n",
+               wanted ? "OWED — the modules will be rebuilt at boot"
+                      : "not owed — this cache is current");
+        return 0;
+    }
+
     // Release-github §0: the overlay generation by hand — what the first-run hook
     // below runs automatically, exposed for the byte-identity gate against the
     // Python references (tools/gen_pc_options.py + tools/gen_kbm_icons.py: run

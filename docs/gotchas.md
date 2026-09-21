@@ -6751,3 +6751,30 @@ From phase C part 18 (the frame rate — and none of it was work):
     session slot — which means the guard written for issue #7 guards the wrong Chuck
     on a joiner. Write the space, not just the number, next to every index a trace
     prints. (coop-plan.md, player issue #9)
+597. **A CACHED ARTEFACT'S IDENTITY IS ITS INPUT *AND* ITS BUILD FLAGS — and if the
+    cache key covers only the input, a flag change fixes nothing for anyone who
+    already has the cache.** Case Zero's shader cache is keyed by the FNV-1a hash of
+    the microcode alone. Turning a translate-time define on therefore changes what a
+    fresh install compiles and changes NOTHING for an existing one: every module's
+    file name is still there, so the resume logic reports the cache complete and
+    keeps serving the old bytes for ever. Stamp the recipe into the cache directory
+    (`shader_recipe.txt`) and treat a mismatch as "this cache is empty". The
+    invalidation needs its own positive control — flip the recipe both ways and
+    count the files dropped — because a stamp that never mismatches has not been
+    shown capable of mismatching (gotcha 30). (player issue #10)
+598. **A SECOND-CACHE ARM THAT BECOMES THE VERIFIED ANSWER HAS TO BE PROMOTED, OR THE
+    OPERATOR AND THE PLAYER ARE RUNNING DIFFERENT GAMES.** Part 57 built user clip
+    planes — the zombie-slicing mechanism — as a shader-define arm in
+    `assets/shader_spv_clip_a2m`, part 58 finished it, the operator said *"Yes it is
+    perfect now"*, and it was never made the default. `tools/play_session.sh` selects
+    that cache on every operator session; the release packagers ship no
+    `CZ_SHADER_SPV` and no `CZ_DXC_DEFINES`, and the first-run builder passed no
+    defines at all. Census: **0 of 104 vertex shaders in the shipped cache declared
+    `BuiltIn ClipDistance` against 104 of 104 in the arm cache.** For eighteen parts
+    the shipped game published the six plane constants every frame and no shader read
+    them, so a sliced zombie rendered as two whole bodies — the exact part-56 symptom
+    part 57 was written to fix — and it took a player's F9 to find it. **The session
+    script that claims to run "the game as it ships" is a claim to be gated**: diff
+    what it adds to the environment against `cz_defaults.env`, and treat every arm
+    that has passed an operator verdict as owing a promotion commit. (player issue
+    #10, and 595's sibling: the two implementations here were dev and ship)

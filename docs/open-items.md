@@ -3626,6 +3626,22 @@ operator: **"Yes it is perfect now."** FRONT=CW is the default;
 watch: the part-57 doubled-slab sighting was not re-observed in any part-58 session —
 an observation with a shelf life, re-open if it shows.
 
+**00q ADDENDUM, 2026-09-21, PLAYER ISSUE #10 — none of the above ever reached a
+player, and the watch above could not have caught it.** Nickaim reported a broadsword
+kill producing *two separate zombies*: verbatim the part-56 picture. The mechanism is
+not a regression — it is that **user clip planes live behind the `XE_USER_CLIP_PLANES`
+shader define, every operator session selects a cache built with it
+(`tools/play_session.sh`), and no release has ever built one.** Census: 0 of 104 vertex
+modules in the shipped cache declared `ClipDistance` against 104 of 104 in the arm
+cache. The watch was kept on the operator's builds, which are the one population that
+never had the defect.
+
+Fixed by promoting the define to the translator's default, stamping the cache with the
+recipe it was built under so existing installs rebuild (`shader_recipe.txt`), and making
+`shaderClipDistance` required while that recipe is in force. `phase5-notes.md` §6fd,
+gotchas 597-598. **Owed: the operator's eye on a broadsword kill with no `CZ_SHADER_SPV`
+in the environment** (`PLAIN=1 tools/play_session.sh`, or the packaged artifact).
+
 ## 00r. PART 59: THE DISTANCE CLASS (gas sign) IS FIXED — small packed textures
 
 The R6 trace closed item 00's oldest distance defect in one session. The far-LOD

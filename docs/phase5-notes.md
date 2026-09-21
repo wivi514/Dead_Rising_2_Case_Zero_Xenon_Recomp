@@ -22453,3 +22453,164 @@ on the DAY garage (brighter than before, at the table's ceiling);
 then the Uncle Bill's / Bob's spots of §6fb.1. The Gamma meter (plan §4) is untouched:
 with the exposure right it may not be needed. v1.1.1 was on hold for this
 (`reminder-verify-issue3-fix` memory): rebuild all legs after the eye test.
+
+## 6fd. Player issue #10: THE SHIPPED GAME NEVER HAD USER CLIP PLANES — the zombie-
+## slicing fix of parts 57/58 lived in a shader-define arm that no release ever built
+
+Reported by Nickaim, 2026-09-18, on v1.1.0-39-g8efd9d1: *"Broadsword splits zombies into
+two separate zombies. When using a Broadsword to kill a zombie, instead of dismembering
+it, it instead creates two zombie bodies."* A second player's guess in the thread was
+"probably a mask issue". It is not a mask; it is the clip planes, and this port has a
+long record of exactly this symptom.
+
+### 1. The symptom is verbatim the PART 56 state, which part 57 fixed
+
+§6cm §1 records the operator's verdict when the clip planes first went in: *"The zombie
+slice in two parts but not properly but better then how it was"* — *"where part 56's
+build gave **two whole doubled bodies**"*. §6cn then fixed the two residuals (the
+see-through cut and the thin doubled slab) by correcting the two-sided stencil's front
+face, and the operator closed it: *"Yes it is perfect now."*
+
+So the mechanism was known, built, and verified fourteen months of parts ago. The
+question was never "what causes this" — it was "why is a player seeing the pre-fix
+picture on a build two dozen releases later".
+
+### 2. The answer: the fix is a SHADER DEFINE, and no release has ever passed it
+
+Vulkan has no fixed-function user clip planes, so the translated VERTEX shader computes
+the six dots itself and exports `SV_ClipDistance0/1`. XenosRecomp emits that epilogue
+inside `#ifdef XE_USER_CLIP_PLANES`, deliberately, so that a cache built without the
+define is byte-identical to the old one — the null-control property §6cm wanted while
+the feature was being proven. It was then never promoted, and four things kept that
+invisible:
+
+| | what it does | clip planes? |
+|---|---|---|
+| `tools/play_session.sh` — the OPERATOR's session, "the game as it ships" | `CZ_SHADER_SPV=assets/shader_spv_clip_a2m` | **yes** |
+| every `partNN_operator_session.sh` since part 57 | the same cache | **yes** |
+| `tools/release_package_{linux,windows}` → `cz_defaults.env` | `CZ_VKDRAW=1`, `CZ_LAUNCHER=1`, nothing else | **no** |
+| the player's own first-run cache, built in-process by `gpu/shader_translator.cpp` | `-D XE_SHADER_TAG=<n>` and nothing else | **no** |
+
+The renderer's own comment said so in as many words and nobody read it as a bug report:
+*"this publish does nothing until a cache built with `CZ_DXC_DEFINES="-D
+XE_USER_CLIP_PLANES=1"` is selected via `CZ_SHADER_SPV` … On the default cache the
+constants are simply never read."*
+
+**The census, which is what turns that from a reading into a measurement** — SPIR-V
+`OpDecorate <id> BuiltIn ClipDistance` over every `vs_*.spv`:
+
+| cache | vertex modules declaring ClipDistance |
+|---|---|
+| `assets/shader_spv` (the stock cache, and what a release builds) | **0 of 104** |
+| `assets/shader_spv_clip` | 104 of 104 |
+| `assets/shader_spv_clip_a2m` (the operator's) | 104 of 105 |
+| `assets/shader_spv_a2m` | 0 of 104 |
+
+So the shipped renderer published six plane equations into SharedConstants+2080 on every
+draw of every session since part 57, and not one shader ever read a word of it.
+
+### 3. The define is VERTEX-ONLY, and that is measured rather than assumed
+
+`assets/shader_spv_clip` against `assets/shader_spv`, module by module: **345 of 345
+pixel modules BYTE-IDENTICAL, 104 of 104 vertex modules different.** A fresh build of
+the whole cache with today's toolchain reproduces the same split (346 of 346 PS
+identical to the checked-in cache, 104 of 104 VS different), which incidentally also
+says the translator has not drifted since August. That measurement is what lets the
+cache invalidation below throw away the vertex half alone instead of an entire
+1,367-module rebuild.
+
+### 4. The fix, and why it is three changes rather than one
+
+**(a) The epilogue is the translator's default.** `ShaderTranslator::ClipPlanesWanted()`
+adds `-D XE_USER_CLIP_PLANES=1` for a `vs_` translation; `tools/build_shader_spv.sh`
+does the identical thing, so the two implementations the D.2 gate holds byte-identical
+stay byte-identical. `CZ_NO_CLIP_SHADERS=1` is the control arm and the escape hatch.
+
+**(b) The cache's identity now includes its build flags.** This is the half without
+which (a) fixes nothing for anyone who already played: the cache is keyed by the
+microcode's FNV-1a hash alone, so every stale module is still present under its correct
+name and the first-run pass's resume logic reports the cache complete. `RecipeId()` —
+today the string `clip=1` — is stamped into the cache directory as
+`shader_recipe.txt`; `WantedAtBoot` treats a mismatched or absent stamp as a pass owed,
+and `BuildFromDisc` drops the vertex half before rebuilding it. Only a cache the
+first-run pass itself built is ever touched: a developer cache assembled from dumps has
+no `disc_prebuild.done` and is left alone, the same rule that already governs growing
+one. Gotcha 597.
+
+**(c) `shaderClipDistance` becomes REQUIRED when the recipe says clip.** It was optional
+while clip was an arm, which meant a device lacking it would have built pipelines from
+modules declaring a capability it does not have. The requirement is computed at the
+feature walk rather than pinned in the table, so `CZ_NO_CLIP_SHADERS=1` — which builds
+the cache without the epilogue — takes the requirement away with it, and the refusal
+text names that variable.
+
+### 5. The controls, both directions, because a stamp that never mismatches proves nothing
+
+`cz_runtime --shader-cache-status [dir]` prints the stamp, the recipe this build emits,
+and `WantedAtBoot`'s verdict; it exists because otherwise the half of the mechanism that
+decides whether a rebuild is ever REACHED would have no instrument at all — which is the
+shape of the defect this whole section is about.
+
+Four arms over one scratch cache, same binary, real disc banks and `vs_recipes.bin`:
+
+| arm | dropped | translated | stamp | VS with ClipDistance |
+|---|---|---|---|---|
+| 1. fresh build (a player's first run) | — | 1,367 | `clip=1` | **102 of 102** |
+| 2. `CZ_NO_CLIP_SHADERS=1` (recipe changes) | 205 vertex files | 102 | `clip=0` | **0 of 102** |
+| 3. back to the default (changes again) | 205 vertex files | 102 | `clip=1` | **102 of 102** |
+| 4. run again, recipe unchanged — the NULL | 0 | 0 | `clip=1` | 102 of 102 |
+
+and on the boot decision: a current cache reads `not owed`; the same cache against a
+build making `clip=0` reads `OWED`; and the same cache with its stamp file removed — the
+actual shape of every install in the wild today — reads `OWED`.
+
+**And the end-to-end control, which is the one that proves the epilogue reaches the
+RASTERIZER and not merely the file.** `CZ_VK_CLIP_POISON=1` publishes plane 0 =
+(0,0,0,−1) on every draw — a dot of −w, negative for every visible vertex — so on a
+cache that reads the planes the picture must vanish and on one that does not it must
+change nothing. Three headless 150 s boots, one binary, mean luma per dumped frame:
+
+| arm | frames | median luma | frames above luma 1.0 |
+|---|---|---|---|
+| stock cache, no poison | 315 | 97.42 | 290 |
+| stock cache + `CZ_VK_CLIP_POISON=1` | 273 | **0.00** | **0** |
+| `CZ_SHADER_SPV=assets/shader_spv_noclip` + the same poison | 318 | 96.73 | 292 |
+
+Read the third row before the second. It is the NULL: the same arm, the same binary, the
+pre-fix cache — and it changes nothing, which is what says the blanking in row 2 acts
+through the epilogue and not through some generic side effect of publishing a plane.
+Row 3 is also, exactly, what row 2 read before this commit. The pair is the whole chain
+(device feature → per-draw constant publish → vertex epilogue → clipping) demonstrated
+in two runs with no zombie required.
+
+### 6. Gates
+
+`--smoke` OK. `shader_dim_census.py` 452 shaders, 341 2D + 100 cube, **0
+disagreements**. `rt_world_xform_census.py` **105 of 105 vertex shaders covered**, exit 0
+(it picked up `vs_fc8d9cff71390c1c`, a shader the checked-in cache had been missing since
+first-sight translation added it to the arm cache alone — the drift of gotcha 390, found
+for free). **The D.2 identity gate PASSES on the new default**: `cz_runtime
+--translate-shaders ~/DR2CZ-troubleshooting/ucode-dumps` then `diff -r` against
+`assets/shader_spv` is byte-identical, 452 of 452. A headless 150 s boot on the new
+default cache prints `no translated shader` **0**.
+
+`assets/shader_spv` is now the clip cache (452 modules, 105 of 105 VS with ClipDistance);
+the pre-fix cache is preserved as **`assets/shader_spv_noclip`**, which is the
+same-binary control arm for anything this commit is later blamed for.
+
+### 7. What is owed, and what this does NOT claim
+
+The operator's eye on a broadsword kill, on a build with no `CZ_SHADER_SPV` in the
+environment — i.e. `PLAIN=1 tools/play_session.sh`, or better, the packaged artifact.
+**Pre-registered prediction: the zombie comes apart in two halves rather than becoming
+two whole bodies, and the cut is sealed rather than see-through** (parts 57 and 58's
+verdict, now reaching the default cache for the first time).
+
+Not claimed: that nothing else changes. Every vertex shader in the game is a different
+module after this commit, and although the epilogue is additive and dots against planes
+the renderer zeroes per draw (a zero plane dots to 0 = KEPT), "cannot affect anything"
+is how defects hide. The whole-cache gates above are the evidence that it does not, and
+the operator's session is the rest of it. The second thing owed is the wider question
+gotcha 598 asks: **`play_session.sh` adds `CZ_VK_A2M_ANY_SURFACE=1` and
+`CZ_VK_A2M_MODE=1` too**, neither of which any player has ever had, and nobody has
+checked whether those are also verified answers sitting in an arm.

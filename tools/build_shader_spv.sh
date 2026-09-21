@@ -90,9 +90,16 @@ for x in "$SYNTH"/*.xshd; do
   # lets an instrument paint a colour a decoder can turn back into a shader NAME instead
   # of a human inferring which material a green patch belonged to.
   tag=$(( 0x${n#*_} & 0xFFFF ))
+  # USER CLIP PLANES, on by default and VERTEX-ONLY, matching the runtime translator
+  # exactly (runtime/gpu/shader_translator.cpp) — the two implementations are kept
+  # byte-identical by `cz_runtime --translate-shaders`, so a default that differs here
+  # would read as a translator defect rather than as the config difference it is.
+  # CZ_NO_CLIP_SHADERS=1 builds the pre-issue-#10 cache: the control arm.
+  clipdef=""
+  case "$n:${CZ_NO_CLIP_SHADERS:-0}" in vs_*:0) clipdef="-D XE_USER_CLIP_PLANES=1" ;; esac
   if LD_LIBRARY_PATH="$DXCLIB" "$DXC" -T "$target" -HV 2021 \
       -all-resources-bound -spirv -fvk-use-dx-layout -Qstrip_debug \
-      -D "XE_SHADER_TAG=$tag" ${CZ_DXC_DEFINES:-} \
+      -D "XE_SHADER_TAG=$tag" $clipdef ${CZ_DXC_DEFINES:-} \
       -Fo "$OUT/$n.spv" "$SYNTH/$n.hlsl" > "$SYNTH/$n.dxc.log" 2>&1; then
     cp "$SYNTH/$n.meta.json" "$OUT/"
     ok=$((ok + 1))
