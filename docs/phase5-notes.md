@@ -22598,19 +22598,35 @@ default cache prints `no translated shader` **0**.
 the pre-fix cache is preserved as **`assets/shader_spv_noclip`**, which is the
 same-binary control arm for anything this commit is later blamed for.
 
-### 7. What is owed, and what this does NOT claim
+### 7. OPERATOR-VERIFIED, 2026-09-23 — and on two weapon classes, not one
 
-The operator's eye on a broadsword kill, on a build with no `CZ_SHADER_SPV` in the
-environment — i.e. `PLAIN=1 tools/play_session.sh`, or better, the packaged artifact.
-**Pre-registered prediction: the zombie comes apart in two halves rather than becoming
-two whole bodies, and the cut is sealed rather than see-through** (parts 57 and 58's
-verdict, now reaching the default cache for the first time).
+The prediction registered before the session was: *the zombie comes apart in two halves
+rather than becoming two whole bodies, and the cut is sealed rather than see-through*
+(parts 57 and 58's verdict, reaching the default cache for the first time). The session
+ran on `PLAIN=1 SAFE=1 tools/play_session.sh` — which prints `as shipped: no cache
+override, no arms` and loads `assets/shader_spv`, i.e. the cache a player's install now
+builds. Operator: **"All good tried with broadsword and paddle-chainsaw."**
+
+**The second weapon is worth more than the confirmation it adds.** The report named the
+broadsword, so the broadsword is what the prediction was written about; the paddlesaw is
+a different weapon, a different animation and a different piece set, and it comes apart
+correctly too. That moves the claim from "the reported instance is fixed" to "the
+dismemberment path is fixed", which is the claim the mechanism actually supports — every
+sliced actor in the game goes through the same two-copies-and-a-clip-plane technique
+(§6cm §1's census: a depth-only prepass of each clipped half, a colour pass at z EQUAL,
+then the gore plug). Nothing else was reported out of place, which is the other half of
+what the session was for: every vertex shader in the game is a different module after
+this commit.
+
+### 7b. What this does NOT claim
 
 Not claimed: that nothing else changes. Every vertex shader in the game is a different
 module after this commit, and although the epilogue is additive and dots against planes
 the renderer zeroes per draw (a zero plane dots to 0 = KEPT), "cannot affect anything"
 is how defects hide. The whole-cache gates above are the evidence that it does not, and
-the operator's session is the rest of it. The second thing owed is the wider question
+the 2026-09-23 session is the rest of it — one operator sitting is one sitting, and the
+population that has never been looked at on this cache is every era of the game that
+session did not enter (gotcha 13). The second thing owed is the wider question
 gotcha 598 asks: **`play_session.sh` adds `CZ_VK_A2M_ANY_SURFACE=1` and
 `CZ_VK_A2M_MODE=1` too**, neither of which any player has ever had, and nobody has
 checked whether those are also verified answers sitting in an arm.

@@ -3639,8 +3639,15 @@ never had the defect.
 Fixed by promoting the define to the translator's default, stamping the cache with the
 recipe it was built under so existing installs rebuild (`shader_recipe.txt`), and making
 `shaderClipDistance` required while that recipe is in force. `phase5-notes.md` §6fd,
-gotchas 597-598. **Owed: the operator's eye on a broadsword kill with no `CZ_SHADER_SPV`
-in the environment** (`PLAIN=1 tools/play_session.sh`, or the packaged artifact).
+gotchas 597-598.
+
+**00q IS CLOSED, OPERATOR-VERIFIED 2026-09-23** on `PLAIN=1 SAFE=1
+tools/play_session.sh` (no `CZ_SHADER_SPV`, the cache a player's install now builds):
+*"All good tried with broadsword and paddle-chainsaw."* Two weapon classes, so the claim
+is the dismemberment PATH rather than the reported instance. The part-57 doubled-slab
+watch above is retired with it — that watch was kept on operator builds, which were the
+one population that never had the defect. **What is left is a release**: the fix is on
+master and in no published artifact.
 
 ## 00r. PART 59: THE DISTANCE CLASS (gas sign) IS FIXED — small packed textures
 
