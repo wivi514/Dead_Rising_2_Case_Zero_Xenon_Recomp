@@ -22630,3 +22630,130 @@ session did not enter (gotcha 13). The second thing owed is the wider question
 gotcha 598 asks: **`play_session.sh` adds `CZ_VK_A2M_ANY_SURFACE=1` and
 `CZ_VK_A2M_MODE=1` too**, neither of which any player has ever had, and nobody has
 checked whether those are also verified answers sitting in an arm.
+
+## §6fe — Player report: THE EXPOSURE METER WAS POINT-SAMPLING A SCALED 1x1, so a
+## shadow under a bright sky read a quadrant and the auto-exposure blew the frame out
+
+Reported by the operator on 2026-09-23, against the lighting work v1.1.1 shipped:
+*"when the player is in shadow it's overexposed ... it's too bright even if he is in a
+shadow outside where the sun is."* They then played a session and pressed F9 five times —
+**two frames they called correct and three they called wrong** — which is what made this
+measurable in one sitting, because the two classes came from the same run, the same
+binary and the same minute.
+
+### 1. The controller was converged in every frame, good and bad
+
+`CZ_VK_EXPOSURE_TRACE` on the session, read at the five capture frames (the capture is
+named `capture_<frame>.ppm`, so the alignment is exact), against the live controller
+sampled out of the running process with `process_vm_readv` (`tools/guest_poke.py`'s
+`read:` twin; a `gdb` attach would have stalled the game the operator was aiming with):
+
+| capture | operator | exposure `pc(14).w` | the 1x1 the CPU read (`197CE000`) | `mDesiredLuminance` |
+|---|---|---|---|---|
+| 9528  | correct | 0.4266 | 0.1078 | 0.1154 |
+| 9797  | correct | 0.4135 | 0.1392 | 0.1154 |
+| 12086 | wrong   | 0.9229 | 0.1118 | 0.1154 |
+| 14486 | worst   | 1.2290 | **0.1157** | **0.1154** |
+| 16436 | wrong   | 0.5864 | 0.1118 | 0.1154 |
+
+**The loop hit its target to three decimals on the frame the operator called the worst
+one.** §6fc's decode says the steady state is `measured luminance == desired`, and that is
+exactly what every frame shows. Every diagnostic this port owns said the controller was
+healthy — which is gotcha 600: a feedback loop cannot report a wrong measurement, because
+it drives the world until the measurement reads right.
+
+### 2. The independent reconstruction, which is what ranked the frames
+
+The only test that can see past a converged loop is one that does not use the loop's own
+error signal. `LT-LumAvgInit360` (`ps_0a443678bf8fd691`) decodes the scene buffer with
+`y = x² <= 0.5 ? 1 - sqrt(1 - 2x²) : 8x² - 3` and dots it with the luma weights (§6fc §3),
+so that math run on the CPU over the scene buffer the pass actually read — `0684B000`,
+named by the frame's own draw census, not guessed — reconstructs what the meter *should*
+have said:
+
+| capture | true scene luminance (CPU) | what the meter said | error | exposure |
+|---|---|---|---|---|
+| 9797  correct | 0.1022 | 0.1392 | **+36%** | 0.413 |
+| 9528  correct | 0.0951 | 0.1078 | **+13%** | 0.427 |
+| 16436 wrong   | 0.1376 | 0.1118 | **−19%** | 0.586 |
+| 12086 wrong   | 0.2086 | 0.1118 | **−46%** | 0.923 |
+| 14486 worst   | 0.2659 | 0.1157 | **−56%** | 1.229 |
+
+Monotone in five points, and the ordering is the operator's own ordering. The picture is
+2.3x too bright in the worst frame because the meter reads 2.3x too low in it.
+
+### 3. Two explanations refuted before the right one, both by measurement
+
+**The 1.0 clamp — refuted.** Our EDRAM stand-in is R8G8B8A8_UNORM where the title's chain
+is 16_16_FLOAT with a 0..5 decode range, and §6fc §3 flagged the clamp as a stated
+limitation measured only in open daylight. It is the obvious suspect for a sun-and-shadow
+frame. The share of bytes at 255 across all nine chain stages of the worst frame peaks at
+**0.37%** — far too little to move an average by half. Not this.
+
+**The scaled reduce chain losing the average — refuted.** The chain's surfaces are
+resolution-scaled and its tail stages stop shrinking (the guest goes 10x5 -> 5x2 -> 2x1 ->
+1x1 while the host surface floors at 86 px wide), so a bilinear halving sampling a scaled
+source looked like a compounding undersample. Walking every stage over its VALID region
+(guest dims from the census times the scale, X by W/1280 and Y by H/720) says the chain is
+a near-perfect average all the way down:
+
+| stage (guest) | worst frame, valid-region mean |
+|---|---|
+| 640x360 | 0.2622 |
+| 320x180 | 0.2622 |
+| 160x90  | 0.2618 |
+| 80x45   | 0.2621 |
+| 40x22   | 0.2617 |
+| 20x11   | 0.2608 |
+| 10x5    | 0.2543 |
+| 5x2     | 0.2520 |
+| 2x1     | 0.2396 |
+| **1x1** | **0.2000** |
+
+**The chain arrived at 0.2000. The guest was handed 0.1157.** The defect is downstream of
+the chain entirely, in our own code, and the gap is where it lives.
+
+### 4. The defect: our write-back takes the corner texel of a scaled block
+
+`RetireOldestFrame`'s write-back (part 120) mapped a guest pixel to a host pixel and read
+that one texel:
+
+```cpp
+const uint32_t hx = std::min(g.hw - 1, x * g.hw / std::max(1u, g.w));
+const uint32_t hy = std::min(g.hh - 1, y * g.hh / std::max(1u, g.h));
+const uint8_t* p = px + (VkDeviceSize(hy) * g.hw + hx) * 4;
+```
+
+At internal scale 1 the footprint is 1x1 and this is exact — which is why it was correct
+for four parts, for every headless gate and for every `1280x720` measurement in §6fc. At
+the operator's **3440x1440** the scale is **2.6875 x 2.0**, so the title's **1x1** target
+is a **2x2 host block**, and its four texels are four independent reductions of the whole
+frame. `(29 + 0.5) / 255 = 0.1157` — the corner texel, and exactly the value the guest
+read. The other three were already in the staging buffer: the whole scaled window is
+copied at record time, so nothing was missing, only discarded.
+
+That also explains the SIGN: a point sample is not biased low, it is biased by whatever
+contrast survives to the last stage. Flat frames read high (+13%, +36%), sun-and-shadow
+frames read low (−19%, −46%, −56%).
+
+### 5. The positive control: the same binary at native resolution
+
+The mechanism predicts the defect vanishes at scale 1, where the footprint is one texel.
+Headless, DebugJump route, `CZ_VK_SNAP_DUMP` at a fixed frame:
+
+| internal resolution | written back | true scene (CPU) | error |
+|---|---|---|---|
+| **1280x720** | 0.0922 | 0.0893 | **+3.2%** |
+| 3440x1440 (the operator's captures) | 0.1157 | 0.2659 | **−56%** |
+
+### 6. The fix
+
+Average the host footprint the guest pixel covers, in the UNORM domain where the EDRAM
+stand-in holds the chain and where a box filter is the resolve's own semantic. An identity
+at scale 1 by construction, so the unscaled arm is provably unchanged.
+`CZ_VK_WB_POINT_SAMPLE=1` restores the corner texel as the same-binary control arm. The
+bucket-centre encode survives the average, so an all-zero footprint still leaves 0.5/255
+rather than the controller's `lum == 0 -> 1.0` "no data" sentinel (§6fc §4).
+
+Gotchas 599 (a scaled surface read by the GUEST owes a filter, because the resolution
+scale is a promise about sampling) and 600 (a converged loop is not a correct one).

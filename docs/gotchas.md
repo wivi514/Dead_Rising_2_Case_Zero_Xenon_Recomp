@@ -6778,3 +6778,36 @@ From phase C part 18 (the frame rate — and none of it was work):
     what it adds to the environment against `cz_defaults.env`, and treat every arm
     that has passed an operator verdict as owing a promotion commit. (player issue
     #10, and 595's sibling: the two implementations here were dev and ship)
+599. **A RESOLUTION-SCALED RENDER TARGET READ BACK BY THE CPU MUST BE *RESOLVED*, NOT
+    POINT-SAMPLED — and for a 1x1 target that mistake hands the consumer a quadrant
+    where it asked for the average.** Part 120 gave this port its exposure back by
+    writing the title's tiny luminance resolves into guest memory; it mapped each
+    guest pixel to a host pixel with `hx = x * hw / w` and read that one texel. At the
+    internal resolution scale of 1 that is exact, which is why it was right for four
+    parts and for every headless gate. At the operator's 3440x1440 the scale is
+    2.6875 x 2.0, so the title's **1x1** luminance target is a **2x2 host block whose
+    four texels are four independent reductions of the whole frame**, and the corner
+    one is not the frame's average — it is one quadrant's. Measured on the player's
+    own captures: the reduce chain arrived at **0.2000** and the write-back handed the
+    controller **0.1157**, so the auto-exposure held the scene **2.3x too bright**, and
+    the error changed SIGN with content (+13% and +36% on flat frames, −19%, −46% and
+    −56% on sun-and-shadow ones) because a point sample is wrong by however much
+    contrast survives to the last stage. **The rule: when a scaled surface is consumed
+    by the GUEST rather than by the screen, average the host footprint the guest pixel
+    covers.** The bytes are already in the staging copy, so it costs nothing. And the
+    general form, which is the part worth carrying to Case West: **a resolution scale
+    is a promise about SAMPLING, and every path that turns those samples back into one
+    guest value owes a filter — the picture path had one and this path did not.**
+    (player report 2026-09-23, phase5-notes §6fe)
+600. **A CONTROL LOOP CANNOT REPORT A WRONG MEASUREMENT — it reports CONVERGED, which
+    looks exactly like correct.** Every diagnostic said the exposure controller was
+    healthy: the loop reached its target luminance to three decimals on the very frame
+    the player called blown out (measured 0.1157 against a desired 0.1154). That is
+    not evidence the meter is right; a feedback loop drives the world until its
+    MEASUREMENT reads correct, so a meter reading 2.3x low produces a scene 2.3x too
+    bright *and* a perfect convergence trace. **Never gate a loop on its own error
+    signal.** The test that works is the one that leaves the loop out: reconstruct the
+    measured quantity independently — here, the title's own decode math run over the
+    scene buffer on the CPU — and compare. That single number ranked five captures in
+    exactly the order the operator ranked them by eye. (player report 2026-09-23,
+    sibling of 3 and 30)

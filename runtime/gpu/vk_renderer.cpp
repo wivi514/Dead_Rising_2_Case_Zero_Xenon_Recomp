@@ -15508,10 +15508,48 @@ int RetireOldestFrame()
             for (uint32_t y = 0; y < g.h; ++y)
                 for (uint32_t x = 0; x < g.w; ++x)
                 {
-                    // The host pixel a guest pixel maps to under the resolution scale.
-                    const uint32_t hx = std::min(g.hw - 1, x * g.hw / std::max(1u, g.w));
-                    const uint32_t hy = std::min(g.hh - 1, y * g.hh / std::max(1u, g.h));
-                    const uint8_t* p = px + (VkDeviceSize(hy) * g.hw + hx) * 4;
+                    // THE GUEST PIXEL'S WHOLE HOST FOOTPRINT, AVERAGED — not its corner
+                    // texel (player report, 2026-09-23: "in shadow it's overexposed").
+                    //
+                    // A guest pixel is `hw/w` by `hh/h` host pixels under the internal
+                    // resolution scale, and at 1280x720 that is exactly 1x1, which is why
+                    // the corner-texel version this replaces was correct for four parts and
+                    // wrong for everyone playing scaled. The surface this matters most for
+                    // is the 1x1 the exposure controller reads (§6fc): at 3440x1440 the
+                    // scale is 2.6875 x 2.0, so the title's "1x1" is a 2x2 host block whose
+                    // four texels are four independent reductions of the frame, and taking
+                    // one of them hands the controller a quadrant where it asked for the
+                    // average. Measured on the operator's own captures: the chain reduced
+                    // the frame to 0.2000 and we wrote 0.1157, so the loop held the scene
+                    // 2.3x too bright and every diagnostic still read "converged", because
+                    // a controller cannot tell a wrong measurement from a dark room.
+                    //
+                    // The bytes were always there — the whole scaled window is copied into
+                    // `wb` at record time — so this reads what was already paid for. It is
+                    // an identity at scale 1 by construction, which is what makes the
+                    // unscaled arm provably unchanged; `CZ_VK_WB_POINT_SAMPLE=1` is the
+                    // same-binary control arm that restores the corner texel.
+                    static const bool pointSample = EnvOn("CZ_VK_WB_POINT_SAMPLE");
+                    const uint32_t x0 = std::min(g.hw - 1, x * g.hw / std::max(1u, g.w));
+                    const uint32_t y0 = std::min(g.hh - 1, y * g.hh / std::max(1u, g.h));
+                    uint32_t x1 = std::min(g.hw, (x + 1) * g.hw / std::max(1u, g.w));
+                    uint32_t y1 = std::min(g.hh, (y + 1) * g.hh / std::max(1u, g.h));
+                    if (pointSample || x1 <= x0) x1 = x0 + 1;
+                    if (pointSample || y1 <= y0) y1 = y0 + 1;
+                    // Averaged in the UNORM domain, which is where the EDRAM stand-in holds
+                    // the chain and where a box filter is the resolve's own semantic.
+                    float acc[4] = { 0, 0, 0, 0 };
+                    for (uint32_t hy = y0; hy < y1; ++hy)
+                        for (uint32_t hx = x0; hx < x1; ++hx)
+                        {
+                            const uint8_t* s = px + (VkDeviceSize(hy) * g.hw + hx) * 4;
+                            for (int c = 0; c < 4; ++c) acc[c] += float(s[c]);
+                        }
+                    const float n = float((x1 - x0) * (y1 - y0));
+                    const float avg[4] = { acc[0] / n, acc[1] / n, acc[2] / n, acc[3] / n };
+                    const uint8_t p[4] = {
+                        uint8_t(std::lround(avg[0])), uint8_t(std::lround(avg[1])),
+                        uint8_t(std::lround(avg[2])), uint8_t(std::lround(avg[3])) };
                     // Tiny surfaces only: pixel (0,0) is at offset 0 of a tiled surface
                     // as well as of a linear one, and the CPU consumer reads only that.
                     // The rest of the window is laid out LINEARLY at the surface pitch,
@@ -15520,7 +15558,10 @@ int RetireOldestFrame()
                     const uint32_t idx = y * g.pitch + x;
                     if (g.destFmt == 30)
                     {
-                        const float v = p[0] == 255 ? 1.0f : (float(p[0]) + 0.5f) / 255.0f;
+                        // The bucket-centre encode of the original stands, and survives the
+                        // average: an all-zero footprint still leaves 0.5/255 rather than
+                        // the controller's `lum == 0 -> 1.0` "no data" sentinel.
+                        const float v = avg[0] >= 255.0f ? 1.0f : (avg[0] + 0.5f) / 255.0f;
                         const uint16_t hv = halfOf(v);
                         uint8_t* dst = g_guestBase + PhysToVa(g.dest) + idx * 2;
                         if (g.endian == 1)
