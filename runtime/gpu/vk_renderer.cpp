@@ -15438,6 +15438,36 @@ void PresentSwapchain()
 // (DoResolve is handed it; the retire is not).
 static uint8_t* g_guestBase = nullptr;
 
+// CZ_VK_LUM_SCALE=<f> / CZ_VK_LUM_SCALE_FILE=<path> — the exposure dial of §6fe §7.
+// The file form is re-read twice a second at most, so an operator can turn it while the
+// game runs and say when the picture is right; a picture verdict is a judgement about a
+// place, and relaunching per value compares two different places (gotcha 133).
+float LumScaleNow()
+{
+    static const float fixed = []() {
+        const char* v = Env("CZ_VK_LUM_SCALE");
+        return v ? float(atof(v)) : 1.0f;
+    }();
+    static const char* const path = Env("CZ_VK_LUM_SCALE_FILE");
+    if (!path)
+        return fixed;
+    // Its own call counter rather than a frame number: this runs once per written-back
+    // surface, so a counter here measures exactly the thing being throttled.
+    static float live = fixed;
+    static uint32_t calls = 0;
+    if ((calls++ % 120) == 0)
+    {
+        if (FILE* f = fopen(path, "r"))
+        {
+            float x = 0.0f;
+            if (fscanf(f, "%f", &x) == 1 && x > 0.0f && x < 64.0f)
+                live = x;
+            fclose(f);
+        }
+    }
+    return live;
+}
+
 int RetireOldestFrame()
 {
     // Slots are used strictly in ring order, so when the frame just submitted is `s` the
@@ -15561,7 +15591,25 @@ int RetireOldestFrame()
                         // The bucket-centre encode of the original stands, and survives the
                         // average: an all-zero footprint still leaves 0.5/255 rather than
                         // the controller's `lum == 0 -> 1.0` "no data" sentinel.
-                        const float v = avg[0] >= 255.0f ? 1.0f : (avg[0] + 0.5f) / 255.0f;
+                        float v = avg[0] >= 255.0f ? 1.0f : (avg[0] + 0.5f) / 255.0f;
+                        // CZ_VK_LUM_SCALE / CZ_VK_LUM_SCALE_FILE — A DIAGNOSTIC DIAL, NOT A
+                        // FIX. It multiplies the luminance handed to the title's exposure
+                        // controller, which drives the exposure the other way (report more
+                        // light, the loop stops asking for more), so an operator can settle
+                        // by eye whether a scene the player calls blown out is over-exposed
+                        // at all — the one question a converged loop cannot answer about
+                        // itself (gotcha 600).
+                        //
+                        // The FILE form exists because the alternative is a relaunch per
+                        // value, and a picture verdict taken minutes apart in different
+                        // places is not an A/B (gotcha 133: one frame of an animated scene
+                        // is one sample). Re-read at most once every 30 frames, so the cost
+                        // is a `stat` twice a second and nothing on the draw path. If the
+                        // dial has to be far from 1.0 to make the picture right, the defect
+                        // is NOT in this write-back and this knob must not be shipped as
+                        // one: it would be a fudge factor standing in for whatever makes
+                        // our scene darker than hardware's before exposure is applied.
+                        v *= LumScaleNow();
                         const uint16_t hv = halfOf(v);
                         uint8_t* dst = g_guestBase + PhysToVa(g.dest) + idx * 2;
                         if (g.endian == 1)
