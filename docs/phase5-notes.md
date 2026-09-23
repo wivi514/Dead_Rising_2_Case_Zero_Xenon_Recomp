@@ -22821,3 +22821,42 @@ It returns hardware's own 1x1 for a comparable view and decides in one run betwe
 "hardware measures ~0.118 here, so its scene really does carry that highlight energy and
 ours does not" and "hardware measures ~0.05 too, and the disc's target is met some other
 way". Capture request Round O.
+
+### 8. The constant is REFUTED by the operator's own regression test (2026-09-23)
+
+The dial survived far more than expected — better across the daylight scenarios the
+operator roamed, and good at midnight in the garage, where the night scene measures mean
+0.0112 with **0% of pixels above 1.0**, so the dial is a pure exposure shift there with no
+highlight interaction at all. That killed the first argument against it (§7 predicted a
+global 2x would crush the night; measured, at midnight it did not — retracted).
+
+So the test was made a real regression instead of an argument: `tools/guest_poke.py`
+pinning the hour (`82A578D0` f32, `82A57CAA` u8:1) to **19:00** — the exact hour part
+120's night was verified at — in the **safehouse**, the exact room, with the scale at the
+operator's preferred 3.0.
+
+**The engaged-arm control first** (gotcha 151), because at 19:00 the exposure sits on
+`mExposureMinimum` and a railed loop can make a dial inert: 0.2168 at scale 1.0 against
+0.1000 at 3.0. Engaged.
+
+**The result, against part 120's own recorded numbers for that room:**
+
+| | presented mean luma |
+|---|---|
+| part 120, before the resolve write-back (operator REJECTED as black) | 5.8 |
+| part 120, after (operator: *"Yeah this is it"*) | **32.1** |
+| **scale 3.0, this session** | **10.8** (median 4) |
+
+**A scale of 3.0 gives back two thirds of the night fix.** The operator preferred 3.0
+everywhere they looked outdoors and in daylight, and the one place that has a recorded
+prior verdict says it is a regression — which is exactly why the prior verdict was worth
+having. No single constant satisfies both: daylight wants ~3.0, the verified 19:00
+safehouse wants ~1.0.
+
+**So the constant is not the fix, and now that is measured rather than argued.** The
+incompatibility is itself the evidence for what §7 suspected: what our scene is missing
+is HIGHLIGHT energy, which is present in daylight and absent at night, so no
+scene-independent scale can correct both. `CZ_VK_LUM_SCALE` stays a diagnostic.
+
+**Still owed, unchanged and now the only lead:** the Xenia `readback_resolve = "fast"`
+oracle of §6fc §5.
