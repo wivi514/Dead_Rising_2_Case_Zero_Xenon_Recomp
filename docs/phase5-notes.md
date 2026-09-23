@@ -22757,3 +22757,67 @@ rather than the controller's `lum == 0 -> 1.0` "no data" sentinel (§6fc §4).
 
 Gotchas 599 (a scaled surface read by the GUEST owes a filter, because the resolution
 scale is a promise about sampling) and 600 (a converged loop is not a correct one).
+
+### 7. The dial test, operator-driven — and what it refuted (2026-09-23)
+
+With the write-back fixed the operator still reported blown highlights, in four captures
+they described precisely: *"First is blown out outside. the two after are blown out
+exterior. and the last one is blown-out light in interior."* Mid-tones right, top end
+clipped — which is a curve complaint, not a level one.
+
+Every input was then verified and each one came back clean, so none of them is the
+defect:
+
+* **the meter** — the write-back now agrees with an independent CPU reconstruction of
+  what the chain measured to ±10-26%, with no consistent sign (it was −56% one-way);
+* **the loop** — settled, not adapting: 400 frames either side of each capture are flat;
+* **the target** — `prologue.csv` extracted from `data/datafile.big` and read directly.
+  Hours 8..14 give `mExposureMinimum` 0.2/0.35/0.45/0.5/0.4/0.4/0.4,
+  `mExposureMaximum` 1.5/1.5/1.4/1.5/1.3/1.5/1.5, `mDesiredLuminance`
+  0.09/0.095/0.12/0.1/0.1/0.1/0.09. The live block read 0.41 / 1.42 / 0.109 — the right
+  fields, correctly interpolated;
+* **the luma weights' channel order** — the census prints the pass's constant as
+  (0.0721, 0.2125, 0.7154, 0.5), which is Rec.709 but NOT in R,G,B order, so every
+  assignment of the three weights to the three channels was run against the value the
+  chain actually produced on four frames. No permutation fits (best 15.4% mean error,
+  no clear winner). REFUTED — the residual is the title's own coarse chain against an
+  exact average, not a swizzle.
+
+**The experiment that settled the direction.** `CZ_VK_LUM_SCALE_FILE` turned live, the
+operator standing still in the pawnshop back room facing the open door — the worst case,
+pinned at the exposure ceiling:
+
+| dial | exposure | operator |
+|---|---|---|
+| 1.0 | 1.437 | doorway and both windows hazed out |
+| 1.3 | 1.071 | |
+| 1.6 | 0.876 | |
+| **2.0** | **0.700** | *"Think this one is good"* |
+
+At that exposure the street reads through both windows and the doorway and the room is
+*better* — warmer, more depth in the wood — not gloomier. **So "our scene is too dark
+through the mid-tones, and the exposure is compensating" is REFUTED.** The picture at
+E = 0.70 is right; it is the METER that disagrees with it.
+
+**The number that remains.** At the operator-approved exposure the scene's true average
+luminance is **0.0517** and the chain measured 0.065, against a `mDesiredLuminance` of
+**0.1176** — so a correctly-exposed frame here measures about HALF what the engine was
+designed around. The chain is not wrong about our scene; our scene has half the
+luminance the title expects, and the decode is the clue: it ranges to **5.0**, so bright
+pixels dominate the average, and this frame has **0.05% of pixels above 1.0** with a max
+of 2.57.
+
+**Why a constant is not the fix, stated before anyone is tempted.** Part 120's night is
+operator-verified at dial 1.0 (*"Yeah this is it"*, 2026-09-16 02:50). A night scene has
+almost nothing above 1.0, so a global 2x passes straight through the meter and would
+make that verified night too dark. No single scale can be right in both places — which
+is itself evidence that what is missing is scene-dependent HIGHLIGHT energy rather than
+a factor dropped somewhere in the chain.
+
+**Owed, and it is the same oracle §6fc §5 asked for and nobody has run:** Xenia canary
+with `readback_resolve = "fast"` (it ships `"none"`, which is exactly why Xenia has
+always agreed with our old behaviour rather than with a console), standing in this room.
+It returns hardware's own 1x1 for a comparable view and decides in one run between
+"hardware measures ~0.118 here, so its scene really does carry that highlight energy and
+ours does not" and "hardware measures ~0.05 too, and the disc's target is met some other
+way". Capture request Round O.
