@@ -23003,6 +23003,14 @@ element that looks STRETCHED rather than fixed, and no counter here could have
 distinguished "covered the screen" from "covered the screen by distorting the art" —
 only the byte-identical centre band and a human could, and both agree.
 
+The IN-GAME FADES were the one case no measurement here reached — the frontend
+captures are all the runtime could reproduce unattended, and the area-transition fade
+rides the same quad by construction rather than by observation. The operator checked
+them in the same session: *"Area transition was good from the few i did"* (2026-09-24).
+Recorded as what it is — **a few transitions, not a sweep** — so a later session
+treating it as a closed census knows better (gotcha 3). If a flank ever flashes bright
+during a transition, that is this class and `CZ_VK_NO_WIDE_FILL=1` is the bisection.
+
 ### 7. For Case West
 
 Same engine, same studio, same UI sprite path, so the overscan margin and the fill
