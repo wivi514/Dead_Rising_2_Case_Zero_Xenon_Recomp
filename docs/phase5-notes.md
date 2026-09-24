@@ -22883,3 +22883,112 @@ to "highlights blow out" by giving the controller its input back. The Xenia
 `readback_resolve = "fast"` oracle of §6fc §5 remains the one measurement that would
 say whether hardware really measures ~0.118 in that room, and it has still never been
 run.
+
+## §6ff — Player report (ultrawide): THE MENU SHOWED THROUGH THE SIDES OF EVERY LOGO
+## AND EVERY FADE, because the title's full-screen fills carry a 20% overscan margin
+## and the wide patch divided it away
+
+Reported by the operator on 2026-09-24 after a capture session on their 3440x1440
+panel: *"issue with boot logo and loading in the main title where the side of the
+screen that are outside the 16:9 ratio you can see the main menu clearly behind."*
+Five F9 captures — Capcom, Blue Castle, Dolby, the DEAD RISING 2 title card, and the
+French *"Chargement en cours"* loading card — all showing the same thing.
+
+### 1. The measurement, before any theory
+
+Every one of the five captures has its black (or dimmed) region running from column
+**184 to 3255 inclusive — exactly 3072 px of 3440, symmetric, full height**, with the
+frontend's Still Creek street rendered at full brightness in the 184 px strip down
+each side. The loading card is the same geometry with the fill at partial alpha: the
+centre is dimmed, the flanks are not.
+
+3072 is not a number about 3440. On a W x H surface the patched UI is aspect-correct,
+so the covered width is `H * 16/9 * margin` and depends only on the HEIGHT:
+`1440 * 16/9 * 1.2 = 3072` exactly. That arithmetic named the margin — 1.2 — before
+anything was read out of the guest, and predicted that the defect appears at any
+aspect wider than `16/9 * 1.2 = 2.1333:1` and at no aspect below it.
+
+### 2. Where the 1.2 lives
+
+`vp=` is `(640,640,-360,360,1,0)` on every draw of every one of these frames: the
+guest never asks for anything but its own 1280x720. The widening is entirely ours, and
+for UI it is the RAW-form half of the part-60 wide patch — `PatchWideProjection` divides
+the x scale of a recognized 16:9 perspective by `k = 9W/16H`, which is what centres
+the HUD and the frontend art at 16:9 on a wider surface (`instruments.md`,
+`CZ_VK_WIDE`: *"the frontend's own UI comes out CENTERED for free"*). That is right for
+anything with proportions and wrong for anything meant to COVER.
+
+A temporary probe over the VS constant windows of raw-form draws found exactly two
+classes, and the second is the whole defect:
+
+```
+c8=(1   0 0 0)        c9=(0 1   0 0)      the ordinary sprite — identity, rect in the vertex stream
+c8=(1.2 0 0 -1.06667) c9=(0 1.5 0 -0.75)  the FULL-SCREEN FILL          (and a 1.7 variant)
+```
+
+`-1.06667 = -1.2 * 8/9` and `-0.75 = -1.5/2`: the UI shader's sprite space runs
+`x in [0, 16/9]`, `y in [0, 1]`, so both rows are a **centred scale-up**. Unpatched the
+fill reaches +-1.2 in NDC horizontally and +-1.5 vertically — the 360-era overscan
+margin, and NDC +-1 is the surface edge whatever the surface's aspect. Divided by
+k = 1.34375 the horizontal becomes +-0.893, and 0.893 * 3440 = **3072**. The
+prediction and the pixels agree to the column.
+
+### 3. What is in the class, censused rather than assumed
+
+`m=` was added to the draw census (c8/c9, xscale/xoff and yscale/yoff) so the two
+classes can be told apart without a probe. Over **134 censused frames** of the boot,
+all four logos, the title card and the attract loop, and again over **107 frames of
+gameplay up to 8,966 draws**, every single draw carrying the fill transform samples
+**one** texture: `0364B000`, 16x16 — a flat colour. Nothing in the class has
+proportions to lose, and the logo art is a separate, smaller draw (the Dolby wordmark
+is a 512x256 quad at `m=1/0,1/0`) that must keep its centring and does.
+
+### 4. The fix
+
+`CoverQuadWindow` recognizes the class geometrically — scale-up on both axes, axis
+aligned, and centred (`c8.w == -c8.x*8/9`, `c9.w == -c9.y/2`) — and
+`PatchWideProjection` then returns form **3** for it and leaves the projection alone.
+Unpatched, the fill covers +-1.2 NDC, so it covers 21:9, 32:9 and narrow mode alike
+with the title's own margin intact. It is not a new scale factor; it is the absence of
+ours.
+
+Two details that were not free:
+
+* **The patch memo's key had to grow a `cover` bit.** Every UI window in this title
+  shares one c0..c3, so a key of c0..c3 alone would have served the first class seen to
+  the other and a fill would have silently got the sprite's patched projection back.
+* **The recognizer sits on a 158-million-call path** (VS patches in one seven-minute
+  gameplay run, ~15,800 a frame). It is ordered for the early-out: register 8's x is
+  the only word read in the common case, and the ordinary sprite has 1.0 there. It is
+  also never called at 16:9 at all, because `wideNow` is 0 there.
+
+### 5. What it measured
+
+Same binary, `CZ_VK_NO_WIDE_FILL=1` the control, 3440x1440, frame dumps every 64th:
+
+| | control | fix |
+|---|---|---|
+| frames with a dark centre and bright flanks | **33 of 301** | **0 of 302** |
+| the 3072 px the fill already covered | — | **100.0000% byte-identical**, maxdiff 0 |
+| the flanks, on the Capcom frame | mean **72.54** | mean **0.00**, max pixel 0 |
+| engagement counter | absent | **5,866** fill draws |
+
+The centre band being byte-identical is the load-bearing row: the logo is the same
+size in the same place with the same pixels, and only the region the fill never reached
+changed.
+
+Other aspects, same binary, same arms:
+
+* **16:10 (1280x800, narrow mode): 0 defect frames in BOTH arms.** The fill's vertical
+  margin is 1.5, so narrow mode down to ~1.185:1 was always covered; the change is a
+  no-op there by measurement as well as by arithmetic.
+* **16:9 (2560x1440): the arm pair is indistinguishable from the null.** Two boots of
+  the SAME arm agree on 60 of 286 frames and disagree on 226; the arm pair agrees on 57
+  and disagrees on 233. The difference is boot nondeterminism, and the code path is
+  unreachable at 16:9 anyway (`AspectPatchMode()` is 0, so `PatchWideProjection` is not
+  called).
+
+Gates: `tools/part47_gates.sh` **ALL GATES CLEAN** — smoke, every switch-shaped `bctr`
+lowered, shader dimensions agreeing, both PM4 oracles (24.5 M packets, 28,726 indirect
+buffers), `no translated shader` 0, and the E3 picture gate at **+0.8530** with 4 of 5
+frames agreeing on layout (part 117 closed at +0.8411).

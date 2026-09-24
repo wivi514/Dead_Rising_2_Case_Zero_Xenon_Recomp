@@ -2489,6 +2489,26 @@ CZ_SHADER_SPV_RT=<dir>  where the route (b) VARIANT cache lives. Default is the
                    census's population — no more, none missing. A cache built
                    without the hook loads with `0 variant module(s)` and the
                    panel's RT rungs disappear rather than doing nothing
+CZ_VK_NO_WIDE_FILL=1  **the control arm for the full-screen FILL exemption** (part 121).
+                   The wide patch divides a raw-form (UI) projection's x scale by k,
+                   which centres the HUD and the frontend art at 16:9 on a wider
+                   surface — and did the same to the title's full-screen FILLS, which
+                   carry a 20% overscan margin (+-1.2 NDC) and so covered only
+                   `H*16/9*1.2` px: **3072 of 3440 at the operator's panel, measured to
+                   the column**, with the main menu visible in the 184 px strip down
+                   each side of every intro logo, every fade and the loading card. The
+                   default now leaves a recognized cover quad's projection alone, so
+                   its own margin covers any aspect. This restores the old behaviour.
+                   **Try it FIRST if a full-screen UI element looks STRETCHED on a wide
+                   screen** — that is the failure shape a wrong recognition would have.
+                   Engagement evidence: the counter
+                   `draw: full-screen FILL left at its own scale (part 121)`, which must
+                   be absent under this arm and in the thousands without it. A 16:9
+                   player never reaches the code at all. The class is recognized
+                   geometrically (`CoverQuadWindow`: a centred scale-up on both axes)
+                   and the draw census prints each draw's `m=xscale/xoff,yscale/yoff`
+                   so a census says which class a draw is. `phase5-notes.md` §6ff,
+                   gotchas 601-605
 CZ_VK_WIDE=1|0     **the env arm for wide mode** (part 60 night item 3), winning
                    over the settings file's `aspect=` value. BOOT-LATCHED — the mode
                    reshapes every render-pipeline surface, so it applies at launch

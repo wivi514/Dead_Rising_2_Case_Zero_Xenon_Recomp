@@ -6811,3 +6811,54 @@ From phase C part 18 (the frame rate — and none of it was work):
     scene buffer on the CPU — and compare. That single number ranked five captures in
     exactly the order the operator ranked them by eye. (player report 2026-09-23,
     sibling of 3 and 30)
+
+601. **A UI ELEMENT MEANT TO COVER THE SCREEN AND ONE MEANT TO SIT ON IT NEED OPPOSITE
+    TREATMENTS, and an aspect patch that cannot tell them apart will get one of them
+    wrong.** The wide patch divides a raw-form UI projection's x scale by k, which
+    keeps the HUD and the frontend art aspect-correct and centred — exactly right for
+    anything with proportions. The same patch shrinks the title's FULL-SCREEN FILLS by
+    the same k, and those are the one class whose whole job is to reach the edge. The
+    result on a 21:9 panel: the main menu still rendered in a 184 px strip down each
+    side of every intro logo, every fade and the loading card, for as long as wide mode
+    has existed. **Before shipping an aspect transform, enumerate what it is applied to
+    and ask which members are CONTENT and which are COVERAGE.** (Case Zero part 121,
+    `phase5-notes.md` §6ff)
+
+602. **A FULL-SCREEN QUAD FROM A 360 TITLE IS OVERSIZED ON PURPOSE, and the size of
+    that margin is the exact aspect ratio at which your port starts leaking.** This
+    title draws its fills at +-1.2 in NDC — a 20% TV-overscan margin — so they cover
+    everything up to `16/9 * 1.2 = 2.1333:1` and nothing beyond it. 16:9 and 16:10
+    players could never see the defect; 21:9 (2.389:1) sees 3072 px of 3440 covered.
+    **The corollary is the fix**: leave such a quad's projection ALONE and its own
+    margin covers any aspect, because NDC +-1 is the surface edge whatever the surface
+    is. The repair for an over-shrunk cover quad is the ABSENCE of your transform, not
+    a new one. (Case Zero part 121)
+
+603. **WHEN A DEFECT'S EXTENT IS A ROUND NUMBER, SOLVE FOR WHAT PRODUCED IT BEFORE
+    READING ANY CODE.** The black band measured 3072 px of 3440, symmetric, on all five
+    of the operator's captures. Because the patched UI is aspect-correct, the covered
+    width is `H * 16/9 * margin` — a function of the HEIGHT only — so
+    `1440 * 16/9 * 1.2 = 3072` named the margin as 1.2 and predicted the defect's
+    threshold aspect, all before a single constant was dumped. The guest's own
+    transform then read `c8=(1.2, ...)` literally. **An exact arithmetic hit on a
+    measured extent is worth more than a day of reading, and it tells you what to go
+    looking for.** (Case Zero part 121)
+
+604. **PROVE A SURGICAL FIX BY WHAT IT DID *NOT* CHANGE.** The convincing row of the
+    part-121 A/B is not "0 defect frames instead of 33" — it is that the 3072 px the
+    fill already covered are **100.0000% byte-identical between the arms, maxdiff 0**,
+    while the flanks went from mean 72.54 to exactly 0. A defect count can be moved by
+    a change that also wrecks something else; an identical region is the statement that
+    nothing else moved. Pair every "the symptom is gone" number with an "and this is
+    untouched" number over the region the change was not supposed to reach.
+    (Case Zero part 121)
+
+605. **A CLASSIFIER YOU ADD TO A HOT PATH SHOULD BE ORDERED FOR THE CASE THAT IS NOT
+    IT.** `CoverQuadWindow` decides whether a constant window is a full-screen fill, and
+    it sits on the VS patch path — **158 million calls in one seven-minute gameplay
+    run, ~15,800 a frame**. The first draft read all eight floats of c8/c9 up front,
+    which touched a second cache line on every one of those calls to answer "no". Load
+    the ONE word that retires the common case first (the ordinary sprite has 1.0 where
+    a fill has 1.2) and read the rest only past that gate. The same reasoning put the
+    whole test behind `wideNow`, so a 16:9 player never pays it at all.
+    (Case Zero part 121)

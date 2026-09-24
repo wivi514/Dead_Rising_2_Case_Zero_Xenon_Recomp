@@ -2101,6 +2101,67 @@ inline float WideFovFactor()
 }
 
 
+// THE ENGINE'S FULL-SCREEN "COVER" QUAD, recognized in the UI sprite's own model
+// transform at c8/c9 (part 121).
+//
+// WHAT WENT WRONG WITHOUT IT. The wide patch divides a raw-form (UI) projection's x
+// scale by k, which is what centres the HUD and the frontend art at 16:9 on a wider
+// surface — correct for anything with proportions. But the engine draws its
+// FULL-SCREEN FILLS through that same projection: the intro-logo backdrop, the
+// loading card's dim, every fade to black. Those are quads the title deliberately
+// oversizes to +-1.2 in NDC — a 20% margin for 360-era TV overscan — and dividing
+// that by k leaves them covering 1.2/k of the surface. At 3440x1440 (k = 1.34375)
+// that is 3072 px of 3440, measured exactly, so an ultrawide player saw the MAIN MENU
+// still rendered in the 184 px strip down each side of every logo and every fade.
+// A 16:9 player never could: 1.2 >= k there, so the margin always covered the screen.
+//
+// THE SHAPE, measured over 134 censused frames (the boot, all four logos, the title
+// card and the attract loop): the fills are the only windows whose model transform
+// SCALES UP (c8.x = 1.2, c9.y = 1.5 or 1.7) and the only ones CENTRED about the
+// origin — the sprite's vertex x runs 0..16/9 and y 0..1, so centred means
+// c8.w = -c8.x*(8/9) and c9.w = -c9.y/2, which both variants satisfy exactly. Every
+// other window in the frontend is either the identity (the ordinary sprite, whose
+// rect lives in its vertex stream) or a scale BELOW 1. All 50 fill draws in that
+// census sample one 16x16 texture, i.e. a flat colour — so the class is a fill and
+// nothing in it has proportions to lose.
+//
+// The treatment is to leave the fill's projection ALONE: unpatched it covers +-1.2 in
+// NDC, and NDC +-1 is the surface edge whatever the surface's aspect, so the original
+// 20% margin covers 21:9, 32:9 and narrow mode alike. `w` is a full VS constant
+// window (registers 0..9 at least), not the 16-dword c0..c3 block.
+inline bool CoverQuadWindow(const uint32_t* w)
+{
+    // ORDERED FOR THE EARLY-OUT, because this runs on the VS patch path — 158 M times
+    // in a seven-minute gameplay run, ~15,800 a frame. Register 8's x is the only word
+    // read in the common case: the ordinary sprite has 1.0 there and every world
+    // matrix that lands here is a composite the caller will reject anyway, so one
+    // load and one compare retires all but a handful of draws. Reading all eight
+    // floats up front cost a second cache line on every one of those calls.
+    float x;
+    memcpy(&x, w + 8 * 4, 4);
+    if (!(x > 1.0f))                              // must SCALE UP in x
+        return false;
+    float c8[4], c9[4];
+    memcpy(c8, w + 8 * 4, sizeof c8);
+    memcpy(c9, w + 9 * 4, sizeof c9);
+    if (!(c9[1] > 1.0f))                          // ...and in y
+        return false;
+    if (c8[1] != 0.0f || c9[0] != 0.0f)           // axis-aligned only
+        return false;
+    // Centred about the origin in the sprite space the UI shader uses (x 0..16/9,
+    // y 0..1). A fill that is NOT centred is some other element and keeps the patch.
+    return std::fabs(c8[3] + c8[0] * (8.0f / 9.0f)) < 1e-3f &&
+           std::fabs(c9[3] + c9[1] * 0.5f) < 1e-3f;
+}
+// The same-binary control arm: CZ_VK_NO_WIDE_FILL=1 restores the pre-part-121
+// behaviour, where a full-screen fill was shrunk with everything else. It is the
+// first thing to try if a full-screen UI element looks STRETCHED on a wide screen.
+inline bool NoWideFill()
+{
+    static const bool o = EnvOn("CZ_VK_NO_WIDE_FILL");
+    return o;
+}
+
 // THE 16:9 SCENE PROJECTION, recognized structurally in a VS constant window's c0..c3.
 // The shape is the one part 58's pose work measured (tools/pose_read.py,
 // clip_plane_space.py): row 3 exactly (0,0,1,0) — w_clip = z_view, a perspective —
@@ -2220,12 +2281,16 @@ inline int SceneXformForm(const uint32_t* c, float& bEff)
 // a constant-VERTICAL crop, again inside their own 16:9 frustum. Proportions are
 // aspect-correct either way: on a W x H surface with a 16:9 projection the picture is
 // stretched vertically by 1/k, and scaling x by 1/k or y by k both undo it.
-inline int PatchWideProjection(uint32_t* c)
+inline int PatchWideProjection(uint32_t* c, bool cover = false)
 {
     float bEff;
     const int form = SceneXformForm(c, bEff);
     if (form == 0)
         return 0;
+    // A recognized RAW form that is the engine's full-screen cover quad keeps its
+    // own projection — see CoverQuadWindow. Form 3 so the counter can say so.
+    if (cover && form == 1)
+        return 3;
     const float k = WideFovFactor();
     const bool narrow = k < 1.0f;
     if (form == 1)
@@ -17830,7 +17895,10 @@ struct PatchMemoEntry
 {
     uint32_t key[16];
     float fov = 0.0f;
-    uint8_t wide = 0, valid = 0;
+    // `cover` is part of the KEY, not a payload: every UI window in this title shares
+    // one c0..c3, so without it the first class seen would be served to the other and
+    // a fill would silently get the sprite's patched projection back (part 121).
+    uint8_t wide = 0, cover = 0, valid = 0;
     uint32_t out[16];
     int8_t fovForm = 0, wideForm = 0;
 };
@@ -18490,7 +18558,11 @@ void VerticalWasteCensus(const uint32_t* vsWindow, const ShaderMeta& vs,
     memcpy(scratch, vsWindow, sizeof scratch);
     PatchFovProjection(scratch, FovHalfRadThisFrame());
     if (AspectPatchActive())
-        PatchWideProjection(scratch);
+        // The cover-quad exemption too (part 121), or this stops being "exactly as the
+        // upload path builds it" the moment a raw-form fill reaches here. `vsWindow` is
+        // the whole window, so the recognizer can read c8/c9; the box math below is for
+        // composite world streams, which the exemption never touches.
+        PatchWideProjection(scratch, !NoWideFill() && CoverQuadWindow(vsWindow));
     float m[16];
     memcpy(m, scratch, sizeof m);
 
@@ -23954,12 +24026,18 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
             bool memoServed = false;
             const float fovNow = FovHalfRadThisFrame();
             const uint8_t wideNow = AspectPatchMode();   // 0 / 1 wide / 2 narrow
+            // Is this window the engine's full-screen cover quad? Read from the REGISTER
+            // FILE, which is ordinary cached memory — the arena copy is write-combined
+            // and reading it is what part 75 removed from this path.
+            const uint8_t coverNow =
+                (wideNow && !NoWideFill() && CoverQuadWindow(vsSrc)) ? 1 : 0;
             if (!patchInPlace && !NoPatchMemo())
             {
                 for (int way = 0; way < 4; ++way)
                 {
                     PatchMemoEntry& e = g_patchMemoWays[way];
                     if (!e.valid || e.fov != fovNow || e.wide != wideNow ||
+                        e.cover != coverNow ||
                         memcmp(e.key, patchAt, sizeof e.key) != 0)
                         continue;
                     if (PatchMemoVerify())
@@ -23971,7 +24049,7 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
                         memcpy(chk, patchAt, sizeof chk);
                         PatchFovProjection(chk, fovNow);
                         if (wideNow)
-                            PatchWideProjection(chk);
+                            PatchWideProjection(chk, coverNow);
                         memcpy(want, e.out, sizeof want);
                         if (PatchMemoVerifyPoison())
                             want[0] ^= 0x40000000u;
@@ -24007,7 +24085,7 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
                     memcpy(preKey, patchAt, sizeof preKey);
                 fovForm = PatchFovProjection(patchAt, fovNow);
                 if (wideNow)
-                    wideForm = PatchWideProjection(patchAt);
+                    wideForm = PatchWideProjection(patchAt, coverNow);
                 if (store)
                 {
                     for (int j = 3; j > 0; --j)
@@ -24017,6 +24095,7 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
                     memcpy(e.out, patchAt, sizeof e.out);
                     e.fov = fovNow;
                     e.wide = wideNow;
+                    e.cover = coverNow;
                     e.valid = 1;
                     e.fovForm = int8_t(fovForm);
                     e.wideForm = int8_t(wideForm);
@@ -24053,7 +24132,11 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
                     else
                         COUNT("draw: COMPOSITE viewproj widened to 21:9");
                     break;
+                case 3:
+                    COUNT("draw: full-screen FILL left at its own scale (part 121)");
+                    break;
             }
+
             if (!patchInPlace)
             {
                 // CZ_VK_VERIFY_PATCH_SRC=1 — the arm that makes the shortcut believable.
@@ -24077,7 +24160,7 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
                     memcpy(want, dst, sizeof want);   // the arena's own c0..c3
                     PatchFovProjection(want, FovHalfRadThisFrame());
                     if (AspectPatchActive())
-                        PatchWideProjection(want);
+                        PatchWideProjection(want, coverNow);
                     if (g_patchSrcVerifyPoison)
                         want[0] ^= 0x40000000u;
                     ++g_patchSrcChecked;
@@ -24131,7 +24214,8 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
             // memo defect.
             PatchFovProjection(scratch.data(), FovHalfRadThisFrame());
             if (AspectPatchActive())
-                PatchWideProjection(scratch.data());
+                PatchWideProjection(scratch.data(),
+                                    !NoWideFill() && CoverQuadWindow(scratch.data()));
             if (g_constMemoVerifyPoison)
             {
                 // POISON A REGISTER THE COMPARE ACTUALLY LOOKS AT. Under the gather the
@@ -24523,6 +24607,15 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
                        "draw %llu verts=%u prim=%u vs=%016llx ps=%016llx mask=%X "
                        "blend=%08X po=%u/%g/%g su=%08X dc=%08X sr=%08X cl=%08X ucp=%g/%g/%g/%g"
                        " xf=%d bEff=%.4f n0=%.4f n1=%.4f n3=%.4f"
+                       // THE UI SPRITE'S OWN MODEL TRANSFORM, c8/c9 of the VS constant
+                       // file — xscale/xoff, yscale/yoff (part 121). This is what
+                       // separates a full-screen FILL (the intro-logo backdrop, a fade,
+                       // the loading dim: 1.2/-1.06667 with y 1.5 or 1.7) from an
+                       // ordinary sprite (1/0, its rect in the vertex stream), and the
+                       // wide patch now treats the two differently — so a census that
+                       // could not show which class a draw is could not explain a
+                       // widescreen complaint about it. See CoverQuadWindow.
+                       " m=%g/%g,%g/%g"
                        // THE TILE (player issue #3): the window offset and scissor say
                        // which half of the screen this draw is a replay for, so two
                        // copies of one draw can be read side by side when only one of
@@ -24582,6 +24675,10 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
                        F32(regs[xenos::kPaClUcp0X]), F32(regs[xenos::kPaClUcp0X + 1]),
                        F32(regs[xenos::kPaClUcp0X + 2]), F32(regs[xenos::kPaClUcp0X + 3]),
                        xfForm, xfB, xfN0, xfN1, xfN3,
+                       F32(regs[xenos::kAluConstantBase + 8 * 4 + 0]),
+                       F32(regs[xenos::kAluConstantBase + 8 * 4 + 3]),
+                       F32(regs[xenos::kAluConstantBase + 9 * 4 + 1]),
+                       F32(regs[xenos::kAluConstantBase + 9 * 4 + 3]),
                        regs[xenos::kPaScWindowOffset], regs[xenos::kPaScWindowScissorTl],
                        regs[xenos::kPaScWindowScissorBr], regs[xenos::kRbColorControl],
                        F32(regs[xenos::kRbAlphaRef]),
