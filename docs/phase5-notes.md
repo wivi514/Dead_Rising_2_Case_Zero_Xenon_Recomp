@@ -22860,3 +22860,26 @@ scene-independent scale can correct both. `CZ_VK_LUM_SCALE` stays a diagnostic.
 
 **Still owed, unchanged and now the only lead:** the Xenia `readback_resolve = "fast"`
 oracle of §6fc §5.
+
+### 9. What shipped, and what is still open (2026-09-23/24)
+
+**Operator-verified the same night:** the EXPOSURE row in the in-game Visuals panel
+(1.0..5.0 in steps of 0.5, default 2.5, live, persisted as `exposure_x10`) and the
+debug menu's TIME OF DAY submenu (lock / 08:00 / 12:00 / 19:00 / HOUR ±1). The second
+exists because every exposure question this part asked needed the clock held, and the
+only way to do that was a `guest_poke.py` incantation carrying a pid and a host base.
+
+**The slider is a control over a trade, not a fix**, and §8 is why: no constant
+satisfies both daylight and the verified 19:00 night. It ships because the defect is
+visible to players now and the real cause is not yet understood — and because a player
+who dislikes the default can move it, which is not true of a constant compiled in.
+
+**Still open, and it is the whole remaining defect:** our scene carries about half the
+luminance the engine expects for a correct-looking picture, concentrated in the
+highlights (at the operator-approved exposure: true scene 0.0517 against a
+`mDesiredLuminance` of 0.1176, with 0.05% of pixels above 1.0 and a max of 2.57). That
+is almost certainly older than part 120 — part 120 moved it from "everything too dark"
+to "highlights blow out" by giving the controller its input back. The Xenia
+`readback_resolve = "fast"` oracle of §6fc §5 remains the one measurement that would
+say whether hardware really measures ~0.118 in that room, and it has still never been
+run.
