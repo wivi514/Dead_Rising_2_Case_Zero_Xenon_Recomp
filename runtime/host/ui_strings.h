@@ -64,6 +64,7 @@ enum class UiStr
     FrameCap,
     FieldOfView,
     MouseSens,
+    Exposure,
     FooterApplyResolution,
     FooterMsaaNextLaunch,
     FooterRtOff,

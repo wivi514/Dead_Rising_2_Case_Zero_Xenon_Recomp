@@ -44,6 +44,13 @@ struct State
     int rtShadows = 0;          // 0 = none (default), 1/2/3 = RT LOW/MED/HIGH.
                                 // Non-zero REPLACES the raster cascade (part 64,
                                 // operator's spec).
+    int exposureX10 = 25;       // EXPOSURE, in tenths: 10..50 step 5, default 2.5
+                                // (operator's spec, 2026-09-23). Scales the luminance
+                                // reported to the title's auto-exposure controller, so
+                                // a LARGER value settles the picture DARKER. No single
+                                // value is right everywhere — see settings.h and
+                                // phase5-notes §6fe §8 for why this is a player choice
+                                // and not a constant.
     int mouseSens = 5;          // 1..10, the panel's MOUSE SENS row. The mouse
                                 // CAMERA itself is always on now (settings.h).
     int language = 1;           // Xbox console-language ID (1=en 2=ja 4=fr 5=es
@@ -98,12 +105,14 @@ void SaveLocked()
             "fov=%d\n"             // field-of-view adjustment in degrees, -10..+30, 0 = OG
             "aspect=%d\n"          // 0 = 16:9, 1 = 21:9 (applies at next launch)
             "rt_shadows=%d\n"     // 0 = OG, 1 = RT LOW (needs a ray-query device)
+            "exposure_x10=%d\n"   // EXPOSURE in tenths: 10..50 step 5, 25 = 2.5
             "mouse_sens=%d\n"     // 1..10
             "language=%d\n"       // Xbox ID: 1=en 2=ja 4=fr 5=es 6=it 7=ko
             "skip_intro_logos=%d\n", // 1 = jump straight to the title screen
             int(g_state.displayMode), g_state.resW, g_state.resH, g_state.renderScale,
             g_state.vsync ? 1 : 0, g_state.shadowTier, g_state.msaa, g_state.fpsCap,
-            g_state.fov, g_state.aspect, g_state.rtShadows, g_state.mouseSens,
+            g_state.fov, g_state.aspect, g_state.rtShadows, g_state.exposureX10,
+            g_state.mouseSens,
             g_state.language, g_state.skipIntroLogos ? 1 : 0);
     fclose(f);
 }
@@ -206,6 +215,17 @@ void Settings_Load(const std::string& path)
             else
                 fprintf(stderr, "[settings] fps_cap=%ld is not one of "
                                 "0/30/60/90/120/240/480 — using OFF\n", v);
+        }
+        else if (!strcmp(key, "exposure_x10"))
+        {
+            // Clamped AND snapped to the 0.5 step, loudly: a hand-edited 3.3 is a
+            // value the panel could never show and could never step away from, which
+            // is the dead-row problem one level down.
+            if (v >= 10 && v <= 50)
+                g_state.exposureX10 = int(v - (v % 5));
+            else
+                fprintf(stderr, "[settings] exposure_x10=%ld is outside 10..50 — "
+                                "keeping %d\n", v, g_state.exposureX10);
         }
         else if (!strcmp(key, "fov"))
         {
@@ -549,4 +569,23 @@ int Settings_OverlaySelection()
 void Settings_SetOverlaySelection(int row)
 {
     g_overlaySelection.store(row, std::memory_order_release);
+}
+
+int Settings_ExposureX10()
+{
+    std::lock_guard<std::mutex> lock(g_mutex);
+    return g_state.exposureX10;
+}
+
+void Settings_SetExposureX10(int tenths)
+{
+    if (tenths < 10)
+        tenths = 10;
+    if (tenths > 50)
+        tenths = 50;
+    std::lock_guard<std::mutex> lock(g_mutex);
+    g_state.exposureX10 = tenths - (tenths % 5);
+    SaveLocked();
+    // Applied LIVE: the write-back reads it once per written-back surface
+    // (LumScaleNow, vk_renderer.cpp), the same shape as the shadow tier and FOV.
 }

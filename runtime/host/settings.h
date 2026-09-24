@@ -58,6 +58,20 @@ int           Settings_Fov();           // FIELD OF VIEW (part 61): degrees of
                                         // ADJUSTMENT from the game's own camera,
                                         // -10..+30 in steps of 1; 0 = OG, the
                                         // default and the bit-identical control
+// EXPOSURE (2026-09-23, operator's spec: default 2.5, 1.0..5.0 in steps of 0.5).
+// Stored in TENTHS so the whole store stays integer key=value text.
+//
+// It scales the luminance handed to the title's own auto-exposure controller, which
+// drives the exposure the other way: a LARGER value reports more light and settles the
+// picture DARKER. It exists because no single value is right everywhere — the operator
+// preferred ~3.0 in daylight while the 19:00 safehouse that was verified in part 120
+// wants ~1.0, and that incompatibility is measured, not assumed (phase5-notes §6fe §8).
+// Until the underlying defect is found — our scene carries about half the luminance the
+// engine expects, concentrated in the highlights — this is the player's control over
+// the trade. Applies LIVE; CZ_VK_LUM_SCALE and CZ_VK_LUM_SCALE_FILE win over it.
+int           Settings_ExposureX10();       // 10..50, step 5; 25 = the 2.5 default
+void          Settings_SetExposureX10(int); // clamped and snapped to the step
+
 int           Settings_RtShadows();     // RT tier (part 64): 0 = none (the raster
                                         // cascade), 1/2/3 = RT LOW/MEDIUM/HIGH.
                                         // Env CZ_VK_RT_SHADOWS wins over this.

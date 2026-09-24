@@ -15438,34 +15438,48 @@ void PresentSwapchain()
 // (DoResolve is handed it; the retire is not).
 static uint8_t* g_guestBase = nullptr;
 
-// CZ_VK_LUM_SCALE=<f> / CZ_VK_LUM_SCALE_FILE=<path> — the exposure dial of §6fe §7.
-// The file form is re-read twice a second at most, so an operator can turn it while the
-// game runs and say when the picture is right; a picture verdict is a judgement about a
-// place, and relaunching per value compares two different places (gotcha 133).
+// The EXPOSURE scale in force right now — the panel's row, with the two dev arms
+// winning over it (settings.h's standing rule: an env var must beat the settings file,
+// or an A/B can be silently overridden by a menu).
+//
+// The value multiplies the luminance handed to the title's own exposure controller, so
+// a LARGER number reports more light and settles the picture DARKER. Default 2.5.
+//
+//   CZ_VK_LUM_SCALE=<f>        pin it for a run (measurement arm)
+//   CZ_VK_LUM_SCALE_FILE=<p>   re-read from a file while the game runs — the diagnostic
+//                              that found this, kept because a picture verdict is a
+//                              judgement about a PLACE and relaunching per value
+//                              compares two different places (gotcha 133)
+//
+// The file is re-read at most every 120 write-backs: a `stat` twice a second, nothing
+// on the draw path.
 float LumScaleNow()
 {
-    static const float fixed = []() {
-        const char* v = Env("CZ_VK_LUM_SCALE");
-        return v ? float(atof(v)) : 1.0f;
-    }();
+    static const char* const envFixed = Env("CZ_VK_LUM_SCALE");
+    static const float fixed = envFixed ? float(atof(envFixed)) : 0.0f;
     static const char* const path = Env("CZ_VK_LUM_SCALE_FILE");
-    if (!path)
-        return fixed;
-    // Its own call counter rather than a frame number: this runs once per written-back
-    // surface, so a counter here measures exactly the thing being throttled.
-    static float live = fixed;
-    static uint32_t calls = 0;
-    if ((calls++ % 120) == 0)
+    if (path)
     {
-        if (FILE* f = fopen(path, "r"))
+        // Its own call counter rather than a frame number: this runs once per
+        // written-back surface, so a counter here measures exactly what is throttled.
+        static float live = fixed > 0.0f ? fixed : 2.5f;
+        static uint32_t calls = 0;
+        if ((calls++ % 120) == 0)
         {
-            float x = 0.0f;
-            if (fscanf(f, "%f", &x) == 1 && x > 0.0f && x < 64.0f)
-                live = x;
-            fclose(f);
+            if (FILE* f = fopen(path, "r"))
+            {
+                float x = 0.0f;
+                if (fscanf(f, "%f", &x) == 1 && x > 0.0f && x < 64.0f)
+                    live = x;
+                fclose(f);
+            }
         }
+        return live;
     }
-    return live;
+    if (envFixed)
+        return fixed;
+    // The player's row. Read every time rather than cached, so the panel applies LIVE.
+    return float(Settings_ExposureX10()) * 0.1f;
 }
 
 int RetireOldestFrame()

@@ -876,12 +876,33 @@ void PcOptions_Pump(PPCContext& ctx, uint8_t* base, uint32_t buttons)
                     fprintf(stderr, "[pcopt] mouse sensitivity %d — live\n", sv);
                     break;
                 }
+                case 8:
+                {
+                    // EXPOSURE (operator's spec, 2026-09-23): 1.0..5.0 in steps of
+                    // 0.5, clamped at the ends like every ordered ladder here
+                    // (gotcha 377). Stored in tenths, so one press is 5.
+                    //
+                    // A LARGER value reports MORE light to the title's own exposure
+                    // controller, which settles the picture DARKER. It is a player
+                    // choice rather than a constant because no single value is right
+                    // everywhere and that is measured: the operator preferred ~3.0 in
+                    // daylight, while the 19:00 safehouse verified in part 120 reads
+                    // mean luma 32.1 at 1.0 and 10.8 at 3.0 (phase5-notes §6fe §8).
+                    // The real defect is upstream — our scene carries about half the
+                    // luminance the engine expects, in the highlights — and when that
+                    // is found this row should be re-examined, not kept for ever.
+                    const int tenths = Settings_ExposureX10() + dir * 5;
+                    Settings_SetExposureX10(tenths);   // clamps and snaps
+                    fprintf(stderr, "[pcopt] exposure %.1f — live\n",
+                            double(Settings_ExposureX10()) * 0.1);
+                    break;
+                }
             }
         };
         int sel = Settings_OverlaySelection();
         if (pressed & (kUp | kDown))
         {
-            sel = (sel + ((pressed & kDown) ? 1 : 7)) % 8;   // eight rows since part 108 (MSAA)
+            sel = (sel + ((pressed & kDown) ? 1 : 8)) % 9;   // nine rows since the EXPOSURE row
             Settings_SetOverlaySelection(sel);
         }
         else if (pressed & (kLeft | kRight))

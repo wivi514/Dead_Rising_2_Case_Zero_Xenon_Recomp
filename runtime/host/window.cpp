@@ -794,7 +794,13 @@ void EmitSettingsOverlay(int w, int h, Rect&& rect)
     snprintf(msaaName, sizeof msaaName, "%s%s",
              msaaSet == 0 ? UiText(UiStr::Off) : msaaSet == 2 ? "2X" : "4X",
              msaaPending ? " *" : "");
-    const char* rows[8][2] = {
+    // EXPOSURE (operator's spec, 2026-09-23): 1.0..5.0 in steps of 0.5, shown as the
+    // number the player reasons about rather than the tenths the store keeps. A LARGER
+    // value settles the picture DARKER — it scales the luminance reported to the
+    // title's own auto-exposure controller. Applies LIVE.
+    char expName[8];
+    snprintf(expName, sizeof expName, "%.1f", double(Settings_ExposureX10()) * 0.1);
+    const char* rows[9][2] = {
         { UiText(UiStr::Resolution), resName },
         { UiText(UiStr::DisplayMode), kModeNames[int(Settings_DisplayMode()) % 3] },
         { UiText(UiStr::VSync), kOnOff[Settings_VSync() ? 1 : 0] },
@@ -803,9 +809,10 @@ void EmitSettingsOverlay(int w, int h, Rect&& rect)
         { UiText(UiStr::FrameCap), capName },
         { UiText(UiStr::FieldOfView), fovName },
         { UiText(UiStr::MouseSens), sensName },
+        { UiText(UiStr::Exposure), expName },
     };
     const int sel = Settings_OverlaySelection();
-    for (int i = 0; i < 8; ++i)
+    for (int i = 0; i < 9; ++i)
     {
         const int y = panelY + 86 + i * 40;
         if (i == sel)
