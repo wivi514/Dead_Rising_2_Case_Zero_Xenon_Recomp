@@ -193,6 +193,51 @@ constexpr uint32_t kRemoveAllZombies = 0xFFFFCFFC;
 constexpr uint32_t kProgressionMenu = 0xFFFFCFFB;
 constexpr uint32_t kPPAwardBase = 0xFFFFCFE0;
 constexpr uint32_t kToggleLevelCap = 0xFFFFCFDF;
+// TIME OF DAY (operator request). Ids sit in the free window under kToggleLevelCap and
+// above kCustomBoolBase's block; every other synthetic id in this file is accounted for
+// above, so a collision here would be silent and is worth the one-line check.
+constexpr uint32_t kTimeMenu      = 0xFFFFCFDE;
+constexpr uint32_t kTimeLock      = 0xFFFFCFDD;
+constexpr uint32_t kTimeSetBase   = 0xFFFFCFD8;   // +0 = 08:00, +1 = 12:00, +2 = 19:00
+constexpr uint32_t kTimeHourUp    = 0xFFFFCFD7;
+constexpr uint32_t kTimeHourDown  = 0xFFFFCFD6;
+
+// THE TWO GLOBALS THE LIGHTING ACTUALLY READS (part 120, phase5-notes §6fc §1).
+// `DISABLE TIME OF DAY` is the title's own debug bool — the same byte the
+// WORLD / RENDERING list carries, so the two rows can never disagree — and when it is
+// set the lighting interpolates the float below instead of the mission clock.
+constexpr uint32_t kTimeOfDayFlag = 0x82A57CAA;   // u8
+constexpr uint32_t kPinnedHour    = 0x82A578D0;   // f32, hours 0..24
+const float        kTimePresets[] = { 8.0f, 12.0f, 19.0f };
+
+// The pinned hour, as a float. It is only MEANINGFUL while the flag is set; an
+// out-of-range value means nothing has pinned it yet, and the stepper starts from noon
+// rather than from whatever happened to be in the slot.
+float DebugPinnedHour(uint8_t* base)
+{
+    const uint32_t bits = PPC_LOAD_U32(kPinnedHour);
+    float h = 0.0f;
+    memcpy(&h, &bits, 4);
+    return (h >= 0.0f && h < 24.0f) ? h : 12.0f;
+}
+
+void DebugSetPinnedHour(uint8_t* base, float h, const char* how)
+{
+    // Wrapped, not clamped: the hours are a CIRCLE, so stepping down from 00:00 must
+    // reach 23:00 rather than stopping — an ordered-ladder clamp (gotcha 377) is right
+    // for a range with ends and wrong for one without.
+    while (h < 0.0f)   h += 24.0f;
+    while (h >= 24.0f) h -= 24.0f;
+    uint32_t bits = 0;
+    memcpy(&bits, &h, 4);
+    PPC_STORE_U32(kPinnedHour, bits);
+    // ENGAGE THE LOCK TOO. Writing the hour with the flag clear is a silently dead
+    // action: the lighting keeps interpolating the mission clock and the menu looks
+    // broken. Setting a time MEANS holding it.
+    PPC_STORE_U8(kTimeOfDayFlag, 1);
+    fprintf(stderr, "[debug] time of day -> %02d:%02d (%s; lock engaged)\n",
+            int(h), int((h - float(int(h))) * 60.0f + 0.5f) % 60, how);
+}
 static int32_t g_currentMenu = -1;
 const char* const kAutoChuckStates[] = {
     "LOUNGER", "ITEM PICKER", "ZOMBIE KILLER", "EXPLORER",
@@ -291,6 +336,31 @@ static void PublishDebugMenuLabels(uint8_t* base)
             continue;
         }
         if (node == kAutoChuckMenu)
+        {
+            labels.push_back(std::move(label));
+            continue;
+        }
+        if (node == kTimeMenu)
+        {
+            labels.push_back(std::move(label));
+            continue;
+        }
+        if (node == kTimeLock)
+        {
+            // The row states BOTH halves: whether the clock is held, and at what —
+            // a lock row that says only ON leaves the player guessing which hour
+            // they locked, and the hour is the thing they came here to set.
+            const bool on = PPC_LOAD_U8(kTimeOfDayFlag) != 0;
+            const float h = DebugPinnedHour(base);
+            char buf[48];
+            snprintf(buf, sizeof buf, " : %s (%02d:%02d)", on ? "ON" : "OFF",
+                     int(h), int((h - float(int(h))) * 60.0f + 0.5f) % 60);
+            label += buf;
+            labels.push_back(std::move(label));
+            continue;
+        }
+        if ((node >= kTimeSetBase && node < kTimeSetBase + 3) ||
+            node == kTimeHourUp || node == kTimeHourDown)
         {
             labels.push_back(std::move(label));
             continue;
@@ -396,6 +466,33 @@ static void ShowAutoChuckMenu(uint8_t* base)
         g_debugMenuVisibleNodes.push_back(kAutoChuckBase + state);
         g_debugMenuBaseLabels.push_back(kAutoChuckStates[state]);
     }
+    PublishDebugMenuLabels(base);
+}
+
+// TIME OF DAY (operator request): hold the clock, jump to the three hours the lighting
+// work keeps returning to, and step an hour at a time.
+//
+// 08:00 / 12:00 / 19:00 are not arbitrary — they are the hours this port's lighting
+// evidence is written against: 8h and 12h are daylight keyframes in the disc's own
+// prologue.csv, and 19:00 is the hour part 120's night was operator-verified at, which
+// makes it the regression check for any exposure change (phase5-notes §6fe §8).
+static void ShowTimeMenu(uint8_t* base)
+{
+    g_currentMenu = -3;
+    g_debugMenuVisibleNodes.clear();
+    g_debugMenuBaseLabels.clear();
+    g_debugMenuVisibleNodes.push_back(kTimeLock);
+    g_debugMenuBaseLabels.push_back("< LOCK TIME");
+    static const char* const kPresetLabels[] = { "SET 08:00", "SET 12:00", "SET 19:00" };
+    for (uint32_t i = 0; i < 3; ++i)
+    {
+        g_debugMenuVisibleNodes.push_back(kTimeSetBase + i);
+        g_debugMenuBaseLabels.push_back(kPresetLabels[i]);
+    }
+    g_debugMenuVisibleNodes.push_back(kTimeHourUp);
+    g_debugMenuBaseLabels.push_back("HOUR +1");
+    g_debugMenuVisibleNodes.push_back(kTimeHourDown);
+    g_debugMenuBaseLabels.push_back("HOUR -1");
     PublishDebugMenuLabels(base);
 }
 
@@ -1789,6 +1886,50 @@ void DebugTunables_PumpDebugMenu(PPCContext& ctx, uint8_t* base)
             ShowAutoChuckMenu(base);
         return;
     }
+    if (node == kTimeMenu)
+    {
+        if (action == 1 || action == 2)
+            ShowTimeMenu(base);
+        return;
+    }
+    if (node == kTimeLock)
+    {
+        // Toggled by USE and by either EDIT direction, like every other bool row here.
+        if (action != 1 && action != 2 && action != -1)
+            return;
+        const uint8_t next = PPC_LOAD_U8(kTimeOfDayFlag) ? 0 : 1;
+        PPC_STORE_U8(kTimeOfDayFlag, next);
+        // Engaging the lock with nothing pinned would hold the lighting at whatever
+        // junk the slot carries, so the hour is normalised on the way in — the same
+        // value DebugPinnedHour() reports, which is what the row shows.
+        if (next)
+            DebugSetPinnedHour(base, DebugPinnedHour(base), "lock engaged");
+        else
+            fprintf(stderr, "[debug] time of day UNLOCKED — the mission clock runs "
+                            "the lighting again\n");
+        PublishDebugMenuLabels(base);
+        return;
+    }
+    if (node >= kTimeSetBase && node < kTimeSetBase + 3)
+    {
+        if (action != 1 && action != 2)
+            return;
+        DebugSetPinnedHour(base, kTimePresets[node - kTimeSetBase], "preset");
+        PublishDebugMenuLabels(base);
+        return;
+    }
+    if (node == kTimeHourUp || node == kTimeHourDown)
+    {
+        if (action != 1 && action != 2 && action != -1)
+            return;
+        // EDIT LEFT on either row steps the other way, so holding the menu's own
+        // left/right on "HOUR +1" behaves the way a stepper should rather than only
+        // ever counting up.
+        const float step = (node == kTimeHourUp ? 1.0f : -1.0f) * (action == -1 ? -1.0f : 1.0f);
+        DebugSetPinnedHour(base, DebugPinnedHour(base) + step, "step");
+        PublishDebugMenuLabels(base);
+        return;
+    }
     if (node == kAutoChuckOff)
     {
         if (action != 1)
@@ -2199,6 +2340,8 @@ PPC_FUNC(sub_824AAEB8)
     g_debugMenuRootLabels.push_back("AUTOCHUCK >");
     g_debugMenuRootNodes.push_back(kProgressionMenu);
     g_debugMenuRootLabels.push_back("PLAYER PROGRESSION >");
+    g_debugMenuRootNodes.push_back(kTimeMenu);
+    g_debugMenuRootLabels.push_back("TIME OF DAY >");
     for (uint32_t category = 0; category < std::size(kCustomCategoryNames); ++category)
     {
         g_debugMenuRootNodes.push_back(kCustomMenuBase + category);
