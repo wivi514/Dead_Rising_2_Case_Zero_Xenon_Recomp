@@ -22992,3 +22992,22 @@ Gates: `tools/part47_gates.sh` **ALL GATES CLEAN** — smoke, every switch-shape
 lowered, shader dimensions agreeing, both PM4 oracles (24.5 M packets, 28,726 indirect
 buffers), `no translated shader` 0, and the E3 picture gate at **+0.8530** with 4 of 5
 frames agreeing on layout (part 117 closed at +0.8411).
+
+### 6. Operator-verified
+
+Relaunched on their own 3440x1440 panel with `CZ_SKIP_INTRO=0` so the logos play, and
+their verdict on the four logos, the title card and the loading card was **"This is
+perfect"** (2026-09-24). That closes the report. The eye test mattered beyond the
+numbers for one reason: the failure shape of a WRONG recognition is a full-screen
+element that looks STRETCHED rather than fixed, and no counter here could have
+distinguished "covered the screen" from "covered the screen by distorting the art" —
+only the byte-identical centre band and a human could, and both agree.
+
+### 7. For Case West
+
+Same engine, same studio, same UI sprite path, so the overscan margin and the fill
+transform will be there too. Two things carry: publish `CoverQuadWindow`'s rule with
+any wide mode rather than discovering it from a player report, and remember that the
+class is invisible to a 16:9 test matrix — the defect's threshold is
+`16/9 * margin = 2.1333:1`, so every gate this project runs at 1280x720 or 2560x1440
+passes with it fully present.

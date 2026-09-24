@@ -256,6 +256,31 @@ mask; trust the microcode's own swizzles.
     OWED: their eye on the DAY garage, then the v1.1.1 rebuild (all four legs) that
     was on hold for this.** `CZ_VK_GAMMA_RAMP_FIRST=1`
     is still the Xenia-picture arm (§3 of the plan). §6fb.1, gotcha 588.
+    **AND PART 121 (2026-09-24) FIXED THE ULTRAWIDE FRONTEND, OPERATOR-VERIFIED BY EYE
+    ("This is perfect").** Their report: on 3440x1440 the main menu was visible down
+    both sides of every intro logo and of the loading card. Measured, the black ran
+    columns 184..3255 — **exactly 3072 px of 3440** on all five captures — and 3072 is
+    a fact about the HEIGHT, not the width: the patched UI is aspect-correct, so the
+    covered width is `H*16/9*margin` and `1440*16/9*1.2 = 3072` named the margin before
+    anything was read out of the guest. **The title draws its FULL-SCREEN FILLS at
+    +-1.2 NDC — 360-era TV overscan — and the wide patch divided that margin by
+    k = 1.34375 along with everything else.** A 16:9 player could never see it
+    (1.2 >= k); anything wider than `16/9*1.2 = 2.1333:1` leaks, so this had been there
+    for every ultrawide player since wide mode existed. The fill class is stated by the
+    guest (`c8=(1.2,0,0,-1.06667) c9=(0,1.5,0,-0.75)`, a centred scale-up, against
+    `(1,0),(1,0)` for every ordinary sprite) and `CoverQuadWindow` recognizes it
+    geometrically; `PatchWideProjection` then **leaves it alone**, which covers 21:9,
+    32:9 and narrow mode alike because NDC +-1 is the surface edge at any aspect. **The
+    repair is the ABSENCE of our transform, not a new one.** 33 of 301 defect frames ->
+    **0 of 302**, with the 3072 px the fill already covered **100.0000% byte-identical**
+    (maxdiff 0) and the flanks 72.54 -> 0.00; 16:10 clean in both arms; 16:9 the code
+    path is unreachable and the arm pair matches a two-boot null; frame time a null at
+    the 9,500-9,750 band (+0.03 ms against a 0.23-0.36 within-arm spread — and the wall
+    median CANNOT read it, gotcha 572); `part47_gates.sh` ALL GATES CLEAN, E3 +0.8530.
+    `CZ_VK_NO_WIDE_FILL=1` is the control arm and is the FIRST thing to try if a
+    full-screen UI element ever looks STRETCHED on a wide screen. `phase5-notes.md`
+    §6ff, gotchas 601-605, commit e9c51b6. **For Case West: same engine, same overscan
+    margin — check this before shipping any wide mode there.**
     The performance hand-off is still `part118-kickoff.md` — PART 118 (the late afternoon of 2026-09-12, unattended, a
     16:00 deadline) GAVE EACH PIPELINE STAGE A PHYSICAL CORE OF ITS OWN: the PMU said the
     guest's Main Thread runs the same instructions at 17% more cycles with our renderer
