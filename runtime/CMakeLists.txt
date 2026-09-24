@@ -379,6 +379,7 @@ add_executable(cz_runtime
     kernel/coop_transport.cpp        # the connection-listener site Case Zero's release byte NULLs
     kernel/coop_outfit_default.cpp   # co-op part 6: a joiner with no save is dressed in the default outfit
     kernel/coop_outfit.cpp           # CZ_OUTFIT_TRACE=1: the clothing pipeline, step by step
+    kernel/coop_items.cpp            # CZ_ITEM_TRACE=1: player issue #9 — which bike part, out of whose hands
     kernel/coop_call.cpp             # the host's "wants to join your game" prompt (CZ_COOP_JOIN_PROMPT=0 the control)
     kernel/coop_friends.cpp          # the JoinGame screen's JOIN FRIENDS row: the LIVE search kept to friends' sessions
     kernel/xlive_overlay_glue.cpp    # the in-game overlay's seam; no-ops without CZ_XLIVE_OVERLAY
