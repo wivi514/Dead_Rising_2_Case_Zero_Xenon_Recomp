@@ -139,8 +139,9 @@ index and hash are both published.
 
 ## The cutscenes
 
-Case Zero ships 29 cinematic scripts; `cutsceneName` is one of these names, without the
-`.txt`. The story ones are in `700`–`716`:
+`cutsceneName` is a cinematic script's name without the `.txt`. They come from **two**
+archives, and the second one matters more than its size suggests — see the warning below.
+`data/cinematics/cinematics.big` holds 29, of which the story ones are `700`–`716`:
 
 ```
 700_prologue_intro                 709_leave_the_garage
@@ -158,10 +159,32 @@ Case Zero ships 29 cinematic scripts; `cutsceneName` is one of these names, with
 plus the survivor-death scenes (`601_`, `604_`, `604b_…_female`, `605_`, `605b_`, `609_`,
 `609b_`, `610_`, `610b_`) and `sd_male_a`.
 
-**Prefer `isCutsceneExclusive` over `isCutscene`.** The engine distinguishes *exclusive*
-cinematics — the ones that take the screen and the controller — from non-exclusive ones
-that play in the world while you keep playing. Only the first kind is a thing a run
-should have its timer paused for.
+`data/cinematics/permanent.big` holds nine more, and these are **not** cutscenes in any
+sense a runner means:
+
+```
+625_pawncam        door_fade_out    gnd_gpl_back_right    male_case_6_4_assemble
+pike_sequence_1..4                  workbench1
+```
+
+### Use `isCutsceneExclusive`, not `isCutscene` — this is measured, not advice
+
+The engine distinguishes *exclusive* cinematics, which take the screen and the controller,
+from non-exclusive ones that play in the world while you keep playing, and it is the second
+archive that makes the distinction load-bearing. **`workbench1` is the combo-weapon
+crafting animation.** It runs through the same cinematic manager, so `isCutscene` goes to 1
+every single time the player builds a weapon — which in a Case Zero run is constantly — and
+`isCutsceneExclusive` correctly stays 0. An operator session on 2026-09-25 caught it
+firing for 0.31 s mid-combat, alongside `625_pawncam` (the pawnshop camera, 6.0 s, also
+ambient):
+
+```
+  [   76.68s f  13746] CUTSCENE BEGIN  workbench1     ambient    len 10 (inline)  decode AGREE
+  [   76.99s f  13795] CUTSCENE END    workbench1
+```
+
+A load remover built on `isCutscene` would pause the timer on every craft. Build it on
+`isCutsceneExclusive`.
 
 ## `guestBase`, and reading anything else the game knows
 
@@ -240,11 +263,27 @@ Being event-driven rather than polled, it catches transitions a reader cannot: t
 `CZ_SPEEDRUN_TRACE=1` additionally echoes each line to the log as it happens, which is how
 the above was taken headlessly.
 
-**Owed:** the inline branch is confirmed; the heap branch — reachable only at
-`707_give_katey_zombrex_psycho_intro`, 35 bytes — has not been observed, and the fallback
-means a wrong decode there would still publish the right name and say so. **A playthrough
-that reaches that cutscene and then presses F9 closes it**: the line will read
-`len 35 (HEAP branch)  decode AGREE` or name the disagreement.
+### The operator session of 2026-09-25
+
+Twelve minutes of ordinary play, six F9 presses, **eleven cinematics and every one
+`decode AGREE`** — lengths 10 to 25, so all on the inline branch. Three things it
+established beyond the decode:
+
+* **A SKIPPED cutscene still produces a clean `CUTSCENE END`.** `704_making_a_list` ran
+  2.0 s and `705_intro_to_queen_wasps` 1.9 s against the ~14-34 s the unskipped ones took.
+  That matters: a remover that only sees BEGIN would hang its pause on every skip.
+* **No mid-game load happened at all.** The only `LOAD BEGIN`/`END` pair in the whole
+  session was the initial `FEToGame → Loading → InGame`, which corroborates the headless
+  finding that Case Zero streams its one map rather than loading between areas. A run's
+  loads are therefore: the boot, and starting/reloading a game.
+* **The F9 timing genuinely does not matter.** The operator deliberately missed one
+  cutscene and pressed late after another; every one of the six reports carried the
+  complete history up to its own moment regardless.
+
+**Owed:** the heap branch — reachable only at `707_give_katey_zombrex_psycho_intro`,
+35 bytes — was still not reached (the session's longest name was 25). The fallback means a
+wrong decode there would publish the right name anyway and say so, so this is a
+completeness gap and not a risk. The line to look for is `len 35 (HEAP branch)`.
 
 Also owed: a Windows run. The block is mapped with `VirtualAlloc` at the same address and
 nothing in it is platform-specific, but that is an argument, not a measurement.

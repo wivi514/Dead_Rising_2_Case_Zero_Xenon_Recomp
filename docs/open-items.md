@@ -24,7 +24,22 @@ Next, in order:
     cutscene transition goes into a 64-entry ring that the F9 bug report's `system.txt`
     carries, and each cutscene line states the name's length and which branch that selected
     (`len 35 (HEAP branch)`) plus the decode verdict. One playthrough past that cutscene,
-    then F9 once, anywhere in the session.** Everything else observed reads AGREE.
+    then F9 once, anywhere in the session.** Everything else observed reads AGREE —
+    **an operator session on 2026-09-25 played twelve minutes, pressed F9 six times and
+    produced ELEVEN cinematics, every one `decode AGREE`, lengths 10 to 25 and so all
+    inline.** That session also established three things the block is better for: a SKIPPED
+    cutscene still emits a clean `CUTSCENE END` (704 ran 2.0 s, 705 1.9 s, against 14-34 s
+    unskipped), no mid-game load occurred at all (the only pair was the initial
+    `FEToGame -> Loading -> InGame`, corroborating that Case Zero streams its one map), and
+    the F9 timing is genuinely irrelevant — the operator deliberately missed one cutscene
+    and pressed late after another, and all six reports carried the full history.
+    **AND IT CORRECTED THE DOC: cinematic names come from TWO archives.**
+    `data/cinematics/permanent.big` holds nine more beyond cinematics.big's 29, and
+    `workbench1` — the COMBO-WEAPON CRAFTING animation — runs through the same cinematic
+    manager, firing `isCutscene` for 0.31 s on every craft while `isCutsceneExclusive`
+    correctly stays 0. That makes "use the exclusive flag" a measured requirement rather
+    than advice: a remover built on `isCutscene` would pause the timer on every weapon
+    built. `625_pawncam` is the same shape (6.0 s, ambient).
     **A HEADLESS ROUTE TO IT WAS TRIED AND DOES NOT WORK — do not re-buy it.** The title
     ships a debug "play this cinematic" hook: `sub_824A8390` returns
     `kCineNames[*(u32*)0x82A58748]` when the byte at `0x82A5862E` is 1 (and clears it),
