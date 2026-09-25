@@ -2292,26 +2292,57 @@ inline void HudGapRebuild()
     // anchoring leaves an element exactly where the shipped renderer puts it today.
     static const float minGap = [] {
         const char* e = Env("CZ_VK_HUD_GAP_MIN");
-        return (e && *e) ? float(atof(e)) : 0.10f;
+        return (e && *e) ? float(atof(e)) : 0.06f;
     }();
+    // THE WIDEST EMPTY RUN ON EACH SIDE OF THE CENTRE, not the run that CONTAINS the
+    // centre. The first spelling required x = 0 itself to be empty, and this title draws
+    // a small centred marker at the top of the screen (16:9 x -0.105..+0.095, the
+    // compass arrow) — one 4-vertex quad which, sitting in the same bands as the
+    // health/PP/level widget, switched the anchor off for the whole of the top of the
+    // screen. Measured: the widget stayed at columns 797..992 against the 16:9
+    // reference's 357..552 even with the push tripled.
+    //
+    // The WIDEST run and not the nearest, because a widget has internal gaps — between
+    // the level disc and the PP bar, between a bar and its caption — and the nearest
+    // empty run would land inside the widget and split it. The gap that separates a
+    // side from the middle is much the largest one in its half; taking its MIDPOINT
+    // leaves margin on both sides of the decision.
     const int zero = HudGapBin(0.0f);
+    const int win = HudGapBin(0.75f) - zero;       // how far out to look for a middle
     for (int b = 0; b < HudGapMap::kBands; ++b)
     {
         uint8_t* o = g_hudGap.occ[b];
-        if (o[zero])
-        {
-            g_hudGap.ok[b] = false;            // something is drawn across the middle
-        }
-        else
-        {
-            int l = zero, r = zero;
-            while (l > 0 && !o[l - 1]) --l;
-            while (r < HudGapMap::kBins - 1 && !o[r + 1]) ++r;
-            const float xl = HudGapBinLo(l), xr = HudGapBinLo(r + 1);
-            g_hudGap.ok[b] = (xr - xl) >= minGap;
-            g_hudGap.lo[b] = xl;
-            g_hudGap.hi[b] = xr;
-        }
+        // Widest empty run in [-0.75, 0] and in [0, +0.75].
+        auto widest = [&](int from, int to, int step, float& mid) {
+            int best = 0, run = 0;
+            float bestMid = 0.0f;
+            for (int i = from; i != to; i += step)
+            {
+                if (!o[i])
+                {
+                    ++run;
+                    if (run > best)
+                    {
+                        best = run;
+                        const int a = i, c = i - step * (run - 1);
+                        bestMid = 0.5f * (HudGapBinLo(a) + HudGapBinLo(c)) +
+                                  0.5f * (HudGapBinLo(1) - HudGapBinLo(0));
+                    }
+                }
+                else
+                {
+                    run = 0;
+                }
+            }
+            mid = bestMid;
+            return float(best) * (HudGapBinLo(1) - HudGapBinLo(0));
+        };
+        float lmid = 0.0f, rmid = 0.0f;
+        const float lw = widest(zero, std::max(0, zero - win) - 1, -1, lmid);
+        const float rw = widest(zero, std::min(HudGapMap::kBins - 1, zero + win) + 1, 1, rmid);
+        g_hudGap.ok[b] = lw >= minGap && rw >= minGap;
+        g_hudGap.lo[b] = lmid;
+        g_hudGap.hi[b] = rmid;
         memset(o, 0, sizeof g_hudGap.occ[b]);
     }
 }
@@ -2365,13 +2396,22 @@ inline void ApplyHudAnchor(uint32_t* c, int side, float wclip)
 {
     if (!side)
         return;
+    // CZ_VK_HUD_ANCHOR_SCALE — the POSITIVE CONTROL. At 3 every anchored element moves
+    // three times as far, so one frame says which parts of the HUD this mechanism
+    // actually reaches. The first build of it reported 270,942 draws anchored while the
+    // top-left health widget had not moved a pixel, and a counter alone cannot tell
+    // those two states apart (gotcha 151).
+    static const float scale = [] {
+        const char* e = Env("CZ_VK_HUD_ANCHOR_SCALE");
+        return (e && *e) ? float(atof(e)) : 1.0f;
+    }();
     const float k = WideFovFactor();
     const bool narrow = k < 1.0f;
     const float push = narrow ? (1.0f - k) : (1.0f - 1.0f / k);
     const int at = narrow ? 7 : 3;          // row 1's w term / row 0's
     float t;
     memcpy(&t, c + at, 4);
-    t += float(side) * push * wclip;
+    t += float(side) * push * scale * wclip;
     memcpy(c + at, &t, 4);
 }
 
@@ -23394,7 +23434,7 @@ uint64_t g_noDoDrawSkipped = 0;
 // the plain wide patch, which is the pre-part-121b picture, and the counter says so.
 bool UiElementRect(const uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
                    const ShaderMeta& vs, const uint32_t* window, float& xlo, float& xhi,
-                   float& ylo, float& yhi, float& wclip, bool wholeBuffer)
+                   float& ylo, float& yhi, float& wclip, bool wholeBuffer, bool mark)
 {
     // 3, not 4: a triangle is a legal sprite. The upper bound is a refusal to walk an
     // unbounded index buffer on the draw path — nothing in this title's UI comes close,
@@ -23510,6 +23550,37 @@ bool UiElementRect(const uint8_t* base, const Pm4Draw& draw, const uint32_t* reg
     float lox = 1e30f, hix = -1e30f, loy = 1e30f, hiy = -1e30f;
     float wlo = 1e30f, whi = -1e30f;
     bool any = false;
+    // OCCUPANCY IS MARKED PER PRIMITIVE, NOT PER DRAW, and that distinction decides
+    // whether the anchor works at all. This title BATCHES HUD sprites into quad lists:
+    // one draw of 128 vertices is 32 independent quads scattered across the screen, and
+    // its bounding box is a HULL, not a filled region. Marking the hull as occupied
+    // closed the middle gap in 16 of 24 bands in every frame carrying the full HUD, so
+    // the health/PP/level widget sitting right beside it read "spans the middle" and was
+    // left where it was — 440 px in from the edge, which is the whole complaint.
+    //
+    // A LIST primitive is independent geometry and is marked per group; a strip, a fan
+    // or a single sprite is connected and keeps one box. The group size is the
+    // primitive's own, so this is a fact about the draw rather than a threshold.
+    uint32_t group = 0;
+    switch (draw.primType)
+    {
+        case xenos::kQuadList:      group = 4; break;
+        case xenos::kTriangleList:  group = 3; break;
+        case xenos::kRectangleList: group = 3; break;
+        default:                    group = 0; break;   // connected: one box
+    }
+    float glox = 1e30f, ghix = -1e30f, gloy = 1e30f, ghiy = -1e30f;
+    uint32_t gn = 0;
+    const bool narrowNow = NarrowMode();
+    auto flushGroup = [&] {
+        if (!gn || !(ghix >= glox))
+            return;
+        if (narrowNow)
+            HudGapMark(gloy, ghiy, glox, ghix);
+        else
+            HudGapMark(glox, ghix, gloy, ghiy);
+        glox = gloy = 1e30f; ghix = ghiy = -1e30f; gn = 0;
+    };
     for (uint32_t v = vmin; v <= vmax; ++v)
     {
         float o[3];
@@ -23541,7 +23612,16 @@ bool UiElementRect(const uint8_t* base, const Pm4Draw& draw, const uint32_t* reg
         any = true;
         lox = std::min(lox, nx); hix = std::max(hix, nx);
         loy = std::min(loy, ny); hiy = std::max(hiy, ny);
+        if (mark)
+        {
+            glox = std::min(glox, nx); ghix = std::max(ghix, nx);
+            gloy = std::min(gloy, ny); ghiy = std::max(ghiy, ny);
+            if (group && ++gn == group)
+                flushGroup();
+        }
     }
+    if (mark)
+        flushGroup();
     if (!any)
     {
         COUNT("  ui rect declined: no vertex survived the finite/near-plane checks");
@@ -23598,7 +23678,8 @@ int HudAnchorForDraw(const uint8_t* base, const Pm4Draw& draw, const uint32_t* r
         return 0;
     COUNT("draw: UI element considered for the HUD edge anchor (part 121b)");
     float xlo, xhi, ylo, yhi;
-    if (!UiElementRect(base, draw, regs, vs, window, xlo, xhi, ylo, yhi, wclip, false))
+    if (!UiElementRect(base, draw, regs, vs, window, xlo, xhi, ylo, yhi, wclip, false,
+                       true))
     {
         wclip = 0.0f;
         COUNT("draw: UI element rect unreadable — left where the wide patch put it");
@@ -23608,10 +23689,6 @@ int HudAnchorForDraw(const uint8_t* base, const Pm4Draw& draw, const uint32_t* r
     // in PatchWideProjection, so narrow mode hands the gap map a transposed rect and
     // everything below it is the same code.
     const bool narrow = NarrowMode();
-    if (narrow)
-        HudGapMark(ylo, yhi, xlo, xhi);
-    else
-        HudGapMark(xlo, xhi, ylo, yhi);
     const int side = narrow ? HudGapSide(ylo, yhi, xlo, xhi)
                             : HudGapSide(xlo, xhi, ylo, yhi);
     if (!side)
@@ -25133,18 +25210,18 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
     float uiBXlo = 0.0f, uiBXhi = 0.0f, uiBYlo = 0.0f, uiBYhi = 0.0f;
     if (drawCensus || burstCensus)
     {
-        const uint32_t* c0 = &regs[xenos::kAluConstantBase];
+        const uint32_t* c0 = &regs[xenos::kAluConstantBase + memoVsBase * 4];
         xfForm = SceneXformForm(c0, xfB);
         if (RawFormFast(c0) && Is169Perspective(c0) &&
             UiElementRect(base, draw, regs, vs, c0, uiXlo, uiXhi, uiYlo, uiYhi, uiW,
-                          false))
+                          false, false))
         {
             uiSide = NarrowMode() ? HudGapSide(uiYlo, uiYhi, uiXlo, uiXhi)
                                   : HudGapSide(uiXlo, uiXhi, uiYlo, uiYhi);
             uiWrel = g_uiRectWrel;
             float bw;
             if (!UiElementRect(base, draw, regs, vs, c0, uiBXlo, uiBXhi, uiBYlo, uiBYhi,
-                               bw, true))
+                               bw, true, false))
                 uiBXlo = uiBXhi = uiBYlo = uiBYhi = 0.0f;
         }
         float m[16];
@@ -25175,7 +25252,7 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
                        // wide patch now treats the two differently — so a census that
                        // could not show which class a draw is could not explain a
                        // widescreen complaint about it. See CoverQuadWindow.
-                       " m=%g/%g,%g/%g ui=%d,%g/%g,%g/%g,%g,%g uib=%g/%g,%g/%g"
+                       " m=%g/%g,%g/%g vb=%u ui=%d,%g/%g,%g/%g,%g,%g uib=%g/%g,%g/%g"
                        // THE TILE (player issue #3): the window offset and scissor say
                        // which half of the screen this draw is a replay for, so two
                        // copies of one draw can be read side by side when only one of
@@ -25239,7 +25316,7 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
                        F32(regs[xenos::kAluConstantBase + 8 * 4 + 3]),
                        F32(regs[xenos::kAluConstantBase + 9 * 4 + 1]),
                        F32(regs[xenos::kAluConstantBase + 9 * 4 + 3]),
-                       uiSide, uiXlo, uiXhi, uiYlo, uiYhi, uiW, uiWrel,
+                       memoVsBase, uiSide, uiXlo, uiXhi, uiYlo, uiYhi, uiW, uiWrel,
                        uiBXlo, uiBXhi, uiBYlo, uiBYhi,
                        regs[xenos::kPaScWindowOffset], regs[xenos::kPaScWindowScissorTl],
                        regs[xenos::kPaScWindowScissorBr], regs[xenos::kRbColorControl],
