@@ -4772,4 +4772,21 @@ frame    7979  state  7 InGame        loading=0 cutscene=0(excl=0)  loads=2 cine
 ```
 
 `LegalScreen` is absent because it lasts 7 ms and the reader polls at 30 Hz, which is a
-fact about the reader and not about the block.
+fact about the reader and not about the block — and it is why the **event ring** exists
+beside it. Every load and cutscene transition is kept (64 entries, enough for a whole run)
+and appended to the **F9 bug report's `system.txt`**, with no env var and no timing
+needed: one F9 anywhere in a session carries all of it, and the ring being event-driven it
+does catch that 7 ms state. `CZ_SPEEDRUN_TRACE=1` echoes each entry live, which is how
+this was taken headlessly:
+
+```
+[speedrun] [    8.61s f   2269] LOAD BEGIN  state Loading
+[speedrun] [    9.77s f   2542] LOAD END    state FrontEnd
+[speedrun] [    9.82s f   2553] CUTSCENE BEGIN  700_prologue_intro   EXCLUSIVE  len 18 (inline)  decode AGREE
+[speedrun] [   51.41s f   8375] CUTSCENE END    700_prologue_intro
+[speedrun] [   53.42s f   8862] LOAD END    state InGame
+```
+
+The `len` and branch label are in the line because the name's length is what selects the
+string class's branch — so the report says which branch each cutscene exercised without
+its reader needing to know the mechanism.

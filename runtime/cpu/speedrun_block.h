@@ -22,6 +22,7 @@
 #pragma once
 
 #include <cstdint>
+#include <string>
 
 // The address the block is mapped at. Chosen well clear of where either OS hands out
 // ordinary allocations, 64 KB-aligned (Windows' allocation granularity), and inside the
@@ -75,6 +76,14 @@ static_assert(sizeof(CzSpeedrunBlock) == 256, "the block's size is part of its c
 // address is unavailable the block is allocated anywhere, the address is logged and
 // written to cz_speedrun_block.txt, and the magic still makes a scan possible.
 void SpeedrunBlock_Init();
+
+// Every load and cutscene transition this session, oldest first, as text. Goes into the
+// F9 bug report's system.txt so one keypress at ANY moment captures the whole session's
+// history rather than whatever happened to be on screen — an operator asked to press F9
+// "at or near" each cutscene, and a record that does not depend on their timing is
+// strictly better than one that does. Includes the name-decode verdict per cutscene, so
+// a playthrough closes the check the headless routes could not reach (open-items 0zd).
+std::string SpeedrunBlock_EventLog();
 
 // One publish per presented frame, from the PM4 swap. Cheap: a handful of guest reads
 // and a 256-byte store. A no-op if Init did not run or the feature is switched off.

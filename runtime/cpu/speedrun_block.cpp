@@ -67,9 +67,13 @@
 #include <atomic>
 #include <chrono>
 #include <cstdio>
+#include <cstdarg>
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
+#include <mutex>
+#include <string>
+#include <vector>
 
 #if defined(_WIN32)
 #define NOMINMAX
@@ -117,6 +121,44 @@ uint32_t g_cineCount = 0;
 bool g_wasLoading = false;
 uint32_t g_lastCine = 0;
 bool g_decodeTrusted = true;
+uint32_t g_lastState = 0xFFFFFFFEu;   // a value no state index can take
+
+// THE EVENT RING. 64 entries is every load and cutscene of a Case Zero run with room to
+// spare (the game has 29 cinematic scripts and a handful of loads), so in practice this
+// never wraps and an F9 at the end of a session carries all of it. Written from the swap
+// thread, read from the bug-report worker — hence the mutex, which is touched only at a
+// transition and at an F9, never per frame.
+bool Tracing();   // defined below; the ring echoes through it
+
+std::mutex g_eventMutex;
+std::vector<std::string> g_events;
+const auto g_epoch = std::chrono::steady_clock::now();
+
+double ElapsedSeconds()
+{
+    return std::chrono::duration<double>(std::chrono::steady_clock::now() - g_epoch).count();
+}
+
+void AddEvent(uint64_t frame, const char* fmt, ...)
+{
+    char body[256];
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(body, sizeof(body), fmt, ap);
+    va_end(ap);
+    char line[320];
+    snprintf(line, sizeof(line), "[%8.2fs f%7llu] %s", ElapsedSeconds(),
+             (unsigned long long)frame, body);
+    // Echoed under the trace so a headless run can verify the ring without an F9, which
+    // needs a window and a keyboard. Without it the ring is silent and free.
+    if (Tracing())
+        fprintf(stderr, "[speedrun] %s\n", line);
+    std::lock_guard<std::mutex> lock(g_eventMutex);
+    if (g_events.size() < 64)
+        g_events.emplace_back(line);
+    else if (g_events.size() == 64)
+        g_events.emplace_back("[... the ring is full; later transitions are not recorded]");
+}
 
 // What sub_8247A828 was actually handed, for the decode's cross-check. Written on a
 // guest thread, read on the pump thread; a torn read would only mis-print a log line,
@@ -305,9 +347,23 @@ void SpeedrunBlock_Publish(uint8_t* base)
     const uint32_t cine = cineMgr ? Deref(base, cineMgr + kCineCurrent, kCineExclusive + 1) : 0;
 
     const bool loading = stateIndex == kStateLoading || stateIndex == kStateFEToGame;
-    if (loading && !g_wasLoading)
-        ++g_loadCount;
+    const char* stateName = stateIndex < kStateSlots ? kStateNames[stateIndex] : "?";
+    if (loading != g_wasLoading)
+    {
+        if (loading)
+            ++g_loadCount;
+        // Both directions, because a load remover is wrong in a way nobody notices if
+        // the flag only ever goes ON — and an end with no begin, or the reverse, is what
+        // a reader's own bug looks like too.
+        AddEvent(g_frame + 1, "LOAD %-5s  state %s", loading ? "BEGIN" : "END", stateName);
+    }
     g_wasLoading = loading;
+    if (stateIndex != g_lastState)
+    {
+        if (g_lastState != 0xFFFFFFFEu)
+            AddEvent(g_frame + 1, "state -> %s", stateName);
+        g_lastState = stateIndex;
+    }
 
     if (cine && cine != g_lastCine)
     {
@@ -340,6 +396,20 @@ void SpeedrunBlock_Publish(uint8_t* base)
         // either — the failing case is a string-length class, not this one cinematic.
         if (!agree && passed[0])
             g_decodeTrusted = false;
+
+        // The name's LENGTH is in the line on purpose: it is what selects the string
+        // class's branch (inline below 31, heap at or above), so a reader of the report
+        // can see which branch each cutscene exercised without knowing the mechanism.
+        AddEvent(g_frame + 1, "CUTSCENE BEGIN  %-36s %s  len %zu (%s)  decode %s",
+                 passed[0] ? passed : decoded,
+                 base[cine + kCineExclusive] ? "EXCLUSIVE" : "ambient  ",
+                 strlen(passed[0] ? passed : decoded),
+                 strlen(passed[0] ? passed : decoded) >= 0x1F ? "HEAP branch" : "inline",
+                 agree ? "AGREE" : "DISAGREE — using the passed name");
+    }
+    else if (!cine && g_lastCine)
+    {
+        AddEvent(g_frame + 1, "CUTSCENE END    %s", b->cutsceneName);
     }
     g_lastCine = cine;
 
@@ -399,4 +469,19 @@ PPC_FUNC(sub_8247A828)
 {
     g_playedNameVa.store(ctx.r5.u32, std::memory_order_release);
     __imp__sub_8247A828(ctx, base);
+}
+
+std::string SpeedrunBlock_EventLog()
+{
+    std::lock_guard<std::mutex> lock(g_eventMutex);
+    if (g_events.empty())
+        return "speedrun: no load or cutscene transition has happened yet this session\n";
+    std::string out = "speedrun transitions this session (oldest first):\n";
+    for (const std::string& e : g_events)
+    {
+        out += "  ";
+        out += e;
+        out += '\n';
+    }
+    return out;
 }

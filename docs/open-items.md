@@ -19,9 +19,12 @@ Next, in order:
     half-decoder would get wrong at a mission runners split on. The runtime cross-checks
     every name against the plain `const char*` `PlayCinematic` was handed, falls back to
     it, and prints the first disagreement even with tracing off, so a wrong decode is
-    self-reporting rather than silent — but "self-reporting" is not "reported". **One
-    operator run with `CZ_SPEEDRUN_TRACE=1` that reaches that cinematic closes it in one
-    line.** Everything else observed reads AGREE.
+    self-reporting rather than silent — but "self-reporting" is not "reported".
+    **CLOSABLE WITH NO ENV VAR AND NO TIMING as of the same session: every load and
+    cutscene transition goes into a 64-entry ring that the F9 bug report's `system.txt`
+    carries, and each cutscene line states the name's length and which branch that selected
+    (`len 35 (HEAP branch)`) plus the decode verdict. One playthrough past that cutscene,
+    then F9 once, anywhere in the session.** Everything else observed reads AGREE.
     **A HEADLESS ROUTE TO IT WAS TRIED AND DOES NOT WORK — do not re-buy it.** The title
     ships a debug "play this cinematic" hook: `sub_824A8390` returns
     `kCineNames[*(u32*)0x82A58748]` when the byte at `0x82A5862E` is 1 (and clears it),

@@ -213,10 +213,38 @@ Measured, not assumed:
   prints every comparison; a headless prologue run reads
   `PlayCinematic said '700_prologue_intro', manager+159C decodes '700_prologue_intro' — AGREE`.
 
-**Owed:** the inline branch is confirmed by that run; the heap branch — reachable only at
-`707_give_katey_zombrex_psycho_intro` — has not been observed yet, and the fallback means
-a wrong decode there would still publish the right name and say so in the log. Anyone who
-plays to that mission with `CZ_SPEEDRUN_TRACE=1` closes it in one line.
+### Verifying it from a playthrough — press F9 once, whenever
+
+Every load and cutscene transition of a session is kept in a 64-entry ring and written
+into the **F9 bug report's `system.txt`**. That needs no environment variable and no
+timing: one F9 at any point carries the whole session's history, so "press F9 near each
+cutscene" is not a requirement — pressing it once at the end is enough. Each cutscene line
+states the name's LENGTH and which branch of the string class that selected, plus the
+decode verdict:
+
+```
+speedrun transitions this session (oldest first):
+  [    3.61s f     10] state -> Startup
+  [    8.61s f   2267] state -> LegalScreen
+  [    8.61s f   2269] LOAD BEGIN  state Loading
+  [    9.77s f   2542] LOAD END    state FrontEnd
+  [    9.82s f   2553] CUTSCENE BEGIN  700_prologue_intro    EXCLUSIVE  len 18 (inline)  decode AGREE
+  [   51.39s f   8372] LOAD BEGIN  state FEToGame
+  [   51.41s f   8375] CUTSCENE END    700_prologue_intro
+  [   53.42s f   8862] LOAD END    state InGame
+```
+
+Being event-driven rather than polled, it catches transitions a reader cannot: the
+`LegalScreen` above lasts 7 ms.
+
+`CZ_SPEEDRUN_TRACE=1` additionally echoes each line to the log as it happens, which is how
+the above was taken headlessly.
+
+**Owed:** the inline branch is confirmed; the heap branch — reachable only at
+`707_give_katey_zombrex_psycho_intro`, 35 bytes — has not been observed, and the fallback
+means a wrong decode there would still publish the right name and say so. **A playthrough
+that reaches that cutscene and then presses F9 closes it**: the line will read
+`len 35 (HEAP branch)  decode AGREE` or name the disagreement.
 
 Also owed: a Windows run. The block is mapped with `VirtualAlloc` at the same address and
 nothing in it is platform-specific, but that is an argument, not a measurement.

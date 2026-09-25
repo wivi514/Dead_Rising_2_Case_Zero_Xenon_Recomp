@@ -27,6 +27,7 @@
 
 #include "log_file.h"
 #include "settings.h"
+#include "../cpu/speedrun_block.h"
 #include "../kernel/xlive_glue.h"
 #include "../kernel/xlive_overlay_glue.h"
 
@@ -517,8 +518,16 @@ void WriteReport(std::unique_ptr<Pending> p)
                  Rfc3339(p->wall).c_str());
         sys = b;
     }
+    // Every load and cutscene transition of the session, appended here rather than as a
+    // seventh file because the contract is six. It is a few KiB at most and it makes one
+    // F9 — pressed at any moment, not timed to anything — the whole record of what the
+    // game's load and cutscene state did.
+    sys += "\n";
+    sys += SpeedrunBlock_EventLog();
     ok = ok && WriteFile(partial / "system.txt", sys.data(), sys.size());
-    files.push_back({ "system.txt", "text/plain", "OS, CPU, GPU, driver, RAM, settings", sys.size() });
+    files.push_back({ "system.txt", "text/plain",
+                      "OS, CPU, GPU, driver, RAM, settings, and the session's load/cutscene "
+                      "transitions", sys.size() });
     total += sys.size();
 
     // capture.json, last.
