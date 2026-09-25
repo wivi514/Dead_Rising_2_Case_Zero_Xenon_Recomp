@@ -350,12 +350,58 @@ void WatchPlayer(PPCContext& ctx, uint8_t* base, uint32_t userPlayers, uint32_t 
     std::memcpy(st.slot, now, sizeof now);
 }
 
+// THE WORLD, resolved the way this project already resolves it.
+//
+// The first spelling of this read `updateCtx + 0x1C`, on the strength of the trigger
+// fire handing an action `ctx->0x1C` as its world. It measured SILENT — the hook was
+// alive, the watch was armed, and no baseline ever printed — so that field is not the
+// world in the UPDATE context, and a silent instrument that looks armed is exactly the
+// failure gotcha 30 is about. Replaced with the five-step chain
+// `debug_tunables.cpp:LookupPlayerObject` has been using since the fall guard, vtable
+// sanity checks and all: a vtable slot holding a heap pointer mid-transition is a real
+// fault this project has already paid for once.
+//
+// The "is a level running" gate that chain needs is implicit here: this runs from
+// cMissionOnTrigger::Update, which only ticks while a level's missions are updating.
+uint32_t ResolveWorld(PPCContext& ctx, uint8_t* base, const char*& why)
+{
+    why = "no game-state manager";
+    const uint32_t mgr = LoadU32(base, 0x82A57428);
+    if (!mgr)
+        return 0;
+    PPCContext call = ctx;
+    call.r1.u64 = (ctx.r1.u32 - 0x400) & ~0xFu;
+    call.r3.u64 = mgr;
+    call.r4.u64 = 1;
+    why = "session getter refused";
+    if (!GuestCall(call, base, 0x82483230, "watch-session"))
+        return 0;
+    const uint32_t sess = call.r3.u32;
+    why = "no session";
+    if (!sess)
+        return 0;
+    const uint32_t vt = LoadU32(base, sess);
+    why = "session vtable not in the image (mid-transition)";
+    if (vt < 0x82000000 || vt >= 0x82B40000)
+        return 0;
+    const uint32_t getT = LoadU32(base, vt + 0x10);
+    why = "vt[0x10] not code";
+    if (getT < 0x82150000 || getT >= 0x829C3554)
+        return 0;
+    call.r3.u64 = sess;
+    why = "world getter refused";
+    if (!GuestCall(call, base, getT, "watch-world"))
+        return 0;
+    why = "no world";
+    return call.r3.u32;
+}
+
 // The throttle and the reentrancy guard. The sweep makes guest calls, and a guest call
 // can re-enter the hook that drives it; without the guard that is unbounded recursion
 // rather than a wrong number, so it is a correctness guard and not an optimisation.
-void WatchInventories(PPCContext& ctx, uint8_t* base, uint32_t world)
+void WatchInventories(PPCContext& ctx, uint8_t* base)
 {
-    if (!world || WatchPeriodMs() <= 0)
+    if (WatchPeriodMs() <= 0)
         return;
 
     static thread_local bool inSweep = false;
@@ -366,19 +412,41 @@ void WatchInventories(PPCContext& ctx, uint8_t* base, uint32_t world)
     static InvState state[kMaxPlayers];
     static std::chrono::steady_clock::time_point next{};
 
+    // try_lock, not lock: the sweep makes guest calls while holding this, and if the
+    // mission update ever runs on more than one thread a blocking lock would park a
+    // GUEST thread inside an instrument. Skipping a sweep costs a quarter second of
+    // resolution; stalling the game manufactures the stability the trace reports
+    // (gotcha 7).
     const auto now = std::chrono::steady_clock::now();
-    std::lock_guard<std::mutex> lock(mu);
-    if (now < next)
+    std::unique_lock<std::mutex> lock(mu, std::try_to_lock);
+    if (!lock.owns_lock() || now < next)
         return;
     next = now + std::chrono::milliseconds(WatchPeriodMs());
 
-    const uint32_t userPlayers = LoadU32(base, world + 0x7C);
-    const uint32_t game = LoadU32(base, world + 0x78);
+    inSweep = true;
+    const char* why = "";
+    const uint32_t world = ResolveWorld(ctx, base, why);
+    const uint32_t userPlayers = world ? LoadU32(base, world + 0x7C) : 0;
+    const uint32_t game = world ? LoadU32(base, world + 0x78) : 0;
     const uint32_t invMgr = game ? LoadU32(base, game + 0x30) : 0;
     if (!userPlayers || !invMgr)
+    {
+        // Say it once. A watch that is armed and silent is indistinguishable from a
+        // watch that found nothing, which is the whole of gotcha 30.
+        static bool said = false;
+        if (!said)
+        {
+            said = true;
+            fprintf(stderr, "[item] inventory watch cannot sweep yet: %s (world %08X "
+                            "userPlayers %08X invMgr %08X) — it retries every period and "
+                            "says nothing further\n",
+                    world ? "world resolved but players/inventory not up" : why, world,
+                    userPlayers, invMgr);
+        }
+        inSweep = false;
         return;
+    }
 
-    inSweep = true;
     const char* side = Side(ctx, base);
     for (uint32_t i = 0; i < kMaxPlayers; i++)
         WatchPlayer(ctx, base, userPlayers, invMgr, i, state[i], side);
@@ -438,10 +506,7 @@ PPC_FUNC(sub_823E79B8)
             fprintf(stderr, "[item] mission update context player index is now %d (%s)\n", idx,
                     Side(ctx, base));
         }
-        // The update context's +0x1C is the world — the same field the trigger fire
-        // hands an action as its `world` argument (sub_823B0068's decode above).
-        if (ctx.r5.u32)
-            WatchInventories(ctx, base, PPC_LOAD_U32(ctx.r5.u32 + 0x1C));
+        WatchInventories(ctx, base);
     }
     __imp__sub_823E79B8(ctx, base);
 }
@@ -508,13 +573,42 @@ PPC_FUNC(sub_823B0068)
 PPC_FUNC(sub_82245650)
 {
     { static bool seen = false; if (Level()) FirstCall("sub_82245650 broadcast-event listener", seen); }
-    if (Level() && ctx.r5.u32 && (PPC_LOAD_U8(ctx.r4.u32 + 5) == 0x68))
+    if (Level() && ctx.r5.u32)
     {
+        // TWO CENSUSES, one line per newly-seen value, because the decode below is
+        // FILTERED and a filter is a hypothesis (gotcha 25: a grep that cannot match is
+        // not a clean result). The `+5 == 0x68` test was written for the trigger-fire
+        // event; if an item or inventory message travels as a different event class or
+        // subtype, the old code could not have printed it however often it arrived. So
+        // say what classes and subtypes actually cross this listener, before filtering.
         const uint32_t ev = ctx.r5.u32;
+        const uint8_t cls = PPC_LOAD_U8(ctx.r4.u32 + 5);
         const uint32_t sub = PPC_LOAD_U32(ev + 0x10);
-        if (sub == 0 || Level() >= 2)
-            fprintf(stderr, "[item] Event subtype %u (%s): player %d trigger %08X\n", sub,
-                    Side(ctx, base), int32_t(PPC_LOAD_U32(ev + 0x14)), PPC_LOAD_U32(ev + 0x18));
+
+        {
+            static bool clsSeen[256] = {};
+            if (!clsSeen[cls])
+            {
+                clsSeen[cls] = true;
+                fprintf(stderr, "[item] broadcast event CLASS %02X seen for the first time "
+                                "(%s)%s\n", cls, Side(ctx, base),
+                        cls == 0x68 ? " — the trigger-fire class this trace decodes" : "");
+            }
+        }
+        if (cls == 0x68)
+        {
+            static bool subSeen[64] = {};
+            if (sub < 64 && !subSeen[sub])
+            {
+                subSeen[sub] = true;
+                fprintf(stderr, "[item] broadcast event subtype %u seen for the first time "
+                                "(%s)\n", sub, Side(ctx, base));
+            }
+            if (sub == 0 || Level() >= 2)
+                fprintf(stderr, "[item] Event subtype %u (%s): player %d trigger %08X\n", sub,
+                        Side(ctx, base), int32_t(PPC_LOAD_U32(ev + 0x14)),
+                        PPC_LOAD_U32(ev + 0x18));
+        }
     }
     __imp__sub_82245650(ctx, base);
 }
