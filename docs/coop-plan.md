@@ -1036,7 +1036,64 @@ time, the wrong part four times of seven) follows without any further mechanism.
 before today.
 
 
+
+#### Four placements, both machines, with the held item printed — the complete picture
+
+`~/DR2CZ-troubleshooting/issue9/bike2_0925_{host,joiner}.log`. Same session, four
+`TryPlaceItem` interacts, every one naming the same acting player on both sides (1, 1,
+0, 0 — the actor agrees, as it did in the afternoon):
+
+| # | acting | host: selected slot -> item | joiner: selected slot -> item | event |
+|---|---|---|---|---|
+| 1 | guest | slot 0 -> `AABAD4A8` **WheelPawn** | slot 0 -> `AABAD4A8` **WheelPawn** | both `WheelPawnPlaced` ✓ |
+| 2 | guest | slot 0 -> **`00000000` EMPTY** | slot 0 -> `AABAD210` GasolineCanister | `NoPartsPlaced` vs `GasCanPlaced` |
+| 3 | host | slot 3 -> `AABAC7B0` GasolineCanister | slot 3 -> `AABAC518` HandleBar | `GasCanPlaced` vs `HandleBarPlaced` |
+| 4 | host | slot **3** -> `AABAC518` HandleBar | slot **0** -> `AABACCE0` Whiskey | `HandleBarPlaced` vs `NoPartsPlaced` |
+
+**Placement 1 is the most informative row in this whole investigation, because it
+WORKED — and it worked exactly.** Both machines resolved the guest's selected slot to
+the *same object address*, `AABAD4A8` (pool index 6), holding the same item, and both
+raised `WheelPawnPlaced`. So the two machines are not operating in permanently private
+namespaces: **they can agree completely, and when they do, the bike works.**
+
+That forces a correction to the reading recorded above.
+
+> **REFINED: "the pool index is not a shared namespace" is too absolute.** Index 6 was a
+> `WheelPawn` on BOTH machines and index 0 a `HandleBar` on both; only index 5 disagreed
+> (`BikeEngine` on the host, `GasolineCanister` on the joiner). The pool is shared *by
+> construction* — same base, same `0x298` stride, same indices — and the machines
+> allocate into it **independently**. So they start in agreement and DRIFT as items are
+> acquired and consumed in different orders. It is a progressive desync of a
+> shared-shaped structure, not two unrelated numberings.
+
+Rows 2-4 then say what drifts, and it is more than the pool:
+
+- **Row 2 — contents.** The host's copy of the guest's slot 0 is `00000000`, *empty*,
+  while the guest is holding a gas can. The host has already consumed or never received
+  that entry.
+- **Row 3 — the slot-to-index mapping.** Both machines read selected slot **3**, and get
+  different pool entries: index 1 on the host, index 0 on the joiner. Same slot number,
+  different item.
+- **Row 4 — the selection itself.** The host believes slot **3** is selected; the joiner
+  believes slot **0** is. The two machines no longer agree on which item the player is
+  even holding.
+
+**What this means for a fix, stated as a direction and not a design.** Nothing here is
+repaired by changing the bike, the trigger, or the player index — all three are correct
+on both machines in all four rows. The repairable thing is the divergence itself: the
+inventory's contents, its slot ordering and its selected index are each maintained
+locally on both sides and never reconciled, and the mission action reads whichever local
+answer its machine has. A fix has to make one side authoritative for "what is this
+player holding" at the moment the action runs, rather than letting each machine answer
+from its own drifted copy. **Which code allocates a pool entry, and what (if anything)
+about an inventory crosses the wire, are the two open questions — and both are code
+questions answerable without another two-machine session.**
+
 #### The item pool, and why the same index is a different item on each machine
+
+*(Read the four-placement table above first — it refines this
+section's conclusion: the pool is shared by construction and DRIFTS, rather than being
+two private numberings.)*
 
 Every item address the watch printed in the second session — twelve of twelve, no
 exceptions — lands **exactly** on a 664-byte (`0x298`) stride in one of two pools. That
