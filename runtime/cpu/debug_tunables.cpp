@@ -105,6 +105,9 @@
 // plain C++ declaration here would mangle differently and fail to link (gotcha 33).
 extern "C" PPC_FUNC(__imp__sub_824A2470);
 extern "C" PPC_FUNC(__imp__sub_8276E398);
+// sub_821ABAC8(clock, hours) — the title's own SkipHour, a thunk to the
+// add-and-normalise at sub_82160078. See DebugMissionClock above.
+extern "C" PPC_FUNC(__imp__sub_821ABAC8);
 extern "C" PPC_FUNC(__imp__sub_827F6D40);
 extern "C" PPC_FUNC(__imp__sub_824AAEB8);
 extern "C" PPC_FUNC(__imp__sub_824A8120);
@@ -201,6 +204,15 @@ constexpr uint32_t kTimeLock      = 0xFFFFCFDD;
 constexpr uint32_t kTimeSetBase   = 0xFFFFCFD8;   // +0 = 08:00, +1 = 12:00, +2 = 19:00
 constexpr uint32_t kTimeHourUp    = 0xFFFFCFD7;
 constexpr uint32_t kTimeHourDown  = 0xFFFFCFD6;
+// ADVANCE THE MISSION CLOCK (operator request, 2026-09-25). The rows above are a
+// LIGHTING pin and nothing else — they set the title's own `DISABLE TIME OF DAY` bool and
+// the hour the lighting interpolates, and the mission clock keeps its own time underneath.
+// That is right for a lighting comparison and useless for reaching a time-gated mission,
+// which is what the operator actually needed: `707_give_katey_zombrex_psycho_intro` is
+// hours into Case Zero and there was no way to it but to play.
+constexpr uint32_t kTimeSkipBase  = 0xFFFFCFD0;   // +0..+3 = +1h, +2h, +4h, +8h
+constexpr uint32_t kTimeReadout   = 0xFFFFCFCF;   // not a button; shows the clock
+constexpr uint32_t kTimeSkipHours[] = { 1, 2, 4, 8 };
 
 // THE TWO GLOBALS THE LIGHTING ACTUALLY READS (part 120, phase5-notes §6fc §1).
 // `DISABLE TIME OF DAY` is the title's own debug bool — the same byte the
@@ -219,6 +231,74 @@ float DebugPinnedHour(uint8_t* base)
     float h = 0.0f;
     memcpy(&h, &bits, 4);
     return (h >= 0.0f && h < 24.0f) ? h : 12.0f;
+}
+
+// THE MISSION CLOCK — the thing the pinned hour above is NOT.
+//
+// Found by following the title's own shipped debug screen. `sub_824D5990` is the hour-skip
+// UI: its `SkipHour` button calls `sub_821ABAC8(clock, n)`, which is a thunk to
+// `sub_82160078(clock, days, hours, minutes, seconds)` — a pure ADD-and-normalise over
+// four u32 fields (seconds carry at 60, minutes at 60, hours at 24 into days):
+//
+//     clock+0x14 days   clock+0x18 hours   clock+0x1C minutes   clock+0x20 seconds
+//
+// THREE independent callers agree on the last two hops — `sub_82214198`, `sub_821FB670`
+// and `sub_82263928` all do `<owner> -> +0x78 -> +0x48` — but each reaches `<owner>` from a
+// different object of its own (`mission+4`, `level+0x4D4`), so none of them gives a global.
+// `sub_82475928` supplies the missing link: from the cinematic manager it does
+// `+0x18 -> +0x78`, so `cineMgr+0x18` is that same owner, and the cinematic manager is
+// already global-rooted at `*(*(0x82A57428)+0x2C)+0x08`.
+//
+// Measured on a live process, that collapses: `*(cineMgr+0x18)` came back EQUAL to
+// `*(root+0x2C)`, i.e. `+0x2C` of the root simply IS the owner and the cinematic detour is
+// unnecessary. So the path is four dereferences from one global.
+//
+// RETRACTION, recorded here because the wrong version was written first and read
+// plausibly: this comment originally said `*(0x82A57428)` was itself the owner and took
+// `+0x48` of it directly. That reads ZERO — it skips `+0x2C` and `+0x78` — and a zero here
+// is indistinguishable from "no level loaded", which is exactly the silent-wrong-answer
+// shape the validation below exists for.
+//
+// VALIDATED rather than trusted, for the same reason: a bad pointer yields a plausible
+// small number, and adding hours into the wrong struct would corrupt something at a
+// distance. A real clock has hours 0..23, minutes 0..59, seconds 0..59 and a small day
+// count — four range checks that junk fails. Confirmed live at day 0 07:03:00 advancing to
+// 07:06:00 over fifteen seconds, so it is the RUNNING clock and not a copy.
+constexpr uint32_t kSubsystemRoot = 0x82A57428;
+
+uint32_t DebugMissionClock(uint8_t* base)
+{
+    auto hop = [&](uint32_t p, uint32_t off) -> uint32_t {
+        if (!p || uint64_t(p) + off + 4 >= PPC_MEMORY_SIZE)
+            return 0;
+        const uint32_t v = PPC_LOAD_U32(p + off);
+        return (v && uint64_t(v) + 0x100 < PPC_MEMORY_SIZE) ? v : 0;
+    };
+    const uint32_t root  = hop(kSubsystemRoot, 0);
+    const uint32_t owner = hop(root, 0x2C);
+    const uint32_t subs  = hop(owner, 0x78);
+    const uint32_t clock = hop(subs, 0x48);
+    if (!clock)
+        return 0;
+    const uint32_t d = PPC_LOAD_U32(clock + 0x14), h = PPC_LOAD_U32(clock + 0x18);
+    const uint32_t m = PPC_LOAD_U32(clock + 0x1C), sec = PPC_LOAD_U32(clock + 0x20);
+    if (h > 23 || m > 59 || sec > 59 || d > 32)
+        return 0;
+    return clock;
+}
+
+// "Day 0 13:42:07", or a refusal. The readout row exists because a skip button with no
+// clock beside it cannot be checked by the person pressing it.
+std::string DebugClockText(uint8_t* base)
+{
+    const uint32_t clock = DebugMissionClock(base);
+    if (!clock)
+        return "unreadable";
+    char buf[48];
+    snprintf(buf, sizeof buf, "day %u  %02u:%02u:%02u", PPC_LOAD_U32(clock + 0x14),
+             PPC_LOAD_U32(clock + 0x18), PPC_LOAD_U32(clock + 0x1C),
+             PPC_LOAD_U32(clock + 0x20));
+    return buf;
 }
 
 void DebugSetPinnedHour(uint8_t* base, float h, const char* how)
@@ -360,8 +440,17 @@ static void PublishDebugMenuLabels(uint8_t* base)
             continue;
         }
         if ((node >= kTimeSetBase && node < kTimeSetBase + 3) ||
-            node == kTimeHourUp || node == kTimeHourDown)
+            node == kTimeHourUp || node == kTimeHourDown ||
+            (node >= kTimeSkipBase && node < kTimeSkipBase + std::size(kTimeSkipHours)))
         {
+            labels.push_back(std::move(label));
+            continue;
+        }
+        if (node == kTimeReadout)
+        {
+            // The clock, on the row above the buttons that move it. A skip button whose
+            // effect cannot be read is a button nobody can check.
+            label += " : " + DebugClockText(base);
             labels.push_back(std::move(label));
             continue;
         }
@@ -493,6 +582,19 @@ static void ShowTimeMenu(uint8_t* base)
     g_debugMenuBaseLabels.push_back("HOUR +1");
     g_debugMenuVisibleNodes.push_back(kTimeHourDown);
     g_debugMenuBaseLabels.push_back("HOUR -1");
+    // The rows above pin the LIGHTING. These advance the MISSION CLOCK and leave it
+    // running, which is the only way to reach a time-gated mission without playing to it.
+    // Separate rows rather than a mode on the existing ones, because the two are genuinely
+    // different things and a shared control would make "did I lock it or move it?"
+    // unanswerable from the menu.
+    g_debugMenuVisibleNodes.push_back(kTimeReadout);
+    g_debugMenuBaseLabels.push_back("--- MISSION CLOCK");
+    for (uint32_t i = 0; i < std::size(kTimeSkipHours); ++i)
+    {
+        g_debugMenuVisibleNodes.push_back(kTimeSkipBase + i);
+        g_debugMenuBaseLabels.push_back("ADVANCE CLOCK +" +
+            std::to_string(kTimeSkipHours[i]) + "h (keeps running)");
+    }
     PublishDebugMenuLabels(base);
 }
 
@@ -1927,6 +2029,47 @@ void DebugTunables_PumpDebugMenu(PPCContext& ctx, uint8_t* base)
         // ever counting up.
         const float step = (node == kTimeHourUp ? 1.0f : -1.0f) * (action == -1 ? -1.0f : 1.0f);
         DebugSetPinnedHour(base, DebugPinnedHour(base) + step, "step");
+        PublishDebugMenuLabels(base);
+        return;
+    }
+    if (node == kTimeReadout)
+    {
+        // Selectable so USE re-reads it; it changes nothing.
+        if (action == 1 || action == 2)
+            PublishDebugMenuLabels(base);
+        return;
+    }
+    if (node >= kTimeSkipBase && node < kTimeSkipBase + std::size(kTimeSkipHours))
+    {
+        if (action != 1 && action != 2)
+            return;
+        const uint32_t hours = kTimeSkipHours[node - kTimeSkipBase];
+        const uint32_t clock = DebugMissionClock(base);
+        if (!clock)
+        {
+            // Refuse loudly. A silent no-op here is indistinguishable from a mission that
+            // simply is not time-gated, which would send the next session hunting the
+            // wrong thing (gotcha 5).
+            fprintf(stderr, "[debug] ADVANCE CLOCK +%uh REFUSED: no valid mission clock "
+                            "off *(%08X) +2C +78 +48 — not in a level yet?\n",
+                    hours, kSubsystemRoot);
+            return;
+        }
+        const std::string before = DebugClockText(base);
+        // The title's OWN SkipHour path, not arithmetic of ours: sub_821ABAC8 adds `hours`
+        // and normalises. Calling guest code from this pump is what RequestFrontendScreen
+        // above already does, on the same borrowed context.
+        ctx.r3.u64 = clock;
+        ctx.r4.u64 = hours;
+        __imp__sub_821ABAC8(ctx, base);
+        // Read it back and check the invariants the normaliser guarantees. A write that
+        // landed in the wrong struct would still "succeed" otherwise.
+        const uint32_t after = DebugMissionClock(base);
+        fprintf(stderr, "[debug] ADVANCE CLOCK +%uh: %s -> %s%s\n", hours, before.c_str(),
+                after ? DebugClockText(base).c_str() : "UNREADABLE — the write may have "
+                                                      "gone somewhere wrong",
+                PPC_LOAD_U8(kTimeOfDayFlag) ? "   (note: LOCK TIME is ON, so the LIGHTING "
+                                              "stays at the pinned hour)" : "");
         PublishDebugMenuLabels(base);
         return;
     }

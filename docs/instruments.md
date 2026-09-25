@@ -4790,3 +4790,28 @@ this was taken headlessly:
 The `len` and branch label are in the line because the name's length is what selects the
 string class's branch — so the report says which branch each cutscene exercised without
 its reader needing to know the mechanism.
+
+
+## F4 -> TIME OF DAY: the LIGHTING pin and the MISSION CLOCK are two different things
+
+The three preset rows and `HOUR +-1` set the title's own `DISABLE TIME OF DAY` bool
+(`0x82A57CAA`) and the hour the lighting interpolates (`0x82A578D0`, f32). **They do not
+move the mission clock at all** — which is right for a lighting comparison and useless for
+reaching a time-gated mission. The operator hit that on 2026-09-25 wanting
+`707_give_katey_zombrex_psycho_intro` without playing hours to it.
+
+`ADVANCE CLOCK +1/+2/+4/+8h (keeps running)` are the other thing: they call the title's own
+`sub_821ABAC8(clock, hours)` — the `SkipHour` button of its shipped debug screen
+`sub_824D5990`, a thunk to the add-and-normalise at `sub_82160078(clock, d, h, m, s)` over
+`clock+0x14` days / `+0x18` hours / `+0x1C` minutes / `+0x20` seconds. The clock keeps
+running from the new time; nothing is held.
+
+The clock is `*(*(*(*(0x82A57428)) + 0x2C) + 0x78) + 0x48`, four dereferences from one
+global, and the row above the buttons prints it (`--- MISSION CLOCK : day 0 07:06:00`)
+because a skip button whose effect cannot be read is one nobody can check. Every press logs
+`before -> after` and re-validates the struct, so a write that landed somewhere wrong says
+so instead of looking like success. It also warns when `LOCK TIME` is ON, since the lighting
+will then stay put while the clock moves — the two controls are independent by design.
+
+Derivation and the one retraction (the first version took `+0x48` of the root directly and
+read a plausible zero) are in `DebugMissionClock`'s comment in `cpu/debug_tunables.cpp`.
