@@ -22,6 +22,18 @@ Next, in order:
     self-reporting rather than silent — but "self-reporting" is not "reported". **One
     operator run with `CZ_SPEEDRUN_TRACE=1` that reaches that cinematic closes it in one
     line.** Everything else observed reads AGREE.
+    **A HEADLESS ROUTE TO IT WAS TRIED AND DOES NOT WORK — do not re-buy it.** The title
+    ships a debug "play this cinematic" hook: `sub_824A8390` returns
+    `kCineNames[*(u32*)0x82A58748]` when the byte at `0x82A5862E` is 1 (and clears it),
+    the table at `0x829DD540` is the 19 story cinematics in order, and **index 8 is
+    exactly `707_give_katey_zombrex_psycho_intro`** — the case wanted. Its only reader,
+    `sub_821D2BE0`, is additionally gated on the byte at `0x82A5862D`. Both bytes were
+    poked live with `tools/guest_poke.py` on a run sitting in `InGame` (writes verified by
+    read-back) and **the request byte was still 1 fifteen seconds later**, i.e. the
+    consumer never ran: `sub_821D2BE0` has ZERO direct callers in the image, so it is a
+    virtual that this build's active object does not dispatch. Reaching it needs more
+    scaffolding than the check is worth, given the fallback already guarantees the
+    published name is right.
     (b) **a Windows run.** The block is mapped with `VirtualAlloc` at the same address
     and nothing in the file is platform-specific, which is an argument and not a
     measurement. `cz_runtime.log` states the address and whether it was the fixed one,
