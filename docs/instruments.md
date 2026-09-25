@@ -4321,7 +4321,30 @@ CZ_ITEM_TRACE=N    WHICH BIKE PART, OUT OF WHOSE HANDS (player issue #9,
                    `tools/name_hash.py --lookup <hex>`. `tools/coop_pair_items.sh` is
                    the two-instance harness; a solo run reads player index 0 for ever,
                    which is correct and says nothing. Per-event; inert without it
-CZ_COOP_TRIGGER_PLAYER=1  THE CANDIDATE FIX for player issue #9, OFF by default.
+CZ_ITEM_WATCH_MS=N THE PICKUP, AT THE INSTANT IT HAPPENS (with CZ_ITEM_TRACE=1;
+                   default 250 ms, 0 switches just the watch off and is its control
+                   arm). Every N ms it walks all four user players' twelve inventory
+                   slots and prints ONLY CHANGES: `INV BASELINE` once per player so two
+                   machines' logs diff from a common start, then `PICKUP` (a slot gained
+                   an item), `LOSE` (lost one), `REPLACE` (a different object), and
+                   `IDENTITY` — the same object POINTER whose name hash changed, which
+                   is the split the bike trace measured across machines (object
+                   AABAD210 was BikeEngine on the host and BikeForks on the joiner).
+                   `INV RESEAT` marks an actor or inventory object being replaced, so a
+                   respawn or level change is not misread as a pickup. Built 2026-09-25
+                   after two real machines refuted the trigger-player mechanism and the
+                   operator's account named the real one: a guest's pickup never reaches
+                   the host. RUN IT ON BOTH MACHINES AND DIFF — a PICKUP that prints on
+                   the guest and not on the host is the defect, photographed. It reuses
+                   the two accessors the bike path already calls, so it adds no new
+                   guest address; the bill is eight guest calls and ~48 loads at most
+                   four times a second, off the renderer thread
+CZ_COOP_TRIGGER_PLAYER=1  THE CANDIDATE FIX for player issue #9 — **REFUTED 2026-09-25,
+                   do not ship it as that fix.** Two real machines measured the field it
+                   overwrites already tracking the acting player correctly, seven
+                   placements for seven, on BOTH sides; the arm writes a value that is
+                   already there. Kept as an arm because the mechanism is real elsewhere
+                   and because a refuted arm that still builds is a control. OFF by default.
                    A mission trigger's fire (`sub_823B0068`) is handed the player index
                    that triggered it and every mission action then IGNORES it, reading
                    `missionActionCtx + 0x10` instead — a field measured at 0 for a whole

@@ -45,12 +45,38 @@
 //   sub_821AFE48(missionMgr, hash, p) the mission event raise itself — the
 //                                     ANSWER, i.e. which part the title decided
 //
+// THE SUBJECT MOVED, 2026-09-25 (two real machines, host + czwin). The trace above
+// answered its own question and refuted the mechanism it was built for: the player
+// index is RIGHT on both machines, seven placements for seven. What is wrong is the
+// ITEM — the two machines hold different items at the same inventory slots, and the
+// operator's own account names why: a guest's pickup of a world item never reaches
+// the host, so the item can be taken twice and the host's copy of the guest's
+// inventory is short exactly what the guest picked up.
+//
+// So this file now also watches INVENTORIES FOR CHANGE, which is the measurement
+// that names the moment rather than its consequence twenty seconds later at the bike:
+//
+//   every ~250 ms (CZ_ITEM_WATCH_MS), walk all four user players' twelve slots and
+//   print only what CHANGED — a slot gaining an item (a pickup), losing one (a drop
+//   or a use), or KEEPING its pointer while the name hash changes (the identity
+//   split the bike trace measured: object AABAD210 was BikeEngine on the host and
+//   BikeForks on the joiner).
+//
+// Run it on both machines and diff. A guest pickup that prints on the guest and not
+// on the host is the defect, photographed at the instant it happens. The watch needs
+// no new guest addresses — it reuses the two accessors the bike path already calls —
+// so it cannot crash on a wrong vtable guess, and it covers EVERY item rather than
+// the five the bike knows.
+//
 // Hashes are printed raw AND named where the name is one of the six the bike
 // path knows; `tools/name_hash.py --lookup <hex>` reverses any other against
 // items.txt. Everything is gated on the variable and every hook is a straight
 // pass-through when it is off; none of these are on the frame path.
+#include <chrono>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
+#include <mutex>
 
 #include <ppc_config.h>
 #include <ppc_context.h>
@@ -187,6 +213,177 @@ void DumpPlayer(PPCContext& ctx, uint8_t* base, uint32_t userPlayers, uint32_t i
         fprintf(stderr, "[item]     slot %2u: item %08X hash %08X (%s)\n", s, it, h, NameOf(h));
     }
 }
+
+// ---------------------------------------------------------------------------
+// THE INVENTORY WATCH — the pickup, at the instant it happens
+// ---------------------------------------------------------------------------
+//
+// Driven from cMissionOnTrigger::Update, which already runs every frame for every
+// mission trigger in the level and is already hooked; its update context carries the
+// world at +0x1C (the same field the trigger fire hands an action as its `world`
+// argument). So this costs no new guest address and no new call site.
+//
+// THE BILL, said out loud because an instrument that stalls the game manufactures the
+// stability it reports (gotcha 7): eight guest calls and ~48 loads, at most four times
+// a second, on a thread that is not the renderer's. CZ_ITEM_WATCH_MS tunes the period
+// and 0 switches the watch off while leaving the rest of the trace on — which is also
+// the control arm for "did the watch itself change the run".
+constexpr uint32_t kMaxPlayers = 4;
+
+struct SlotState
+{
+    uint32_t item;
+    uint32_t hash;
+};
+
+struct InvState
+{
+    bool seen;
+    uint32_t actor;
+    uint32_t inv;
+    int32_t selected;
+    SlotState slot[kInvSlots];
+};
+
+int WatchPeriodMs()
+{
+    static const int ms = [] {
+        const char* e = std::getenv("CZ_ITEM_WATCH_MS");
+        const int n = (e && *e) ? std::atoi(e) : 250;
+        if (Level() && n > 0)
+            fprintf(stderr, "[item] inventory watch ON, every %d ms — a slot gaining an item is "
+                            "a PICKUP, a slot keeping its pointer while its hash changes is the "
+                            "identity split. CZ_ITEM_WATCH_MS=0 is the control arm.\n", n);
+        else if (Level())
+            fprintf(stderr, "[item] inventory watch OFF (CZ_ITEM_WATCH_MS=0)\n");
+        return n;
+    }();
+    return ms;
+}
+
+// One player's twelve slots, compared against what we last saw. Prints only changes,
+// and prints the FIRST sighting as a baseline block so two logs can be diffed from a
+// common start rather than from whatever each machine happened to be doing.
+void WatchPlayer(PPCContext& ctx, uint8_t* base, uint32_t userPlayers, uint32_t invMgr,
+                 uint32_t index, InvState& st, const char* side)
+{
+    PPCContext call = ctx;
+    call.r1.u64 = (ctx.r1.u32 - 0x400) & ~0xFu;
+    call.r3.u64 = userPlayers;
+    call.r4.u64 = index;
+    if (!GuestCall(call, base, kFnUserPlayer, "watch-user-player"))
+        return;
+    const uint32_t actor = call.r3.u32;
+    if (!actor)
+        return;
+    call.r3.u64 = invMgr;
+    call.r4.u64 = actor;
+    if (!GuestCall(call, base, kFnPlayerInv, "watch-player-inventory"))
+        return;
+    const uint32_t inv = call.r3.u32;
+    if (!inv)
+        return;
+
+    const int32_t sel = int32_t(LoadU32(base, inv + kInvSelected));
+    SlotState now[kInvSlots];
+    for (uint32_t i = 0; i < kInvSlots; i++)
+    {
+        now[i].item = LoadU32(base, inv + i * 8 + 4);
+        now[i].hash = now[i].item ? LoadU32(base, now[i].item + kItemNameHash) : 0;
+    }
+
+    if (!st.seen)
+    {
+        st.seen = true;
+        st.actor = actor;
+        st.inv = inv;
+        st.selected = sel;
+        std::memcpy(st.slot, now, sizeof now);
+        fprintf(stderr, "[item] INV BASELINE player %u (%s): actor %08X inv %08X selected %d\n",
+                index, side, actor, inv, sel);
+        for (uint32_t i = 0; i < kInvSlots; i++)
+            if (now[i].item)
+                fprintf(stderr, "[item]   base slot %2u: item %08X hash %08X (%s)\n", i,
+                        now[i].item, now[i].hash, NameOf(now[i].hash));
+        return;
+    }
+
+    // The actor or the inventory object being replaced is itself worth a line — a
+    // respawn or a level change re-seats both, and a diff read across one of those
+    // without knowing is how a pickup gets invented.
+    if (actor != st.actor || inv != st.inv)
+    {
+        fprintf(stderr, "[item] INV RESEAT player %u (%s): actor %08X -> %08X, inv %08X -> %08X\n",
+                index, side, st.actor, actor, st.inv, inv);
+        st.actor = actor;
+        st.inv = inv;
+    }
+
+    for (uint32_t i = 0; i < kInvSlots; i++)
+    {
+        const SlotState& was = st.slot[i];
+        const SlotState& is = now[i];
+        if (was.item == is.item && was.hash == is.hash)
+            continue;
+        if (!was.item && is.item)
+            fprintf(stderr, "[item] PICKUP player %u slot %2u (%s): item %08X hash %08X (%s)\n",
+                    index, i, side, is.item, is.hash, NameOf(is.hash));
+        else if (was.item && !is.item)
+            fprintf(stderr, "[item] LOSE   player %u slot %2u (%s): was item %08X hash %08X (%s)\n",
+                    index, i, side, was.item, was.hash, NameOf(was.hash));
+        else if (was.item == is.item)
+            fprintf(stderr, "[item] IDENTITY player %u slot %2u (%s): item %08X KEPT but hash "
+                            "%08X (%s) -> %08X (%s)  <- the same object is now a different item\n",
+                    index, i, side, is.item, was.hash, NameOf(was.hash), is.hash,
+                    NameOf(is.hash));
+        else
+            fprintf(stderr, "[item] REPLACE player %u slot %2u (%s): item %08X hash %08X (%s) -> "
+                            "item %08X hash %08X (%s)\n",
+                    index, i, side, was.item, was.hash, NameOf(was.hash), is.item, is.hash,
+                    NameOf(is.hash));
+    }
+    if (sel != st.selected && Level() >= 2)
+        fprintf(stderr, "[item] SELECT player %u (%s): slot %d -> %d\n", index, side,
+                st.selected, sel);
+
+    st.selected = sel;
+    std::memcpy(st.slot, now, sizeof now);
+}
+
+// The throttle and the reentrancy guard. The sweep makes guest calls, and a guest call
+// can re-enter the hook that drives it; without the guard that is unbounded recursion
+// rather than a wrong number, so it is a correctness guard and not an optimisation.
+void WatchInventories(PPCContext& ctx, uint8_t* base, uint32_t world)
+{
+    if (!world || WatchPeriodMs() <= 0)
+        return;
+
+    static thread_local bool inSweep = false;
+    if (inSweep)
+        return;
+
+    static std::mutex mu;
+    static InvState state[kMaxPlayers];
+    static std::chrono::steady_clock::time_point next{};
+
+    const auto now = std::chrono::steady_clock::now();
+    std::lock_guard<std::mutex> lock(mu);
+    if (now < next)
+        return;
+    next = now + std::chrono::milliseconds(WatchPeriodMs());
+
+    const uint32_t userPlayers = LoadU32(base, world + 0x7C);
+    const uint32_t game = LoadU32(base, world + 0x78);
+    const uint32_t invMgr = game ? LoadU32(base, game + 0x30) : 0;
+    if (!userPlayers || !invMgr)
+        return;
+
+    inSweep = true;
+    const char* side = Side(ctx, base);
+    for (uint32_t i = 0; i < kMaxPlayers; i++)
+        WatchPlayer(ctx, base, userPlayers, invMgr, i, state[i], side);
+    inSweep = false;
+}
 } // namespace
 
 // cMissionSetChuckState::Execute(action, world, ctx, ...) — state 61 is the bike.
@@ -241,6 +438,10 @@ PPC_FUNC(sub_823E79B8)
             fprintf(stderr, "[item] mission update context player index is now %d (%s)\n", idx,
                     Side(ctx, base));
         }
+        // The update context's +0x1C is the world — the same field the trigger fire
+        // hands an action as its `world` argument (sub_823B0068's decode above).
+        if (ctx.r5.u32)
+            WatchInventories(ctx, base, PPC_LOAD_U32(ctx.r5.u32 + 0x1C));
     }
     __imp__sub_823E79B8(ctx, base);
 }
