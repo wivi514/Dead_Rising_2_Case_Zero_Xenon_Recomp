@@ -909,6 +909,12 @@ playing it, says **why** — and it is one defect, not four. Their words, 2026-0
 So: **a guest's pickup of a world item is not replicated to the host at all.** Every
 symptom in this issue falls out of that one fact:
 
+> **RETRACTED THE SAME EVENING — see "The second session" below.** With the pickup watch
+> running on both machines the HOST printed `PICKUP player 1 ... (WheelPawn)` in its own
+> log: a guest pickup DOES cross the link. The host's copy being short at the bike is a
+> CONSEQUENCE; what is wrong is the item's IDENTITY. The list that follows is still what
+> the operator saw and still worth reading — only its opening claim is too strong.
+
 - the host's copy of the guest's inventory is short exactly the items the guest picked
   up (the trace's `player 1` holding only `WrenchLarge`, never the `GasolineCanister`);
 - the world item is therefore still "not taken" on the host, so **it can be picked up a
@@ -965,6 +971,69 @@ the two machines disagree about in the trace (`AABAD210` BikeEngine/BikeForks,
 `AABACCE0` GasolineCanister/BikeEngine). A spawn point whose item identity is decided
 locally, per machine, would produce precisely that.
 
+
+
+#### The second session, with the watch on both sides (2026-09-25 evening) — and a correction
+
+The pickup watch ran on both machines. It resolves the mechanism further and **corrects
+the reading above in one important way**, so that is stated first:
+
+**"A guest's pickup never reaches the host" is TOO STRONG and is retracted.** The host
+printed, in its own log, with its own session bytes:
+
+```
+[item] PICKUP player 1 slot  0 (coop=1 isHost=1): item AABACCE0 hash 878FC97B (WheelPawn)
+```
+
+Player 1 is the guest. So a guest pickup DOES cross the link and the host's copy of that
+inventory DOES gain a slot. The earlier reading was built on the host's copy being short
+at the bike, which is true and is a CONSEQUENCE, not the mechanism.
+
+**What is actually wrong is the item's IDENTITY, and it was caught live on both sides
+within the same minute:**
+
+| | host (`coop=1 isHost=1`) | joiner (`coop=0 isHost=0`) |
+|---|---|---|
+| player 1's slot count | **one** | **two** |
+| object `AABACCE0` | `878FC97B` **WheelPawn** | `5F8D0521` **GasolineCanister** |
+| object `AAC37158` | `878FC97B` WheelPawn, slot 0 | `5F8D0521` GasolineCanister, slot 1 |
+
+The same object address is a different item on each machine — the `AABAD210`
+disagreement of the afternoon session, reproduced deliberately and caught in the act
+rather than inferred twenty seconds later at the bike.
+
+**And the watch shows a mechanism the bike trace could not have.** Both machines print a
+continuous ping-pong of the LOCAL player's item objects between two parallel address
+sets, hashes unchanged:
+
+```
+REPLACE player 0 slot 0: AABACA48 (SpikedBat) -> AAC36EC0 (SpikedBat)
+REPLACE player 0 slot 1: AABAC7B0 (Whiskey)   -> AAC36C28 (Whiskey)
+REPLACE player 0 slot 2: AABAC518 (Whiskey)   -> AAC36990 (Whiskey)
+... and back again, indefinitely
+```
+
+For the local player this is harmless — the same items either way. For the REMOTE
+player the same ping-pong lands on objects that hold different items on the two
+machines, which is where the identity disagreement becomes visible.
+
+**Stated as an inference, not a finding:** the address pattern looks like two parallel
+item-object arrays being alternated, with a remote player's inventory rebuilt from
+replicated data each frame and binding the wrong definition. That has NOT been confirmed
+in the code — the evidence is the address pattern alone, and the alternative (an
+allocator handing the same addresses back in a different order on each machine) predicts
+the same trace. Distinguishing them is the next piece of work, and it is a code question,
+not another session.
+
+**What it explains, either way:** the guest places a gasoline canister; the host looks up
+the item in the guest's selected slot, finds a WheelPawn, and raises the event for that
+part or for none. *"Most key items were either missing or replaced with other key
+items"* is then the literal truth, and the afternoon's decision table (same actor every
+time, the wrong part four times of seven) follows without any further mechanism.
+
+**Also established this session**: nine of the eleven broadcast subtypes were seen live
+(0, 1, 2, 3, 6, 7, 8, 9, 10; only 4 and 5 unseen), against the ONE the trace could print
+before today.
 
 #### The broadcast-event wire, decoded (2026-09-25)
 
