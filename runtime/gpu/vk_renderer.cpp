@@ -2207,184 +2207,200 @@ inline bool HudAnchorOn()
 }
 
 
-// ---- WHERE THE MIDDLE IS, MEASURED PER FRAME (part 121b) --------------------
+// ---- WIDGETS, NOT DRAWS (part 121b) ----------------------------------------
 //
-// THE ANCHOR NEEDS A BREAKPOINT, AND A CONSTANT IS THE WRONG KIND OF NUMBER. An
-// element entirely left of the breakpoint is pushed left, entirely right of it pushed
-// right, and anything crossing it is left alone. Two attempts fixed that breakpoint —
-// first as a centre-weighted ramp, then as a constant +-0.15 — and both were wrong in
-// the same way, because this title draws text ONE GLYPH PER DRAW: a string that crosses
-// the breakpoint has some of its characters pushed 440 px and the rest not, and the
-// word breaks in half. The operator's own capture of the first attempt shows it at its
-// worst — the save-slot menu's panel displaced from the text written on it.
+// THE ANCHOR MOVES A WIDGET TO THE SCREEN EDGE, and the whole difficulty is that this
+// title does not draw a widget. It draws a level disc, a PP bar, the word "NV.", the
+// number 6, the word "VIE", four health blocks and "12,500 $" as separate draws — and
+// text one glyph at a time, four vertices each — so any rule that classifies a DRAW is
+// classifying a fragment of a widget, and the moment two fragments get different answers
+// the widget comes apart on screen.
 //
-// So the breakpoint is not chosen, it is MEASURED, and the measurement is the one thing
-// that makes a torn element impossible: put the breakpoint where NOTHING IS DRAWN.
+// THREE RULES WERE BUILT AND ALL THREE TORE SOMETHING, each for the same reason in a new
+// costume. A centre-weighted ramp gave the bar the full push and its caption a fraction
+// (the operator's capture: the save-slot panel displaced from the text written on it). A
+// fixed +-0.15 NDC breakpoint cut strings mid-word. Measuring the breakpoint per frame as
+// the widest empty run in each half — the idea being that the objects themselves show you
+// where the middle is — put the breakpoint INSIDE a widget instead: the save menu leaves a
+// 0.071-wide margin between its "EMPL." labels and its panel, which is wider than the gaps
+// inside the HUD's own left group, so the labels were pushed off the panel and the level
+// disc was pushed off its own numbers.
 //
-// Each frame, every readable UI element marks the x bins it covers, in the y band it
-// covers. At the frame boundary each band is scanned outward from x = 0 for the run of
-// empty bins around the centre — the band's own gap. An element is anchored only if it
-// lies entirely outside that gap, so by construction no element can straddle it. And a
-// band whose centre is OCCUPIED has no gap at all, which is exactly a menu: the anchor
-// switches itself off wherever the title is drawing across the middle, which is the
-// operator's scope in one sentence — *"the only UI that needs to work with this is the
-// level/health/ppbar and the inventory and mission since it's all that is on the side."*
+// The lesson is that no threshold on a fragment's POSITION can work, because the sizes
+// that separate widgets and the sizes that separate a widget's own parts are the same
+// sizes. So group first and classify second: build the widgets, then ask which side each
+// widget is on, and hand every fragment of it the same answer. Two fragments of one
+// widget cannot disagree, because they are no longer asked separately.
 //
-// Per BAND and not per screen, because a centred subtitle would otherwise switch the
-// whole HUD off for as long as it is up, and the HUD would jump 440 px when it appeared.
-//
-// WHAT THE FIXED THRESHOLD WAS, AND WHY IT IS GONE. It came from a census of 1,329 HUD
-// draws in three vertical bands, which showed a clean gap in every one of them:
-//
-//     band                         left parts end at   right parts start at
-//     top (health/PP, inventory)        -0.27                +0.49
-//     middle (mission, Zombrex)         -0.19                +0.18
-//     bottom (location, kills)          -0.19                +0.17
-//
-// so +-0.15 sat inside all three. The table is right and the conclusion drawn from it
-// was not: it censused THE HUD, and the frames where a breakpoint does damage are the
-// ones with a MENU up, which that census never looked at — a measurement cannot report
-// on a population it excluded (gotcha 25). Measuring the gap per frame asks the same
-// question of whatever is actually on the screen.
-//
-// It runs one frame behind: the map an element is classified against was built from the
-// previous frame. The HUD's layout is static, so the only cost is that an element in a
-// newly occupied part of the screen is unanchored for its first frame.
-struct HudGapMap
+// A widget is a connected component under "close in both axes" — the plainest possible
+// reading of what a widget looks like. It is built from the PREVIOUS frame, which costs
+// one frame of latency on a HUD whose layout does not move, and it over-merges rather
+// than under-merges: a group that swallows too much spans the middle and is left alone,
+// which is the harmless direction. That is also what keeps menus safe without naming
+// them — a panel merges with everything sitting on it, the result spans the middle, and
+// the anchor switches itself off for the lot.
+struct HudRect
 {
-    static constexpr int kBands = 24;
-    static constexpr int kBins = 256;
-    static constexpr float kLo = -1.3f, kHi = 1.3f;
-    // Being filled by THIS frame; read at the frame boundary and cleared.
-    uint8_t occ[kBands][kBins] = {};
-    // Derived from the PREVIOUS frame: the band's empty run around zero, in NDC.
-    float lo[kBands] = {}, hi[kBands] = {};
-    bool ok[kBands] = {};
-    uint64_t frame = ~0ull;
-    uint64_t marks = 0;
+    float xlo, xhi, ylo, yhi;
 };
-HudGapMap g_hudGap;
+struct HudWidget
+{
+    float xlo, xhi, ylo, yhi;
+    int8_t side;
+};
+struct HudWidgetMap
+{
+    std::vector<HudRect> seen;         // being collected by THIS frame
+    std::vector<HudWidget> widgets;    // grouped from the PREVIOUS frame
+    uint64_t frame = ~0ull;
+};
+HudWidgetMap g_hudWidgets;
 
-inline int HudGapBand(float y)
+// How close two fragments have to be to belong to the same widget, in 16:9 NDC. The
+// defaults are deliberately generous: over-merging costs an element its anchor, which
+// leaves it exactly where the shipped renderer puts it today, while under-merging tears
+// a widget in half on screen. 0.10 is about a character and a half of the HUD's own
+// font; 0.06 vertically is under one line of it.
+inline float HudGroupX()
 {
-    const int b = int((y - HudGapMap::kLo) / (HudGapMap::kHi - HudGapMap::kLo) *
-                      HudGapMap::kBands);
-    return b < 0 ? 0 : (b >= HudGapMap::kBands ? HudGapMap::kBands - 1 : b);
+    static const float v = [] {
+        const char* e = Env("CZ_VK_HUD_GROUP_X");
+        return (e && *e) ? float(atof(e)) : 0.10f;
+    }();
+    return v;
 }
-inline int HudGapBin(float x)
+inline float HudGroupY()
 {
-    const int b = int((x - HudGapMap::kLo) / (HudGapMap::kHi - HudGapMap::kLo) *
-                      HudGapMap::kBins);
-    return b < 0 ? 0 : (b >= HudGapMap::kBins ? HudGapMap::kBins - 1 : b);
-}
-inline float HudGapBinLo(int b)
-{
-    return HudGapMap::kLo +
-           (HudGapMap::kHi - HudGapMap::kLo) * float(b) / float(HudGapMap::kBins);
-}
-
-// Rebuild the gap from the frame that just ended. Called from the first UI draw of the
-// next one, so it costs nothing on a frame with no UI at all.
-inline void HudGapRebuild()
-{
-    // The narrowest empty run that counts as a middle. Below it the two sides are not
-    // separable and the band is switched off — the safe direction, because not
-    // anchoring leaves an element exactly where the shipped renderer puts it today.
-    static const float minGap = [] {
-        const char* e = Env("CZ_VK_HUD_GAP_MIN");
+    static const float v = [] {
+        const char* e = Env("CZ_VK_HUD_GROUP_Y");
         return (e && *e) ? float(atof(e)) : 0.06f;
     }();
-    // THE WIDEST EMPTY RUN ON EACH SIDE OF THE CENTRE, not the run that CONTAINS the
-    // centre. The first spelling required x = 0 itself to be empty, and this title draws
-    // a small centred marker at the top of the screen (16:9 x -0.105..+0.095, the
-    // compass arrow) — one 4-vertex quad which, sitting in the same bands as the
-    // health/PP/level widget, switched the anchor off for the whole of the top of the
-    // screen. Measured: the widget stayed at columns 797..992 against the 16:9
-    // reference's 357..552 even with the push tripled.
-    //
-    // The WIDEST run and not the nearest, because a widget has internal gaps — between
-    // the level disc and the PP bar, between a bar and its caption — and the nearest
-    // empty run would land inside the widget and split it. The gap that separates a
-    // side from the middle is much the largest one in its half; taking its MIDPOINT
-    // leaves margin on both sides of the decision.
-    const int zero = HudGapBin(0.0f);
-    const int win = HudGapBin(0.75f) - zero;       // how far out to look for a middle
-    for (int b = 0; b < HudGapMap::kBands; ++b)
+    return v;
+}
+// A whole widget is either on one side of the screen or it spans the middle; it is not a
+// fragment, so this threshold no longer has to thread a needle between widgets and their
+// own parts. Anything that reaches across the centre is left where it is.
+inline float HudEdge()
+{
+    static const float v = [] {
+        const char* e = Env("CZ_VK_HUD_ANCHOR_EDGE");
+        return (e && *e) ? float(atof(e)) : 0.15f;
+    }();
+    return v;
+}
+
+inline float HudGap1(float alo, float ahi, float blo, float bhi)
+{
+    return std::max(0.0f, std::max(alo, blo) - std::min(ahi, bhi));
+}
+
+// Group the fragments the frame just drew into widgets, and decide each widget's side.
+inline void HudWidgetsRebuild()
+{
+    std::vector<HudRect>& S = g_hudWidgets.seen;
+    g_hudWidgets.widgets.clear();
+    const size_t n = S.size();
+    // A frame with this many UI fragments is not a HUD frame, and the quadratic grouping
+    // below has no business running on it. Nothing is anchored, which is the safe answer.
+    if (!n || n > 2048)
     {
-        uint8_t* o = g_hudGap.occ[b];
-        // Widest empty run in [-0.75, 0] and in [0, +0.75].
-        auto widest = [&](int from, int to, int step, float& mid) {
-            int best = 0, run = 0;
-            float bestMid = 0.0f;
-            for (int i = from; i != to; i += step)
-            {
-                if (!o[i])
-                {
-                    ++run;
-                    if (run > best)
-                    {
-                        best = run;
-                        const int a = i, c = i - step * (run - 1);
-                        bestMid = 0.5f * (HudGapBinLo(a) + HudGapBinLo(c)) +
-                                  0.5f * (HudGapBinLo(1) - HudGapBinLo(0));
-                    }
-                }
-                else
-                {
-                    run = 0;
-                }
-            }
-            mid = bestMid;
-            return float(best) * (HudGapBinLo(1) - HudGapBinLo(0));
-        };
-        float lmid = 0.0f, rmid = 0.0f;
-        const float lw = widest(zero, std::max(0, zero - win) - 1, -1, lmid);
-        const float rw = widest(zero, std::min(HudGapMap::kBins - 1, zero + win) + 1, 1, rmid);
-        g_hudGap.ok[b] = lw >= minGap && rw >= minGap;
-        g_hudGap.lo[b] = lmid;
-        g_hudGap.hi[b] = rmid;
-        memset(o, 0, sizeof g_hudGap.occ[b]);
-    }
-}
-
-inline void HudGapFrame(uint64_t frame)
-{
-    if (frame == g_hudGap.frame)
+        S.clear();
         return;
-    // A frame with no UI draws at all leaves the map as it was rather than clearing it,
-    // because a HUD that blinks off for one frame would jump 440 px and back.
-    if (g_hudGap.marks)
-        HudGapRebuild();
-    g_hudGap.marks = 0;
-    g_hudGap.frame = frame;
+    }
+    std::vector<uint32_t> par(n);
+    for (size_t i = 0; i < n; ++i)
+        par[i] = uint32_t(i);
+    auto find = [&](uint32_t a) {
+        while (par[a] != a) { par[a] = par[par[a]]; a = par[a]; }
+        return a;
+    };
+    // Sorted by ylo so the inner loop can stop as soon as the vertical gap alone rules
+    // every remaining pair out. n is a few hundred on a HUD frame.
+    std::vector<uint32_t> order(n);
+    for (size_t i = 0; i < n; ++i)
+        order[i] = uint32_t(i);
+    std::sort(order.begin(), order.end(),
+              [&](uint32_t a, uint32_t b) { return S[a].ylo < S[b].ylo; });
+    const float gx = HudGroupX(), gy = HudGroupY();
+    for (size_t ii = 0; ii < n; ++ii)
+    {
+        const uint32_t i = order[ii];
+        for (size_t jj = ii + 1; jj < n; ++jj)
+        {
+            const uint32_t j = order[jj];
+            if (S[j].ylo > S[i].yhi + gy)
+                break;
+            if (HudGap1(S[i].xlo, S[i].xhi, S[j].xlo, S[j].xhi) <= gx &&
+                HudGap1(S[i].ylo, S[i].yhi, S[j].ylo, S[j].yhi) <= gy)
+            {
+                const uint32_t a = find(i), b = find(j);
+                if (a != b)
+                    par[a] = b;
+            }
+        }
+    }
+    std::unordered_map<uint32_t, size_t> at;
+    for (size_t i = 0; i < n; ++i)
+    {
+        const uint32_t r = find(uint32_t(i));
+        auto it = at.find(r);
+        if (it == at.end())
+        {
+            at.emplace(r, g_hudWidgets.widgets.size());
+            g_hudWidgets.widgets.push_back(
+                {S[i].xlo, S[i].xhi, S[i].ylo, S[i].yhi, 0});
+        }
+        else
+        {
+            HudWidget& w = g_hudWidgets.widgets[it->second];
+            w.xlo = std::min(w.xlo, S[i].xlo); w.xhi = std::max(w.xhi, S[i].xhi);
+            w.ylo = std::min(w.ylo, S[i].ylo); w.yhi = std::max(w.yhi, S[i].yhi);
+        }
+    }
+    const float edge = HudEdge();
+    for (HudWidget& w : g_hudWidgets.widgets)
+        w.side = (w.xhi < -edge) ? -1 : ((w.xlo > edge) ? 1 : 0);
+    S.clear();
 }
 
-inline void HudGapMark(float xlo, float xhi, float ylo, float yhi)
+inline void HudWidgetsFrame(uint64_t frame)
 {
-    const int b0 = HudGapBand(std::min(ylo, yhi)), b1 = HudGapBand(std::max(ylo, yhi));
-    const int i0 = HudGapBin(std::min(xlo, xhi)), i1 = HudGapBin(std::max(xlo, xhi));
-    for (int b = b0; b <= b1; ++b)
-        memset(g_hudGap.occ[b] + i0, 1, size_t(i1 - i0 + 1));
-    ++g_hudGap.marks;
+    if (frame == g_hudWidgets.frame)
+        return;
+    // A frame that drew no UI at all leaves the previous grouping in place rather than
+    // clearing it: a HUD that lost its anchor for one frame would jump 440 px and back.
+    if (!g_hudWidgets.seen.empty())
+        HudWidgetsRebuild();
+    g_hudWidgets.frame = frame;
 }
 
-// -1 / 0 / +1, against the measured gap of every band this element touches. It has to
-// clear ALL of them: an element tall enough to span a band with a menu in it is part of
-// that menu far more often than it is part of the HUD.
-inline int HudGapSide(float xlo, float xhi, float ylo, float yhi)
+// Record a fragment for NEXT frame's grouping, and answer it against THIS frame's.
+// -2 means "no widget knows about this rect yet", which the caller treats as 0.
+inline int HudWidgetSide(float xlo, float xhi, float ylo, float yhi)
 {
     if (!(std::fabs(xlo) < 8.0f) || !(std::fabs(xhi) < 8.0f) || !(xlo <= xhi))
-        return 0;                              // the census found draws at x = -20001
-    const int b0 = HudGapBand(std::min(ylo, yhi)), b1 = HudGapBand(std::max(ylo, yhi));
-    bool left = true, right = true;
-    for (int b = b0; b <= b1; ++b)
+        return 0;                      // the census found draws at x = -20001
+    if (g_hudWidgets.seen.size() < 4096)
+        g_hudWidgets.seen.push_back({xlo, xhi, ylo, yhi});
+    // The widget this fragment belongs to: the one that contains it, else the one it
+    // overlaps most. The fallback matters because a counter or a clock changes width
+    // between frames, and a fragment that found no widget would un-anchor for a frame.
+    const HudWidget* best = nullptr;
+    float bestArea = 0.0f;
+    for (const HudWidget& w : g_hudWidgets.widgets)
     {
-        if (!g_hudGap.ok[b])
-            return 0;
-        if (!(xhi <= g_hudGap.lo[b])) left = false;
-        if (!(xlo >= g_hudGap.hi[b])) right = false;
+        if (xlo >= w.xlo - 1e-3f && xhi <= w.xhi + 1e-3f &&
+            ylo >= w.ylo - 1e-3f && yhi <= w.yhi + 1e-3f)
+            return w.side;
+        const float ox = std::min(xhi, w.xhi) - std::max(xlo, w.xlo);
+        const float oy = std::min(yhi, w.yhi) - std::max(ylo, w.ylo);
+        if (ox > 0.0f && oy > 0.0f && ox * oy > bestArea)
+        {
+            bestArea = ox * oy;
+            best = &w;
+        }
     }
-    return left ? -1 : (right ? 1 : 0);
+    return best ? best->side : -2;
 }
 
 // Move a recognized RAW-form projection's origin by `side` pushes. Factored out
