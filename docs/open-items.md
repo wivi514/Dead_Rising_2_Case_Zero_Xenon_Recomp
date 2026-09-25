@@ -7,6 +7,30 @@ NOT the cause is what stops the next session re-buying it.
 
 Next, in order:
 
+0zd. **THE SPEEDRUN BLOCK'S TWO OWED CHECKS — both free, neither done.** A Case Zero
+    runner asked for load/cutscene signals at a stable address and they shipped
+    (`docs/speedrun-block.md`, commit 18bc6a2): 256 bytes at the fixed host address
+    `0x0000435A00000000`, ON by default, boot-to-gameplay gate clean with every flag
+    shown taking BOTH values. What is owed:
+    (a) **the heap branch of the cutscene-name decode.** The engine's string class is
+    inline below 31 bytes and heap-allocated at or above, and
+    `707_give_katey_zombrex_psycho_intro` (35 bytes) is the ONLY name in Case Zero that
+    takes the heap path — i.e. the one a headless route cannot reach and the one a
+    half-decoder would get wrong at a mission runners split on. The runtime cross-checks
+    every name against the plain `const char*` `PlayCinematic` was handed, falls back to
+    it, and prints the first disagreement even with tracing off, so a wrong decode is
+    self-reporting rather than silent — but "self-reporting" is not "reported". **One
+    operator run with `CZ_SPEEDRUN_TRACE=1` that reaches that cinematic closes it in one
+    line.** Everything else observed reads AGREE.
+    (b) **a Windows run.** The block is mapped with `VirtualAlloc` at the same address
+    and nothing in the file is platform-specific, which is an argument and not a
+    measurement. `cz_runtime.log` states the address and whether it was the fixed one,
+    so the check is: launch on czwin, grep `[speedrun]`, expect `the documented fixed
+    address`.
+    Also unpriced: the publish itself (a dozen guest loads and a 256-byte store per
+    PRESENTED frame). `CZ_SPEEDRUN_BLOCK=0` is the control arm if anyone wants the
+    number. Nothing suggests it is visible, and nobody has measured it.
+
 0zc. **"INTERIORS ARE TOO DARK" (operator, 2026-09-15) — THE TRANSFER CURVE IS MEASURED
     AND IT GOES THE OTHER WAY; THE DECIDING NUMBER IS THE OPERATOR'S.** Part 119 ran
     `docs/lighting-plan-part119.md` §2 (`phase5-notes.md` §6fb): the front buffer is

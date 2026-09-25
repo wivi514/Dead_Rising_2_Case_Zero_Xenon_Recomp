@@ -614,6 +614,14 @@ mask; trust the microcode's own swizzles.
   - **`steam-deck-plan.md`** (the Deck hypotheses and their tests; §6 is part 105's record)
     and **`steam-deck-testing.md`** (the player's walk-through; what a Deck report must
     contain). Every build writes `cz_runtime.log` and has `--diag` as of part 105.
+  - **`speedrun-block.md`** — **A PUBLISHED EXTERNAL CONTRACT, the only one this port
+    has.** A Case Zero runner's load remover reads 256 bytes at the fixed host address
+    `0x0000435A00000000` (magic `CZSPDRN1`, v1, ON by default) for "am I loading", "am I
+    in a cutscene" and which cutscene played last, plus `guestBase` so any guest variable
+    is reachable stably. **Do not move that address and do not change a v1 offset's
+    meaning** — new fields come out of the reserved tail, and a semantic change gets a new
+    `version`. `runtime/cpu/speedrun_block.cpp`'s header comment derives every guest
+    address from the instruction that states it; `open-items.md` 0zd is what is owed.
   - `instruments.md` (every env var and arm), `measurement.md` (how to judge a change),
     ~~`perf-cpu-plan.md` (the live performance plan)~~ and `perf-plan-overnight.md` (its
     executed predecessor).
