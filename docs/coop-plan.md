@@ -1035,6 +1035,52 @@ time, the wrong part four times of seven) follows without any further mechanism.
 (0, 1, 2, 3, 6, 7, 8, 9, 10; only 4 and 5 unseen), against the ONE the trace could print
 before today.
 
+
+#### The item pool, and why the same index is a different item on each machine
+
+Every item address the watch printed in the second session — twelve of twelve, no
+exceptions — lands **exactly** on a 664-byte (`0x298`) stride in one of two pools. That
+is arithmetic over the observed set, not a guess, and it is what turns the ping-pong
+from noise into a structure:
+
+```
+pool A base ...AC518     pool B base ...36990     stride 0x298
+index   0  1  2  3  4    index   0  1  2  3  4
+```
+
+| observed | pool | index | item |
+|---|---|---|---|
+| host player 1 slot 0 | A then B | **3** | WheelPawn |
+| joiner player 1 slot 0 | A then B | **4** | WheelPawn |
+| joiner player 1 slot 1 | A then B | **3** | **GasolineCanister** |
+| player 0 slots 2/1/0 | A then B | 0/1/2 | Whiskey, Whiskey, SpikedBat |
+
+Three things follow, and only the third is an inference:
+
+1. **The two pools are MIRRORS.** Within one machine, `A[i]` and `B[i]` always hold the
+   same item hash, and an inventory slot's pointer alternates between them indefinitely.
+   The indices are shared across players — player 0 holds 0..2 and player 1 holds 3..4 —
+   so this is one item-instance array with two backing pools, not one pool per player.
+2. **The index IS the item's identity within a machine, and the two machines number
+   them differently.** Index 3 is a WheelPawn on the host and a GasolineCanister on the
+   joiner. That is the whole of the "same address, different item" disagreement, stated
+   without reference to addresses: **the pool index is not a shared namespace.**
+   Anything replicated by index therefore resolves to the wrong item on the far side,
+   which is exactly the reported defect.
+3. *(Inference.)* The continuous A/B alternation looks like a replication double-buffer
+   — an authoritative copy and a received copy, with the slot pointer flipped each
+   update. **Not confirmed**, and one observation argues against reading too much into
+   it: both mirrors agree on the hash within a machine, so the alternation is not itself
+   producing the disagreement. It may equally be an unrelated instance-recycling scheme.
+
+**What this does and does not settle.** It settles that the disagreement is systematic
+and index-shaped rather than a corrupted value or a dropped message, and it gives the
+next session a precise question instead of a symptom. It does NOT yet name the code that
+assigns an index, nor show that an index is what crosses the wire — both are code
+questions now, answerable without another two-machine session. The pool base addresses
+are per-run and are recorded only to make the arithmetic checkable; the finding is the
+STRUCTURE (two mirrors, stride `0x298`, index = identity), not the addresses.
+
 #### The broadcast-event wire, decoded (2026-09-25)
 
 The listener is `sub_82245650(listener, header, event)`. It accepts exactly one event
