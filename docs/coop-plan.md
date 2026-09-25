@@ -1089,6 +1089,13 @@ from its own drifted copy. **Which code allocates a pool entry, and what (if any
 about an inventory crosses the wire, are the two open questions — and both are code
 questions answerable without another two-machine session.**
 
+> **THE FIRST IS ANSWERED (2026-09-25) — see "WHO ALLOCATES A POOL ENTRY" below.** An id
+> is popped off a 2,048-entry LIFO free-list private to one manager object
+> (`sub_8223B000`), pushed back on release (`sub_8221E9C8`), and touched by nothing else
+> in the image. It cannot arrive from the network: there is no spawn path that accepts an
+> id. The divergence is therefore a predicted consequence of the allocator, not an extra
+> defect on top of it.
+
 #### The item pool, and why the same index is a different item on each machine
 
 *(Read the four-placement table above first — it refines this
@@ -1144,6 +1151,121 @@ assigns an index, nor show that an index is what crosses the wire — both are c
 questions now, answerable without another two-machine session. The pool base addresses
 are per-run and are recorded only to make the arithmetic checkable; the finding is the
 STRUCTURE (two mirrors, stride `0x298`, index = identity), not the addresses.
+
+#### WHO ALLOCATES A POOL ENTRY — answered, 2026-09-25
+
+The first of the two open code questions is closed. **A pool entry is an index popped
+off a LIFO free-list of 2,048 `int16` ids that lives entirely inside one manager object,
+is initialised once at world construction, and is never read or written by anything
+else.** Three functions are the whole mechanism, and the census below shows there is no
+fourth.
+
+```
+sub_821A0970   @ 0x821A0A20   INIT     freeTop = 2047; list[0..2047] = 2047..0
+sub_8223B000   @ 0x8223B014   ALLOC    id = list[freeTop--]          (the spawner)
+sub_8221E9C8   @ 0x8221ED04   RELEASE  list[++freeTop] = id          (the destroyer)
+```
+
+##### The manager's per-id layout, read off the code
+
+`mgr + 8` is the world (the same world the part-5 chain resolves — `sub_8221E9C8` reads
+`world+0x78` for the game and `world+0x7C` for the user players, exactly as
+`LookupPlayerObject` does). Every per-id array is sized 2,048 and they tile the object
+without a gap, which is the cross-check that the bounds below are right rather than
+guessed:
+
+| offset | stride | what |
+|---|---|---|
+| `mgr + 0x0030 + id*4` | 4 | **object pointer table.** `NULL` = the id is free |
+| `mgr + 0x2E72` | — | `int16` free-list TOP (the stack pointer) |
+| `mgr + 0x2E74 + i*2` | 2 | `int16` free-id stack, 2,048 entries, ends at `0x3E74` |
+| `mgr + 0x4D00 + id*4` | 4 | a per-id word; its ADDRESS is handed to the object as `obj+0x210` |
+| `*(mgr + 0x6D00) + id*0x298` | **664** | **the item record — the object itself** |
+| `*(mgr + 0x6D04) + id*0x4C` | 76 | the aux record |
+
+`0x4D00 + 2048*4 = 0x6D00` exactly, and `0x0030 + 2048*4 = 0x2030` sits below the free
+list. The two heap arrays are allocated in the constructor `sub_8224A268` at
+`0x8224A4B0` and `0x8224A4C8` with literal sizes `1359872 = 2048 * 664` and
+`155648 = 2048 * 76`, so the 664-byte stride the watch measured is stated by the
+allocation, not inferred from the addresses.
+
+##### The allocation, instruction by instruction
+
+```
+8223B014  lha   r11, 0x2e72(r3)     ; r11 = freeTop            (signed!)
+8223B01C  addi  r10, r11, 0x173a    ; 0x173A*2 = 0x2E74
+8223B028  slwi  r10, r10, 1
+8223B03C  lhax  r24, r10, r3        ; id = list[freeTop]       <-- THE POP
+8223B048  cmpwi r11, 0
+8223B04C  bge   0x8223b104          ; freeTop < 0 -> assert, return 0
+8223B104  addi  r11, r11, -1
+8223B10C  sth   r11, 0x2e72(r26)    ; freeTop--
+8223B108  cmpwi cr6, r24, 0         ; and 0 <= id < 0x800
+...
+8223B1E4  r3 = *(mgr+0x6D04) + id*76  -> sub_822D1D30(r3)          = the aux record
+8223B1F8  r3 = *(mgr+0x6D00) + id*664 -> sub_8231BB88(r3, world, aux)
+8223BB30  addi  r11, r24, 0xc
+8223BB38  slwi  r9,  r11, 2
+8223BB44  stwx  r31, r9, r26        ; objTable[id] = obj
+8223BB50  stw   r11, 0x210(r31)     ; obj->0x210 = &mgr[0x4D00 + id*4]
+```
+
+`sub_8231BB88` is a **placement constructor** — it keeps `r3` in `r31` and writes fields
+into it out to at least `+0x1EC`, which fits a 664-byte record. So the object address the
+inventory watch printed *is* `poolBase + id*664`; the `0x298` stride was never a
+coincidence of the heap.
+
+The release is the exact mirror, and it is what makes the recycling visible:
+
+```
+8221ECD4  memset(*(mgr+0x6D00) + id*0x298, 0x298 bytes, 0)   ; the record is ZEROED
+8221ECEC  memset(*(mgr+0x6D04) + id*0x4C,  0x4C  bytes, 0)
+8221ED04  objTable[id] = 0
+8221ED08  freeTop++ ; list[freeTop] = id                      <-- THE PUSH
+```
+
+(That zeroing is the mechanism behind the earlier note that a released prop's first word
+stops being a vtable.)
+
+##### Why this is the answer to the desync, and what it predicts
+
+`sth`/`lha` at `0x2E72` occurs **seven times in the whole 57,822-function image**, in five
+functions. Three are the init, the pop and the push above. The other two are read-only and
+neither is a network path:
+
+- `sub_82187708` @ `0x8218776C` — a spawn budget: return 1 only if `freeTop >= 10`.
+- `sub_82568460` @ `0x8256870C` — a debug stat: `2047 - freeTop`, converted to float for
+  display. The number of live items.
+
+And `mulli ..., 664` occurs **twice in the image** — the construct at `0x8223B1FC` and the
+zero at `0x8221ECD8`. There is no third site, so there is no second way to turn an id into
+a record, and in particular **no spawn path that accepts an id from outside**.
+
+So the id is a pure function of each machine's own local spawn/release history:
+
+1. Both machines initialise the list identically (2047..0), so ids issue **0, 1, 2, …**
+   ascending on a fresh world. **That is why the machines start in agreement** — and why
+   placement 1 resolved to the same index 6 on both sides and worked exactly.
+2. The stack is LIFO, so a released id is the *next* one handed out. **That is the
+   recycling** already measured (pool A index 3 was a `WheelPawn` and became an `M16`).
+3. Any spawn or release one machine performs and the other does not — a zombie dropping
+   an item, a prop broken on one side, a pickup replicated late — **permanently offsets
+   the two stacks**. From then on the same id names two different objects, and it never
+   re-converges, because nothing ever reconciles the list.
+
+This is a progressive, one-way divergence of a structure that is shared only by
+construction. It matches every row of the four-placement table without needing anything
+else to be wrong, and it is consistent with the one row that worked being the earliest.
+
+##### What it does NOT settle
+
+It does not show what crosses the wire. It shows only that **an id cannot be what
+arrives** — nothing can spawn at a given id — so if items are replicated at all, they are
+replicated by something else, and that is still the second open question. It also does not
+prove the drift is what the operator saw; it predicts it. The cheap test is an instrument
+on `sub_8223B000` printing `(id, object, name hash)` on both machines: if the mechanism is
+right, the two logs agree entry for entry until the first unmatched spawn and disagree by
+a constant offset thereafter.
 
 #### The broadcast-event wire, decoded (2026-09-25)
 
