@@ -828,7 +828,130 @@ ticked off" means the code read the wrong ITEM, and there are only two ways:
 
 They predict different logs, which is what the instrument below is shaped around.
 
-### Why (1) is the standing suspicion: two sibling triggers disagree
+### ANSWERED on two real machines, 2026-09-25: the INDEX is right, the ITEM is not
+
+The two-player reading the section below calls owed has landed, on the operator's own
+two machines (host `wivi514` here, joiner `Alaska69420` on czwin, both at `01a0773`,
+both `CZ_ITEM_TRACE=1`, the arm `CZ_COOP_TRIGGER_PLAYER` deliberately OFF so this is the
+defect and not a fix). Logs: `~/DR2CZ-troubleshooting/issue9/bike_0925_{host,joiner}.log`.
+
+**Mechanism (1) is REFUTED and the candidate fix below is NOT the fix.** Every one of
+the seven placement attempts named the same actor on both machines:
+
+```
+[item] SetChuckState 61 TryPlaceItem (coop=1 isHost=1) ... -> playerIdx 1   # host
+[item] SetChuckState 61 TryPlaceItem (coop=0 isHost=0) ... -> playerIdx 1   # joiner
+```
+
+`ctx->0x10` tracks the acting player correctly with two players in the level — 1 when
+the client interacts, 0 when the host does, on **both** sides, seven for seven. The solo
+run that measured it "0 and never changes" was reading a one-player level, which the
+section below already flagged as correct-and-silent; with a real partner it moves. So
+the sphere trigger's `updateCtx + 0x10` is not a stale field, `CZ_COOP_TRIGGER_PLAYER=1`
+would be a no-op on this path, **and it must not be shipped as a fix for issue #9** —
+arming it would retire the report while the defect stayed. (Gotcha 611.)
+
+**Mechanism (2) is CONFIRMED: the two machines hold DIFFERENT ITEMS at the same
+inventory slots.** The actor, inventory and item-object addresses are identical on both
+sides — the objects are replicated — but the item each address *is* differs:
+
+| item object | host calls it | joiner calls it |
+|---|---|---|
+| `AABAD210` | `A55F8BAB` BikeEngine | `52EA0EA6` BikeForks |
+| `AABACCE0` | `5F8D0521` GasolineCanister | `A55F8BAB` BikeEngine |
+| `AABAC518` | `C32E815B` HandleBar | `C32E815B` HandleBar |
+
+and the client's own inventory is a slot short on the host:
+
+```
+host:    player 1 ... inv AADAC818 selected 0 -> AABAD4A8 7EFC90B8 (WrenchLarge)   # 1 slot
+joiner:  player 1 ... inv AADAC818 selected 0 -> AABAD740 5F8D0521 (GasolineCanister)
+                                       slot 1 -> AABAD4A8 7EFC90B8 (WrenchLarge)   # 2 slots
+```
+
+The client picked a gas can up; the host never learned of it, so the host still believes
+that Chuck holds only the wrench. Hence the decision table, seven attempts in order —
+**same actor every time, different part four times out of seven**:
+
+| # | acting | host raises | joiner raises | |
+|---|---|---|---|---|
+| 1 | player 1 | `NoPartsPlaced` | `GasCanPlaced` | ✗ |
+| 2 | player 1 | `NoPartsPlaced` | `GasCanPlaced` | ✗ |
+| 3 | player 1 | `NoPartsPlaced` | `NoPartsPlaced` | ✓ |
+| 4 | player 0 | `GasCanPlaced` | `NoPartsPlaced` | ✗ |
+| 5 | player 0 | `FuelTankPlaced` | `BikeForksPlaced` | ✗ |
+| 6 | player 0 | `HandleBarPlaced` | `HandleBarPlaced` | ✓ |
+| 7 | player 1 | `NoPartsPlaced` | `NoPartsPlaced` | ✓ |
+
+Row 5 is the reporter's sentence rendered exactly — *"replaced with other key items"*:
+one interact, and the two machines tick off **two different objectives**. Row 1 is the
+other half, *"missing"*: the client places a part and the authoritative host scores
+nothing. And the disagreement runs **both ways** — rows 4 and 5 are the HOST placing,
+mis-seen by the client — so this is not "the host cannot see the client", it is that
+**item identity within a replicated inventory is not synchronised at all**.
+
+Note also that the host's `RaiseMissionEvent` for `NoPartsPlaced` comes from a different
+call site (`lr 8240B0EC`) than a real part (`lr 8240B088`) — the `default` arm of the
+hash switch, i.e. the host genuinely fell through all five compares.
+
+
+#### The operator's own eye on the same session, which names the cause upstream of all of it
+
+The trace above says the host does not know what the client is holding. The operator,
+playing it, says **why** — and it is one defect, not four. Their words, 2026-09-25:
+
+> *"A lot of issues happened like being able to get the canister a second time since the
+> guest picked it up first it didn't register in picked item in the list it should track
+> both player inventory and shouldn't be able to respawn if guest already picked it up.
+> And in the picked up stuff only the canister showed up in the picked up stuff for the
+> bike since both grabbed it but didn't appear until the first player picked it up."*
+
+So: **a guest's pickup of a world item is not replicated to the host at all.** Every
+symptom in this issue falls out of that one fact:
+
+- the host's copy of the guest's inventory is short exactly the items the guest picked
+  up (the trace's `player 1` holding only `WrenchLarge`, never the `GasolineCanister`);
+- the world item is therefore still "not taken" on the host, so **it can be picked up a
+  second time** — by the host, or again by the guest;
+- the mission's picked-up list only ticks when **the host** takes something, because the
+  host is the only machine whose pickups reach the authority;
+- and a client placing a part at the bike raises `NoPartsPlaced`, because the part is
+  not in the hands the host is looking at.
+
+**This reframes the fix.** The bike is not where the defect is — it is merely where it
+becomes visible, because Case 0-4 is the one mission that reads an inventory slot's item
+identity and branches on it. The subject is world-item pickup replication, and the
+bike's five slots are just its most legible symptom. (Gotcha 612.)
+
+**Evidence in hand**: five F9 captures with screenshots,
+`~/.config/XenonLive/captures/20260925-2101*` .. `-2109*`. The last (21:09:22) is the
+decisive picture — the garage, both Chucks, the gas canister still sitting on the floor
+beside the bike, and `Dossier 0-4 - Pièces de moto` showing **three** of five slots
+ticked. Three is exactly the number of times the HOST placed a part in the trace. The
+guest's four attempts are the two empty slots.
+
+**Not yet instrumented, and it is what the next session needs**: nothing in
+`CZ_ITEM_TRACE` watches a pickup. It traces the bike path only, so the pickup claim above
+rests on the operator's eye and on the inventory shortfall the trace measures downstream
+of it. An instrument on the pickup/despawn path — the world item, which player took it,
+and whether that crossed the link — would turn this from an inference into a measurement,
+and it is the same shape as the hooks already in `coop_items.cpp`.
+
+**Where this leaves the fix.** The defect is upstream of everything this section decoded:
+not the trigger, not the action context, not the hash table, but the inventory replication
+that gives each machine its own answer to "what is item `AABAD210`". That is a different
+and larger subject than the one-store arm below, and it has not been opened. What is owed
+now is the item-replication path — how an inventory slot's item definition crosses the
+link — and this pair of logs is the specification for it, because it names four concrete
+disagreements with addresses on both sides.
+
+### Why (1) WAS the standing suspicion: two sibling triggers disagree
+
+**RETRACTED 2026-09-25 by the two-machine reading above — mechanism (1) does not
+happen.** The reasoning below is kept because it is a correct reading of the image and
+because it is what the instrument was shaped around; only its conclusion is wrong. The
+field it predicts would be stuck at 0 is measured tracking the acting player on both
+machines.
 
 `cMissionOnTrigger::Update` (`sub_823E79B8`) and `cMissionOnTriggerCuboid::Update`
 (`sub_823E7C48`) are the same routine twice. Both loop `r27/r28 = 0..3` over the user
@@ -856,7 +979,7 @@ path is probably the third caller, `sub_82245650` — the broadcast-event listen
 whose subtype 0 carries a player index at `event+0x14` and a trigger at `event+0x18`.
 The instrument prints the caller's `lr`, so one co-op session names the path.
 
-### And the argument the fire is given is DEAD
+### And the argument the fire is given is DEAD — true, and it does not matter
 
 Following the fire down settles what mechanism (1) would have to be. `sub_823B0068`:
 
@@ -888,7 +1011,14 @@ find 2 sessions, so this is the join path being flaky on a same-box pair and not
 measurement). **The host-side reading stands on its own; the joiner-side reading is
 owed.**
 
-### The candidate fix, built and OFF: `CZ_COOP_TRIGGER_PLAYER=1`
+### The candidate fix, built and OFF — and now REFUTED: `CZ_COOP_TRIGGER_PLAYER=1`
+
+**Do not ship this as the issue-#9 fix.** Its pre-registered prediction — *"with two
+players at the bike, the client places a part and that part ticks off; without the arm,
+the host's own held item ticks off"* — was tested on 2026-09-25 and the CONTROL half
+of it is already false: without the arm the host acts as the client, not as itself. The
+arm writes a value that is already there. The text below stands as the design that was
+built; the mechanism it was built for is refuted above.
 
 The minimal shape is to stop the argument being dead: before the fire runs, write the
 player index the fire was given into `ctx->0x10`, and restore it afterwards
@@ -935,7 +1065,13 @@ bike is; `CASE=1` is Case 0-2, outdoors.
 
 ### What is owed
 
-- **The two-player reading.** Either fix the same-box pair's join (it found the host's
+- ~~**The two-player reading.**~~ **DONE, 2026-09-25** — see the answer at the top of
+  this issue. It refuted mechanism (1) and confirmed mechanism (2).
+- **NEW, and the whole of what is left: the item-replication path.** Two machines give
+  different answers to "what item is object `AABAD210`". Find where an inventory slot's
+  item definition crosses the link and why the two ends disagree. The 09-25 log pair is
+  the specification.
+- ~~**The two-player reading (original text).**~~ Either fix the same-box pair's join (it found the host's
   session and then sat in IDLE) or — better, because it is the reporter's own
   hardware and the reporter has already reproduced it once — ask pokisal to run both
   machines with `CZ_ITEM_TRACE=1`, place one part as the client, and hand back both

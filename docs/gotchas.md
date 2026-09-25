@@ -6917,3 +6917,29 @@ From phase C part 18 (the frame rate — and none of it was work):
     craft. It turned "prefer the exclusive flag" from advice into a measured requirement.
     **Before publishing an enumeration, grep for the container, not just the one you
     found.** (Case Zero, the speedrun block)
+
+611. **A CANDIDATE FIX BUILT FROM A ONE-PLAYER READING CAN BE A NO-OP THAT RETIRES THE
+    REPORT.** Player issue #9's whole investigation turned on a field (`missionCtx+0x10`)
+    measured, in a SOLO run, as "0 and never changes" — correct, and silent, because a
+    one-player level has no second answer. An arm was built to overwrite it
+    (`CZ_COOP_TRIGGER_PLAYER=1`) and its prediction pre-registered. Two real machines
+    then measured the field tracking the acting player correctly, seven placements for
+    seven, on BOTH sides: the arm would have written a value that was already there,
+    "fixed" nothing, and — had it been shipped on the strength of its plausible
+    mechanism — closed the issue while the defect stayed. **A measurement taken in the
+    configuration that cannot exhibit the defect is not weak evidence for the mechanism;
+    it is no evidence.** The doc had flagged it as correct-and-silent and built the arm
+    anyway. (Case Zero, co-op bike parts)
+
+612. **THE PLACE A DEFECT IS VISIBLE IS NOT THE PLACE IT LIVES — AND THE PLAYER'S OWN
+    ACCOUNT MAY NAME THE CAUSE THE TRACE ONLY MEASURES DOWNSTREAM OF.** Four sessions of
+    image reading decoded the bike's mission trigger, its action context, its hash switch
+    and its five event strings, and instrumented all of it. The trace was right and the
+    subject was wrong: the host simply did not know what the client was holding. The
+    operator, playing, said why in one sentence — a guest's pickup of a world item never
+    reaches the host, so the item can be taken twice and the mission list only ticks for
+    the host. Every symptom followed from that. The bike was merely the one mission in
+    Case Zero that reads an inventory slot's item IDENTITY and branches on it, which is
+    what made an invisible replication hole legible. **When a trace says "the input was
+    wrong", instrument where the input comes FROM before decoding any more of what
+    consumes it.** (Case Zero, co-op item replication)
