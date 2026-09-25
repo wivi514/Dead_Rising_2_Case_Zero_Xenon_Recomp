@@ -2162,6 +2162,236 @@ inline bool NoWideFill()
     return o;
 }
 
+// ---- THE HUD EDGE ANCHOR (part 121b) ---------------------------------------
+//
+// THE COMPLAINT, and it is the mirror of the fill one above: *"HUD in 21:9 vs 16:9
+// where 21:9 is too much in the middle of the screen compared to 16:9."* The wide
+// patch scales the UI about the SCREEN CENTRE, which keeps every element's shape
+// correct — nothing is stretched, which is why it was right for four parts — but an
+// element's inset from the EDGE then grows with the screen. Measured on the operator's
+// own A/B captures: the bottom-left title sits 231 px in at 2560x1440 and 671 px in at
+// 3440x1440, and the prediction from the k-scale hit both to the pixel. Censused over
+// 3,968 HUD draws, EVERY element's inset grows by exactly the same 440 px, because the
+// correction is a constant:
+//
+//     want   x' such that the PIXEL inset is preserved: (1+x')*W21 = (1+x)*W16
+//     with   W21 = k*W16  ->  x' = (1+x)/k - 1 = x/k - (1 - 1/k)
+//     i.e.   the existing x/k scale PLUS a constant outward push of (1 - 1/k),
+//            toward the element's own side. 0.2558 NDC = 440 px at 3440x1440.
+//
+// It is derived from k and from nothing else, which is what makes it the operator's
+// "should be placed correctly doesn't matter the resolution even in 31:9": 32:9 and
+// anything else follow from the same two lines.
+//
+// THE TWO MODES ARE NOT THE SAME NUMBER. Wide divides x by k, so the push is
+// (1 - 1/k) on x. Narrow MULTIPLIES y by k (k < 1 there), and the same derivation
+// gives y' = y*k + (1 - k): a push of (1 - k) on y. Deriving one and reusing it for
+// the other would be wrong in both sign and magnitude.
+//
+// The push is applied as a TRANSLATION on the projection's row-0 w term, which needs
+// it in clip units, i.e. s * w_clip. That is only legal if w_clip is constant across
+// the quad — a flat sprite — and it is: the census prints `dz` per UI draw and read
+// 0.00000 on all 3,973 of them. `UiElementRect` re-checks it per draw and declines
+// rather than shearing anything, so the spelling cannot outlive its assumption.
+//
+// Cover quads are exempt by construction: they are the one raw-form class that is
+// SUPPOSED to reach the edges and already does (see CoverQuadWindow).
+// CZ_VK_HUD_ANCHOR=0 is the same-binary control arm.
+inline bool HudAnchorOn()
+{
+    static const bool o = [] {
+        const char* e = Env("CZ_VK_HUD_ANCHOR");
+        return !(e && *e && *e == '0');
+    }();
+    return o;
+}
+
+
+// ---- WHERE THE MIDDLE IS, MEASURED PER FRAME (part 121b) --------------------
+//
+// THE ANCHOR NEEDS A BREAKPOINT, AND A CONSTANT IS THE WRONG KIND OF NUMBER. An
+// element entirely left of the breakpoint is pushed left, entirely right of it pushed
+// right, and anything crossing it is left alone. Two attempts fixed that breakpoint —
+// first as a centre-weighted ramp, then as a constant +-0.15 — and both were wrong in
+// the same way, because this title draws text ONE GLYPH PER DRAW: a string that crosses
+// the breakpoint has some of its characters pushed 440 px and the rest not, and the
+// word breaks in half. The operator's own capture of the first attempt shows it at its
+// worst — the save-slot menu's panel displaced from the text written on it.
+//
+// So the breakpoint is not chosen, it is MEASURED, and the measurement is the one thing
+// that makes a torn element impossible: put the breakpoint where NOTHING IS DRAWN.
+//
+// Each frame, every readable UI element marks the x bins it covers, in the y band it
+// covers. At the frame boundary each band is scanned outward from x = 0 for the run of
+// empty bins around the centre — the band's own gap. An element is anchored only if it
+// lies entirely outside that gap, so by construction no element can straddle it. And a
+// band whose centre is OCCUPIED has no gap at all, which is exactly a menu: the anchor
+// switches itself off wherever the title is drawing across the middle, which is the
+// operator's scope in one sentence — *"the only UI that needs to work with this is the
+// level/health/ppbar and the inventory and mission since it's all that is on the side."*
+//
+// Per BAND and not per screen, because a centred subtitle would otherwise switch the
+// whole HUD off for as long as it is up, and the HUD would jump 440 px when it appeared.
+//
+// WHAT THE FIXED THRESHOLD WAS, AND WHY IT IS GONE. It came from a census of 1,329 HUD
+// draws in three vertical bands, which showed a clean gap in every one of them:
+//
+//     band                         left parts end at   right parts start at
+//     top (health/PP, inventory)        -0.27                +0.49
+//     middle (mission, Zombrex)         -0.19                +0.18
+//     bottom (location, kills)          -0.19                +0.17
+//
+// so +-0.15 sat inside all three. The table is right and the conclusion drawn from it
+// was not: it censused THE HUD, and the frames where a breakpoint does damage are the
+// ones with a MENU up, which that census never looked at — a measurement cannot report
+// on a population it excluded (gotcha 25). Measuring the gap per frame asks the same
+// question of whatever is actually on the screen.
+//
+// It runs one frame behind: the map an element is classified against was built from the
+// previous frame. The HUD's layout is static, so the only cost is that an element in a
+// newly occupied part of the screen is unanchored for its first frame.
+struct HudGapMap
+{
+    static constexpr int kBands = 24;
+    static constexpr int kBins = 256;
+    static constexpr float kLo = -1.3f, kHi = 1.3f;
+    // Being filled by THIS frame; read at the frame boundary and cleared.
+    uint8_t occ[kBands][kBins] = {};
+    // Derived from the PREVIOUS frame: the band's empty run around zero, in NDC.
+    float lo[kBands] = {}, hi[kBands] = {};
+    bool ok[kBands] = {};
+    uint64_t frame = ~0ull;
+    uint64_t marks = 0;
+};
+HudGapMap g_hudGap;
+
+inline int HudGapBand(float y)
+{
+    const int b = int((y - HudGapMap::kLo) / (HudGapMap::kHi - HudGapMap::kLo) *
+                      HudGapMap::kBands);
+    return b < 0 ? 0 : (b >= HudGapMap::kBands ? HudGapMap::kBands - 1 : b);
+}
+inline int HudGapBin(float x)
+{
+    const int b = int((x - HudGapMap::kLo) / (HudGapMap::kHi - HudGapMap::kLo) *
+                      HudGapMap::kBins);
+    return b < 0 ? 0 : (b >= HudGapMap::kBins ? HudGapMap::kBins - 1 : b);
+}
+inline float HudGapBinLo(int b)
+{
+    return HudGapMap::kLo +
+           (HudGapMap::kHi - HudGapMap::kLo) * float(b) / float(HudGapMap::kBins);
+}
+
+// Rebuild the gap from the frame that just ended. Called from the first UI draw of the
+// next one, so it costs nothing on a frame with no UI at all.
+inline void HudGapRebuild()
+{
+    // The narrowest empty run that counts as a middle. Below it the two sides are not
+    // separable and the band is switched off — the safe direction, because not
+    // anchoring leaves an element exactly where the shipped renderer puts it today.
+    static const float minGap = [] {
+        const char* e = Env("CZ_VK_HUD_GAP_MIN");
+        return (e && *e) ? float(atof(e)) : 0.10f;
+    }();
+    const int zero = HudGapBin(0.0f);
+    for (int b = 0; b < HudGapMap::kBands; ++b)
+    {
+        uint8_t* o = g_hudGap.occ[b];
+        if (o[zero])
+        {
+            g_hudGap.ok[b] = false;            // something is drawn across the middle
+        }
+        else
+        {
+            int l = zero, r = zero;
+            while (l > 0 && !o[l - 1]) --l;
+            while (r < HudGapMap::kBins - 1 && !o[r + 1]) ++r;
+            const float xl = HudGapBinLo(l), xr = HudGapBinLo(r + 1);
+            g_hudGap.ok[b] = (xr - xl) >= minGap;
+            g_hudGap.lo[b] = xl;
+            g_hudGap.hi[b] = xr;
+        }
+        memset(o, 0, sizeof g_hudGap.occ[b]);
+    }
+}
+
+inline void HudGapFrame(uint64_t frame)
+{
+    if (frame == g_hudGap.frame)
+        return;
+    // A frame with no UI draws at all leaves the map as it was rather than clearing it,
+    // because a HUD that blinks off for one frame would jump 440 px and back.
+    if (g_hudGap.marks)
+        HudGapRebuild();
+    g_hudGap.marks = 0;
+    g_hudGap.frame = frame;
+}
+
+inline void HudGapMark(float xlo, float xhi, float ylo, float yhi)
+{
+    const int b0 = HudGapBand(std::min(ylo, yhi)), b1 = HudGapBand(std::max(ylo, yhi));
+    const int i0 = HudGapBin(std::min(xlo, xhi)), i1 = HudGapBin(std::max(xlo, xhi));
+    for (int b = b0; b <= b1; ++b)
+        memset(g_hudGap.occ[b] + i0, 1, size_t(i1 - i0 + 1));
+    ++g_hudGap.marks;
+}
+
+// -1 / 0 / +1, against the measured gap of every band this element touches. It has to
+// clear ALL of them: an element tall enough to span a band with a menu in it is part of
+// that menu far more often than it is part of the HUD.
+inline int HudGapSide(float xlo, float xhi, float ylo, float yhi)
+{
+    if (!(std::fabs(xlo) < 8.0f) || !(std::fabs(xhi) < 8.0f) || !(xlo <= xhi))
+        return 0;                              // the census found draws at x = -20001
+    const int b0 = HudGapBand(std::min(ylo, yhi)), b1 = HudGapBand(std::max(ylo, yhi));
+    bool left = true, right = true;
+    for (int b = b0; b <= b1; ++b)
+    {
+        if (!g_hudGap.ok[b])
+            return 0;
+        if (!(xhi <= g_hudGap.lo[b])) left = false;
+        if (!(xlo >= g_hudGap.hi[b])) right = false;
+    }
+    return left ? -1 : (right ? 1 : 0);
+}
+
+// Move a recognized RAW-form projection's origin by `side` pushes. Factored out
+// because THREE places must produce the same bytes or a gate breaks: the upload path,
+// the patch-source verifier and the constant-memo verifier. When part 121's fill fix
+// was written the same requirement was met by hand in five places; doing it by hand a
+// sixth time is how a verifier starts reporting the feature as a defect.
+inline void ApplyHudAnchor(uint32_t* c, int side, float wclip)
+{
+    if (!side)
+        return;
+    const float k = WideFovFactor();
+    const bool narrow = k < 1.0f;
+    const float push = narrow ? (1.0f - k) : (1.0f - 1.0f / k);
+    const int at = narrow ? 7 : 3;          // row 1's w term / row 0's
+    float t;
+    memcpy(&t, c + at, 4);
+    t += float(side) * push * wclip;
+    memcpy(c + at, &t, 4);
+}
+
+// Row 3 of a raw 16:9 perspective is exactly (0,0,1,0) — w_clip = z_view. Reading
+// those four dwords retires every WORLD draw (whose row 3 is a unit view row) for one
+// cache line, which matters because the anchor's side has to be asked on every draw:
+// it is part of the constant memo's key. Is169Perspective then reads all sixteen.
+// The last rect's relative w_clip spread, for the census line only. A plain global and
+// not a return value because the reader has eleven callers' worth of decline paths and
+// threading one more out-parameter through them buys nothing a census field does not.
+// Never read on the draw path.
+float g_uiRectWrel = 0.0f;
+
+inline bool RawFormFast(const uint32_t* c)
+{
+    float r3[4];
+    memcpy(r3, c + 12, sizeof r3);
+    return r3[0] == 0.0f && r3[1] == 0.0f && r3[2] == 1.0f && r3[3] == 0.0f;
+}
+
 // THE 16:9 SCENE PROJECTION, recognized structurally in a VS constant window's c0..c3.
 // The shape is the one part 58's pose work measured (tools/pose_read.py,
 // clip_plane_space.py): row 3 exactly (0,0,1,0) — w_clip = z_view, a perspective —
@@ -6068,6 +6298,21 @@ struct Renderer
     // feature working as a memo defect (the exact interaction the gather already
     // documents for its own verifier).
     uint32_t constMemoVsDynBound = 0;
+    // THE HUD EDGE ANCHOR IS PART OF THIS MEMO'S KEY (part 121b), and it has to be.
+    // The anchor adds a per-ELEMENT translation to the projection the shader reads, and
+    // this memo's whole purpose is to hand the next draw the PREVIOUS draw's uploaded
+    // window when the register file has not changed between them. Two UI elements placed
+    // entirely by their vertex streams change no register between them — batched text is
+    // exactly that — so without these two fields the second would be served the first's
+    // shift: a caption left in the middle of the screen while its bar went to the edge.
+    // That is the same symptom the centre-weighted first attempt was blamed for, and it
+    // would have survived the change of rule.
+    //
+    // `constMemoVsHudW` is in the key as well as the side, because the push is applied in
+    // CLIP units (side * push * w_clip) and w_clip is the element's own depth. Two
+    // elements on the same side at different depths need different bytes.
+    int8_t constMemoVsHudSide = 0;
+    float constMemoVsHudW = 0.0f;
 
     uint64_t frame = 0;
     uint64_t drawsThisFrame = 0;
@@ -23125,6 +23370,260 @@ bool NoDoDraw()
 }
 uint64_t g_noDoDrawSkipped = 0;
 
+// The UI sprite's own NDC RECT for THIS DRAW, in the 16:9 space the guest built it in
+// — read from the REGISTER FILE, i.e. before our wide patch touches anything. That is
+// deliberate: the gap the anchor's extent test sits in was censused at 16:9, so the
+// test has to be asked in 16:9 coordinates or its thresholds mean nothing.
+//
+// The chain is the one the UI vertex shader runs: this title's UI position attribute is
+// kFmt_32_32_32_FLOAT (57), the sprite is placed by the model rows at c8..c10, and
+// c0..c3 projects it. w_clip comes back too, because the anchor is a translation on the
+// projection's row-0 w term and that needs the push in clip units (s * w_clip).
+//
+// WHICH VERTICES, and this is the part the first implementation got wrong. It read the
+// first four vertices of the BUFFER. Text in this title is BATCHED and INDEXED: one
+// vertex buffer holds the glyphs of several widgets and each draw indexes its own
+// slice, so every draw sharing a buffer was classified by the FIRST widget in it — a
+// caption on the right of the screen judged by a bar on the left. This reads the draw's
+// OWN index range instead: min..max vertex, which for a contiguous slice is exactly the
+// draw's vertices and for anything else is a superset, i.e. a WIDER rect, i.e. the
+// conservative direction — a wider rect anchors less often, and not anchoring leaves an
+// element exactly where it is today.
+//
+// Every decline is a decline, never a guess. An element whose rect cannot be read keeps
+// the plain wide patch, which is the pre-part-121b picture, and the counter says so.
+bool UiElementRect(const uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
+                   const ShaderMeta& vs, const uint32_t* window, float& xlo, float& xhi,
+                   float& ylo, float& yhi, float& wclip, bool wholeBuffer)
+{
+    // 3, not 4: a triangle is a legal sprite. The upper bound is a refusal to walk an
+    // unbounded index buffer on the draw path — nothing in this title's UI comes close,
+    // and a draw that did would be geometry rather than a widget.
+    if (draw.indexCount < 3)
+    {
+        COUNT("  ui rect declined: fewer than 3 indices");
+        return false;
+    }
+    // NOT A SPRITE. 68% of the raw-form windows this is asked about are the FRONTEND
+    // SCENES the form's comment names — the prologue's rendered geometry, the menu
+    // backdrops — and they arrive with thousands of indices. Declining them by size is
+    // exact enough to be uninteresting (the largest batched text run this title draws is
+    // three orders of magnitude under the cap) and it keeps the walk below bounded.
+    if (draw.indexCount > 4096)
+    {
+        COUNT("  ui rect declined: more indices than a sprite has (frontend geometry)");
+        return false;
+    }
+    const VertexAttribute* pos = nullptr;
+    for (const VertexAttribute& a : vs.attributes)
+        if (!a.indirect && a.location >= 0 && a.fetchSlot < 96 && a.format == 57)
+        {
+            pos = &a;
+            break;
+        }
+    if (!pos || pos->strideDwords < 3)
+    {
+        COUNT("  ui rect declined: no float3 declared position attribute");
+        return false;
+    }
+    const xenos::VertexFetch vf =
+        xenos::DecodeVertexFetch(regs, FetchSlot(pos->fetchSlot));
+    if (!vf.address || vf.sizeDwords <= pos->offsetDwords + 2)
+    {
+        COUNT("  ui rect declined: empty or too-short vertex fetch");
+        return false;
+    }
+    const uint32_t sva = PhysToVa(vf.address);
+    if (!GuestRangeOk(sva, uint64_t(vf.sizeDwords) * 4))
+    {
+        COUNT("  ui rect declined: vertex buffer outside guest memory");
+        return false;
+    }
+    // How many whole vertices the FETCH CONSTANT says are there. This is the bound, not
+    // draw.indexCount — that is an INDEX count, and walking it as a vertex count past a
+    // short buffer is what made a population of draws read "unreadable".
+    const uint32_t nv = (vf.sizeDwords - pos->offsetDwords) / pos->strideDwords;
+    if (!nv)
+    {
+        COUNT("  ui rect declined: fetch holds no whole vertex");
+        return false;
+    }
+
+    uint32_t vmin, vmax;
+    if (wholeBuffer)
+    {
+        vmin = 0;
+        vmax = nv - 1;
+    }
+    else if (draw.indexed && draw.indexVa)
+    {
+        const uint64_t ib = uint64_t(draw.indexCount) * (draw.index32 ? 4u : 2u);
+        if (!GuestRangeOk(draw.indexVa, ib))
+        {
+            COUNT("  ui rect declined: index buffer outside guest memory");
+            return false;
+        }
+        const uint8_t* isrc = base + draw.indexVa;
+        const uint32_t restart = draw.index32 ? 0xFFFFFFFFu : 0xFFFFu;
+        vmin = 0xFFFFFFFFu;
+        vmax = 0;
+        for (uint32_t i = 0; i < draw.indexCount; ++i)
+        {
+            const uint32_t v = ReadIndex(isrc, i, draw.index32, draw.indexEndian, true);
+            if (v == restart)          // primitive restart is not a vertex
+                continue;
+            if (v < vmin) vmin = v;
+            if (v > vmax) vmax = v;
+        }
+        if (vmin > vmax)
+        {
+            COUNT("  ui rect declined: every index was a primitive restart");
+            return false;
+        }
+    }
+    else
+    {
+        vmin = 0;
+        vmax = draw.indexCount - 1;
+    }
+    if (vmin >= nv)
+    {
+        COUNT("  ui rect declined: index range starts past the fetch's vertices");
+        return false;
+    }
+    if (vmax >= nv)
+    {
+        COUNT("  ui rect: index range clamped to the fetch's vertex count");
+        vmax = nv - 1;
+    }
+    if (vmax - vmin > 4096)
+    {
+        COUNT("  ui rect declined: index range too wide to walk");
+        return false;
+    }
+
+    float P[16], M[12];
+    memcpy(P, window, sizeof P);
+    memcpy(M, window + 8 * 4, sizeof M);
+    const uint8_t* vp = base + sva + uint64_t(pos->offsetDwords) * 4;
+    const uint64_t strideB = uint64_t(pos->strideDwords) * 4;
+    float lox = 1e30f, hix = -1e30f, loy = 1e30f, hiy = -1e30f;
+    float wlo = 1e30f, whi = -1e30f;
+    bool any = false;
+    for (uint32_t v = vmin; v <= vmax; ++v)
+    {
+        float o[3];
+        bool ok = true;
+        for (int kk = 0; kk < 3; ++kk)
+        {
+            uint32_t d;
+            memcpy(&d, vp + strideB * v + kk * 4, 4);
+            d = __builtin_bswap32(d);
+            memcpy(&o[kk], &d, 4);
+            // Padding or a degenerate slot, not a position. Skipping it beats poisoning
+            // the rect — the same call ScanBounds makes, for the same reason.
+            if (!std::isfinite(o[kk]) || std::fabs(o[kk]) > 1e7f)
+                ok = false;
+        }
+        if (!ok)
+            continue;
+        const float mx = M[0] * o[0] + M[1] * o[1] + M[2] * o[2] + M[3];
+        const float my = M[4] * o[0] + M[5] * o[1] + M[6] * o[2] + M[7];
+        const float mz = M[8] * o[0] + M[9] * o[1] + M[10] * o[2] + M[11];
+        const float wc = P[12] * mx + P[13] * my + P[14] * mz + P[15];
+        if (!(std::fabs(wc) > 1e-6f))
+            continue;
+        const float nx = (P[0] * mx + P[1] * my + P[2] * mz + P[3]) / wc;
+        const float ny = (P[4] * mx + P[5] * my + P[6] * mz + P[7]) / wc;
+        if (!std::isfinite(nx) || !std::isfinite(ny))
+            continue;
+        wlo = std::min(wlo, wc); whi = std::max(whi, wc);
+        any = true;
+        lox = std::min(lox, nx); hix = std::max(hix, nx);
+        loy = std::min(loy, ny); hiy = std::max(hiy, ny);
+    }
+    if (!any)
+    {
+        COUNT("  ui rect declined: no vertex survived the finite/near-plane checks");
+        return false;
+    }
+    // HOW FLAT THE SPRITE ACTUALLY IS. The push is a translation on the projection's
+    // row-0 w term, so it moves the element by s * w_clip / w_clip = s in NDC only where
+    // w_clip is the SAME at every corner; where it is not, the element is moved by a
+    // different amount at each corner, which is a shear and not a move.
+    //
+    // The first spelling of this refused any variation at all and declined 21% of the
+    // sprite population — a fifth of the HUD left behind, which is exactly the
+    // half-anchored picture that is worse than not anchoring. So the tolerance is a
+    // measured number with a census field of its own (`ui=...,wrel`) rather than a
+    // hard zero: a relative spread under WTOL displaces the far corner by less than
+    // WTOL of the push, i.e. under a pixel at the operator's resolution.
+    // CZ_VK_HUD_ANCHOR_WTOL raises or lowers it; a very large value is the arm that
+    // measures the distribution this default was chosen from.
+    static const float wtol = [] {
+        const char* e = Env("CZ_VK_HUD_ANCHOR_WTOL");
+        return (e && *e) ? float(atof(e)) : 0.02f;
+    }();
+    const float wmid = (wlo + whi) * 0.5f;
+    const float wrel = (std::fabs(wmid) > 1e-6f) ? (whi - wlo) / std::fabs(wmid) : 1e9f;
+    if (wrel > wtol)
+    {
+        COUNT("  ui rect declined: NOT a flat sprite (w_clip varies across it)");
+        return false;
+    }
+    xlo = lox; xhi = hix; ylo = loy; yhi = hiy; wclip = wmid;
+    g_uiRectWrel = wrel;
+    return true;
+}
+
+// Does this draw's UI element belong to one side of the screen? Returns -1 / 0 / +1
+// and, when non-zero, the w_clip the push must be scaled by.
+//
+// ORDERED FOR THE EARLY-OUT, because it is asked on EVERY draw — the constant memo's
+// key needs it, see Renderer::constMemoVsHudSide. A static bool, then one cache line of
+// the projection's row 3, retires the whole world.
+int HudAnchorForDraw(const uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
+                     const ShaderMeta& vs, const uint32_t* window, float& wclip)
+{
+    wclip = 0.0f;
+    if (!HudAnchorOn() || !AspectPatchActive())
+        return 0;
+    HudGapFrame(R->frame);
+    if (!RawFormFast(window) || !Is169Perspective(window))
+        return 0;
+    // The full-screen fills keep their own overscan margin (part 121) and must not be
+    // anchored either — they are the one raw-form class that is SUPPOSED to reach the
+    // edges, and unpatched they already do.
+    if (!NoWideFill() && CoverQuadWindow(window))
+        return 0;
+    COUNT("draw: UI element considered for the HUD edge anchor (part 121b)");
+    float xlo, xhi, ylo, yhi;
+    if (!UiElementRect(base, draw, regs, vs, window, xlo, xhi, ylo, yhi, wclip, false))
+    {
+        wclip = 0.0f;
+        COUNT("draw: UI element rect unreadable — left where the wide patch put it");
+        return 0;
+    }
+    // Wide anchors on x, narrow on y — the axes swap with the mode, exactly as they do
+    // in PatchWideProjection, so narrow mode hands the gap map a transposed rect and
+    // everything below it is the same code.
+    const bool narrow = NarrowMode();
+    if (narrow)
+        HudGapMark(ylo, yhi, xlo, xhi);
+    else
+        HudGapMark(xlo, xhi, ylo, yhi);
+    const int side = narrow ? HudGapSide(ylo, yhi, xlo, xhi)
+                            : HudGapSide(xlo, xhi, ylo, yhi);
+    if (!side)
+    {
+        // Keep w out of the memo key when nothing will be applied, or every centred
+        // element would cost a constant-window upload for a shift of zero.
+        wclip = 0.0f;
+        COUNT("draw: UI element spans the middle — left centred");
+    }
+    return side;
+}
+
 void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
             const Pm4ShaderBinding& vsBind, const Pm4ShaderBinding& psBind)
 {
@@ -23797,9 +24296,20 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
     // key stays exactly as it was — that path has to remain the pre-part-72 renderer
     // byte for byte, because it is both the control arm and, since part 74, the default.
     const bool shaderKeyed = !ConstGatherOff();
+    // The HUD anchor's per-element term (part 121b), computed here because the memo
+    // cannot key on what it has not been told — see Renderer::constMemoVsHudSide. On a
+    // 16:9 surface, with the arm off, or on any draw that is not a raw-form UI window
+    // this is two loads and a compare and both fields stay zero, so the memo behaves
+    // exactly as it did before.
+    float hudW = 0.0f;
+    const int hudSide =
+        HudAnchorForDraw(base, draw, regs, vs,
+                         &regs[xenos::kAluConstantBase + memoVsBase * 4], hudW);
     const bool vsHit = memoOn && R->constMemoVsValid &&
                        R->constMemoVsVersion == vsVersion &&
                        R->constMemoVsBase == memoVsBase &&
+                       R->constMemoVsHudSide == int8_t(hudSide) &&
+                       R->constMemoVsHudW == hudW &&
                        (!shaderKeyed || R->constMemoVsFor == &vs);
     const bool psHit = memoOn && R->constMemoPsValid &&
                        R->constMemoPsVersion == psVersion &&
@@ -24137,6 +24647,21 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
                     break;
             }
 
+            // THE HUD EDGE ANCHOR (part 121b), applied last and deliberately OUTSIDE the
+            // patch memo above: that memo keys on c0..c3, every UI window in this title
+            // shares one, and this term is per ELEMENT — so it cannot live in it without
+            // serving one element another's shift. The constant memo one level up carries
+            // it in its key instead, which is why a per-element term is safe here at all.
+            //
+            // Gated on `wideForm == 1` as well as on the side: form 1 is the recognized
+            // raw projection this push is derived for, form 3 is the exempt fill, and
+            // anything else means the window was not patched and must not be translated.
+            if (hudSide && wideForm == 1)
+            {
+                ApplyHudAnchor(patchAt, hudSide, hudW);
+                COUNT("draw: HUD element anchored to the screen edge (part 121b)");
+            }
+
             if (!patchInPlace)
             {
                 // CZ_VK_VERIFY_PATCH_SRC=1 — the arm that makes the shortcut believable.
@@ -24159,8 +24684,12 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
                     uint32_t want[16];
                     memcpy(want, dst, sizeof want);   // the arena's own c0..c3
                     PatchFovProjection(want, FovHalfRadThisFrame());
-                    if (AspectPatchActive())
-                        PatchWideProjection(want, coverNow);
+                    // The anchor too, or this gate reports the FEATURE as a defect on
+                    // every anchored draw — a verifier that cries wolf is retired by
+                    // whoever next runs it, which is worse than not having one.
+                    if (AspectPatchActive() &&
+                        PatchWideProjection(want, coverNow) == 1 && hudSide)
+                        ApplyHudAnchor(want, hudSide, hudW);
                     if (g_patchSrcVerifyPoison)
                         want[0] ^= 0x40000000u;
                     ++g_patchSrcChecked;
@@ -24180,6 +24709,8 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
             }
             _pcpatch.Close();
             R->constMemoVsFor = &vs;
+            R->constMemoVsHudSide = int8_t(hudSide);
+            R->constMemoVsHudW = hudW;
             R->constMemoVsValid = true;
             R->constMemoVsVersion = vsVersion;
             R->constMemoVsBase = vsBase;
@@ -24213,9 +24744,11 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
             // same order, or the verifier would report every patched projection as a
             // memo defect.
             PatchFovProjection(scratch.data(), FovHalfRadThisFrame());
-            if (AspectPatchActive())
+            if (AspectPatchActive() &&
                 PatchWideProjection(scratch.data(),
-                                    !NoWideFill() && CoverQuadWindow(scratch.data()));
+                                    !NoWideFill() && CoverQuadWindow(scratch.data())) == 1 &&
+                hudSide)
+                ApplyHudAnchor(scratch.data(), hudSide, hudW);
             if (g_constMemoVerifyPoison)
             {
                 // POISON A REGISTER THE COMPARE ACTUALLY LOOKS AT. Under the gather the
@@ -24583,10 +25116,37 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
     // xf=2 indicts something after the classifier, and one reading xf=0 with a unit
     // row3 names a camera the classifier rejects (its norms say why).
     int xfForm = -1; float xfB = 0.0f, xfN0 = 0.0f, xfN1 = 0.0f, xfN3 = 0.0f;
+    // THE UI ELEMENT'S OWN 16:9 NDC RECT AND THE SIDE THE ANCHOR MAKES OF IT (part
+    // 121b). `ui=` reads `side,xlo/xhi,ylo/yhi,w`, with side -9 for a draw that is not a
+    // readable raw-form UI window at all. This is what turns the anchor from a claim into
+    // something a census can check: the gap table the rule's threshold sits in was
+    // measured off this field, and a widget that TEARS shows as two draws of one widget
+    // disagreeing about their side — which is the defect the first two attempts had and
+    // no picture told me about.
+    int uiSide = -9;
+    float uiXlo = 0.0f, uiXhi = 0.0f, uiYlo = 0.0f, uiYhi = 0.0f, uiW = 0.0f;
+    float uiWrel = 0.0f;
+    // The same rect taken over the WHOLE vertex buffer rather than this draw's index
+    // slice. This title draws text ONE GLYPH PER DRAW — four vertices each — so a rule
+    // that classifies a DRAW classifies a character, and a string crossing the middle
+    // tears mid-word. `uib=` is what says whether the BUFFER is the widget.
+    float uiBXlo = 0.0f, uiBXhi = 0.0f, uiBYlo = 0.0f, uiBYhi = 0.0f;
     if (drawCensus || burstCensus)
     {
         const uint32_t* c0 = &regs[xenos::kAluConstantBase];
         xfForm = SceneXformForm(c0, xfB);
+        if (RawFormFast(c0) && Is169Perspective(c0) &&
+            UiElementRect(base, draw, regs, vs, c0, uiXlo, uiXhi, uiYlo, uiYhi, uiW,
+                          false))
+        {
+            uiSide = NarrowMode() ? HudGapSide(uiYlo, uiYhi, uiXlo, uiXhi)
+                                  : HudGapSide(uiXlo, uiXhi, uiYlo, uiYhi);
+            uiWrel = g_uiRectWrel;
+            float bw;
+            if (!UiElementRect(base, draw, regs, vs, c0, uiBXlo, uiBXhi, uiBYlo, uiBYhi,
+                               bw, true))
+                uiBXlo = uiBXhi = uiBYlo = uiBYhi = 0.0f;
+        }
         float m[16];
         memcpy(m, c0, sizeof m);
         xfN0 = std::sqrt(m[0]*m[0] + m[1]*m[1] + m[2]*m[2]);
@@ -24615,7 +25175,7 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
                        // wide patch now treats the two differently — so a census that
                        // could not show which class a draw is could not explain a
                        // widescreen complaint about it. See CoverQuadWindow.
-                       " m=%g/%g,%g/%g"
+                       " m=%g/%g,%g/%g ui=%d,%g/%g,%g/%g,%g,%g uib=%g/%g,%g/%g"
                        // THE TILE (player issue #3): the window offset and scissor say
                        // which half of the screen this draw is a replay for, so two
                        // copies of one draw can be read side by side when only one of
@@ -24679,6 +25239,8 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
                        F32(regs[xenos::kAluConstantBase + 8 * 4 + 3]),
                        F32(regs[xenos::kAluConstantBase + 9 * 4 + 1]),
                        F32(regs[xenos::kAluConstantBase + 9 * 4 + 3]),
+                       uiSide, uiXlo, uiXhi, uiYlo, uiYhi, uiW, uiWrel,
+                       uiBXlo, uiBXhi, uiBYlo, uiBYhi,
                        regs[xenos::kPaScWindowOffset], regs[xenos::kPaScWindowScissorTl],
                        regs[xenos::kPaScWindowScissorBr], regs[xenos::kRbColorControl],
                        F32(regs[xenos::kRbAlphaRef]),
