@@ -6862,3 +6862,58 @@ From phase C part 18 (the frame rate — and none of it was work):
     a fill has 1.2) and read the rest only past that gate. The same reasoning put the
     whole test behind `wideNow`, so a 16:9 player never pays it at all.
     (Case Zero part 121)
+
+606. **A PUBLISHED INTERFACE NEEDS A SECOND IMPLEMENTATION THAT DECODES BY OFFSET, NOT BY
+    INCLUDING YOUR STRUCT.** The speedrun status block is the first thing this port
+    publishes to an outside reader (a runner's load remover), so its field offsets are
+    frozen in a way nothing else here is. A reader that `#include`s the header cannot
+    catch the defect that matters — a field moving — because it moves in lockstep.
+    `tools/speedrun_block_read.py` unpacks every field by literal offset against the
+    documented table, so a layout change breaks the gate before it breaks the consumer.
+    Same reasoning as the two-sided shader-dimension census: an oracle that shares your
+    source of truth is not an oracle. (Case Zero, the speedrun block)
+
+607. **WHEN AN OPERATOR HAS TO VERIFY SOMETHING ACROSS A SESSION, KEEP A RING AND PUT IT
+    IN THE CAPTURE — DO NOT ASK THEM TO TIME A KEYPRESS.** The operator offered to press
+    F9 "at or near" each cutscene so a name decode could be checked. That makes the
+    evidence depend on their reflexes, and they said themselves they missed one and
+    pressed late after another. Recording every transition into a 64-entry ring and
+    appending it to the F9 report's `system.txt` made the timing irrelevant: all six
+    presses carried the complete history, and the two they were worried about were fine.
+    The ring also caught a state a 30 Hz reader structurally cannot — `LegalScreen` lasts
+    7 ms. **An event ring beats a polled sample for anything a human triggers, and it
+    turns "press it at the right moment" into "press it whenever".** (Case Zero, the
+    speedrun block)
+
+608. **A POINTER CHAIN GUESSED FROM A SHARED OFFSET RETURNS A PLAUSIBLE ZERO, WHICH IS
+    INDISTINGUISHABLE FROM "NOT LOADED YET".** Three callers reach the mission clock by
+    `<owner> -> +0x78 -> +0x48`, but each gets `<owner>` from an object of its own, so
+    none yields a global. Seeing that `*(0x82A57428)` also had a `+0x2C` like one of those
+    owners, I concluded it WAS the owner and read `+0x48` of it directly. That reads 0 —
+    and 0 is exactly what "no level is loaded" looks like, so the button would have sat
+    there refusing forever and looking correct. The real path needed two more hops
+    (`+0x2C` then `+0x78`), found by following `sub_82475928`'s `cineMgr+0x18` to the same
+    owner and then measuring that `*(cineMgr+0x18)` EQUALS `*(root+0x2C)`. **Validate a
+    derived pointer against an invariant the target must satisfy** — here hours<=23,
+    minutes<=59, seconds<=59, days<=32, plus "it advances" — because a pointer chain has
+    no error channel of its own. (Case Zero, the mission clock)
+
+609. **TWO CONTROLS THAT SOUND LIKE ONE SUBJECT CAN BE ENTIRELY SEPARATE MECHANISMS.** The
+    F4 `TIME OF DAY` rows had been read, reasonably, as "change the time". They set the
+    title's `DISABLE TIME OF DAY` bool and the hour the LIGHTING interpolates; the mission
+    clock keeps its own time underneath and no mission gate ever moves. Both are called
+    "time of day" by the game itself. The fix was four more rows on the title's own
+    `SkipHour` path, kept deliberately separate — a mode on the existing rows would make
+    "did I lock it or move it?" unanswerable from the menu, and the advance now warns when
+    the lock is on, because the lighting will then stay put while the clock runs.
+    (Case Zero, the mission clock)
+
+610. **A NAME VOCABULARY TAKEN FROM ONE ARCHIVE IS NOT THE VOCABULARY.** The cutscene-name
+    documentation said "one of these 29", from `data/cinematics/cinematics.big`. An
+    operator playthrough produced `workbench1` and `625_pawncam`, which live in a SECOND
+    archive nobody had listed — `permanent.big`, nine more entries. That was not a cosmetic
+    correction: `workbench1` is the combo-weapon crafting animation and runs through the
+    same cinematic manager, so the "is a cutscene playing" flag fires for ~0.3 s on every
+    craft. It turned "prefer the exclusive flag" from advice into a measured requirement.
+    **Before publishing an enumeration, grep for the container, not just the one you
+    found.** (Case Zero, the speedrun block)

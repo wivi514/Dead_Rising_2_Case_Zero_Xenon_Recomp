@@ -42,7 +42,7 @@ the part a future Case West port will reuse verbatim:
 
 ## Transferable gotchas
 
-**THE FULL NUMBERED LEDGER IS `docs/gotchas.md` — 583 entries, and every "gotcha N"
+**THE FULL NUMBERED LEDGER IS `docs/gotchas.md` — 610 entries, and every "gotcha N"
 reference in this repo and in the docs resolves there.** It was split out of this file
 on 2026-08-08, when this file reached 308 KB and was being loaded into every session
 whole. Read it **before making a measurement claim, adding an instrument, believing a
@@ -614,6 +614,8 @@ mask; trust the microcode's own swizzles.
   - **`steam-deck-plan.md`** (the Deck hypotheses and their tests; §6 is part 105's record)
     and **`steam-deck-testing.md`** (the player's walk-through; what a Deck report must
     contain). Every build writes `cz_runtime.log` and has `--diag` as of part 105.
+  - **`speedrunning.md`** — **the SPEEDRUNNER HANDOUT**, self-contained and linked from the
+    public README. Give this one out; `speedrun-block.md` below is the record behind it.
   - **`speedrun-block.md`** — **A PUBLISHED EXTERNAL CONTRACT, the only one this port
     has.** A Case Zero runner's load remover reads 256 bytes at the fixed host address
     `0x0000435A00000000` (magic `CZSPDRN1`, v1, ON by default) for "am I loading", "am I
