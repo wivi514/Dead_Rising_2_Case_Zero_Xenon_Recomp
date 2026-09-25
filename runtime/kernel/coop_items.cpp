@@ -604,10 +604,51 @@ PPC_FUNC(sub_82245650)
                 fprintf(stderr, "[item] broadcast event subtype %u seen for the first time "
                                 "(%s)\n", sub, Side(ctx, base));
             }
-            if (sub == 0 || Level() >= 2)
-                fprintf(stderr, "[item] Event subtype %u (%s): player %d trigger %08X\n", sub,
-                        Side(ctx, base), int32_t(PPC_LOAD_U32(ev + 0x14)),
-                        PPC_LOAD_U32(ev + 0x18));
+            // EVERY event, not just the fire, and with the payload words the handler
+            // for that subtype actually reads (the wire map is in docs/coop-plan.md).
+            // A first-sighting census cannot be correlated in TIME with a pickup, and
+            // correlation is the whole question: if a guest's pickup is replicated at
+            // all, a message lands within a frame or two of it on the host. ~950
+            // events in a whole session, so the volume is nil.
+            const uint32_t p14 = PPC_LOAD_U32(ev + 0x14);
+            switch (sub)
+            {
+            case 0:
+                fprintf(stderr, "[item] Event subtype 0 (%s): player %d trigger %08X\n",
+                        Side(ctx, base), int32_t(p14), PPC_LOAD_U32(ev + 0x18));
+                break;
+            case 1:
+            case 2:
+                fprintf(stderr, "[item] Event subtype %u (%s): player %d args %08X %08X "
+                                "%08X %08X\n", sub, Side(ctx, base), int32_t(p14),
+                        PPC_LOAD_U32(ev + 0x1C), PPC_LOAD_U32(ev + 0x20),
+                        PPC_LOAD_U32(ev + 0x24), PPC_LOAD_U32(ev + 0x28));
+                break;
+            case 3:
+            case 4:
+                fprintf(stderr, "[item] Event subtype %u (%s): player %d obj %08X b30 %02X "
+                                "b31 %02X\n", sub, Side(ctx, base), int32_t(p14),
+                        PPC_LOAD_U32(ev + 0x2C), PPC_LOAD_U8(ev + 0x30),
+                        PPC_LOAD_U8(ev + 0x31));
+                break;
+            case 6:
+                fprintf(stderr, "[item] Event subtype 6 (%s): player %d, players %d and %d\n",
+                        Side(ctx, base), int32_t(p14), int32_t(PPC_LOAD_U32(ev + 0x3C)),
+                        int32_t(PPC_LOAD_U32(ev + 0x40)));
+                break;
+            case 9:
+            case 10:
+                fprintf(stderr, "[item] Event subtype %u (%s): player %d f60 %08X f64 %08X\n",
+                        sub, Side(ctx, base), int32_t(p14), PPC_LOAD_U32(ev + 0x60),
+                        PPC_LOAD_U32(ev + 0x64));
+                break;
+            default:
+                fprintf(stderr, "[item] Event subtype %u (%s): player %d%s\n", sub,
+                        Side(ctx, base), int32_t(p14),
+                        sub == 8 ? " — subtype 8's handler IS the exit: the title does "
+                                   "nothing with this" : "");
+                break;
+            }
         }
     }
     __imp__sub_82245650(ctx, base);
