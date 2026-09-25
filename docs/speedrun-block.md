@@ -1,3 +1,7 @@
+**If you are a speedrunner, read [`speedrunning.md`](speedrunning.md) instead** — it is
+the complete, self-contained interface document. This file is the engineering record: how
+each address was found, what was measured, and what was retracted.
+
 # The speedrun status block — a stable interface for load removers and autosplitters
 
 **Requested by Pokisal (2026-09-24), who speedruns Case Zero and needs the same

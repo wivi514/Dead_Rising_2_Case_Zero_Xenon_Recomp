@@ -163,6 +163,16 @@ renderer and audio build-out records, and the measurement discipline that kept
 it honest. Start with `docs/xenia-capture-analysis.md` and `docs/gotchas.md`.
 The original day-1 dev README is preserved at `docs/dev-readme-day1.md`.
 
+## For speedrunners
+
+The game publishes its loading and cutscene state at a fixed address so a load remover or
+autosplitter does not have to chase pointers through a binary that gets rebuilt constantly.
+**[`docs/speedrunning.md`](docs/speedrunning.md)** is the complete interface: the field
+layout, the cutscene names, example readers, and what is verified versus what is not.
+
+Requests for extra fields are welcome — there is room reserved for them, and adding one
+breaks nobody.
+
 ## Support the project
 
 If this port made your day and you'd like to support the work,
