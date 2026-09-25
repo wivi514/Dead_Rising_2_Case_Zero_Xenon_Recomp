@@ -23019,3 +23019,140 @@ any wide mode rather than discovering it from a player report, and remember that
 class is invisible to a 16:9 test matrix — the defect's threshold is
 `16/9 * margin = 2.1333:1`, so every gate this project runs at 1280x720 or 2560x1440
 passes with it fully present.
+
+## §6fg — Player report (ultrawide), the other half: THE HUD SAT TOO FAR IN, and the
+## fix took three goes because the BREAKPOINT between "left of the middle" and "right
+## of it" cannot be chosen — it has to be measured
+
+The same operator session as §6ff, same panel, 2026-09-24: *"HUD in 21:9 vs 16:9 where
+21:9 is too much in the middle of the screen compared to 16:9"*, and a second sentence
+that set the shape of the answer — *"Also shoud be able to be placed correctly doesn't
+matter the resolution even in 31:9 or others that we do not support for now."*
+
+### 1. The arithmetic, which was never the hard part
+
+The wide patch divides a raw-form (UI) projection's x scale by `k = 9W/16H`. That is a
+scale about the SCREEN CENTRE: every element keeps its proportions — nothing is
+stretched, which is why it survived four parts — and every element's inset from the
+EDGE grows by the same amount. Their own A/B captures: the bottom-left title 231 px in
+at 2560x1440 and **671 px** in at 3440x1440. Predicted 671 and 2784 from the 16:9
+positions before measuring; measured 671 and 2784.
+
+Preserving the PIXEL inset instead of the fractional one:
+
+        (1 + x') * W21 = (1 + x) * W16 ,  W21 = k * W16
+    =>   x' = (1 + x)/k - 1 = x/k - (1 - 1/k)
+
+i.e. the scale the patch already applies, plus a constant outward push of `(1 - 1/k)`
+toward the element's own side — 0.2558 NDC, 440 px at 3440x1440. Censused over 3,968
+HUD draws, every element's inset grows by exactly that same 440 px, which is what says
+the correction really is a constant and not a function of position.
+
+Derived from `k` alone, so 32:9 and anything else follow with no extra work — which is
+the operator's second sentence answered.
+
+Narrow mode is **not** the same number with a sign flipped. There the raw patch
+MULTIPLIES the y scale by `k` (k < 1), and the same derivation gives `y' = y*k + (1-k)`:
+a push of `(1 - k)`, different in both sign and magnitude from `(1 - 1/k)`.
+
+It is written as a translation on the projection's row-0 w term (row 1 in narrow mode),
+because for a flat sprite `w_clip` is constant across the quad and `p03 += s * w_clip`
+is then exactly a constant NDC shift. The census measured `dz = 0.00000` on all 3,973
+UI draws it looked at — and the implementation re-checks it per draw anyway
+(`CZ_VK_HUD_ANCHOR_WTOL`, census field `ui=...,wrel`), because a draw nobody censused
+is a draw the census cannot speak for.
+
+### 2. Three rules for the breakpoint, and why the first two tore the screen
+
+Anchoring is necessarily per-element: preserving the left inset needs a push left and
+the right inset a push right, and no single affine map does both. So something has to
+decide which side an element belongs to, and that decision is the whole problem.
+
+**Rule 1, a centre-weighted ramp.** Push weighted by how far from centre the element
+already sits. It shipped to the operator and their capture
+(`~/DR2CZ-troubleshooting/play/hudanchor_0924_2136/capture_015192.ppm`) is the clearest
+statement of what is wrong with it: the save-slot menu's panel displaced from the text
+written on it, *PROFIL DU JOUEUR* cut in half, the red/blue frame edges split from the
+frame. A widget spans a range of x, so a push that varies with x pulls it apart. Their
+verdict: *"you seem to do it for all UI but the only Ui that needs to work with this is
+the level/health/ppbar and the inventory and mission since it's all that is on the side
+... the rest looks fine in 21:9 so no need to change them."*
+
+**Rule 2, a fixed `+-0.15`.** Taken from a census of 1,329 HUD draws in three vertical
+bands, which showed a clean gap in every one:
+
+    band                         left parts end at   right parts start at
+    top (health/PP, inventory)        -0.27                +0.49
+    middle (mission, Zombrex)         -0.19                +0.18
+    bottom (location, kills)          -0.19                +0.17
+
+The table is right. The conclusion drawn from it was not, for two separate reasons, and
+both are the same mistake in different clothes — **a census speaks only for the
+population it sampled** (gotcha 25).
+
+  - It censused the HUD. The frames where a breakpoint does damage are the ones with a
+    MENU up, and no menu frame was in it.
+  - It treated a DRAW as an element. **This title draws text one glyph per draw, four
+    vertices each**, so a rule that classifies a draw classifies a CHARACTER. Measured
+    in the census, mid-word, at `y -0.267..-0.243`:
+
+        -1  -0.191..-0.181   pushed 440 px left
+        -1  -0.177..-0.167   pushed
+        -1  -0.163..-0.154   pushed
+         0  -0.150..-0.140   left alone      <-- the word breaks here
+         0  -0.136..-0.126   left alone
+
+    Re-measured over the same run, the gap the fixed threshold was supposed to sit in
+    had closed to **-0.1537 / +0.1510** against a threshold of 0.15 — because what
+    reaches inward is not the HUD, it is a centred string that the HUD census never saw.
+
+**Rule 3, and the one that shipped: measure the middle, per frame, per band.** Every
+readable UI element marks the x bins it covers in the y bands it covers. At the frame
+boundary each of 24 bands is scanned outward from x = 0 for the run of bins where
+NOTHING IS DRAWN — the band's own gap. An element is anchored only if it lies entirely
+outside that run.
+
+Two properties fall out, and they are the reason this is the right shape rather than a
+better-tuned version of rule 2:
+
+  - **No element can straddle the breakpoint**, because the breakpoint is placed where
+    no element is. Tearing is not made rarer, it is made impossible (gotcha 361's
+    shape: make it impossible, not rarer).
+  - **A band with something drawn across the middle has no gap at all**, so the anchor
+    switches itself off there. That is exactly a menu, a title card, a subtitle or a
+    centred banner — and it is the operator's scope expressed as a measurement instead
+    of as a list of widgets to special-case.
+
+Per BAND and not per screen: a centred subtitle would otherwise switch the whole HUD
+off for as long as it was up, and the HUD would jump 440 px when it appeared.
+
+It runs one frame behind — the map an element is classified against was built from the
+previous frame. The HUD's layout is static, so the cost is that an element appearing in
+a newly occupied part of the screen is unanchored for its first frame.
+
+### 3. Four things in the implementation that are load-bearing
+
+**The element's rect comes from its OWN index range.** The first reader took the
+buffer's first four vertices, which for batched geometry hands every draw sharing a
+buffer the first one's rect. The bound on the read is still the fetch constant's own
+vertex count (`sizeDwords / stride`) and never `draw.indexCount`, which is an INDEX
+count — walking it as a vertex count past a short buffer is what made a population of
+draws read "unreadable", and unreadable silently means "left where it was".
+
+**The shift is part of the constant memo's key.** That memo hands the next draw the
+previous draw's uploaded constant window whenever no register changed between them —
+and two UI elements placed entirely by their vertex streams change no register at all.
+Without `constMemoVsHudSide`/`constMemoVsHudW` in the key, the second element would be
+served the first's shift. This would have reproduced rule 1's symptom exactly, under a
+rule that had been fixed, which is the sort of thing that costs a whole session.
+
+**Both patch verifiers apply the anchor too.** `CZ_VK_VERIFY_PATCH_SRC` and
+`CZ_VK_VERIFY_CONST_MEMO` compare a recomputed window against the arena's. Leaving the
+anchor out of the recompute would make both of them report the feature as a defect on
+every anchored draw — and a gate that cries wolf is retired by whoever next runs it.
+
+**Every decline has its own counter.** The first build reported 73.6% of candidates
+"unreadable", which is a number with no mechanism attached. Split by reason it was
+**68.9% point sprites** — `prim=1`, `verts=1`, one vertex shader, 1,704 of 2,776
+raw-form draws in the census — which have no extent to anchor by and are correctly left
+alone, plus 4.4% declined for a non-flat `w_clip`. Nothing that is a widget was in it.

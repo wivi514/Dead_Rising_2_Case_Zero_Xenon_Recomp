@@ -6862,3 +6862,42 @@ From phase C part 18 (the frame rate — and none of it was work):
     a fill has 1.2) and read the rest only past that gate. The same reasoning put the
     whole test behind `wideNow`, so a 16:9 player never pays it at all.
     (Case Zero part 121)
+
+606. **A BREAKPOINT IN SCREEN SPACE SHOULD BE MEASURED FROM WHAT IS ON THE SCREEN, NOT
+    CHOSEN.** The ultrawide HUD anchor has to decide, per element, whether it belongs to
+    the left of the screen or the right, and anything crossing the decision point is
+    torn in half by it. Two attempts chose the point — a centre-weighted ramp, then a
+    constant +-0.15 NDC taken from a census — and both tore something the census had not
+    sampled. The third marks the columns every UI element covers and puts the breakpoint
+    in the run of columns where NOTHING IS DRAWN. Straddling then cannot happen: the
+    point is defined as a place with no element in it. **When a rule's failure mode is
+    "an object crosses my threshold", define the threshold as a gap the objects
+    themselves leave, and the failure mode is gone rather than rarer** (compare 361,
+    make it impossible rather than rarer). The same measurement answers a second
+    question for free: a region with no gap at all is a region the title is drawing
+    ACROSS, which is exactly a menu, so the feature switches itself off there without
+    anyone enumerating menus. (Case Zero part 121b)
+
+607. **A BATCHED DRAW'S BOUNDING BOX IS A HULL, NOT A FOOTPRINT — DO NOT TREAT IT AS
+    OCCUPANCY.** This title batches HUD sprites into Xenos QUAD LISTS: one draw of 128
+    vertices is 32 independent quads scattered over the whole screen. Marking that
+    draw's bounding box as "occupied" filled the middle of 16 of 24 bands in every frame
+    carrying the full HUD, and the health/PP/level widget sitting right beside it was
+    therefore classified as spanning the middle and never moved — while the counter
+    cheerfully reported 270,942 draws anchored. **A LIST primitive is independent
+    geometry and has to be measured per group of its own size (4 for a quad list, 3 for
+    a triangle or rect list); only a strip, a fan or a single sprite is one box.** The
+    give-away shape: a draw whose vertex count is far more than its primitive needs is
+    not one object. (Case Zero part 121b)
+
+608. **A COUNTER SAYING THE ARM FIRED IS NOT A MEASUREMENT THAT IT REACHED THE THING YOU
+    CARE ABOUT.** "270,942 draws anchored" and "the widget the player complained about
+    has not moved one pixel" were both true at once, and only a PIXEL measurement could
+    tell them apart: the health blocks sat at columns 797..992 in both arms, against
+    357..552 in the 16:9 reference, i.e. exactly the 440 px the anchor was supposed to
+    remove. Pick the ONE object the report names, measure it in the arm, in the control
+    and in the reference, and read the three numbers together — an aggregate counter
+    over a population you did not pick cannot do it (151 is the same lesson for an arm
+    with no counter; this is its mirror, a counter with no object). The cheap companion
+    is a SCALE arm on the effect: at 3x the push, whatever moves three times as far is
+    what the mechanism actually reaches. (Case Zero part 121b)

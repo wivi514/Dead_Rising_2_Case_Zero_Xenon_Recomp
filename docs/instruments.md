@@ -2509,6 +2509,46 @@ CZ_VK_NO_WIDE_FILL=1  **the control arm for the full-screen FILL exemption** (pa
                    and the draw census prints each draw's `m=xscale/xoff,yscale/yoff`
                    so a census says which class a draw is. `phase5-notes.md` §6ff,
                    gotchas 601-605
+CZ_VK_HUD_ANCHOR=0 **the control arm for the HUD EDGE ANCHOR** (part 121b). The wide
+                   patch scales the UI about the screen CENTRE, so an element's inset
+                   from the EDGE grows with the screen: the operator measured the
+                   bottom-left title 231 px in at 2560x1440 and 671 px in at 3440x1440.
+                   The default now adds a constant outward push of `(1 - 1/k)` — 440 px
+                   at 3440x1440, `(1 - k)` on the vertical in narrow mode — to any
+                   element that belongs to one side of the screen. Verified to the pixel
+                   against a 16:9 run: the kill counter's inset from the right edge is
+                   **215 px at 2560x1440, 214 px anchored at 3440x1440, and 655 px
+                   (= 215 + 440) with this arm set**.
+                   **WHICH side an element belongs to is MEASURED, not thresholded**:
+                   every UI element marks the columns it covers in the band it covers,
+                   and each frame's breakpoint is the run of columns where nothing is
+                   drawn, so nothing can straddle it. A band with something drawn ACROSS
+                   the middle has no such run and the anchor switches itself off there —
+                   which is how menus, title cards and centred subtitles are left alone
+                   without enumerating them. Engagement evidence: the counters
+                   `draw: HUD element anchored to the screen edge (part 121b)` against
+                   `spans the middle -- left centred` and the named decline reasons.
+                   Every intro logo and fade is BYTE-IDENTICAL with and without it.
+                   A 16:9 player never reaches the code. `phase5-notes.md` §6fg,
+                   gotchas 606-608
+CZ_VK_HUD_ANCHOR_SCALE=N  **the POSITIVE CONTROL for the anchor** (part 121b): multiply
+                   the push. At 3 whatever moves three times as far is what the
+                   mechanism actually reaches — which is the question a counter cannot
+                   answer, and the first build of this feature reported 270,942 draws
+                   anchored while the widget the player named had not moved a pixel
+                   (gotcha 608)
+CZ_VK_HUD_GAP_MIN=f  the narrowest empty run that counts as a middle, default 0.10 NDC.
+                   Below it the two sides are not separable and the band is switched
+                   off, which leaves its elements exactly where the shipped renderer
+                   puts them today. Raise it to make the anchor more conservative
+CZ_VK_HUD_ANCHOR_WTOL=f  how flat a sprite has to be before the anchor will move it,
+                   default 0.02 relative spread in `w_clip` across the element. The push
+                   is a translation on the projection's row-0 w term, which is a constant
+                   NDC shift only where `w_clip` is the same at every corner; past the
+                   tolerance the element would SHEAR rather than move and is declined
+                   instead. A very large value is the arm that measures the distribution
+                   this default came from — the census prints each element's spread as
+                   the last field of `ui=`
 CZ_VK_WIDE=1|0     **the env arm for wide mode** (part 60 night item 3), winning
                    over the settings file's `aspect=` value. BOOT-LATCHED — the mode
                    reshapes every render-pipeline surface, so it applies at launch
