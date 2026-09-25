@@ -7,59 +7,31 @@ NOT the cause is what stops the next session re-buying it.
 
 Next, in order:
 
-0zd. **THE SPEEDRUN BLOCK'S TWO OWED CHECKS — both free, neither done.** A Case Zero
-    runner asked for load/cutscene signals at a stable address and they shipped
-    (`docs/speedrun-block.md`, commit 18bc6a2): 256 bytes at the fixed host address
-    `0x0000435A00000000`, ON by default, boot-to-gameplay gate clean with every flag
-    shown taking BOTH values. What is owed:
-    (a) **the heap branch of the cutscene-name decode.** The engine's string class is
-    inline below 31 bytes and heap-allocated at or above, and
-    `707_give_katey_zombrex_psycho_intro` (35 bytes) is the ONLY name in Case Zero that
-    takes the heap path — i.e. the one a headless route cannot reach and the one a
-    half-decoder would get wrong at a mission runners split on. The runtime cross-checks
-    every name against the plain `const char*` `PlayCinematic` was handed, falls back to
-    it, and prints the first disagreement even with tracing off, so a wrong decode is
-    self-reporting rather than silent — but "self-reporting" is not "reported".
-    **CLOSABLE WITH NO ENV VAR AND NO TIMING as of the same session: every load and
-    cutscene transition goes into a 64-entry ring that the F9 bug report's `system.txt`
-    carries, and each cutscene line states the name's length and which branch that selected
-    (`len 35 (HEAP branch)`) plus the decode verdict. One playthrough past that cutscene,
-    then F9 once, anywhere in the session.** Everything else observed reads AGREE —
-    **an operator session on 2026-09-25 played twelve minutes, pressed F9 six times and
-    produced ELEVEN cinematics, every one `decode AGREE`, lengths 10 to 25 and so all
-    inline.** That session also established three things the block is better for: a SKIPPED
-    cutscene still emits a clean `CUTSCENE END` (704 ran 2.0 s, 705 1.9 s, against 14-34 s
-    unskipped), no mid-game load occurred at all (the only pair was the initial
-    `FEToGame -> Loading -> InGame`, corroborating that Case Zero streams its one map), and
-    the F9 timing is genuinely irrelevant — the operator deliberately missed one cutscene
-    and pressed late after another, and all six reports carried the full history.
-    **AND IT CORRECTED THE DOC: cinematic names come from TWO archives.**
-    `data/cinematics/permanent.big` holds nine more beyond cinematics.big's 29, and
-    `workbench1` — the COMBO-WEAPON CRAFTING animation — runs through the same cinematic
-    manager, firing `isCutscene` for 0.31 s on every craft while `isCutsceneExclusive`
-    correctly stays 0. That makes "use the exclusive flag" a measured requirement rather
-    than advice: a remover built on `isCutscene` would pause the timer on every weapon
-    built. `625_pawncam` is the same shape (6.0 s, ambient).
-    **A HEADLESS ROUTE TO IT WAS TRIED AND DOES NOT WORK — do not re-buy it.** The title
-    ships a debug "play this cinematic" hook: `sub_824A8390` returns
-    `kCineNames[*(u32*)0x82A58748]` when the byte at `0x82A5862E` is 1 (and clears it),
-    the table at `0x829DD540` is the 19 story cinematics in order, and **index 8 is
-    exactly `707_give_katey_zombrex_psycho_intro`** — the case wanted. Its only reader,
-    `sub_821D2BE0`, is additionally gated on the byte at `0x82A5862D`. Both bytes were
-    poked live with `tools/guest_poke.py` on a run sitting in `InGame` (writes verified by
-    read-back) and **the request byte was still 1 fifteen seconds later**, i.e. the
-    consumer never ran: `sub_821D2BE0` has ZERO direct callers in the image, so it is a
-    virtual that this build's active object does not dispatch. Reaching it needs more
-    scaffolding than the check is worth, given the fallback already guarantees the
-    published name is right.
-    (b) **a Windows run.** The block is mapped with `VirtualAlloc` at the same address
-    and nothing in the file is platform-specific, which is an argument and not a
-    measurement. `cz_runtime.log` states the address and whether it was the fixed one,
-    so the check is: launch on czwin, grep `[speedrun]`, expect `the documented fixed
-    address`.
-    Also unpriced: the publish itself (a dozen guest loads and a 256-byte store per
-    PRESENTED frame). `CZ_SPEEDRUN_BLOCK=0` is the control arm if anyone wants the
-    number. Nothing suggests it is visible, and nobody has measured it.
+0zd. ~~**THE SPEEDRUN BLOCK'S CUTSCENE-NAME DECODE**~~ — **CLOSED 2026-09-25 by a
+    COMPLETED PLAYTHROUGH.** The one case a headless route could not reach —
+    `707_give_katey_zombrex_psycho_intro`, 35 bytes against the engine string class's
+    31-byte inline/heap threshold — read
+    `len 35 (HEAP branch)  decode AGREE`. **Both branches are now verified against their
+    oracle with ZERO disagreements in 21 cutscene starts across two sessions**, covering
+    every distinct name length Case Zero produces (10-25 inline, 35 heap). The completed run
+    also found a load class the first session missed: **finishing the game returns to the
+    front end through a real `Loading`**, so a run's whole load set is boot, entering the
+    game, and the ending — nothing during play. Only six of the eleven top-level states ever
+    appear (`Startup`, `LegalScreen`, `Loading`, `FrontEnd`, `FEToGame`, `InGame`).
+    **STILL OWED: a Windows run**, which is a grep and not an experiment — the block is
+    mapped with `VirtualAlloc` at the same address, `cz_runtime.log` states the address and
+    whether it was the fixed one, so the check is launch on czwin and grep `[speedrun]` for
+    `the documented fixed address`. czwin was off on 2026-09-25 (`no route to host`).
+    Also unpriced: the publish (a dozen guest loads and a 256-byte store per PRESENTED
+    frame). `CZ_SPEEDRUN_BLOCK=0` is the control arm. Nothing suggests it is visible.
+    **A HEADLESS ROUTE TO THE 707 CUTSCENE WAS TRIED AND DOES NOT WORK — do not re-buy
+    it.** The title ships a debug "play this cinematic" hook: `sub_824A8390` returns
+    `kCineNames[*(u32*)0x82A58748]` when the byte at `0x82A5862E` is 1 (and clears it), the
+    table at `0x829DD540` is the 19 story cinematics in order, and index 8 is exactly the
+    name wanted. Its only reader, `sub_821D2BE0`, is additionally gated on `0x82A5862D`.
+    Both bytes were poked live with `tools/guest_poke.py` on a run in `InGame` (writes
+    verified by read-back) and the request byte was STILL 1 fifteen seconds later:
+    `sub_821D2BE0` has zero direct callers, a virtual this build never dispatches.
 
 0zc. **"INTERIORS ARE TOO DARK" (operator, 2026-09-15) — THE TRANSFER CURVE IS MEASURED
     AND IT GOES THE OTHER WAY; THE DECIDING NUMBER IS THE OPERATOR'S.** Part 119 ran

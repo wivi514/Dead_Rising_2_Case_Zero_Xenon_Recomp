@@ -280,10 +280,35 @@ established beyond the decode:
   cutscene and pressed late after another; every one of the six reports carried the
   complete history up to its own moment regardless.
 
-**Owed:** the heap branch — reachable only at `707_give_katey_zombrex_psycho_intro`,
-35 bytes — was still not reached (the session's longest name was 25). The fallback means a
-wrong decode there would publish the right name anyway and say so, so this is a
-completeness gap and not a risk. The line to look for is `len 35 (HEAP branch)`.
+### CLOSED — a full playthrough, both string-class branches, 2026-09-25
+
+The operator completed the game in a second session. The line that was owed:
+
+```
+  [  569.40s f  75794] CUTSCENE BEGIN  707_give_katey_zombrex_psycho_intro  EXCLUSIVE  len 35 (HEAP branch)  decode AGREE
+```
+
+**Both branches of the engine's string class are now verified against their oracle, and
+there were ZERO disagreements in 21 cutscene starts across the two sessions** — lengths 10,
+11, 12, 13, 16, 17, 18, 20, 23, 24 and 25 on the inline path and 35 on the heap path, which
+is every distinct length Case Zero produces. `cutsceneName` needs no further verification.
+
+The completed run also added a **load class the first session never reached**: finishing the
+game returns to the front end through a real load.
+
+```
+  [  779.05s f 107260] CUTSCENE BEGIN  710_ending_a   EXCLUSIVE  len 12 (inline)  decode AGREE
+  [  800.67s f 110428] LOAD BEGIN  state Loading
+  [  801.73s f 110711] LOAD END    state FrontEnd
+```
+
+So a run's complete load set is: boot, entering the game, and the ending's return to the
+menu. Nothing during play.
+
+Across both sessions only six of the eleven top-level states ever appeared — `Startup`,
+`LegalScreen`, `Loading`, `FrontEnd`, `FEToGame`, `InGame`. `BCGIntro`, `InGameTut1`,
+`FEToGameShow` and `GameShow` were never entered, which matches `BCGIntro` being known dead
+and the rest belonging to modes Case Zero does not ship.
 
 Also owed: a Windows run. The block is mapped with `VirtualAlloc` at the same address and
 nothing in it is platform-specific, but that is an argument, not a measurement.
