@@ -1061,8 +1061,15 @@ Three things follow, and only the third is an inference:
    same item hash, and an inventory slot's pointer alternates between them indefinitely.
    The indices are shared across players — player 0 holds 0..2 and player 1 holds 3..4 —
    so this is one item-instance array with two backing pools, not one pool per player.
-2. **The index IS the item's identity within a machine, and the two machines number
-   them differently.** Index 3 is a WheelPawn on the host and a GasolineCanister on the
+2. **The index IS the item's identity within a machine AT A GIVEN MOMENT, and the two
+   machines number them differently.** The time qualifier is not hedging — it was
+   measured later in the same session: pool A index 3 was a `WheelPawn` on the host and
+   became an `M16` a few minutes afterwards, and index 5 became a `BikeEngine`. **The
+   pool RECYCLES**, so the mapping is not stable even within one machine over time. That
+   makes the comparison below a snapshot of one moment (a valid one — both machines were
+   read within the same minute) rather than a standing table, and it makes any scheme
+   that replicates an item by pool index worse, not better: the far side can resolve the
+   index to something the near side has since recycled. Index 3 is a WheelPawn on the host and a GasolineCanister on the
    joiner. That is the whole of the "same address, different item" disagreement, stated
    without reference to addresses: **the pool index is not a shared namespace.**
    Anything replicated by index therefore resolves to the wrong item on the far side,
