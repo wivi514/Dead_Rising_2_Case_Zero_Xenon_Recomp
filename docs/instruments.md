@@ -4725,3 +4725,51 @@ CZ_VK_GAMMA_RAMP=1        THE DISPLAY GAMMA RAMP AT PRESENT (part 119) — the 2
                           `... no DC_LUT table loaded yet`, `... pass unavailable`. Unset is
                           the exact pre-part-119 path (null pair: 1,409/1,409 logo frames
                           hash-identical).
+
+## The speedrun status block (`docs/speedrun-block.md` is the interface)
+
+Requested by a Case Zero runner: a load remover needs "am I loading" and "am I in a
+cutscene" at an address that survives a rebuild, which this port's constant relinking
+denies to any pointer scan. The runtime publishes them instead, at the fixed host address
+`0x0000435A00000000`, 256 bytes, magic `CZSPDRN1`.
+
+**It is ON by default**, so a player needs no flag for a timer to work. Unlike everything
+else in this file, therefore, the arm here is the OFF switch.
+
+```
+CZ_SPEEDRUN_BLOCK=0   THE CONTROL ARM. No page is mapped, no publish runs, and the path is
+                      the exact pre-feature one — which is also what a frame-time A/B
+                      would use, since nobody has priced the publish (a dozen guest loads
+                      and a 256-byte store per PRESENTED frame, from the PM4 swap; both
+                      swap sites call it, pm4.cpp and pump_split.cpp)
+CZ_SPEEDRUN_TRACE=1   the cutscene-name decode against its ORACLE, one line per cinematic
+                      start: the engine's string class at cinematic-manager+0x159C is
+                      inline below 31 bytes and heap-allocated above, so the decode is ours
+                      and gets checked against the plain `const char*` that PlayCinematic
+                      (`sub_8247A828`) was handed. Reads
+                      `[speedrun] cinematic #1 starts: PlayCinematic said
+                      '700_prologue_intro', manager+159C decodes '700_prologue_intro' —
+                      AGREE`. **A DISAGREEMENT PRINTS ONCE WITHOUT THIS SET** and switches
+                      the block to the passed name for the rest of the run, because a name
+                      field that is quietly wrong is worse than one that is empty
+```
+
+Read it with `tools/speedrun_block_read.py` (`--watch` for one line per change). That
+script decodes by OFFSET, not by including the struct, so it is a second implementation of
+the published layout and a contract break fails there first.
+
+The boot-to-gameplay gate, from the DebugJump route, is the pair of controls this feature
+needs — every flag has to be shown capable of BOTH values (gotcha 30):
+
+```
+frame     205  state  1 Startup       loading=0 cutscene=0(excl=0)  loads=0 cines=0  ''
+frame    1804  state  6 Loading       loading=1 cutscene=0(excl=0)  loads=1 cines=0  ''
+frame    2071  state  4 FrontEnd      loading=0 cutscene=0(excl=0)  loads=1 cines=0  ''
+frame    2078  state  4 FrontEnd      loading=0 cutscene=1(excl=1)  loads=1 cines=1  '700_prologue_intro'
+frame    7490  state  5 FEToGame      loading=1 cutscene=1(excl=1)  loads=2 cines=1  '700_prologue_intro'
+frame    7494  state  6 Loading       loading=1 cutscene=0(excl=0)  loads=2 cines=1  '700_prologue_intro'
+frame    7979  state  7 InGame        loading=0 cutscene=0(excl=0)  loads=2 cines=1  '700_prologue_intro'
+```
+
+`LegalScreen` is absent because it lasts 7 ms and the reader polls at 30 Hz, which is a
+fact about the reader and not about the block.

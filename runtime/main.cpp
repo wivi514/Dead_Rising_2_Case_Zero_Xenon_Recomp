@@ -48,6 +48,7 @@ extern "C" unsigned int __stdcall timeBeginPeriod(unsigned int uPeriod);
 #include "cpu/crash_report.h"
 #include "cpu/guest_thread.h"
 #include "cpu/timebase.h"
+#include "cpu/speedrun_block.h"
 
 // The LLVM profiling runtime's flush, resolved only in a -fprofile-instr-generate build
 // (see the SIGTERM handler). Weak, so a normal link leaves it null. GNU-only: the
@@ -622,6 +623,10 @@ int main(int argc, char** argv)
     g_memory.Init();
     g_heap.Init();
     fprintf(stderr, "runtime: guest memory at %p, heaps ready\n", (void*)g_memory.base);
+
+    // The speedrun status block, straight after the guest map exists because it
+    // publishes that map's base address for external readers. Never fatal.
+    SpeedrunBlock_Init();
 
     // The thread budget, printed BEFORE anything spawns a worker. A performance number
     // taken at an unknown thread count is not comparable with anything, and this line is

@@ -63,5 +63,6 @@ runtime/build-*-oldbase.configure.log
 # the dev tree is the repo root. CZ_NO_LOG_FILE=1 / CZ_LOG_FILE=path (docs/instruments.md)
 /cz_runtime.log
 /cz_runtime.log.1
+/cz_speedrun_block.txt
 /cz_diag.txt
 /cz_diag.txt.1

@@ -36,6 +36,7 @@
 #endif
 
 #include "../cpu/fence_wait.h"
+#include "../cpu/speedrun_block.h"
 #include "../cpu/thread_budget.h"
 #include "../cpu/timebase.h"
 #include "../host/window.h"
@@ -282,6 +283,7 @@ void Consume(uint64_t limit)
                 t += 4;
                 VkRenderer_OnSwap(g_base, front, w, hh);
                 Host_Present(front, w, hh);
+                SpeedrunBlock_Publish(g_base);   // the other swap site; see pm4.cpp
                 cz_timebase::AdvanceFrame();
                 ++g_stats.swaps;
                 g_lastKind = 4;

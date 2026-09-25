@@ -349,6 +349,7 @@ add_executable(cz_runtime
     cpu/camera_fov.cpp               # part 62: the fov-property watch (culling fix)
     cpu/shadow_distance.cpp          # part 93: the shadow-distance slider (cascade scale)
     cpu/boot_skip.cpp                # part 99: the skip-intro-logos launcher toggle
+    cpu/speedrun_block.cpp           # the fixed-address load/cutscene block for load removers
     cpu/thread_budget.cpp
     cpu/fence_wait.cpp               # part 107: the Draw Thread fence wait, parked on a futex
     cpu/trial_flag.cpp               # co-op part 6: enable_trial_experience follows the licence

@@ -18,6 +18,7 @@
 // (see the guest-memory note below: it must stay reusable by an offline replay
 // harness) survives exactly as long as that stays true.
 #include "../cpu/fence_wait.h"   // part 107: wake the parked Draw Thread on a fence store
+#include "../cpu/speedrun_block.h"
 #include "../cpu/timebase.h"
 #include "../host/window.h"
 #include "pump_split.h"   // part 117: the walk on one core, the renderer on another
@@ -2474,6 +2475,11 @@ uint32_t ExecutePacket(uint8_t* base, const Source& fetch, uint32_t pos, uint32_
                 }
                 VkRenderer_OnSwap(base, body(1), body(2), body(3));
                 Host_Present(body(1), body(2), body(3));
+                // The speedrun status block publishes here rather than inside
+                // Host_Present because that function returns early when the window is
+                // not active, and a load remover must keep working headless and while
+                // the window is in the background.
+                SpeedrunBlock_Publish(base);
                 // The deterministic-clock instrument steps here, at the guest's own
                 // frame boundary, so the clock and the picture advance together by
                 // construction rather than by two schedules that have to agree.
