@@ -965,6 +965,48 @@ the two machines disagree about in the trace (`AABAD210` BikeEngine/BikeForks,
 `AABACCE0` GasolineCanister/BikeEngine). A spawn point whose item identity is decided
 locally, per machine, would produce precisely that.
 
+
+#### The broadcast-event wire, decoded (2026-09-25)
+
+The listener is `sub_82245650(listener, header, event)`. It accepts exactly one event
+CLASS — `*(u8*)(header + 5) == 0x68` — and switches on a SUBTYPE at `event + 0x10`,
+bounded at 10, through a byte index table at **`0x820099C8`** into handlers based at
+**`0x822456B0`**. Eleven subtypes, eleven distinct handlers:
+
+| # | handler | what it does |
+|---|---|---|
+| 0 | `822456B0` | **the trigger fire** — `sub_823B0068(trigger, player)`, player at `event+0x14`, trigger at `event+0x18`. The only one the trace decoded before today |
+| 1 | `822456F4` | `world->0x78` vt[0x1E8], args `event+0x1C/0x20/0x24/0x28` |
+| 2 | `82245714` | `world->0x78` vt[0x1EC], same four args |
+| 3 | `82245734` | `sub_8223E018(event+0x2C, player, event+0x30, event+0x31)`, then `world->0x78` vt[0x2C0](.., `event+0x2C`, **1**) |
+| 4 | `82245758` | `sub_8223E2F0(...)` then the same vt[0x2C0] with **0** — the sibling of 3, so 3/4 are an on/off pair |
+| 5 | `82245798` | `event+0x34`, `event+0x38`, compares `event+0x14` against 4 |
+| 6 | `82245808` | `sub_8223D530(game->0x38, player, event+0x3C, event+0x40)` — and BOTH of those last two are bounds-checked against **4**, so this message carries **two player indices** |
+| 7 | `82245824` | compares `event+0x4C` against the constant **`0x00014C09`**, and on a match calls `sub_825399B0`/`sub_8253CD70` on the online object at `0x82A69CD4 + 8`; then `sub_82482AD8(listener, player)` and vt[0x1FC] |
+| 8 | `822458F0` | **the function's own exit — a NO-OP.** The host received subtype 8 in the 09-25 session and did nothing with it |
+| 9 | `822458A4` | `event+0x60`, `event+0x64`, then `sub_82379620(event+0x64, listener, player)` |
+| 10 | `822458CC` | the sibling of 9, same two fields |
+
+**Seven of the eleven were seen live within minutes of a session starting** (0, 1, 2, 3,
+6, 8, 9), which is the point: **the trace before today printed subtype 0 and nothing
+else**, so six live message types had been invisible to every co-op session this project
+has run. That is gotcha 25 exactly — the filter could not match, so its silence was read
+as "nothing else happens".
+
+`game->0x78` is the object whose `+0x30` is the INVENTORY MANAGER the bike path walks;
+subtype 6 reaches into the same object's `+0x38`. That adjacency is a lead and not a
+finding — nothing here has yet been shown to carry an item.
+
+**What this does NOT yet say.** None of the eleven has been identified as an item or
+pickup message, and the engine's named event vocabulary (`TYPE_EVENT_OUTFIT`,
+`TYPE_EVENT_PLAYER`, `TYPE_EVENT_CLIENT`, `TYPE_SYNC_POINT`, `TYPE_FLOW`,
+`TYPE_CINEMATIC`, `TYPE_EVENT_SYNC_FREE_ZOMBIES`, `TYPE_HOST_MIGRATE`, `TYPE_READY`,
+`TYPE_END_OF_GAME`, `TYPE_GAMEDATA`, `TYPE_GAMEINFO`, `TYPE_MM_PARAMETERS`) has **no
+entry for items or inventory**. If that holds after the subtypes are identified, the
+conclusion is that Case Zero's co-op layer never replicated item pickups at all — a
+feature that was never written rather than one that broke — which is consistent with a
+single-player title whose co-op path no one ever ran with two inventories.
+
 **This reframes the fix.** The bike is not where the defect is — it is merely where it
 becomes visible, because Case 0-4 is the one mission that reads an inventory slot's item
 identity and branches on it. The subject is world-item pickup replication, and the
