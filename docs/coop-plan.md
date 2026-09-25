@@ -918,6 +918,53 @@ symptom in this issue falls out of that one fact:
 - and a client placing a part at the bike raises `NoPartsPlaced`, because the part is
   not in the hands the host is looking at.
 
+
+#### The matched F9 pair: both machines photographed at the same moments
+
+The operator pressed F9 on **both** machines through the session, within seconds of each
+other, which turns the screenshots into a two-machine trace of the same events. Guest
+captures are on czwin at `%APPDATA%\XenonLive\captures`, copied to
+`~/DR2CZ-troubleshooting/issue9/guest_captures/`; host captures at
+`~/.config/XenonLive/captures/`.
+
+| time (UTC) | machine | what the frame shows |
+|---|---|---|
+| 21:00:55 | guest | running at Buck's carrying a **wheel**; `Case 0-4 - Find Bike Parts` five slots EMPTY |
+| 21:01:14 | guest | **acquires the GASOLINE CANISTER** — the key-item card |
+| 21:01:20 | host | the pawnshop, `Dossier 0-4` five slots still **EMPTY** — the guest's canister, six seconds old, did not register |
+| 21:02:58 | guest | **acquires the BIKE ENGINE** — the card, at the Still Creek yard |
+| 21:03:05 | host | at the gas pumps **holding a gasoline canister**, and the tracker now carries it — **a SECOND canister, still there because the guest's pickup never registered** |
+| 21:06:01 | guest | **acquires the BIKE FORKS** — the card, the same yard |
+| 21:08:06 | guest | the **BIKE PARTS notebook: all five NOT FOUND** — after personally picking up four of them |
+| 21:08:15 | host | the same notebook page, same state, in French |
+| 21:09:22 | host | the garage, both Chucks, the canister on the floor, tracker **three of five** — exactly the host's three placements in the trace |
+
+Rows 2-4 are the whole defect in three frames and they need no code reading: **the guest
+takes a key item, the host's mission state does not move, and the item is therefore still
+available for the host to take again.** That is the operator's *"being able to get the
+canister a second time"* photographed from both ends.
+
+Row 7 is the harder one and it goes further than the trace did: **the guest's own
+notebook does not register the guest's own pickups either.** Four key items carried, five
+listed `NOT FOUND`. So this is not only "guest → host does not replicate" — the guest's
+local mission state does not move on a local pickup, which means a joining player cannot
+make bike-part progress at all, by any route.
+
+**One thing NOT established, and it needs a cheap control before anyone reads row 7 as
+above.** Row 8 shows the HOST's notebook in the same all-`NOT FOUND` state at 21:08:15,
+and the host had certainly picked parts up. Either the notebook's found-state is broken
+for both players (a different defect, possibly not even co-op's), or that page means
+something narrower than "collected". **A single-player run to the same page settles it
+in minutes and nothing below should be built on row 7 until it has been run.** The
+HUD tracker and the notebook are two different displays and this session has not
+established that they read the same flag.
+
+Also worth noting for whoever opens the replication path: the guest picked up the
+**engine** and the **forks** at the same spawn yard, and those are exactly the two items
+the two machines disagree about in the trace (`AABAD210` BikeEngine/BikeForks,
+`AABACCE0` GasolineCanister/BikeEngine). A spawn point whose item identity is decided
+locally, per machine, would produce precisely that.
+
 **This reframes the fix.** The bike is not where the defect is — it is merely where it
 becomes visible, because Case 0-4 is the one mission that reads an inventory slot's item
 identity and branches on it. The subject is world-item pickup replication, and the
