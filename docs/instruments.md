@@ -4339,6 +4339,79 @@ CZ_ITEM_WATCH_MS=N THE PICKUP, AT THE INSTANT IT HAPPENS (with CZ_ITEM_TRACE=1;
                    the two accessors the bike path already calls, so it adds no new
                    guest address; the bill is eight guest calls and ~48 loads at most
                    four times a second, off the renderer thread
+CZ_COOP_PLACE_TRACE=1  **THE EFFECT PATH — what the mission's RESPONSE to a placement does,
+                   and to whom** (player issue #9 part 10, 2026-09-26). Everything above
+                   traces the DECISION, which three two-machine sessions measured CORRECT;
+                   this traces what happens after the event is raised, which is where the
+                   wrong Chuck loses an item. Six hooks, each printing the ACTOR it acted on
+                   and the CALLER's `lr`, because this engine's interesting paths are virtual
+                   and four candidate fixes died from reading the call graph upward:
+                   `REMOVE` (`sub_821A75B8` = Inventory::RemoveItemAt, the mirror of the
+                   InsertItemAt the pickup trace hooks — **part 9 §3.1's exact request**, and
+                   whichever inventory loses an item names the bug in one line); `RELEASE`
+                   (`sub_8223BBB8`, an item put into the world — the standing candidate for
+                   "it appears next to the bike"); `DROP-ALL` (`sub_8223CEF8`, twelve
+                   iterations that empty a Chuck's whole bag, reached from CHUCK STATE 35
+                   whose handler `0x8240A9C0` resolves its actor from **world->0x80**);
+                   `STATE 34/35` (the place animation's own player index, which NO log this
+                   project holds contains — `CZ_ITEM_TRACE=1` prints state 61 only — plus
+                   which of the three network event listeners dispatched it); `PROPCMD`
+                   (`sub_82408908` = cMissionSendCommandToProp::Execute, identified from the
+                   vtable and confirmed live by it printing `PropName = "Bike2"`); and
+                   **`PROPFIND`** (`sub_821A2200`, the name lookup, WITH A CENSUS of how many
+                   live pool entries matched). That census is the point: the lookup returns
+                   the FIRST live entry by pool id and consults nothing else, so `1 match` at
+                   a co-op placement refutes the whole reading on one line and `2+` names it,
+                   saying which one the title took and whose hand each was in. Pair with
+                   `CZ_ITEM_TRACE=1`, which is what maps an inventory to a player number;
+                   without it the lines read `player ?`
+CZ_COOP_POOL_CENSUS_MS=N  **THE PROP-LOOKUP HYPOTHESIS AS A NUMBER, readable without a
+                   placement.** Every N ms, walk the item pool's 2,048-entry object table and
+                   report any INSTANCE name hash that names more than one live entry, on
+                   change. Prints the first twenty entries once with BOTH name fields, which
+                   is the cross-check on the decode: `+0x98` is the instance name and
+                   `+0x100` the item type, so a scripted spawn shows them different
+                   (`Bike2` / `BikeBody`) and the generic instance a player carries shows them
+                   equal. Measured in SINGLE PLAYER at the Case 0-4 bike: 149 live entries and
+                   **four names already naming more than one** — `Nails` x5,
+                   `ChuckWalkieTalkie` x4, `fe_watch` x4, `WrenchLarge` x2. So the ambiguity
+                   is ordinary rather than hypothetical. One 2,048-entry walk per period on a
+                   mission thread; off by default
+CZ_COOP_RAISE_EVENT=NAME@SEC[,...]  **A HARNESS, not an instrument — it MANUFACTURES a
+                   mission event and must never be set in a gate run** (the same rule as
+                   CZ_FAKE_PRESS_SEQ, gotcha 78). Raises a named mission event directly via
+                   `sub_821AFE48(missionMgr, hash, 0)` — the same call state 61 makes at
+                   `0x8240B084`, with the same third argument — SEC seconds after the level
+                   is up, so the RESPONSE can be run without carrying a bike part from Still
+                   Creek to the safehouse garage. It exists because neither of the two obvious
+                   routes works: the five interactable parts spawn in `LEVEL_PROLOGUE` and the
+                   ones at the bike are `NonInteractableProp = "true"`, so there is nothing to
+                   pick up in the garage, and `CZ_AUTOCHUCK="MISSION MASTER"` does not move
+                   Chuck there at all (fifteen minutes on the spawn point). NAME is one of the
+                   six event names the bike path knows or a raw hex hash. **This is how state
+                   34 was observed for the first time.** Its clock starts at the level's own
+                   first `cMissionSendCommandToProp`, not at the first resolved mission
+                   manager — the main menu has one of those, and the first spelling raised
+                   `WheelPawnPlaced` into the title screen
+CZ_COOP_PLACE_FIX=1  **A CANDIDATE FIX, OFF BY DEFAULT** (`=2` observes and changes nothing,
+                   `=0` is the control). When the bike's destroy command (`PropCommand = 17`)
+                   asks for a prop by name and the lookup is AMBIGUOUS, hand back the item
+                   STATE 61 ACTUALLY READ — `r30` at `0x8240AF98`, the return of
+                   `sub_821A6C18(game->0x30, actor)` — instead of the lowest pool id. One
+                   return value of one call is replaced; nothing is written to guest memory.
+                   Five guards: only inside command 17; only when the guest's own search found
+                   MORE THAN ONE live candidate (so an unambiguous lookup is bit-identical);
+                   only when the remembered object is still live, still held, and its own
+                   `+0x98` still equals the hash asked for (the pool is a LIFO free list, so a
+                   released id comes straight back as something else); only within
+                   `CZ_COOP_PLACE_FIX_MS` (default 5000, against the mission's 500 ms timer);
+                   and one-way — it can only pick a different member of the set the title was
+                   already choosing from. **It is OFF because the two-machine measurement that
+                   convicts or acquits it has not been run, and four fixes have already been
+                   refuted here for exactly that reason.** What makes it worth shipping is
+                   that its own log line IS the diagnosis: it can only engage where the lookup
+                   was ambiguous, so a session where it never fires has refuted the mechanism
+                   rather than merely failed
 CZ_COOP_ACTING_PLAYER  **REFUTED BY CENSUS, 2026-09-26 — DEAD CODE, it can never fire.**
                    5,820,000 GetUserPlayer calls on a 240 s roam, 0 out of range, so the
                    substitution is never reached. Kept only because its census is the

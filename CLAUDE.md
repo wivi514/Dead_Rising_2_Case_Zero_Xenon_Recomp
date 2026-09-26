@@ -191,7 +191,36 @@ mask; trust the microcode's own swizzles.
     was built, but **two of its eight steps are retired and its item 0 is answered** —
     read `phase5-notes.md` §6ba before following anything in it.
   - **THE LIVE HAND-OFF IS ALWAYS THE HIGHEST-NUMBERED `partNN-kickoff.md`**, and it
-    supersedes every earlier kickoff on "where the port is". **AS OF THE EVENING OF
+    supersedes every earlier kickoff on "where the port is". **AS OF 2026-09-26 THE LIVE
+    WORK IS PLAYER ISSUE #9 AND THE HAND-OFF IS `docs/coop-part10-kickoff.md`** — the
+    guest places a bike part, it lands on the floor and the HOST drops what he was
+    holding. Part 9 refuted four mechanisms (its kickoff is still the authority on those:
+    do not re-buy them) and asked for ONE measurement: find what removes the item, and do
+    not answer it by reading the call graph upward again. Part 10 built that, and the
+    response chain is now read end to end. **Two independent leads survive and ONE
+    OPERATOR PLACEMENT READS BOTH**, in the same log: (1) the response's actions arrive as
+    a **class-0x6B BATCH** of 0x1C-byte records, each carrying its own player index at
+    `+0x10` (initialised to 4, a "nobody" sentinel, so any value there was written) —
+    `[place] STATE 34 ... ctx+0x10 = N` says whose Chuck the animation runs for, and `0`
+    on the host while the guest is player 1 is symptom 3 exactly; (2) the response's last
+    action, `cMissionSendCommandToProp { PropCommand = "17" PropName = "WheelPawn" }`,
+    resolves the name through `sub_821A2200` — nine instructions that return **the first
+    live entry of the item pool by id** — and then takes the prop off whatever holder that
+    landed on and releases it into the world with `actor = 0`, consulting the acting player
+    nowhere. A census of that pool **in single player at the bike already finds four
+    instance names naming two or more live entries** (`Nails` x5, `ChuckWalkieTalkie` x4,
+    `fe_watch` x4, `WrenchLarge` x2). `[place] PROPFIND ... N live pool entries match`
+    decides it: `1` refutes lead 2 on one line, `2+` names it.
+    **The arms are `CZ_COOP_PLACE_TRACE=1` + `CZ_ITEM_TRACE=1` +
+    `CZ_COOP_POOL_CENSUS_MS=3000` on BOTH machines**, `CZ_COOP_RAISE_EVENT=NAME@SEC` is the
+    single-machine harness that runs a response without a part in hand (it MANUFACTURES a
+    mission event — never a gate run), and `CZ_COOP_PLACE_FIX=1` is a CANDIDATE shipped OFF
+    whose own log line is the diagnosis. Also from part 10: **`DOWN` twice on the DebugJump
+    screen selects Case 0-4 and lands Chuck two metres from the bike, headless** — a route
+    that did not exist; and **`cMissionOnTrigger::Update` is entered ONCE in the safehouse**,
+    so `CZ_ITEM_WATCH_MS` has been armed and silent there since co-op part 1. Two earlier
+    findings were RETRACTED IN PLACE the same night, both for the same reason: a number read
+    off a hook that had failed to be added. ~~AS OF THE EVENING OF
     2026-09-12 THE LIVE WORK IS CO-OP PART 6 — `docs/coop-plan.md` "Part 6": the call
     RINGS (toast + D-pad RIGHT / Right Arrow), and the JOIN THAT SAT IN INFINITE LOADING
     FOR EVERY SESSION SINCE 09-11 21:57 WAS A REGRESSION FROM e7a9e25 ("CZ_XLIVE_COOP=1
@@ -327,7 +356,7 @@ mask; trust the microcode's own swizzles.
     (`coop_friends.cpp`), hosting implied by `CZ_XLIVE_COOP=1`, the three data patches
     ported into `overlay_gen.cpp` (v5, byte-identical), both release legs carrying
     libcurl. Operator-verified on two machines. OWED: the mission transition, the
-    crowd, a solo session on the shipped binary; the privacy setting is not exposed.**
+    crowd, a solo session on the shipped binary; the privacy setting is not exposed.~~
     ~~It was `part114-kickoff.md` — CO-OP WORKS AND THE PARTNER IS DRESSED (co-op plan part 4,
     evening of 2026-09-11, branch `xlive-integration`): the missing chest piece was
     `OUTFIT_COOP_DEFAULT_UNDER`, a name in the title's table with NO row in Case Zero's

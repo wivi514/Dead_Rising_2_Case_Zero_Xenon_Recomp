@@ -1962,3 +1962,332 @@ bike is; `CASE=1` is Case 0-2, outdoors.
    xlive stack for solo + leaderboards.
 
 For Case West this whole doc's shape transfers — it already got past step 3.
+
+## Player issue #9, part 10: THE RESPONSE IS READ, AND THE PROP LOOKUP IS AMBIGUOUS BY CONSTRUCTION (2026-09-26, overnight)
+
+**Read `docs/coop-part9-kickoff.md` first for the four refutations this builds on.** That
+kickoff's §3.1 asked for one thing — *"find what removes the item, by measurement"* — and
+said the answer must not be another inference read upward through a call graph. This
+session found the removal, read the whole response chain off the image, and then measured
+the one step in it that cannot be right. **Nothing here is confirmed on two machines yet;
+what is new is that the mechanism now predicts a NUMBER, and the instrument that reads
+that number ships.**
+
+### 1. The removal, and the response chain, end to end
+
+`Inventory::RemoveItemAt` is **`sub_821A75B8`**, the exact mirror of the
+`InsertItemAt` (`sub_821A7550`) the pickup trace already hooks: it bounds `slot` at 12,
+`memmove`s the slots above it down (`0x821A7604`), zeroes the tail, decrements the count at
+`inv + 0x64` and — only when its third argument is non-zero — the selected slot at
+`inv + 0x68`. It is hooked now (`CZ_COOP_PLACE_TRACE=1`).
+
+But the bike's response does not go through it. Read out of `missions.txt` and the image,
+the response to `WheelPawnPlaced` is three actions, and the third is the one that matters:
+
+```
+cMissionObjectiveEvent GetWheelPawn { EventString = "WheelPawnPlaced"
+    cMissionSetChuckState PlaceItemAnimation11 { ChuckState = "34" }
+    cMissionSendAudioEvent EmotePos { AudioEvent = "ChuckEmotePositive" }
+    cMissionTimer WaitforPlacement7 { DeltaTimeSecondsRealTime = "0.5"
+        cMissionSendCommandToProp Destroy3 { PropCommand = "17"  PropName = "WheelPawn" } } }
+```
+
+**`cMissionSendCommandToProp::Execute` is `sub_82408908`.** Identified from the vtable, not
+guessed: the class's own name-hash accessor `0x823A8B68` sits at slot 1 of the table at
+`0x8204C870`, `cMissionSetChuckState`'s sits at slot 1 of `0x8204D390`, the two tables
+agree slot for slot (slots 3-11 are literally the same functions), and slot 14 is
+`0x82409900` for SetChuckState — so it is `0x82408908` here. The bytes right after the
+table spell `TargetNPCName` and `PropCommand`. Confirmed live: the hook printed
+`PROPCMD 22 on prop named "Bike2"`, which is exactly what `missions.txt` declares for the
+bike body's own `NonInteractBike` action.
+
+Its lookup, and then command 17:
+
+```
+82408BA8  bl  0x8276E398        ; hash PropName, the usual h = h*33 ^ (signed char)c
+82408BB8  lwz r3, 0x20(game)    ; the item/prop manager
+82408BBC  bl  0x821A2200        ; FindPropByNameHash
+...
+8240916C  bl  0x822D4870              ; holder = prop->0x1BC ? ... : 0
+82409194  game->vt[0x38C](game, holder, prop, 0)   ; TAKE THE PROP OFF THAT HOLDER
+824091B4  bl  0x8223BBB8(mgr, 0, prop, ...)        ; RELEASE IT INTO THE WORLD, actor = 0
+```
+
+**So the command takes the prop out of whoever's hands the lookup landed in, and releases
+it into the world. The acting player is never consulted at any point.** That is the
+operator's third symptom — *"it makes the first player drop his currently held item"* —
+spelled as two instructions, and the second symptom — *"it appears next to the bike but is
+not added to the bike parts"* — as the instruction after them.
+
+### 2. And the lookup decides nothing. `sub_821A2200` is nine instructions
+
+```
+r10 = mgr + 0x30                       ; the 2,048-entry object pointer table
+for i in 0 .. 0x7FF:
+    obj = objTable[i]
+    if (obj && obj->0x98 == hash) return obj      <-- THE FIRST MATCH WINS
+```
+
+`mgr + 0x30 + id*4` is **the same object table the item pool's LIFO free list hands ids out
+of** (see "WHO ALLOCATES A POOL ENTRY" above). So *"find the prop called WheelPawn"* means
+**"return the live pool entry with the lowest id whose instance name is WheelPawn"**, and
+nothing else is considered — not the holder, not the acting player, not the mission.
+
+**The two name fields, measured rather than assumed.** `+0x98` is the prop's INSTANCE name
+hash and `+0x100` its item TYPE hash. The `PROPCMD 22` above resolved
+`hash 04E332D7 -> id 147 ... itemHash 19CB1675`, and `tools/name_hash.py` gives
+`04E332D7 Bike2` / `19CB1675 BikeBody` — the spawn action's own name and the item type,
+exactly as `missions.txt` declares them (`cMissionSpawnItem Bike2 { ItemName = "BikeBody" }`).
+
+**Which makes the bike's five destroy commands point at generic instances, and that is the
+finding.** There is **no `cMissionSpawnItem` action named `WheelPawn`, `HandleBar`,
+`GasolineCanister`, `BikeEngine` or `BikeForks`** anywhere in `missions.txt` — the five
+world spawns are called `WheelPawnWorldSpawn`, `HandleBarRespawn`, `GasCan7`, `FuelTank3`
+and `BikeForksWorld4`, and the five decorative ones at the bike are `WheelPilePawn2`,
+`HandleBarpile3`, `GasCan4`, `FuelTankPile2` and `BikeForks2`. Those five names appear as a
+`PropName` in exactly five places in the whole file: the five destroy commands. So the prop
+the command looks for is **the generic instance a player is carrying**, whose instance name
+is its own type name.
+
+### 3. The number: in SINGLE PLAYER, at the bike, four names already name two props
+
+`CZ_COOP_POOL_CENSUS_MS=3000` walks the 2,048-entry table and reports any instance name
+with more than one live entry. Case 0-4, safehouse garage, solo, 149 live entries:
+
+```
+[census] 4 instance name(s) now name MORE THAN ONE live pool entry:
+         05B7EDB9 (Nails) x5, 0768AA95 (ChuckWalkieTalkie) x4,
+         A1FC9255 (fe_watch) x4, 7EFC90B8 (WrenchLarge) x2
+```
+
+and the head of the table shows both kinds of entry side by side, which is the cross-check
+on the decode:
+
+```
+id    0 obj AAB94D00 instance 05F369B4 (Snack)     type 05F369B4 (Snack)     <-- generic
+id    2 obj AAB95230 instance C460A007 (generated) type 05F369B4 (Snack)     <-- scripted
+id   11 obj AAB96988 instance 4229A541 (CashRegister_dmg) type 4229A541 ...  <-- generic
+```
+
+So a generic instance really is named after its type, duplicates of one really do coexist,
+and `FindPropByNameHash` really is resolving an ambiguous name every time one of those is
+asked for. **One player carries one bike part of a given type at a time, so single player
+is exact where it matters. Two players can carry two** — and the operator measured that
+they do, because a bike part the guest had already taken could still be picked up a second
+time. Then the destroy takes the part out of whichever Chuck holds the lower pool id, and
+releases it on the floor.
+
+**Why the host's own placements work** falls out without a second mechanism: the host's own
+instance is usually the older, lower id.
+
+### 4. What is NOT established, said out loud
+
+- **No two-machine measurement yet.** Everything above is one machine plus the image. The
+  deciding line is one the operator's next session produces for free (§6).
+- **The generic-instance claim is an inference from three measured facts**, not a direct
+  reading: that `+0x98` is the instance name (measured), that no spawn action is named after
+  a part (read off `missions.txt`), and that generic instances named after their type exist
+  (measured). What has NOT been watched is a bike part being picked up and becoming one.
+- **State 34 has still never been observed.** The trace prints it now; no run has reached a
+  real placement.
+- **`world + 0x80` is still a live candidate for something else.** The state jump table at
+  `0x82043388` re-verified against the image (77 entries, base `0x82409954`, index =
+  `state - 1`; state 61 -> `0x8240AF7C` and state 34 -> `0x8240A930`, both as recorded) says
+  **state 35 -> `0x8240A9C0`**, and that handler resolves its actor from `world->0x80`
+  rather than from the action context, then calls `sub_8223CEF8` — a twelve-iteration loop
+  that empties that Chuck's whole bag into the world. It is the one entry in the table that
+  uses a world-global player index. Both are hooked; if a placement reaches them the trace
+  says so, and if it does not, the candidate is closed by measurement instead of left open.
+
+### 5. An instrument defect this session found, and it has shipped since co-op part 1
+
+**`cMissionOnTrigger::Update` (`sub_823E79B8`) is entered ONCE in the safehouse.** It was
+chosen to drive the inventory watch on the reasoning that it "already runs every frame for
+every mission trigger in the level"; the new harness put an unconditional counter on it and
+got `0s elapsed, 1 mission updates seen`, two minutes after the level was up. So in a level
+whose missions are not trigger-driven, **`CZ_ITEM_WATCH_MS` is armed and silent** — gotcha
+30 in the instrument this investigation has leaned on hardest. The driver is
+`GetUserPlayer` (`sub_8247B020`) now, which this file's own census measured at 5,820,000
+calls in 240 s, throttled to one resolve per 200 ms with a reentrancy guard. The watch
+itself still hangs off the old hook; moving it is owed.
+
+### 6. The instruments, and the one line that decides this
+
+| arm | what it is for |
+|---|---|
+| `CZ_COOP_PLACE_TRACE=1` | the effect path: `RemoveItemAt`, the release into the world, the drop-whole-bag loop, Chuck states 34/35, every `PropCommand` with its `PropName`, and **every `FindPropByNameHash` with a census of how many live pool entries matched** |
+| `CZ_COOP_POOL_CENSUS_MS=3000` | which instance names name more than one live prop, on change |
+| `CZ_COOP_RAISE_EVENT=WheelPawnPlaced@20` | **a harness**: raise a mission event directly, so the response can be run without carrying a part from Still Creek to the garage. Manufactures a mission event — never a gate run |
+| `CZ_COOP_PLACE_FIX=1` | **a CANDIDATE fix, OFF by default.** `=2` observes and changes nothing; `=0` is the control |
+
+**The deciding line, on the HOST, when the guest places a part:**
+
+```
+[place] PROPFIND hash 878FC97B (WheelPawn) for PROPCMD 17 "WheelPawn" -> ........,
+        N live pool entries match [...ids, holders...]
+```
+
+* **`N == 1`** refutes this whole reading in one line, and the `holder` field then says
+  whose part the single candidate was.
+* **`N >= 2`** names it, says which one the title took, and which Chuck was holding each.
+
+### 7. The candidate fix — `CZ_COOP_PLACE_FIX`, and why it ships OFF
+
+State 61 already knows exactly which item object it decided on: it is `r30` at
+`0x8240AF98`, the return of `sub_821A6C18(game->0x30, actor)`. The arm remembers that
+object across the mission's half-second timer and, when the prop command's lookup is
+**ambiguous**, hands back the remembered one instead of the lowest id. One return value of
+one call is replaced; nothing is written to guest memory.
+
+Five guards: only inside `PropCommand = 17`; only when the guest's own search found more
+than one live candidate; only when the remembered object is still live AND its own `+0x98`
+still equals the hash asked for AND it is still held by someone (the pool is a LIFO free
+list, so an id released in between comes straight back as something else); only within
+`CZ_COOP_PLACE_FIX_MS` (default 5000, against the mission's 500 ms timer); and one-way — it
+can only choose a different member of the set the title was already choosing from.
+
+**The prediction, so a run can refute it:** the guest places a part, the GUEST's Chuck loses
+it, the HOST keeps what he was holding, and the part is added to the bike.
+
+**It is OFF because the measurement that convicts or acquits it has not been run, and four
+fixes have already been refuted here for exactly that reason.** What makes it worth shipping
+at all is that its own log line is the diagnosis: it can only engage where the lookup was
+ambiguous, so a session where it never fires has refuted the mechanism rather than merely
+failed. Note honestly that guard 2 is **not** a guaranteed null in single player — §3 shows
+duplicates are ordinary — but for command 17 it needs two live instances of the *same bike
+part*, and there substituting the one state 61 read is more correct rather than less.
+
+### 8. A reproducible headless route to the bike, which did not exist before
+
+The DebugJump "Cases" column lists the three `ShowInDebugMenu` case missions in file order
+— `PrologueCase0-1`, `PrologueCase0-2`, `PrologueCase0-4` — so **`DOWN` twice selects
+Case 0-4**, whose `LevelToStartAtIfDebuggingMission` is `PROLOGUE_SAFEHOUSE`. Chuck lands
+at `(-271.7, 3.3, -64.0)`, about two metres from the bike trigger at
+`(-270.054, 4.089, -61.046)`:
+
+```
+CZ_NO_WINDOW=1 CZ_VKDRAW=1 CZ_DEBUG_MENU=1 CZ_FAKE_START_MS=8000 \
+CZ_FAKE_PRESS_SEQ='F2,START,WAITJUMP,NONE,DOWN,DOWN,A,NONE' \
+CZ_ITEM_TRACE=1 CZ_COOP_PLACE_TRACE=1 CZ_COOP_POOL_CENSUS_MS=3000 \
+CZ_COOP_RAISE_EVENT='WheelPawnPlaced@20' timeout 400 ./cz_runtime
+```
+
+Two things it cannot do, recorded so the next session does not re-try them: the five
+**interactable** bike parts spawn out in `LEVEL_PROLOGUE` (Still Creek) and the ones at the
+bike are `NonInteractableProp = "true"`, so there is nothing to pick up in the garage; and
+**`CZ_AUTOCHUCK="MISSION MASTER"` does not move Chuck at all there** — a 15-minute run left
+him on the spawn point. That is why the event harness exists.
+
+### 9. STATE 34 OBSERVED FOR THE FIRST TIME — and every caller of the action dispatcher is a NETWORK EVENT LISTENER
+
+The event harness made the response run on one machine, and the first line it produced
+changes the shape of the problem:
+
+```
+[raise] raising 6AD9B344 (WheelPawnPlaced) on mission manager AADAD250 at 15s
+[item]  RaiseMissionEvent 6AD9B344 (WheelPawnPlaced) param 00000000 lr 82448ABC
+[place] STATE 34 ctx 88041094 -> ctx+0x10 = 0, that is player 0 (actor B925ABE0);
+        world+0x80 = 0, r6=88040E64, from lr 82378FFC
+```
+
+**Three things, in order of how much they change.**
+
+**(a) `ctx+0x10` is 0, not 9 — so part 9's link (A) is refuted by direct measurement.** The
+objective-event context really does carry a type tag there (`sub_821AD238` writes 11,
+`sub_8248B838` overwrites it with 9, read off the image), and the context the action actually
+receives carries **0**. So that context is not what reaches the action, the out-of-bounds
+`GetUserPlayer(players, 9)` that candidate 3 was built on genuinely cannot happen, and the
+census that refuted it was right for a reason that is now visible rather than inferred.
+
+**(b) `sub_82378FA0` does have static callers, and all three are network event listeners.**
+Part 9 recorded it as reached only through vtables, which is why four sessions could not
+follow the chain. A census over every `b`/`bl` in the image finds exactly three, each
+gated on the class byte at `header + 5` in the same shape as `sub_82245650`'s `0x68`:
+
+| site | class | how it supplies the action's context |
+|---|---|---|
+| `0x821898E0` (a tail `b`) | **0x6A** | `ExecuteAction(event->0x14, world, event)` — **the received event object IS the context** |
+| `0x821899B4` | **0x6B** | a COUNT at `event+0x10`, an array of 0x1C-byte entries at `event+0x14` — several actions per message |
+| `0x8218A1B8` (`sub_8218A070`) | **0x6C** | builds a stack context with `sub_8248BE28(ctx, .., 0, event->0x10)`, and `sub_8248BE28` is three stores: `+0x10 = r6`, `+0x14 = r4`, `+0x18 = r5`. **So the player index the action reads comes straight off the wire.** |
+
+So the engine replicates *"run this mission action"* as a message, with a player index in the
+payload, and the response to `WheelPawnPlaced` executes through that path — even in single
+player, where the message is delivered to the sender.
+
+> **RETRACTED IN PLACE, the same night: which of the three classes delivers it is NOT
+> established.** The line that said so — `dispatched from 00000000 (not through
+> sub_82378FA0)`, read as "the class-0x6A tail branch, because a tail branch does not pass
+> the entry" — was an artifact. The hook on `sub_82378FA0` that sets that field **was never
+> added**: the edit that would have added it aborted on an assertion before writing the
+> file, and the field was therefore the initialiser, `0`, on every call. A zero from a hook
+> that does not exist and a zero from a tail branch are the same number, which is gotcha 151
+> in the instrument built to answer exactly this question. Both hooks exist now, each with a
+> `hook alive` line, so a later zero is a measurement; the class stays unknown until one
+> prints. The three call sites and `sub_8248BE28`'s three stores are read off the image and
+> stand.
+
+**(c) Which makes the live question ONE FIELD ON ONE PACKET, and it is now printed.** The
+`STATE` line names the dispatching site, so on the host with the guest placing a part:
+
+* **`ctx+0x10 = 1`** — the response is running for the right Chuck and the defect is the prop
+  lookup of §2 (which `CZ_COOP_PLACE_FIX` addresses);
+* **`ctx+0x10 = 0`** — the response is running for the LOCAL Chuck, so the animation plays on
+  the host and the item comes out of the host's hands. That is the operator's third symptom
+  exactly, and the fix is then to correct the index rather than the lookup.
+
+The single-player run cannot separate those two: player 0 is both the acting player and the
+local player there. **That is the whole of what the operator's next placement decides**, and
+it is one line.
+
+> **A note on what this does NOT retire.** §2 and §3 stand on their own — the prop lookup
+> really is first-match-by-pool-id and duplicate instance names really do coexist — so if
+> `ctx+0x10` comes back correct, the lookup is still the next suspect and its own census line
+> is already in the log. The two leads are independent and the same run reads both.
+
+### 10. THE DISPATCH IS MEASURED: a class-0x6B BATCH, and the player index is a field of the record
+
+With the dispatcher hook actually present (see the retraction in §9) the same harness run
+reads:
+
+```
+[item]  hook alive: sub_82378FA0 mission action dispatcher (its ENTRY; ...)
+[place] STATE 34 ctx 88040FB4 -> ctx+0x10 = 0, that is player 0 (actor B925ABE0);
+        world+0x80 = 0, from lr 82378FFC, dispatched from 821899B8 (event class 0x6B)
+```
+
+`0x821899B8` is the instruction after the `bl 0x82378FA0` inside **`sub_821898E8`, the
+class-0x6B listener** — so that is the path, measured, and the `hook alive` line is what
+licenses reading the number (the previous reading of this was an artifact).
+
+**What a class-0x6B message is, read off the image.** It is a BATCH of class-0x6A action
+records:
+
+```
+sub_821898E8(world, header, event):
+    if (header[5] != 0x6B) return;
+    count = event->0x10;                        // a BYTE
+    for i in 0 .. count-1:
+        entry = event + 0x14 + i*0x1C;          // guarded on entry->0x08 == 0x6A
+        action = entry->0x14;  if (!action) continue;
+        ExecuteAction(action, world, entry)     // 0x821899B4
+```
+
+**So each 0x1C-byte record carries its own player index at `+0x10`, and that is the field
+`cMissionSetChuckState::Execute` reads and hands to `GetUserPlayer`.** The batch object's
+constructor is `0x821619D0` — 25 records, queue vtable `0x8200B318`, record vtable
+`0x8200B300` — and it initialises each record's `+0x10` to **4**, which is out of range for
+`MAX_USER_PLAYERS = 4` and therefore a "nobody" sentinel. **A 0 in that field was written by
+whoever queued the action**, so the value is not a default and the question "who wrote it"
+is a real one.
+
+`CZ_COOP_PLACE_TRACE=1` prints every record of every batch now — class, player and action —
+so on the host with the guest placing a part, the record carrying the place animation states
+in one field whose Chuck the response will run for. **If it says 0 while the guest is player
+1, the sender wrote the local player, and that is the defect.** If it says 1, the response is
+correct and §2's prop lookup is the remaining suspect.
+
+**What is NOT established:** who fills the record. 56 sites in the image build a record with
+that vtable — most of them in the mission-action module at `0x823Axxxx` — and the queue's own
+enqueue was not found. That is the next static question, and the batch trace narrows it to
+"whichever site produced the record that carried state 34", which the `lr` on the BATCH line
+plus the record index identifies.
