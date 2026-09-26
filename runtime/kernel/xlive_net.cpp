@@ -19,6 +19,7 @@
 #include "heap.h"
 #include "klog.h"
 #include "memory.h"
+#include "coop_link.h"
 #include "xlive_glue.h"
 #include "xlive_session.h"
 
@@ -439,6 +440,31 @@ bool PullOne(uint32_t handle, const GuestSocket& sock, GuestDatagram& out)
     datagram.fromXuid = xuid;
     datagram.fromPort = fromPort;
     datagram.payload.assign(raw + kPortHeader, size_t(n) - kPortHeader);
+    // OUR OWN CHANNEL, ahead of every guest socket (kernel/coop_link.h). This
+    // port is one the title never binds, so a datagram carrying it is ours by
+    // construction and would otherwise fall through to the drop below. The
+    // ordering matters: checking it FIRST is what stops a guest socket that
+    // happened to bind it from silently eating the channel — the test below
+    // names that case instead.
+    if (toPort == kCoopLinkPort)
+    {
+        if (sock.boundPort == kCoopLinkPort)
+        {
+            static bool said = false;
+            if (!said)
+            {
+                said = true;
+                KLOG("[net] the title bound port %u, which is the co-op side channel's. "
+                     "The channel stands down; item sync is off this session.\n",
+                     kCoopLinkPort);
+            }
+        }
+        else
+        {
+            CoopLink_Deliver(xuid, datagram.payload.data(), datagram.payload.size());
+            return false;
+        }
+    }
     if (toPort == sock.boundPort)
     {
         if (NetLogOn())
@@ -1180,4 +1206,39 @@ void XliveNet_SelfTest()
         fprintf(stderr, "[xlive] net self-test: the socket family answers\n");
     else
         fprintf(stderr, "[xlive] net self-test: %d FAILURE(S)\n", g_selfTestFailures);
+}
+
+// -- the co-op side channel (kernel/coop_link.h) -----------------------------
+//
+// The send half. It lives here rather than in coop_link's own translation unit
+// because everything it needs is here already: the peer list, the one punched
+// socket, and the port framing every guest datagram carries. Building the same
+// frame by hand somewhere else would be a second copy of a format with no
+// version field — and the receive half is four lines in PullOne above.
+int CoopLink_Broadcast(const void* data, size_t length)
+{
+    if (!data || length == 0 || length + kPortHeader > xlive::Client::kMaxDatagram)
+        return 0;
+
+    std::string framed;
+    framed.resize(kPortHeader + length);
+    framed[0] = char(kCoopLinkPort >> 8);
+    framed[1] = char(kCoopLinkPort & 0xFF);
+    framed[2] = char(kCoopLinkPort >> 8);
+    framed[3] = char(kCoopLinkPort & 0xFF);
+    std::memcpy(&framed[kPortHeader], data, length);
+
+    int reached = 0;
+    for (const uint64_t xuid : Live().peers())
+    {
+        // Unreliable by contract: a peer still being punched misses this tick
+        // rather than queueing a stale value for delivery later.
+        if (Live().peer_state(xuid) != xlive::Client::PeerState::Connected)
+            continue;
+        if (Live().SendTo(xuid, framed.data(), framed.size()) >= 0)
+            reached++;
+    }
+    if (NetLogOn() && reached)
+        KLOG("[net] coop-link broadcast %zuB -> %d peer(s)\n", length, reached);
+    return reached;
 }

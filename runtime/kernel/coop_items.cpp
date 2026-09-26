@@ -72,6 +72,7 @@
 // path knows; `tools/name_hash.py --lookup <hex>` reverses any other against
 // items.txt. Everything is gated on the variable and every hook is a straight
 // pass-through when it is off; none of these are on the frame path.
+#include <atomic>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
@@ -81,6 +82,7 @@
 #include <ppc_config.h>
 #include <ppc_context.h>
 
+#include "coop_link.h"
 #include "coop_objects.h"
 #include "xlive_session.h"
 
@@ -452,6 +454,324 @@ void WatchInventories(PPCContext& ctx, uint8_t* base)
         WatchPlayer(ctx, base, userPlayers, invMgr, i, state[i], side);
     inSweep = false;
 }
+
+// ===========================================================================
+// THE FIX — CZ_COOP_ITEM_SYNC. One field crosses the link, and the far machine
+// stops answering out of a copy that has drifted.
+// ===========================================================================
+//
+// THE DEFECT, stated as a mechanism rather than as a symptom. State 61 decides
+// which bike part was placed by reading the acting player's SELECTED INVENTORY
+// SLOT on the machine the code happens to be running on. Both machines run it —
+// the trigger fire is broadcast (subtype 0) and each side re-derives the answer
+// locally. That only works while the two copies agree, and they are never made
+// to: nothing in Case Zero's co-op layer replicates an item or an inventory
+// (no named event type, none of the eleven broadcast subtypes), and the pool
+// index each copy is built on is handed out by a LIFO free list private to each
+// machine (`sub_8223B000`). The two sides therefore start identical — ids issue
+// 0,1,2,... from an identically initialised list, which is why the earliest
+// placement in the 09-25 session resolved to the same object on both machines
+// and worked exactly — and drift apart one way from the first spawn or release
+// one machine performs and the other does not. Four placements, four readings:
+// the same slot holding different items, a slot the host thought was empty, and
+// finally the two machines disagreeing on which slot was even selected.
+//
+// THE FIX. The machine a player is LOCAL to is always right about what that
+// player is holding: it owns the input, the pickup and the inventory. So each
+// machine publishes one field — the name hash of its own player's selected item
+// — every SyncPeriodMs, and when state 61 runs for a player who is REMOTE here,
+// the answer the title computed out of the local copy is replaced with the one
+// the owning machine published.
+//
+// WHY STATE AND NOT AN EVENT. The obvious shape is to send "I placed a
+// WheelPawn" at the moment of the placement, and it races: our datagram and the
+// title's own trigger-fire event travel by different mechanisms, so the far
+// machine can run the placement before the answer arrives. Publishing the held
+// item CONTINUOUSLY has no such moment — the value is already there when the
+// placement runs, a lost datagram costs a tick of freshness, and the code has no
+// ordering to get wrong. It is also the more useful field: anything else that
+// needs to know what the other player is holding can read it.
+//
+// THE SUBSTITUTION IS ONE-WAY, AND THAT IS A SAFETY PROPERTY. It only ever
+// turns "no part" or "the wrong part" into a named part. It will never turn a
+// part the local machine recognised into NoPartsPlaced, and it never fires when
+// the remote machine's answer is not one of the five the bike knows. So the
+// worst case of a wrong reading here is the behaviour that already ships, and
+// the failure mode cannot be "the fix removed a part that used to work".
+//
+// WHAT IT DOES NOT DO. It does not reconcile the inventories, the pool indices
+// or the selected slot — those still drift, and the host's copy of the guest's
+// bag is still wrong. It repairs the one decision the drift is VISIBLE in. The
+// general repair is item replication, which Case Zero never had.
+//
+// CZ_COOP_ITEM_SYNC=0 is the control arm and restores the shipped behaviour
+// exactly; every substitution prints one line either way.
+
+constexpr uint32_t kSyncMagic = 0x435A4831u; // 'CZH1' — held-item, version 1
+constexpr uint8_t kSyncVersion = 1;
+constexpr size_t kSyncBytes = 16;
+constexpr uint32_t kNoPartsPlaced = 0xF574775Au;
+
+// The five (held item -> mission event) pairs state 61 switches on. Taken from
+// the same table the trace names hashes with, so the two cannot drift apart.
+struct PartEvent { uint32_t item; uint32_t event; };
+constexpr PartEvent kPartEvents[] = {
+    {0x878FC97Bu, 0x6AD9B344u}, // WheelPawn        -> WheelPawnPlaced
+    {0xC32E815Bu, 0xD0DF94E4u}, // HandleBar        -> HandleBarPlaced
+    {0x5F8D0521u, 0xD4AF6D06u}, // GasolineCanister -> GasCanPlaced
+    {0xA55F8BABu, 0x34746C95u}, // BikeEngine       -> FuelTankPlaced
+    {0x52EA0EA6u, 0x7D7806D9u}, // BikeForks        -> BikeForksPlaced
+};
+
+uint32_t EventForPart(uint32_t itemHash)
+{
+    for (const PartEvent& p : kPartEvents)
+        if (p.item == itemHash)
+            return p.event;
+    return 0;
+}
+
+bool IsPlacementEvent(uint32_t eventHash)
+{
+    if (eventHash == kNoPartsPlaced)
+        return true;
+    for (const PartEvent& p : kPartEvents)
+        if (p.event == eventHash)
+            return true;
+    return false;
+}
+
+int SyncMode()
+{
+    static const int mode = [] {
+        const char* e = std::getenv("CZ_COOP_ITEM_SYNC");
+        return (e && *e && *e == '0') ? 0 : 1; // ON unless explicitly disabled
+    }();
+    return mode;
+}
+
+// The one predicate the whole fix hangs off. SINGLE PLAYER MATTERS HERE: the
+// bike, state 61 and every mission event exist offline too, so without the
+// session test the substitution path would open its window, make a guest call
+// to ask which side of a session it is on, and warn about a peer that does not
+// exist — on a frame path, in a mode this fix has nothing to say about.
+bool SyncActive() { return SyncMode() && XliveSession_Enabled(); }
+
+int SyncPeriodMs()
+{
+    static const int ms = [] {
+        const char* e = std::getenv("CZ_COOP_ITEM_SYNC_MS");
+        const int n = (e && *e) ? std::atoi(e) : 200;
+        return n > 0 ? n : 200;
+    }();
+    return ms;
+}
+
+// How stale a published value may be and still be believed. Generous, because
+// the thing it guards against is a peer that has GONE (a quit, a hang), not a
+// slow link: a held item does not change on its own, so a value a second old is
+// as true as one 20 ms old.
+int SyncMaxAgeMs()
+{
+    static const int ms = [] {
+        const char* e = std::getenv("CZ_COOP_ITEM_SYNC_MAX_AGE_MS");
+        const int n = (e && *e) ? std::atoi(e) : 3000;
+        return n > 0 ? n : 3000;
+    }();
+    return ms;
+}
+
+// The title's own answer to "am I hosting" (`sub_825530D0`, no arguments — the
+// same one the default-outfit code asks). Cached after the first successful
+// call: it cannot change inside a session, and this is read on the frame path.
+constexpr uint32_t kFnIsHost = 0x825530D0;
+
+// Which end of the session this machine is: 1 host, 0 joiner, -1 not asked yet.
+// Written once by HostSide() on a guest thread and read by the receive half,
+// which has no guest context of its own to ask with.
+std::atomic<int> g_ourSide{-1};
+
+int HostSide(PPCContext& ctx, uint8_t* base)
+{
+    static int cached = -1; // -1 unknown, 0 joiner, 1 host
+    if (cached >= 0)
+        return cached;
+    PPCContext call = ctx;
+    if (!GuestCall(call, base, kFnIsHost, "item-sync-is-host"))
+        return -1;
+    cached = (call.r3.u32 & 0xFF) ? 1 : 0;
+    g_ourSide.store(cached, std::memory_order_relaxed);
+    fprintf(stderr, "[itemsync] this machine is the %s\n", cached ? "HOST" : "JOINER");
+    return cached;
+}
+
+// WHICH USER-PLAYER INDEX IS OURS. The host's Chuck is index 0 and the joiner's
+// is 1, in the SAME numbering on both machines — that is what the `[pos]` lines
+// measured in the 09-25 session, both sides printing the same positions for 0
+// and 1, and it is also why the player index was cleared as a mechanism (it
+// tracked correctly on both machines, 7 of 7 and 4 of 4).
+//
+// It is an ASSUMPTION all the same, so it is overridable and it is checked: a
+// message from a peer that claims the same side we are cannot be trusted about
+// which index it owns, and is rejected loudly rather than filed.
+// The same answer WITHOUT calling guest code. The substitution runs part-way
+// through a mission-event raise, and asking the title a question there means a
+// guest call nested inside one — avoidable, because the publisher runs every
+// frame from the mission update and has already cached the answer long before
+// any placement happens. If it somehow has not, the substitution simply does
+// not fire this once and the title's own answer stands.
+int LocalPlayerIndexCached()
+{
+    static const int forced = [] {
+        const char* e = std::getenv("CZ_COOP_LOCAL_PLAYER");
+        return (e && *e) ? std::atoi(e) : -1;
+    }();
+    if (forced >= 0)
+        return forced;
+    const int host = g_ourSide.load(std::memory_order_relaxed);
+    return host < 0 ? -1 : (host ? 0 : 1);
+}
+
+int LocalPlayerIndex(PPCContext& ctx, uint8_t* base)
+{
+    static const int forced = [] {
+        const char* e = std::getenv("CZ_COOP_LOCAL_PLAYER");
+        return (e && *e) ? std::atoi(e) : -1;
+    }();
+    if (forced >= 0)
+        return forced;
+    const int host = HostSide(ctx, base);
+    return host < 0 ? -1 : (host ? 0 : 1);
+}
+
+struct RemoteHeld
+{
+    uint32_t hash = 0;
+    uint32_t seq = 0;
+    std::chrono::steady_clock::time_point at{};
+    bool valid = false;
+};
+
+std::mutex g_heldMu;
+RemoteHeld g_remoteHeld[kMaxPlayers];
+
+// How many messages have been FILED. The self-test reads it, and it is the only
+// way one of these guards can be shown to have held: a refused message that is
+// merely never read looks exactly like one that was accepted into a slot the
+// test does not check — and a broken BOUND writes off the end of the array,
+// where no value check can see it at all.
+uint32_t g_syncFiled = 0;
+
+void PutBE32(uint8_t* p, uint32_t v)
+{
+    p[0] = uint8_t(v >> 24); p[1] = uint8_t(v >> 16);
+    p[2] = uint8_t(v >> 8);  p[3] = uint8_t(v);
+}
+
+uint32_t GetBE32(const uint8_t* p)
+{
+    return (uint32_t(p[0]) << 24) | (uint32_t(p[1]) << 16) | (uint32_t(p[2]) << 8) | p[3];
+}
+
+// Resolve one player's selected item hash. 0 when the chain is not up yet or
+// the hand is empty — the two are not distinguished because neither is
+// publishable.
+uint32_t SelectedItemHash(PPCContext& ctx, uint8_t* base, uint32_t userPlayers, uint32_t invMgr,
+                          uint32_t playerIdx)
+{
+    PPCContext call = ctx;
+    call.r3.u64 = userPlayers;
+    call.r4.u64 = playerIdx;
+    if (!GuestCall(call, base, kFnUserPlayer, "sync-user-player"))
+        return 0;
+    const uint32_t actor = call.r3.u32;
+    if (!actor)
+        return 0;
+    call.r3.u64 = invMgr;
+    call.r4.u64 = actor;
+    if (!GuestCall(call, base, kFnPlayerInv, "sync-player-inventory"))
+        return 0;
+    const uint32_t inv = call.r3.u32;
+    if (!inv)
+        return 0;
+    const int32_t sel = int32_t(LoadU32(base, inv + kInvSelected));
+    if (sel < 0 || uint32_t(sel) >= kInvSlots)
+        return 0;
+    const uint32_t item = LoadU32(base, inv + uint32_t(sel) * 8 + 4);
+    return item ? LoadU32(base, item + kItemNameHash) : 0;
+}
+
+// Publishes this machine's own player's held item. Driven from the mission
+// trigger update, which runs every frame; throttled to SyncPeriodMs, and a
+// straight return whenever there is no session to publish into.
+void PublishHeldItem(PPCContext& ctx, uint8_t* base)
+{
+    if (!SyncActive())
+        return;
+
+    static thread_local bool inPublish = false;
+    if (inPublish)
+        return;
+
+    static std::mutex mu;
+    static std::chrono::steady_clock::time_point next{};
+    static uint32_t seq = 0;
+
+    const auto now = std::chrono::steady_clock::now();
+    std::unique_lock<std::mutex> lock(mu, std::try_to_lock);
+    if (!lock.owns_lock() || now < next)
+        return;
+    next = now + std::chrono::milliseconds(SyncPeriodMs());
+
+    inPublish = true;
+    const char* why = "";
+    const uint32_t world = ResolveWorld(ctx, base, why);
+    const uint32_t userPlayers = world ? LoadU32(base, world + 0x7C) : 0;
+    const uint32_t game = world ? LoadU32(base, world + 0x78) : 0;
+    const uint32_t invMgr = game ? LoadU32(base, game + 0x30) : 0;
+    const int local = (userPlayers && invMgr) ? LocalPlayerIndex(ctx, base) : -1;
+    if (local < 0 || uint32_t(local) >= kMaxPlayers)
+    {
+        inPublish = false;
+        return;
+    }
+
+    const uint32_t hash = SelectedItemHash(ctx, base, userPlayers, invMgr, uint32_t(local));
+    const int host = HostSide(ctx, base);
+
+    uint8_t msg[kSyncBytes] = {};
+    PutBE32(msg + 0, kSyncMagic);
+    msg[4] = kSyncVersion;
+    msg[5] = uint8_t(local);
+    msg[6] = uint8_t(host == 1 ? 1 : 0);
+    msg[7] = 0;
+    PutBE32(msg + 8, hash);
+    PutBE32(msg + 12, ++seq);
+    const int reached = CoopLink_Broadcast(msg, sizeof msg);
+
+    // Once, when the channel first carries something, and once when the held
+    // item changes after that. A per-tick line would be 5 a second forever.
+    static uint32_t lastSent = 0xFFFFFFFFu;
+    static bool announced = false;
+    if (reached && !announced)
+    {
+        announced = true;
+        fprintf(stderr, "[itemsync] publishing player %d's held item to %d peer(s) every %d ms "
+                        "(CZ_COOP_ITEM_SYNC=0 is the control arm)\n",
+                local, reached, SyncPeriodMs());
+    }
+    if (reached && hash != lastSent)
+    {
+        lastSent = hash;
+        fprintf(stderr, "[itemsync] player %d now holds %08X (%s)\n", local, hash, NameOf(hash));
+    }
+    inPublish = false;
+}
+
+// The placement window: state 61's hook opens it so the mission-event hook can
+// tell a bike placement from every other raise in the game, and for whom.
+thread_local bool t_placing = false;
+thread_local int32_t t_placingPlayer = -1;
 } // namespace
 
 // cMissionSetChuckState::Execute(action, world, ctx, ...) — state 61 is the bike.
@@ -481,7 +801,28 @@ PPC_FUNC(sub_82409900)
             }
         }
     }
+    // The window the mission-event hook needs to tell a bike placement from
+    // every other raise in the game. It is opened for state 61 only, it carries
+    // the player the action will act AS (the field state 61 itself reads), and
+    // it is closed unconditionally so a raise on any later frame cannot inherit
+    // it. Thread-local: two mission updates on two threads would otherwise
+    // share one window.
+    const uint32_t action61 = ctx.r3.u32, ctx61 = ctx.r5.u32;
+    const bool isPlace = SyncActive() && action61 &&
+                         PPC_LOAD_U32(action61 + 0x40) == kChuckStateTryPlaceItem;
+    const bool wasPlacing = t_placing;
+    const int32_t wasPlayer = t_placingPlayer;
+    if (isPlace)
+    {
+        t_placing = true;
+        t_placingPlayer = ctx61 ? int32_t(PPC_LOAD_U32(ctx61 + kCtxPlayer)) : -1;
+    }
     __imp__sub_82409900(ctx, base);
+    if (isPlace)
+    {
+        t_placing = wasPlacing;
+        t_placingPlayer = wasPlayer;
+    }
 }
 
 // cMissionOnTrigger::Update(trigger, missionOwner, updateCtx). The POSITIVE CONTROL
@@ -508,6 +849,10 @@ PPC_FUNC(sub_823E79B8)
         }
         WatchInventories(ctx, base);
     }
+    // Outside the trace gate: this is the FIX, not an instrument, and it has to
+    // run for a player who never sets CZ_ITEM_TRACE. It is a straight return
+    // when there is no co-op session.
+    PublishHeldItem(ctx, base);
     __imp__sub_823E79B8(ctx, base);
 }
 
@@ -666,5 +1011,256 @@ PPC_FUNC(sub_821AFE48)
             fprintf(stderr, "[item] RaiseMissionEvent %08X (%s) param %08X (%s) lr %08X\n",
                     hash, name, ctx.r5.u32, Side(ctx, base), uint32_t(ctx.lr));
     }
+    // THE SUBSTITUTION (CZ_COOP_ITEM_SYNC). Inside a state-61 placement, for a
+    // player who is REMOTE on this machine, the hash the title just computed
+    // came out of a local inventory copy that has drifted. Replace it with the
+    // event for the item the OWNING machine says that player is holding.
+    //
+    // Three guards, and each of them is the difference between a repair and a
+    // new defect: the raise must be one of the six state 61 can produce (so an
+    // unrelated mission event raised from inside the same call is untouched),
+    // the remote value must name one of the five parts (so a peer that is
+    // holding nothing, or something else entirely, cannot cause a placement),
+    // and the substitution must actually change the answer (so the ordinary
+    // agreeing case is silent and costs nothing).
+    if (SyncActive() && t_placing && IsPlacementEvent(hash))
+    {
+        const int local = LocalPlayerIndexCached();
+        const int32_t who = t_placingPlayer;
+        if (local >= 0 && who >= 0 && uint32_t(who) < kMaxPlayers && who != local)
+        {
+            uint32_t remoteItem = 0;
+            bool fresh = false;
+            {
+                std::lock_guard<std::mutex> lock(g_heldMu);
+                const RemoteHeld& r = g_remoteHeld[who];
+                if (r.valid)
+                {
+                    const auto age = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                         std::chrono::steady_clock::now() - r.at)
+                                         .count();
+                    fresh = age <= SyncMaxAgeMs();
+                    remoteItem = r.hash;
+                }
+            }
+            const uint32_t want = fresh ? EventForPart(remoteItem) : 0;
+            if (want && want != hash)
+            {
+                fprintf(stderr, "[itemsync] placement by player %d (remote here): this machine "
+                                "read %08X (%s) out of its own copy, player %d's own machine "
+                                "says %08X (%s) -> raising %08X (%s)\n",
+                        who, hash, NameOf(hash), who, remoteItem, NameOf(remoteItem), want,
+                        NameOf(want));
+                ctx.r4.u64 = want;
+            }
+            else if (!fresh)
+            {
+                static bool said = false;
+                if (!said)
+                {
+                    said = true;
+                    fprintf(stderr, "[itemsync] placement by player %d (remote here) but no fresh "
+                                    "held-item from that machine — the title's own answer %08X "
+                                    "(%s) stands. Is the peer running this build?\n",
+                            who, hash, NameOf(hash));
+                }
+            }
+        }
+    }
     __imp__sub_821AFE48(ctx, base);
+}
+
+// The receive half of the side channel (kernel/coop_link.h). Runs on whichever
+// guest thread was draining the punched path, under the socket layer's own
+// lock, so it does exactly one thing: validate and file. Nothing here calls
+// back into the network, into guest code, or into anything that could block.
+void CoopLink_Deliver(uint64_t fromXuid, const void* data, size_t length)
+{
+    (void)fromXuid;
+    if (length < kSyncBytes)
+        return;
+    const uint8_t* p = static_cast<const uint8_t*>(data);
+    if (GetBE32(p) != kSyncMagic || p[4] != kSyncVersion)
+        return;
+
+    const uint32_t who = p[5];
+    const bool senderIsHost = p[6] != 0;
+    const uint32_t hash = GetBE32(p + 8);
+    const uint32_t seq = GetBE32(p + 12);
+    if (who >= kMaxPlayers)
+        return;
+
+    // THE CHECK THAT KEEPS THE INDEX ASSUMPTION HONEST. Each side derives its
+    // own player index from which end of the session it is, so two machines
+    // that both believe they are the host would both publish index 0 and each
+    // would overwrite the other's view of its own player. That is a
+    // misconfiguration rather than a race, it would be invisible as a wrong
+    // part rather than as an error, and it costs one byte to refuse.
+    const int ourSide = g_ourSide.load(std::memory_order_relaxed);
+    if (ourSide >= 0 && senderIsHost == (ourSide == 1))
+    {
+        static bool said = false;
+        if (!said)
+        {
+            said = true;
+            fprintf(stderr, "[itemsync] REFUSED a held-item message from a peer that claims the "
+                            "same side of the session as this machine (both %s). Item sync is "
+                            "off: the player indices cannot be trusted.\n",
+                    senderIsHost ? "host" : "joiner");
+        }
+        return;
+    }
+
+    std::lock_guard<std::mutex> lock(g_heldMu);
+    RemoteHeld& r = g_remoteHeld[who];
+    // Unordered transport: an older datagram overtaking a newer one must not
+    // roll the value back. Wraparound is handled by the signed difference.
+    if (r.valid && int32_t(seq - r.seq) <= 0)
+        return;
+    r.hash = hash;
+    r.seq = seq;
+    r.at = std::chrono::steady_clock::now();
+    r.valid = true;
+    g_syncFiled++;
+}
+
+// -- the self-test (kernel/coop_link.h) --------------------------------------
+//
+// Every case here is one the live path depends on and none of them is reachable
+// on one machine, so without this the whole receive half ships unexecuted. Each
+// check is written so that BREAKING the implementation makes it fail: the
+// sequence test feeds a stale datagram and requires the old value to survive,
+// the bound test feeds player 9 and requires nothing to be filed, and the
+// same-side test requires a REFUSAL rather than merely "no crash".
+namespace
+{
+int g_syncTestFailures = 0;
+
+void SyncExpect(bool ok, const char* what)
+{
+    if (!ok)
+    {
+        g_syncTestFailures++;
+        fprintf(stderr, "[itemsync] SELF-TEST FAILED: %s\n", what);
+    }
+}
+
+void MakeSyncMsg(uint8_t* out, uint8_t player, bool host, uint32_t hash, uint32_t seq,
+                 uint32_t magic = kSyncMagic, uint8_t version = kSyncVersion)
+{
+    PutBE32(out + 0, magic);
+    out[4] = version;
+    out[5] = player;
+    out[6] = host ? 1 : 0;
+    out[7] = 0;
+    PutBE32(out + 8, hash);
+    PutBE32(out + 12, seq);
+}
+
+uint32_t SyncFiled()
+{
+    std::lock_guard<std::mutex> lock(g_heldMu);
+    return g_syncFiled;
+}
+
+uint32_t SyncHeldOf(uint32_t player)
+{
+    std::lock_guard<std::mutex> lock(g_heldMu);
+    return g_remoteHeld[player].valid ? g_remoteHeld[player].hash : 0;
+}
+
+void SyncClear()
+{
+    std::lock_guard<std::mutex> lock(g_heldMu);
+    for (RemoteHeld& r : g_remoteHeld)
+        r = RemoteHeld{};
+}
+} // namespace
+
+void CoopItems_SyncSelfTest()
+{
+    const char* env = std::getenv("CZ_COOP_ITEM_SYNC_TEST");
+    if (!env || !*env || *env == '0')
+        return;
+
+    g_syncTestFailures = 0;
+    const int savedSide = g_ourSide.load(std::memory_order_relaxed);
+    SyncClear();
+
+    // The tables. Five parts, five distinct events, and the sixth event the
+    // title can raise is NoPartsPlaced — which must be recognised as a
+    // placement (so it can be replaced) but must never be produced.
+    for (const PartEvent& p : kPartEvents)
+    {
+        SyncExpect(EventForPart(p.item) == p.event, "EventForPart does not round-trip its table");
+        SyncExpect(IsPlacementEvent(p.event), "a part's event is not a placement event");
+        SyncExpect(p.event != kNoPartsPlaced, "a part maps to NoPartsPlaced");
+    }
+    SyncExpect(IsPlacementEvent(kNoPartsPlaced), "NoPartsPlaced is not a placement event");
+    SyncExpect(EventForPart(kNoPartsPlaced) == 0, "NoPartsPlaced resolves as a held part");
+    SyncExpect(EventForPart(0) == 0, "an empty hand resolves as a held part");
+    SyncExpect(EventForPart(0xDEADBEEFu) == 0, "an unrelated item resolves as a bike part");
+    SyncExpect(!IsPlacementEvent(0xDEADBEEFu), "an unrelated event counts as a placement");
+
+    // We are the host for the rest of this, so a joiner's messages are the ones
+    // that must be accepted.
+    g_ourSide.store(1, std::memory_order_relaxed);
+    uint8_t msg[kSyncBytes];
+
+    MakeSyncMsg(msg, 1, /*host*/ false, 0x878FC97Bu, 10);
+    CoopLink_Deliver(1, msg, sizeof msg);
+    SyncExpect(SyncHeldOf(1) == 0x878FC97Bu, "a well-formed message was not filed");
+
+    // Unordered transport: an older datagram must not roll the value back.
+    MakeSyncMsg(msg, 1, false, 0x5F8D0521u, 9);
+    CoopLink_Deliver(1, msg, sizeof msg);
+    SyncExpect(SyncHeldOf(1) == 0x878FC97Bu, "a STALE message overwrote a newer one");
+
+    MakeSyncMsg(msg, 1, false, 0x5F8D0521u, 11);
+    CoopLink_Deliver(1, msg, sizeof msg);
+    SyncExpect(SyncHeldOf(1) == 0x5F8D0521u, "a newer message was not accepted");
+
+    // Malformed input must be refused rather than filed or read past.
+    {
+        const uint32_t before = SyncFiled();
+        MakeSyncMsg(msg, 1, false, 0x52EA0EA6u, 12, /*magic*/ 0x12345678u);
+        CoopLink_Deliver(1, msg, sizeof msg);
+        MakeSyncMsg(msg, 1, false, 0x52EA0EA6u, 13, kSyncMagic, /*version*/ 99);
+        CoopLink_Deliver(1, msg, sizeof msg);
+        MakeSyncMsg(msg, 1, false, 0x52EA0EA6u, 14);
+        CoopLink_Deliver(1, msg, sizeof msg - 1);
+        SyncExpect(SyncFiled() == before, "a malformed message was filed");
+        SyncExpect(SyncHeldOf(1) == 0x5F8D0521u, "a malformed message changed the held item");
+    }
+
+    // A player index the game does not have must not be written ANYWHERE, and
+    // that cannot be checked by reading the slots: the failure it guards
+    // against is a write past the end of the array, which no in-range value
+    // test can see. The filed COUNT can.
+    {
+        const uint32_t before = SyncFiled();
+        MakeSyncMsg(msg, 9, false, 0xC32E815Bu, 20);
+        CoopLink_Deliver(1, msg, sizeof msg);
+        SyncExpect(SyncFiled() == before, "an out-of-range player index was filed");
+        for (uint32_t i = 0; i < kMaxPlayers; i++)
+            SyncExpect(SyncHeldOf(i) != 0xC32E815Bu, "an out-of-range message landed in a slot");
+    }
+
+    // The same-side refusal: a peer claiming to be the host while we are.
+    SyncClear();
+    {
+        const uint32_t before = SyncFiled();
+        MakeSyncMsg(msg, 0, /*host*/ true, 0xA55F8BABu, 30);
+        CoopLink_Deliver(1, msg, sizeof msg);
+        SyncExpect(SyncFiled() == before && SyncHeldOf(0) == 0,
+                   "a message from a peer on OUR side of the session was filed");
+    }
+
+    SyncClear();
+    g_ourSide.store(savedSide, std::memory_order_relaxed);
+    if (g_syncTestFailures == 0)
+        fprintf(stderr, "[itemsync] self-test: the held-item contract holds (tables, encoding, "
+                        "ordering, bounds, side check)\n");
+    else
+        fprintf(stderr, "[itemsync] self-test: %d FAILURE(S)\n", g_syncTestFailures);
 }

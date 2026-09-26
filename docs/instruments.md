@@ -4339,6 +4339,33 @@ CZ_ITEM_WATCH_MS=N THE PICKUP, AT THE INSTANT IT HAPPENS (with CZ_ITEM_TRACE=1;
                    the two accessors the bike path already calls, so it adds no new
                    guest address; the bill is eight guest calls and ~48 loads at most
                    four times a second, off the renderer thread
+CZ_COOP_ITEM_SYNC=0  THE CONTROL ARM FOR THE ISSUE #9 FIX (the fix is ON by default
+                   whenever a co-op session exists; `=0` restores the shipped behaviour
+                   exactly, and in single player the whole path is inert). Each machine
+                   publishes the name hash of ITS OWN player's selected item every 200 ms
+                   over a reserved port on the already-punched path (kernel/coop_link.h),
+                   and when Chuck state 61 runs for a player who is REMOTE here, the
+                   mission event the title computed from this machine's own drifted
+                   inventory copy is replaced by the event for the item the OWNING machine
+                   says that player holds. One-way by construction: it can turn "no part"
+                   or "the wrong part" into a named part, never the reverse, so the worst
+                   case of a wrong reading is the behaviour that already ships. It repairs
+                   THE DECISION only — the inventories still drift and a world item can
+                   still be taken twice. Every substitution prints a line naming both
+                   answers. CZ_COOP_ITEM_SYNC_MS=N the publish period,
+                   CZ_COOP_ITEM_SYNC_MAX_AGE_MS=N how stale a published value may be
+                   (3000), CZ_COOP_LOCAL_PLAYER=N overrides the host-is-0 assumption
+CZ_COOP_ITEM_SYNC_TEST=1  the held-item contract, offline and with no second machine:
+                   the part/event tables, the message encoding, and every rule the
+                   receive half enforces — version, runt, sequence order, player bound,
+                   and the refusal of a peer claiming the same side of the session. It
+                   exists because every one of those guards is on a path that CANNOT run
+                   on one machine, so without it the whole receive half ships unexecuted.
+                   **Shown capable of failing**: all four guards broken on purpose produce
+                   five distinct failures, clean again when restored (gotcha 30). The
+                   player-bound check counts messages FILED rather than reading the slots,
+                   because a broken bound writes PAST THE END of the array where no
+                   in-range value test can see it
 CZ_COOP_TRIGGER_PLAYER=1  THE CANDIDATE FIX for player issue #9 — **REFUTED 2026-09-25,
                    do not ship it as that fix.** Two real machines measured the field it
                    overwrites already tracking the acting player correctly, seven

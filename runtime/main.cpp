@@ -82,6 +82,10 @@ static int (*const __llvm_profile_write_file)(void) = nullptr;
 // layer's only other callers are the guest's own imports, and one arm does not earn a
 // header of its own.
 void FileImportsWriteSelfTest();
+// The co-op held-item contract (kernel/coop_link.h). Here rather than beside the
+// other xlive self-tests because it needs neither a server nor a sign-in, and a
+// test that only runs on an online boot is one nobody runs.
+void CoopItems_SyncSelfTest();
 
 namespace {
 
@@ -785,6 +789,7 @@ int main(int argc, char** argv)
     // xpointer) and must not race the title's own file activity. Off by default and
     // free when off; see kernel/file_imports.cpp for why it exists at all.
     FileImportsWriteSelfTest();
+    CoopItems_SyncSelfTest();
 
     // XenonLive, before any guest code runs, because the very first thing
     // the title asks about the user is its name. XexTitleId() is valid from

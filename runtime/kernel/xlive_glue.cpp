@@ -16,6 +16,7 @@
 #include "xlive_overlay_glue.h"
 #include "xlive_session.h"
 #include "xlive_social.h"
+#include "coop_link.h"
 #include "xlive_net.h"
 #include "xlive_stats.h"
 

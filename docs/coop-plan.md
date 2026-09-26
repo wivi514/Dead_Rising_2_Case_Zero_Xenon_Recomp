@@ -1267,6 +1267,106 @@ on `sub_8223B000` printing `(id, object, name hash)` on both machines: if the me
 right, the two logs agree entry for entry until the first unmatched spawn and disagree by
 a constant offset thereafter.
 
+#### THE FIX — `CZ_COOP_ITEM_SYNC`, one field across the link (2026-09-25)
+
+Built, gated and self-tested; **not yet run on two machines**, which is the one thing
+owed. `CZ_COOP_ITEM_SYNC=0` is the control arm and restores the shipped behaviour
+exactly.
+
+##### What it repairs, and what it does not
+
+It repairs **the decision** — which bike part state 61 decides was placed — and nothing
+else. That is the defect the operator's notebook screenshot shows (three of five slots
+ticked, exactly the three the HOST placed) and the one the four-placement table measures.
+
+It does **not** repair the inventories. The host's copy of the guest's bag is still
+short, the pool indices still drift, and **an item the guest picked up can still be
+picked up a second time by the host** — that is world-item replication, a larger subject
+this does not open. Do not read a successful bike as evidence that the drift was fixed;
+read it as the drift no longer being *consulted* at the one place it was visible.
+
+##### The shape
+
+The machine a player is local to is always right about what that player holds: it owns
+the input, the pickup and the inventory. So each machine publishes one field — the name
+hash of its own player's selected item — every 200 ms, and when state 61 runs for a
+player who is remote *here*, the answer computed from the local copy is replaced by the
+owning machine's.
+
+**State, not an event, and that is the load-bearing choice.** The obvious design sends
+"I placed a WheelPawn" at the moment of the placement, and it races: our datagram and the
+title's own trigger-fire event travel by different mechanisms, so the far machine can run
+the placement before the answer arrives. Publishing the held item *continuously* has no
+such moment — the value is already there when the placement runs, a lost datagram costs
+one tick of freshness, and there is no ordering to get wrong.
+
+##### The transport, which cost one branch
+
+There was no need for a new socket, a new connection or a new thread. Every guest
+datagram is already framed with a source and destination **guest port** in front of the
+payload and carried over libxlive's one punched socket (`xlive_net.cpp`, "THE PORTS
+TRAVEL WITH THE BYTES"), and a datagram addressed to a port no guest socket has bound is
+dropped — with a log line. So a reserved port (`0xCF01`, `coop_link.h`) is a whole
+channel: same socket, same punched path, same NAT hole, invisible to the title. If the
+title ever binds it, the receive path says so and the channel stands down rather than
+eating the title's packets.
+
+##### The three guards on the substitution
+
+Each is the difference between a repair and a new defect:
+
+1. The raise must be one of the six events state 61 can produce, so an unrelated mission
+   event raised inside the same call is untouched.
+2. The remote value must name one of the five parts, so a peer holding nothing — or
+   holding a katana — cannot cause a placement.
+3. It must actually change the answer, so the ordinary agreeing case is silent.
+
+**The substitution is one-way, and that is a safety property.** It can turn "no part" or
+"the wrong part" into a named part; it can never turn a part the local machine recognised
+into `NoPartsPlaced`. So the worst case of a wrong reading here is the behaviour that
+already ships, and the failure mode cannot be "the fix removed a placement that used to
+work".
+
+##### The assumption, stated and checked
+
+The host's Chuck is index 0 and the joiner's is 1, in the same numbering on both machines
+— which is what the `[pos]` lines measured, and why the player index was cleared as a
+mechanism in the first place. It is an assumption all the same, so `CZ_COOP_LOCAL_PLAYER`
+overrides it, and a message from a peer claiming **the same side of the session as this
+machine** is refused loudly: two machines that both believe they are the host would both
+publish index 0 and silently overwrite each other's view.
+
+##### Why there is a self-test, and what breaking it proved
+
+Every guard above is on a path that cannot run on one machine, so without a test the
+whole receive half would ship unexecuted until two people sat down to play.
+`CZ_COOP_ITEM_SYNC_TEST=1` runs the contract offline — tables, encoding, sequence order,
+bounds, the side check — and **it was verified by breaking all four guards on purpose:
+five distinct failures, then clean again when restored** (gotcha 30).
+
+One of those breaks is worth recording, because it nearly shipped as an untestable guard.
+The player-index bound was originally checked by reading the four slots — and a *broken*
+bound writes **past the end of the array**, where no in-range value test can see it. The
+test now counts messages FILED, so a guard's failure is observable as a number rather
+than only as a wrong value.
+
+##### What to look for on the two-machine run
+
+```
+[itemsync] this machine is the HOST | JOINER
+[itemsync] publishing player N's held item to 1 peer(s) every 200 ms
+[itemsync] player N now holds 878FC97B (WheelPawn)
+[itemsync] placement by player 1 (remote here): this machine read F574775A
+           (NoPartsPlaced) out of its own copy, player 1's own machine says
+           5F8D0521 (GasolineCanister) -> raising D4AF6D06 (GasCanPlaced)
+```
+
+**The prediction, so a run can refute it:** with the guest placing all five parts and the
+host placing none, the host's notebook should tick all five. Before this, it ticked only
+what the host placed. If the substitution line never prints, the channel is not
+arriving — check that both machines run this build, and that the `HOST`/`JOINER` line
+disagrees between them.
+
 #### The broadcast-event wire, decoded (2026-09-25)
 
 The listener is `sub_82245650(listener, header, event)`. It accepts exactly one event
