@@ -78,6 +78,8 @@
 #include <cstdlib>
 #include <cstring>
 #include <mutex>
+#include <string>
+#include <vector>
 
 #include <ppc_config.h>
 #include <ppc_context.h>
@@ -96,6 +98,11 @@ extern "C" PPC_FUNC(__imp__sub_823E7890);
 extern "C" PPC_FUNC(__imp__sub_821A7550);
 extern "C" PPC_FUNC(__imp__sub_8223B000);
 extern "C" PPC_FUNC(__imp__sub_82243060);
+extern "C" PPC_FUNC(__imp__sub_821A75B8);
+extern "C" PPC_FUNC(__imp__sub_8223BBB8);
+extern "C" PPC_FUNC(__imp__sub_8223CEF8);
+extern "C" PPC_FUNC(__imp__sub_82408908);
+extern "C" PPC_FUNC(__imp__sub_821A2200);
 
 using namespace coop;
 
@@ -105,6 +112,10 @@ constexpr uint32_t kFnUserPlayer = 0x8247B020; // (userPlayerArray, index) -> ac
 constexpr uint32_t kFnTriggerCtx = 0x823A4768;  // (missionObject) -> the mission ACTION CONTEXT
 constexpr uint32_t kCtxPlayer = 0x10;           // ... whose +0x10 every action reads as "who"
 constexpr uint32_t kFnPlayerInv = 0x8215D330;  // (inventoryMgr, actor) -> inventory block
+constexpr uint32_t kPropNameHash = 0x98;       // a prop's INSTANCE name hash — the field
+                                               // 0x821A2200 matches on. Measured: PropName="Bike2"
+                                               // found +0x98 == hash("Bike2")
+constexpr uint32_t kPropHolder = 0x1BC;        // sub_822D4870 reads this; 0 = nobody holds it
 
 constexpr uint32_t kChuckStateTryPlaceItem = 61;
 constexpr uint32_t kInvSlots = 12;             // the guest's own bound at 0x821A6C3C
@@ -245,6 +256,10 @@ constexpr uint32_t kMaxPlayers = 4;
 // rather than a wrong player.
 uint32_t g_invOfPlayer[kMaxPlayers] = {};
 
+// The same map keyed by ACTOR, for the effect-path hooks below: the remove and
+// release calls are handed an actor, not an inventory. Filled by the same sweep.
+uint32_t g_actorOfPlayer[kMaxPlayers] = {};
+
 struct SlotState
 {
     uint32_t item;
@@ -313,7 +328,10 @@ void WatchPlayer(PPCContext& ctx, uint8_t* base, uint32_t userPlayers, uint32_t 
         st.actor = actor;
         st.inv = inv;
         if (index < kMaxPlayers)
+        {
             g_invOfPlayer[index] = inv;
+            g_actorOfPlayer[index] = actor;
+        }
         st.selected = sel;
         std::memcpy(st.slot, now, sizeof now);
         fprintf(stderr, "[item] INV BASELINE player %u (%s): actor %08X inv %08X selected %d\n",
@@ -335,7 +353,10 @@ void WatchPlayer(PPCContext& ctx, uint8_t* base, uint32_t userPlayers, uint32_t 
         st.actor = actor;
         st.inv = inv;
         if (index < kMaxPlayers)
+        {
             g_invOfPlayer[index] = inv;
+            g_actorOfPlayer[index] = actor;
+        }
     }
 
     for (uint32_t i = 0; i < kInvSlots; i++)
@@ -470,6 +491,309 @@ void WatchInventories(PPCContext& ctx, uint8_t* base)
     for (uint32_t i = 0; i < kMaxPlayers; i++)
         WatchPlayer(ctx, base, userPlayers, invMgr, i, state[i], side);
     inSweep = false;
+}
+
+// ---------------------------------------------------------------------------
+// THE EFFECT PATH — CZ_COOP_PLACE_TRACE
+// ---------------------------------------------------------------------------
+//
+// Everything above traces the DECISION: which bike part state 61 decided was
+// placed, and out of whose hands it read it. Three sessions on two real machines
+// measured that side CORRECT — the host raises the right event for the guest's
+// placement every time — and the operator still watches the part land on the
+// ground while the HOST's Chuck drops what he was holding. So the defect is
+// downstream of the decision, in the mission's RESPONSE, and four candidate
+// mechanisms have now been refuted because each was inferred by reading upward
+// through a call graph that dead-ends: this engine's interesting paths are
+// virtual, and `sub_82378FA0`, `sub_8224AE20` and `sub_8250A8B8` all have zero
+// static callers.
+//
+// So this arm does not reason. It hooks the three things that can actually
+// TAKE AN ITEM OFF A CHUCK and prints, for each, WHICH ACTOR it was called on
+// and the `lr` of the code that called it. Whichever inventory loses an item
+// names the bug in one line, and the `lr` names the caller the call graph
+// cannot.
+//
+//   sub_821A75B8  Inventory::RemoveItemAt(inv, slot, adjustSelected)
+//                 The exact mirror of the InsertItemAt hooked above, read off
+//                 its own body: bounds `slot` at 12, memmoves the slots above it
+//                 down (0x821A7604), zeroes `inv + (count-1)*8 + 4`, decrements
+//                 the count at `inv + 0x64` and — only when its third argument is
+//                 non-zero — decrements the selected slot at `inv + 0x68`.
+//                 EVERY item that leaves an inventory by any route comes
+//                 through here.
+//   sub_8223BBB8  the release into the world: (mgr, actor, item, .., f1).
+//                 It is what the drop-everything loop in sub_8223CEF8 calls once
+//                 per slot, so it is the standing candidate for *"it appears next
+//                 to the bike"* — an item put into the world instead of consumed.
+//   sub_8223CEF8  that drop-everything loop itself, (invMgr, actor), twelve
+//                 iterations of sub_8215D330 + sub_8223BBB8. It is reached from
+//                 CHUCK STATE 35, whose handler (0x8240A9C0) resolves its actor
+//                 from **world->0x80** and not from the action context — the one
+//                 place in this jump table measured to use a world-global player
+//                 index rather than the acting one. If state 35 is what runs,
+//                 that field is the defect and the trace will say so.
+//
+// AND IT PRINTS CHUCK STATES 34 AND 35, which nothing has ever observed. The
+// bike's response in missions.txt is `cMissionSetChuckState ChuckState = "34"`
+// (the place animation) and state 34's handler at 0x8240A930 takes its actor
+// from `ctx + 0x10`, the same field state 61 reads. Every log this project holds
+// was taken with CZ_ITEM_TRACE=1, which prints state 61 ONLY, so the index state
+// 34 actually received during a real placement is unmeasured. It is the
+// difference between the two surviving readings — the objective-event context's
+// type tag 9 (refuted by census, so something else must reach the action) and a
+// real but WRONG player index — and one line settles it.
+//
+// Free when off, and every hook is a straight pass-through. `CZ_ITEM_TRACE=1`
+// should be set alongside it: the inventory watch is what maps an inventory
+// object to a player number, and without it this trace prints "player ?".
+// Defined with the pool registry further down; declared here because the
+// descriptors below are written next to the hooks they serve rather than next to
+// the tables they read.
+int32_t PoolIdOf(uint32_t item, unsigned* whichPool);
+int InvPlayer(uint32_t inv);
+
+// The candidate fix, defined beside the lookup it steers (see CZ_COOP_PLACE_FIX);
+// declared here because state 61's hook, which feeds it, comes first in this file.
+// Which of the three network event listeners delivered the action currently
+// executing. Set by the sub_82378FA0 hook further down; 0 means the action did
+// not come through that dispatcher at all, which is itself an answer.
+thread_local uint32_t t_dispatchLr = 0;
+
+// The pool census, defined beside the fix it tests; declared here because the
+// mission-update hook that drives it comes first.
+int PoolCensusMs();
+void PoolCensus(PPCContext& ctx, uint8_t* base, uint32_t world);
+
+bool PlaceTrace()
+{
+    static const bool on = [] {
+        const char* e = std::getenv("CZ_COOP_PLACE_TRACE");
+        const bool v = e && *e && *e != '0';
+        if (v)
+            fprintf(stderr, "[place] CZ_COOP_PLACE_TRACE=1 — the EFFECT path: every item removed "
+                            "from any inventory, every item released into the world, and Chuck "
+                            "states 34/35, each with the ACTOR it acted on and the CALLER's lr. "
+                            "Set CZ_ITEM_TRACE=1 too or inventories print as \"player ?\".\n");
+        return v;
+    }();
+    return on;
+}
+
+// An actor address -> player number (g_actorOfPlayer, filled by the sweep above).
+// The remove and release hooks are handed an ACTOR, not an inventory, so they
+// need this one and not the other; resolving it through the guest inside those
+// hooks would mean guest calls on the drop path.
+int ActorPlayer(uint32_t actor)
+{
+    for (uint32_t i = 0; i < kMaxPlayers; i++)
+        if (actor && g_actorOfPlayer[i] == actor)
+            return int(i);
+    return -1;
+}
+
+// "player 1" or "player ? (actor AABB1234)" — never a bare number that might be
+// a stale cache hit, because a wrong player number here would misroute the next
+// session exactly as four inferred mechanisms already have.
+void DescribeActor(uint32_t actor, char* out, size_t n)
+{
+    const int p = ActorPlayer(actor);
+    if (p >= 0)
+        std::snprintf(out, n, "player %d (actor %08X)", p, actor);
+    else
+        std::snprintf(out, n, "player ? (actor %08X)", actor);
+}
+
+void DescribeInv(uint32_t inv, char* out, size_t n)
+{
+    const int p = InvPlayer(inv);
+    if (p >= 0)
+        std::snprintf(out, n, "player %d (inv %08X)", p, inv);
+    else
+        std::snprintf(out, n, "player ? (inv %08X)", inv);
+}
+
+// The item, named where the bike knows the name and given its pool id either
+// way — the pool id being the only field two machines can be compared on.
+void DescribeItem(uint8_t* base, uint32_t item, char* out, size_t n)
+{
+    if (!item)
+    {
+        std::snprintf(out, n, "item 00000000 (EMPTY)");
+        return;
+    }
+    unsigned pool = 0;
+    const int32_t id = PoolIdOf(item, &pool);
+    const uint32_t hash = LoadU32(base, item + kItemNameHash);
+    if (id >= 0)
+        std::snprintf(out, n, "item %08X POOL %u ID %d hash %08X (%s)", item, pool, id, hash,
+                      NameOf(hash));
+    else
+        std::snprintf(out, n, "item %08X (no known pool) hash %08X (%s)", item, hash,
+                      NameOf(hash));
+}
+
+// ---------------------------------------------------------------------------
+// THE HARNESS — CZ_COOP_RAISE_EVENT. A placement's RESPONSE, on demand.
+// ---------------------------------------------------------------------------
+//
+// WHY IT EXISTS. The whole remaining question is what the mission's response to
+// `WheelPawnPlaced` does, and reaching that response by playing costs an operator
+// session: the five interactable bike parts spawn out in Still Creek
+// (`missions.txt`: `WheelPawnWorldSpawn` at -194.955,3.436,-33.441 and four more),
+// the bike is in the safehouse garage, and no headless route has ever carried a
+// part between the two. So four sessions in a row answered a question about the
+// RESPONSE with reasoning about the DECISION, and all four were refuted.
+//
+// This raises the event directly — `sub_821AFE48(missionManager, hash, 0)`, the
+// same call state 61 makes at `0x8240B084` with the same third argument — so the
+// response runs exactly as it does after a real placement, on one machine, in
+// half a minute, repeatably. What it does NOT reproduce is the acting player's
+// held prop being in the pool, and that absence is the useful part: it isolates
+// the one thing the response does by itself.
+//
+// IT IS A TEST HARNESS AND NOT A FIX. It manufactures a mission event, so a run
+// carrying it is never evidence about progression, and it must never be on in a
+// gate run (the same rule as CZ_FAKE_PRESS_SEQ, gotcha 78).
+//
+// Spelling: `CZ_COOP_RAISE_EVENT=WheelPawnPlaced@20` — a name from the six the
+// bike path knows, or a raw 8-digit hex hash, and the seconds after the first
+// successful inventory sweep at which to raise it. Several are comma-separated.
+constexpr uint32_t kFnRaiseEvent = 0x821AFE48;   // RaiseMissionEvent(mgr, hash, param)
+
+// THE LEVEL-ARRIVAL SIGNAL, and why it is this one. The harness's countdown used
+// to start at "the first mission manager resolves", and with a driver that ticks
+// properly that happens AT THE MAIN MENU — the menu is a level with missions
+// (`cMissionDefinition MainMenuZombie`) and a mission manager of its own, so the
+// first spelling raised WheelPawnPlaced into the title screen. Measured: the raise
+// printed while `[pos] player 0` was still at the menu's (2.6, 0.0, 6.9) and the
+// DebugJump keypresses had not even been delivered.
+//
+// The replacement is a signal the GAME states rather than one we infer:
+// `PrologueCase0-4`'s own `cMissionLevelReady` runs two `cMissionSendCommandToProp`
+// actions the moment the safehouse garage exists (`NonInteractBike` on `Bike2` and
+// `NonInteractBike2` on `Bike4`, both `PropCommand = 22`). So the first prop
+// command of the run IS "the bike is in the world now", and it is exact.
+std::atomic<bool> g_levelPropSeen{false};
+
+struct RaiseJob
+{
+    uint32_t hash;
+    char name[40];
+    int atSec;
+    bool done;
+};
+RaiseJob g_raise[8];
+unsigned g_raiseCount = 0;
+std::chrono::steady_clock::time_point g_raiseEpoch{};
+
+bool RaiseArmed()
+{
+    static const bool on = [] {
+        const char* e = std::getenv("CZ_COOP_RAISE_EVENT");
+        if (!e || !*e)
+            return false;
+        char buf[256];
+        std::snprintf(buf, sizeof buf, "%s", e);
+        for (char* tok = std::strtok(buf, ","); tok && g_raiseCount < 8;
+             tok = std::strtok(nullptr, ","))
+        {
+            char* at = std::strchr(tok, '@');
+            const int sec = at ? std::atoi(at + 1) : 20;
+            if (at)
+                *at = 0;
+            uint32_t hash = 0;
+            for (const Hashed& h : kKnown)
+                if (std::strcmp(h.name, tok) == 0)
+                    hash = h.hash;
+            if (!hash)
+                hash = uint32_t(std::strtoul(tok, nullptr, 16));
+            if (!hash)
+            {
+                fprintf(stderr, "[raise] CZ_COOP_RAISE_EVENT: \"%s\" is neither a known event "
+                                "name nor a hex hash — ignored\n", tok);
+                continue;
+            }
+            RaiseJob& j = g_raise[g_raiseCount++];
+            j.hash = hash;
+            j.atSec = sec;
+            j.done = false;
+            std::snprintf(j.name, sizeof j.name, "%s", tok);
+            fprintf(stderr, "[raise] CZ_COOP_RAISE_EVENT: will raise %08X (%s) %d s after the "
+                            "first inventory sweep. THIS MANUFACTURES A MISSION EVENT — the run "
+                            "is a harness, not evidence about progression.\n",
+                    hash, NameOf(hash), sec);
+        }
+        return g_raiseCount > 0;
+    }();
+    return on;
+}
+
+// Called from the mission-trigger update, which already has the world resolved and
+// already runs every frame. The mission manager is `world->0x78->0x5C`, the same
+// field state 61 reads into r28 at 0x8240AF90 before its raise.
+void MaybeRaise(PPCContext& ctx, uint8_t* base, uint32_t world)
+{
+    if (!RaiseArmed())
+        return;
+    const uint32_t game = world ? LoadU32(base, world + 0x78) : 0;
+    const uint32_t mgr = game ? LoadU32(base, game + 0x5C) : 0;
+    if (!mgr || !g_levelPropSeen.load(std::memory_order_relaxed))
+    {
+        // Say it once. "Not ready yet" and "this harness is dead" are the same
+        // silence otherwise, which is the thing that made four candidate fixes
+        // unreadable (gotcha 151).
+        static bool said = false;
+        if (!said)
+        {
+            said = true;
+            fprintf(stderr, "[raise] not ready yet: world %08X game %08X missionMgr %08X, "
+                            "levelProp %d — retrying, and saying nothing further\n",
+                    world, game, mgr, int(g_levelPropSeen.load(std::memory_order_relaxed)));
+        }
+        return;
+    }
+    // THE CLOCK STARTS WHEN THE GAME SAYS THE LEVEL IS UP (g_levelPropSeen above),
+    // not at the first resolved mission manager: the main menu has one of those.
+    if (g_raiseEpoch.time_since_epoch().count() == 0)
+    {
+        g_raiseEpoch = std::chrono::steady_clock::now();
+        fprintf(stderr, "[raise] mission manager %08X is up — the countdown starts now\n", mgr);
+    }
+    const auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(
+                             std::chrono::steady_clock::now() - g_raiseEpoch)
+                             .count();
+    // THE COUNTER. The first spelling of this harness printed its schedule, printed
+    // "the countdown starts now", and then said nothing for two minutes — which is
+    // the same silence as a dead hook (gotcha 151). Say how many times this has
+    // been reached and what the clock reads, so "not yet" and "never again" are
+    // different lines.
+    static uint64_t calls = 0;
+    static long long lastSaid = -1;
+    calls++;
+    if (elapsed != lastSaid && (elapsed % 10) == 0)
+    {
+        lastSaid = elapsed;
+        fprintf(stderr, "[raise] %llds elapsed, %llu mission updates seen; next job at %ds\n",
+                (long long)elapsed, (unsigned long long)calls,
+                [] { for (unsigned i = 0; i < g_raiseCount; i++) if (!g_raise[i].done) return g_raise[i].atSec; return -1; }());
+    }
+    for (unsigned i = 0; i < g_raiseCount; i++)
+    {
+        RaiseJob& j = g_raise[i];
+        if (j.done || elapsed < j.atSec)
+            continue;
+        j.done = true;
+        fprintf(stderr, "[raise] raising %08X (%s) on mission manager %08X at %llds — the "
+                        "response that follows is what this harness exists to show\n",
+                j.hash, NameOf(j.hash), mgr, (long long)elapsed);
+        PPCContext call = ctx;
+        call.r1.u64 = (ctx.r1.u32 - 0x400) & ~0xFu;
+        call.r3.u64 = mgr;
+        call.r4.u64 = j.hash;
+        call.r5.u64 = 0;
+        GuestCall(call, base, kFnRaiseEvent, "harness-raise-mission-event");
+    }
 }
 
 // ===========================================================================
@@ -1056,6 +1380,37 @@ bool ActingTraceOn()
 PPC_FUNC(sub_82409900)
 {
     { static bool seen = false; if (Level()) FirstCall("sub_82409900 cMissionSetChuckState::Execute", seen); }
+    // THE RESPONSE'S OWN STATE, WHICH NOTHING HAS EVER OBSERVED. Every log this
+    // project holds was taken at CZ_ITEM_TRACE=1, which prints state 61 and
+    // nothing else, so the player index state 34 — the bike's place animation,
+    // `cMissionSetChuckState ChuckState = "34"` in missions.txt — actually
+    // receives during a real placement is unmeasured. It decides between the two
+    // surviving readings: the objective-event context's type tag 9 (refuted by
+    // census, so something else must be reaching the action) and a real but WRONG
+    // player. Printed unconditionally for 34 and 35, in range or not, because an
+    // arm that only prints the case it expects cannot refute itself.
+    if (PlaceTrace())
+    {
+        const uint32_t action = ctx.r3.u32, world = ctx.r4.u32, actionCtx = ctx.r5.u32;
+        const uint32_t state = action ? PPC_LOAD_U32(action + 0x40) : 0;
+        if (state == 34 || state == 35)
+        {
+            const int32_t idx = actionCtx ? int32_t(PPC_LOAD_U32(actionCtx + kCtxPlayer)) : -1;
+            const uint32_t worldLocal = world ? PPC_LOAD_U32(world + 0x80) : 0;
+            char who[64];
+            DescribeActor(idx >= 0 && uint32_t(idx) < kMaxPlayers ? g_actorOfPlayer[idx] : 0, who,
+                          sizeof who);
+            fprintf(stderr, "[place] STATE %u (%s) ctx %08X -> ctx+0x10 = %d%s, that is %s; "
+                            "world+0x80 = %d, r6=%08X, from lr %08X, dispatched from %08X (%s)\n",
+                    state, Side(ctx, base), actionCtx, idx,
+                    (idx < 0 || uint32_t(idx) >= kMaxPlayers) ? " <-- OUT OF RANGE" : "", who,
+                    int32_t(worldLocal), ctx.r6.u32, uint32_t(ctx.lr), t_dispatchLr,
+                    t_dispatchLr == 0x821899B8   ? "event class 0x6B"
+                    : t_dispatchLr == 0x8218A1BC ? "event class 0x6C, index straight off the wire"
+                    : t_dispatchLr == 0          ? "not through sub_82378FA0"
+                                                 : "class 0x6A (the tail branch) or unknown");
+        }
+    }
     if (Level())
     {
         const uint32_t action = ctx.r3.u32, world = ctx.r4.u32, actionCtx = ctx.r5.u32;
@@ -1140,6 +1495,49 @@ PPC_FUNC(sub_82409900)
 // then performs the load anyway. This is the one place the out-of-bounds read
 // can be stopped without touching guest memory: hand the guest a VALID index and
 // let it do its own lookup.
+// ---------------------------------------------------------------------------
+// THE HARNESS/CENSUS DRIVER — and a defect in an instrument that has shipped
+// since the first co-op session.
+// ---------------------------------------------------------------------------
+//
+// The inventory watch, the harness and the census were all driven from
+// `cMissionOnTrigger::Update` (`sub_823E79B8`) on the reasoning that it "already
+// runs every frame for every mission trigger in the level". MEASURED, in the
+// safehouse garage at Case 0-4, that hook is entered **once**: the harness's own
+// counter printed `0s elapsed, 1 mission updates seen` and never printed again,
+// two minutes after the level was up. So in a level whose missions are not
+// trigger-driven the watch is armed and silent, which is gotcha 30 in the
+// instrument this investigation has leaned on hardest — and it is why a counter
+// belongs on every driver and not only on every arm.
+//
+// The replacement driver is `GetUserPlayer` (`sub_8247B020`), which the census in
+// this very file measured at **5,820,000 calls in 240 s**. It is a guest thread
+// with a usable stack, and `ResolveWorld` is self-contained, so nothing else is
+// needed. Throttled to one resolve per period, with a thread-local reentrancy
+// guard because `ResolveWorld` makes guest calls that can re-enter this hook —
+// without the guard that is unbounded recursion rather than a wrong number.
+void HarnessTick(PPCContext& ctx, uint8_t* base)
+{
+    if (!RaiseArmed() && PoolCensusMs() <= 0)
+        return;
+    static thread_local bool inTick = false;
+    if (inTick)
+        return;
+    static std::mutex mu;
+    static std::chrono::steady_clock::time_point next{};
+    const auto now = std::chrono::steady_clock::now();
+    std::unique_lock<std::mutex> lock(mu, std::try_to_lock);
+    if (!lock.owns_lock() || now < next)
+        return;
+    next = now + std::chrono::milliseconds(200);
+    inTick = true;
+    const char* why = "";
+    const uint32_t world = ResolveWorld(ctx, base, why);
+    MaybeRaise(ctx, base, world);
+    PoolCensus(ctx, base, world);
+    inTick = false;
+}
+
 PPC_FUNC(sub_8247B020)
 {
     const int32_t idx = int32_t(ctx.r4.u32);
@@ -1157,6 +1555,7 @@ PPC_FUNC(sub_8247B020)
             fprintf(stderr, "[acting] GetUserPlayer census: %llu calls, %llu out of range\n",
                     (unsigned long long)n, (unsigned long long)outOfRange.load());
     }
+    HarnessTick(ctx, base);
     if (idx < 0 || idx >= kMaxUserPlayers)
     {
         const int mode = ActingPlayerMode();
@@ -1237,6 +1636,15 @@ PPC_FUNC(sub_823E79B8)
                     Side(ctx, base));
         }
         WatchInventories(ctx, base);
+    }
+    // The harness, outside the trace gate because it is armed by its own variable
+    // and has to run for a session that does not want the whole item trace.
+    if (RaiseArmed() || PoolCensusMs() > 0)
+    {
+        const char* why = "";
+        const uint32_t w = ResolveWorld(ctx, base, why);
+        MaybeRaise(ctx, base, w);
+        PoolCensus(ctx, base, w);
     }
     // Outside the trace gate: this is the FIX, not an instrument, and it has to
     // run for a player who never sets CZ_ITEM_TRACE. It is a straight return
@@ -1779,6 +2187,433 @@ PPC_FUNC(sub_821A7550)
                 inv ? PPC_LOAD_U32(inv + 0x64) : 0u, uint32_t(ctx.lr));
     }
     __imp__sub_821A7550(ctx, base);
+}
+
+// ===========================================================================
+// THE EFFECT PATH'S HOOKS. Three calls that can take an item off a Chuck, each
+// printing the ACTOR and the CALLER. See PlaceTrace() above for why this shape
+// and not another reading of the call graph.
+// ===========================================================================
+
+// Inventory::RemoveItemAt(inv, slot, adjustSelected) — `0x821A75B8`.
+//
+// THE ONE MEASUREMENT THE WHOLE ISSUE IS WAITING FOR. Four candidate mechanisms
+// died because each answered "who loses the item?" by reading code; this answers
+// it by watching the store. The item is read at `inv + slot*8 + 4` BEFORE the
+// guest runs, because the guest's first act on the taken slot is to shift the
+// ones above it down and zero the tail — read afterwards, the answer is gone.
+//
+// What to look for with two machines and ONE placement by the guest:
+//   * `player 1` loses the part on both machines  -> the effect is correct and
+//     the defect is the ATTACH, not the removal;
+//   * `player 0` loses an item on the HOST        -> the effect is applied to
+//     the local player and the `lr` names where that player was chosen. That is
+//     the operator's *"it makes the first player drop his currently held item"*,
+//     photographed at the instruction that does it.
+PPC_FUNC(sub_821A75B8)
+{
+    if (PlaceTrace())
+    {
+        static bool seen = false;
+        FirstCall("sub_821A75B8 Inventory::RemoveItemAt", seen);
+        const uint32_t inv = ctx.r3.u32;
+        const int32_t slot = int32_t(ctx.r4.u32);
+        const uint32_t adjustSel = ctx.r5.u32 & 0xFF;
+        const uint32_t item = (inv && slot >= 0 && uint32_t(slot) < kInvSlots)
+                                  ? PPC_LOAD_U32(inv + uint32_t(slot) * 8 + 4)
+                                  : 0;
+        char who[64], what[128];
+        DescribeInv(inv, who, sizeof who);
+        DescribeItem(base, item, what, sizeof what);
+        fprintf(stderr, "[place] REMOVE %s slot %d loses %s (%s), count %u, selected %d, "
+                        "adjustSelected %u, from lr %08X\n",
+                who, slot, what, Side(ctx, base), inv ? PPC_LOAD_U32(inv + 0x64) : 0u,
+                inv ? int32_t(PPC_LOAD_U32(inv + kInvSelected)) : -1, adjustSel,
+                uint32_t(ctx.lr));
+    }
+    __imp__sub_821A75B8(ctx, base);
+}
+
+// The release into the world — `0x8223BBB8(mgr, actor, item, ..., r7, r8, f1)`.
+//
+// Identified from its one legible caller: the drop-everything loop in
+// `sub_8223CEF8` calls it once per inventory slot with `(mgr->..., actor, item)`,
+// so `r4` is the Chuck the item leaves and `r5` is the item. That makes it the
+// standing candidate for the operator's second symptom — *"it appears next to the
+// bike but is not added to the bike parts"* — an item put into the world rather
+// than consumed by the placement.
+//
+// Stated as what it can refute: if a guest placement produces NO line here, the
+// part was not released by this path and the ground copy is something else (the
+// world prop the guest picked up, never removed on the host, for instance). If it
+// produces one naming `player 0`, the release is being applied to the wrong Chuck
+// and the `lr` says by whom.
+PPC_FUNC(sub_8223BBB8)
+{
+    if (PlaceTrace())
+    {
+        static bool seen = false;
+        FirstCall("sub_8223BBB8 release-item-into-world", seen);
+        char who[64], what[128];
+        DescribeActor(ctx.r4.u32, who, sizeof who);
+        DescribeItem(base, ctx.r5.u32, what, sizeof what);
+        fprintf(stderr, "[place] RELEASE %s drops %s (%s), r6=%08X r7=%08X r8=%08X, "
+                        "from lr %08X\n",
+                who, what, Side(ctx, base), ctx.r6.u32, ctx.r7.u32, ctx.r8.u32,
+                uint32_t(ctx.lr));
+    }
+    __imp__sub_8223BBB8(ctx, base);
+}
+
+// The drop-EVERYTHING loop — `0x8223CEF8(invMgr, actor)`, twelve iterations of
+// `sub_8215D330` + `sub_8223BBB8`, i.e. empty this Chuck's whole bag into the
+// world.
+//
+// WHY IT IS HOOKED, AND IT IS NOT AN INFERENCE ABOUT THE BIKE. It is what CHUCK
+// STATE 35 runs, and state 35's handler is the one entry in the state jump table
+// (`0x82043388`, verified against the image: state 61 -> 0x8240AF7C and state 34
+// -> 0x8240A930, exactly as recorded) that resolves its actor from a WORLD field
+// instead of the action's context:
+//
+//     8240A9C0  lwz r11, 0x78(r31)   ; game
+//     8240A9C4  lwz r4,  0x80(r31)   ; <<-- world->0x80, NOT ctx+0x10
+//     8240A9C8  lwz r3,  0x7C(r31)   ; the user-player array
+//     8240A9D0  bl  0x8247B020       ; GetUserPlayer(players, world->0x80)
+//     8240A9DC  bl  0x8223CEF8       ; empty THAT Chuck
+//
+// `world + 0x80` is the field the plan named as the standing candidate for a
+// local-player index. If a guest's bike placement reaches here, the wrong Chuck
+// being emptied is the whole of symptom 3 and the field is named. If it does not,
+// state 35 is not involved and that candidate is closed by measurement rather
+// than left open — which is worth the one hook either way (gotcha 151: an arm
+// with no counter cannot be shown to have engaged).
+PPC_FUNC(sub_8223CEF8)
+{
+    if (PlaceTrace())
+    {
+        static bool seen = false;
+        FirstCall("sub_8223CEF8 drop-whole-inventory", seen);
+        char who[64];
+        DescribeActor(ctx.r4.u32, who, sizeof who);
+        fprintf(stderr, "[place] DROP-ALL %s (%s), invMgr %08X, from lr %08X\n", who,
+                Side(ctx, base), ctx.r3.u32, uint32_t(ctx.lr));
+    }
+    __imp__sub_8223CEF8(ctx, base);
+}
+
+namespace
+{
+// ---------------------------------------------------------------------------
+// THE POOL CENSUS — CZ_COOP_POOL_CENSUS_MS. Does an instance name ever name two
+// live props at once?
+// ---------------------------------------------------------------------------
+//
+// This is the hypothesis behind CZ_COOP_PLACE_FIX stated as a number, and it can
+// be read WITHOUT a placement, on either machine, at any moment. `sub_821A2200`
+// resolves `PropName` to the first live pool entry whose instance name hash
+// matches; if an instance name never names two entries at once, the lookup is
+// exact and the whole reading is refuted. If it does, the lookup is a coin toss
+// wherever the mission relies on it.
+//
+// It prints the FIRST TWENTY live entries once, with BOTH name fields, because
+// that is the cross-check on the decode: for a scripted spawn the two differ
+// (`Bike2` / `BikeBody`), and for the generic instance a player carries they
+// should be equal — which is the step the fix's reasoning rests on and the one
+// thing in it that had not been read off a running game.
+//
+// Then, on change only, it names every instance-name hash with more than one live
+// entry. Costs one 2,048-entry walk per period on a mission-update thread.
+int PoolCensusMs()
+{
+    static const int ms = [] {
+        const char* e = std::getenv("CZ_COOP_POOL_CENSUS_MS");
+        const int n = (e && *e) ? std::atoi(e) : 0;
+        if (n > 0)
+            fprintf(stderr, "[census] CZ_COOP_POOL_CENSUS_MS=%d — every %d ms, which instance-name "
+                            "hashes name MORE THAN ONE live pool entry. That number is the whole "
+                            "of the prop-lookup hypothesis: 1 everywhere refutes it.\n", n, n);
+        return n;
+    }();
+    return ms;
+}
+
+void PoolCensus(PPCContext& ctx, uint8_t* base, uint32_t world)
+{
+    const int period = PoolCensusMs();
+    if (period <= 0 || !world)
+        return;
+    static std::chrono::steady_clock::time_point next{};
+    const auto now = std::chrono::steady_clock::now();
+    if (now < next)
+        return;
+    next = now + std::chrono::milliseconds(period);
+
+    // The item-pool manager is the object the prop lookup is handed: game->0x20.
+    const uint32_t game = LoadU32(base, world + 0x78);
+    const uint32_t mgr = game ? LoadU32(base, game + 0x20) : 0;
+    if (!mgr)
+    {
+        static bool said = false;
+        if (!said)
+        {
+            said = true;
+            fprintf(stderr, "[census] no prop manager yet (world %08X game %08X) — retrying\n",
+                    world, game);
+        }
+        return;
+    }
+
+    struct Live { uint32_t id, obj, name, type, holder; };
+    static std::vector<Live> live;
+    live.clear();
+    for (uint32_t i = 0; i < kPoolEntries; i++)
+    {
+        const uint32_t obj = LoadU32(base, mgr + 0x30 + i * 4);
+        if (!obj)
+            continue;
+        live.push_back({i, obj, LoadU32(base, obj + kPropNameHash),
+                        LoadU32(base, obj + kItemNameHash), LoadU32(base, obj + kPropHolder)});
+    }
+
+    static bool dumped = false;
+    if (!dumped && !live.empty())
+    {
+        dumped = true;
+        fprintf(stderr, "[census] %zu live pool entries; the first 20, with BOTH name fields — "
+                        "equal means the instance is generic (named after its type), unequal means "
+                        "a scripted spawn:\n", live.size());
+        for (size_t i = 0; i < live.size() && i < 20; i++)
+            fprintf(stderr, "[census]   id %4u obj %08X instance %08X (%s) type %08X (%s) "
+                            "holder %08X%s\n",
+                    live[i].id, live[i].obj, live[i].name, NameOf(live[i].name), live[i].type,
+                    NameOf(live[i].type), live[i].holder,
+                    live[i].name == live[i].type ? "  <-- generic" : "");
+    }
+
+    // Duplicates, reported on change so a steady state is silent.
+    std::string dups;
+    unsigned dupNames = 0;
+    for (size_t i = 0; i < live.size(); i++)
+    {
+        unsigned n = 0;
+        bool first = true;
+        for (size_t j = 0; j < live.size(); j++)
+        {
+            if (live[j].name != live[i].name)
+                continue;
+            if (j < i)
+            {
+                first = false;
+                break;
+            }
+            n++;
+        }
+        if (!first || n < 2)
+            continue;
+        dupNames++;
+        char buf[160];
+        std::snprintf(buf, sizeof buf, "%s%08X (%s) x%u", dups.empty() ? "" : ", ", live[i].name,
+                      NameOf(live[i].name), n);
+        dups += buf;
+    }
+    static std::string lastDups = "\x01";
+    if (dups != lastDups)
+    {
+        lastDups = dups;
+        if (dupNames)
+            fprintf(stderr, "[census] %u instance name(s) now name MORE THAN ONE live pool entry: "
+                            "%s   <<<< every one of these makes a PropName lookup ambiguous\n",
+                    dupNames, dups.c_str());
+        else
+            fprintf(stderr, "[census] no instance name names more than one live pool entry "
+                            "(%zu live) — a PropName lookup is exact right now\n", live.size());
+    }
+}
+} // namespace
+
+// ===========================================================================
+// THE PROP COMMAND — how the mission's response actually reaches an item, and
+// the one step in the chain that is AMBIGUOUS BY CONSTRUCTION.
+// ===========================================================================
+//
+// The bike's response in `missions.txt` ends with
+//
+//     cMissionTimer WaitforPlacement7 { DeltaTimeSecondsRealTime = "0.5"
+//         cMissionSendCommandToProp Destroy3 { PropCommand = "17"
+//                                              PropName = "WheelPawn" } }
+//
+// and the plan recorded that as *"the prop is found by NAME, so pool drift
+// cannot break this one"*. Read out of the image, that reassurance is exactly
+// backwards, and this is the first thing in the chain that is wrong by
+// construction rather than by a missing feature.
+//
+// `cMissionSendCommandToProp::Execute` is `sub_82408908` — identified from the
+// vtable, not guessed: the class-name accessor `0x823A8B68` sits in the table at
+// `0x8204C870`, `cMissionSetChuckState`'s sits at the same slot of `0x8204D390`,
+// and the two tables agree slot for slot, so slot 14 — `0x82409900` for
+// SetChuckState — is `0x82408908` here. The following bytes spell `TargetNPCName`
+// and `PropCommand`.
+//
+// Its lookup is:
+//
+//     82408BA8  bl  0x8276E398        ; hash PropName, the usual h = h*33 ^ c
+//     82408BB8  lwz r3, 0x20(game)    ; the prop manager
+//     82408BBC  bl  0x821A2200        ; FindPropByNameHash
+//     82408BC0  or. r31, r3, r3
+//
+// and `sub_821A2200` is nine instructions long and decides nothing:
+//
+//     r10 = mgr + 0x30                 ; the 2,048-entry object table
+//     for i in 0 .. 0x7FF:
+//         obj = objTable[i]
+//         if (obj && obj->0x98 == hash) return obj     <-- THE FIRST MATCH WINS
+//
+// `mgr + 0x30 + id*4` is the SAME object table the item pool's LIFO free list
+// hands ids out of (`coop-plan.md`, "WHO ALLOCATES A POOL ENTRY"). So "find the
+// prop called WheelPawn" means **"return the live pool entry with the lowest id
+// whose name hash is WheelPawn"**, and it is a coin toss the moment more than one
+// exists. In single player there is exactly one at a time and the lookup is
+// exact, which is why this has never been seen.
+//
+// Then, for `PropCommand = 17`:
+//
+//     8240916C  bl  0x822D4870              ; holder = prop->0x1BC ...
+//     82409194  game->vt[0x38C](game, holder, prop, 0)   ; TAKE IT OFF THAT HOLDER
+//     824091B4  bl  0x8223BBB8(.., 0, prop, ..)          ; release it, actor = 0
+//
+// — so the command takes the prop **out of whoever's hands the lookup landed
+// in**, and the acting player is never consulted. That is the operator's third
+// symptom, *"it makes the first player drop his currently held item"*, spelled as
+// two instructions, and it needs no wrong player index and no drifted inventory
+// to happen: it needs only a second prop of the same name in the pool.
+//
+// NOTHING ABOVE IS THE FIX AND IT IS NOT YET THE DIAGNOSIS EITHER — it is a
+// mechanism that predicts a NUMBER, which is the point. The hook below counts
+// how many live pool entries match the hash and prints every one with its id and
+// its holder, so:
+//
+//   * `1 match` at a co-op placement REFUTES this whole reading, on one line;
+//   * `2+ matches` names it, and says which one the title took and which one the
+//     placing player was actually holding.
+//
+// It is the shape four refuted attempts did not have: a census at the point of
+// the decision, whose two outcomes are different log lines rather than the same
+// silence (gotcha 151).
+// The action's inline PropName. The engine's string is a small-string
+// optimisation: a capacity byte at +0x20 from the string object decides whether
+// the characters are inline or behind a pointer, which is the branch
+// 0x82408B58-0x82408B6C reads. Printed rather than trusted, because a wrong
+// decode here would attribute the command to the wrong part.
+void PropNameOf(uint8_t* base, uint32_t strObj, char* out, size_t n)
+{
+    const uint32_t cap = LoadU8(base, strObj + 0x20);
+    uint32_t chars = (cap < 0x1F) ? strObj : LoadU32(base, strObj);
+    size_t i = 0;
+    for (; i + 1 < n; i++)
+    {
+        const uint8_t c = LoadU8(base, chars + uint32_t(i));
+        if (!c)
+            break;
+        out[i] = (c >= 32 && c < 127) ? char(c) : '?';
+    }
+    out[i] = 0;
+}
+
+// The window that makes the census below unconditional for the lookups that
+// matter. A prop command's lookup is the one this issue turns on, and a throttle
+// that hides it is the same defect as no instrument at all: the first version of
+// this hook spent its whole allowance on eight zero-match lookups from an
+// unrelated caller and then suppressed the "Bike2" command it was built for.
+thread_local uint32_t t_propCmd = 0;          // the PropCommand currently executing, 0 = none
+thread_local char t_propCmdName[64] = {};
+
+// cMissionSendCommandToProp::Execute(action, world, ...) — `0x82408908`.
+PPC_FUNC(sub_82408908)
+{
+    g_levelPropSeen.store(true, std::memory_order_relaxed);
+    const bool on = PlaceTrace();
+    const uint32_t wasCmd = t_propCmd;
+    char wasName[64];
+    std::memcpy(wasName, t_propCmdName, sizeof wasName);
+    if (on)
+    {
+        static bool seen = false;
+        FirstCall("sub_82408908 cMissionSendCommandToProp::Execute", seen);
+        const uint32_t action = ctx.r3.u32;
+        const uint32_t command = action ? PPC_LOAD_U32(action + 0xAC) : 0;
+        char name[64] = "?";
+        if (action)
+            PropNameOf(base, action + 0x40, name, sizeof name);
+        fprintf(stderr, "[place] PROPCMD %u on prop named \"%s\" (%s), action %08X, from lr %08X\n",
+                command, name, Side(ctx, base), action, uint32_t(ctx.lr));
+        t_propCmd = command ? command : 0xFFFFFFFFu;
+        std::snprintf(t_propCmdName, sizeof t_propCmdName, "%s", name);
+    }
+    __imp__sub_82408908(ctx, base);
+    t_propCmd = wasCmd;
+    std::memcpy(t_propCmdName, wasName, sizeof t_propCmdName);
+}
+
+// FindPropByNameHash(propMgr, nameHash) — `0x821A2200`. THE CENSUS.
+//
+// Runs the guest's own search first, then repeats it to the END of the table so
+// the log can state how many candidates there were rather than only which one
+// won. Both halves read the same nine-instruction loop, so a disagreement between
+// them would mean this decode is wrong — which is the cross-check that makes the
+// count a measurement.
+//
+// Throttled to the prop commands that matter: printing every lookup in the game
+// would bury the placement, so the line is emitted only when the winner is
+// ambiguous, when the name is one of the five bike parts, or for the first few
+// calls (which is the positive control — a hook that never prints is
+// indistinguishable from one that is dead).
+PPC_FUNC(sub_821A2200)
+{
+    const uint32_t mgr = ctx.r3.u32, hash = ctx.r4.u32;
+    __imp__sub_821A2200(ctx, base);
+    if (!PlaceTrace())
+        return;
+    static bool seen = false;
+    FirstCall("sub_821A2200 FindPropByNameHash", seen);
+
+    const uint32_t won = ctx.r3.u32;
+    uint32_t matches = 0;
+    char list[400];
+    int n = 0;
+    list[0] = 0;
+    for (uint32_t i = 0; i < kPoolEntries && mgr; i++)
+    {
+        const uint32_t obj = LoadU32(base, mgr + 0x30 + i * 4);
+        if (!obj || LoadU32(base, obj + kPropNameHash) != hash)
+            continue;
+        matches++;
+        if (n < int(sizeof list) - 64)
+            n += std::snprintf(list + n, sizeof list - size_t(n),
+                               "%sid %u obj %08X holder %08X itemHash %08X%s", n ? ", " : "", i,
+                               obj, LoadU32(base, obj + kPropHolder),
+                               LoadU32(base, obj + kItemNameHash), obj == won ? " <-- TAKEN" : "");
+    }
+
+    // ALWAYS print inside a prop command — that lookup is the subject. Otherwise
+    // print an ambiguous one, a bike-part one, and the first few of anything else
+    // (the positive control: a hook that never prints cannot be told from a dead
+    // one).
+    static uint64_t said = 0;
+    const bool known = std::strcmp(NameOf(hash), "?") != 0;
+    if (t_propCmd || matches > 1 || known || ++said <= 8)
+    {
+        char why[96] = "";
+        if (t_propCmd)
+            std::snprintf(why, sizeof why, " for PROPCMD %u \"%s\"",
+                          t_propCmd == 0xFFFFFFFFu ? 0u : t_propCmd, t_propCmdName);
+        fprintf(stderr, "[place] PROPFIND hash %08X (%s)%s -> %08X, %u live pool entr%s match (%s) "
+                        "[%s], from lr %08X%s\n",
+                hash, NameOf(hash), why, won, matches, matches == 1 ? "y" : "ies", Side(ctx, base),
+                matches ? list : "none", uint32_t(ctx.lr),
+                matches > 1 ? "   <<<< AMBIGUOUS: the lowest pool id wins and the acting "
+                              "player was never consulted"
+                            : "");
+    }
 }
 
 // The item spawner (`sub_8223B000`). Hooked only to learn where the pools are:
