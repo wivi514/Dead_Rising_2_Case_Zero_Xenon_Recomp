@@ -92,6 +92,7 @@ extern "C" PPC_FUNC(__imp__sub_823E79B8);
 extern "C" PPC_FUNC(__imp__sub_821AFE48);
 extern "C" PPC_FUNC(__imp__sub_82245650);
 extern "C" PPC_FUNC(__imp__sub_8247B020);
+extern "C" PPC_FUNC(__imp__sub_823E7890);
 
 using namespace coop;
 
@@ -873,6 +874,32 @@ int ActingPlayerMode()
 thread_local int32_t t_actingPlayer = -1;
 
 uint64_t g_actingSubs = 0;
+
+// THE ASSUMPTION THIS FIX RESTS ON, AND THE ONLY ONE LEFT UNMEASURED:
+// that the objective-event response runs SYNCHRONOUSLY inside the raise, on this
+// thread, so the enclosing action's player is still published when the response
+// asks for one. It is not obvious from the code — `sub_823E7890` hands the
+// context to `sub_82188488(queue, &ctx, __FILE__, 51)`, which looks like a post,
+// and the action dispatcher `sub_82378FA0` is reached only through vtables, so
+// the static call graph cannot answer it either. If the response is DEFERRED to
+// a later frame, the thread-local below is already restored by then and the fix
+// silently does nothing.
+//
+// So it is instrumented rather than assumed. This counts objective-event
+// responses that pass the host gate, and reports whether a
+// cMissionSetChuckState ran INSIDE one — which is the whole question, and it is
+// answerable on any route where a mission objective fires, not only at the bike.
+thread_local unsigned t_inObjectiveEvent = 0;
+uint64_t g_objEvents = 0, g_nestedStates = 0, g_nestedOutOfRange = 0;
+
+bool ActingTraceOn()
+{
+    static const int on = [] {
+        const char* e = std::getenv("CZ_COOP_ACTING_TRACE");
+        return (e && *e && *e != '0') ? 1 : 0;
+    }();
+    return on == 1;
+}
 } // namespace
 
 // cMissionSetChuckState::Execute(action, world, ctx, ...) — state 61 is the bike.
@@ -925,6 +952,22 @@ PPC_FUNC(sub_82409900)
     // objective-event context's type tag and must not overwrite the enclosing
     // action's answer, so it is left alone and inherited.
     const int32_t here = ctx61 ? int32_t(PPC_LOAD_U32(ctx61 + kCtxPlayer)) : -1;
+    if (t_inObjectiveEvent)
+    {
+        g_nestedStates++;
+        const bool bad = here < 0 || here >= kMaxUserPlayers;
+        if (bad)
+            g_nestedOutOfRange++;
+        if (ActingTraceOn())
+        {
+            static uint64_t said = 0;
+            if (++said <= 30)
+                fprintf(stderr, "[acting] SetChuckState state %u ran INSIDE an objective-event "
+                                "response (depth %u), ctx+0x10 = %d%s\n",
+                        PPC_LOAD_U32(action61 + 0x40), t_inObjectiveEvent, here,
+                        bad ? "  <-- OUT OF RANGE: the fix engages here" : "");
+        }
+    }
     const int32_t wasActing = t_actingPlayer;
     if (here >= 0 && here < kMaxUserPlayers)
         t_actingPlayer = here;
@@ -1454,4 +1497,33 @@ void CoopItems_SyncSelfTest()
                         "ordering, bounds, side check)\n");
     else
         fprintf(stderr, "[itemsync] self-test: %d FAILURE(S)\n", g_syncTestFailures);
+}
+
+// cMissionObjectiveEvent's event handler (`0x823E7890`) — the response dispatch.
+// Hooked ONLY to answer whether the actions it runs are synchronous, because the
+// whole acting-player fix depends on that and nothing else can settle it: the
+// context goes to what looks like a queue, and the action dispatcher is virtual.
+PPC_FUNC(sub_823E7890)
+{
+    ++t_inObjectiveEvent;
+    const uint64_t statesBefore = g_nestedStates;
+    __imp__sub_823E7890(ctx, base);
+    --t_inObjectiveEvent;
+
+    ++g_objEvents;
+    if (ActingTraceOn())
+    {
+        static uint64_t said = 0;
+        const bool ranSomething = g_nestedStates != statesBefore;
+        // Say it the first few times, then only when a response actually ran a
+        // state change — the interesting event. A response that runs NOTHING
+        // synchronously is the answer that kills the fix, so it must be visible
+        // too, not only its opposite.
+        if (++said <= 20 || ranSomething)
+            fprintf(stderr, "[acting] objective-event response returned: %s a "
+                            "cMissionSetChuckState synchronously (responses %llu, nested states "
+                            "%llu, of which out of range %llu)\n",
+                    ranSomething ? "RAN" : "did NOT run", (unsigned long long)g_objEvents,
+                    (unsigned long long)g_nestedStates, (unsigned long long)g_nestedOutOfRange);
+    }
 }

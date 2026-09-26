@@ -1332,6 +1332,38 @@ state 61 to `0x8240AF7C` (matching the disassembly already recorded) and state *
 - State 34's consumer verified by disassembly, not assumed (jump table `0x82043388` ->
   `0x8240A930`, whose first two instructions are the `GetUserPlayer` call).
 
+##### THE ASSUMPTION IS NOT CONFIRMED — read this before trusting the fix
+
+The fix rests on the response running **synchronously** inside state 61's raise, on the
+same thread, so the enclosing action's published player is still live. That is **not
+established**, and two links in the chain are inference rather than reading:
+
+- **(A)** that the type-9 event object `sub_8248B838` fills is what reaches
+  `cMissionSetChuckState::Execute` as its third argument. `sub_823E7890` does not call any
+  action itself — it builds a 0x68-byte object with a vtable (`sub_821AD238`, vtable
+  `0x820121B4`), tags it 9, and **publishes it** via
+  `sub_82188488(mission->0x1C->0x78->0x70, &ev, __FILE__, 51)`, which reads `ev+4`, `ev+8`
+  and calls `ev->vt[4]` — a listener publish, not an action loop.
+- **(B)** that the publish dispatches inline rather than deferring. The action dispatcher
+  is `sub_82378FA0` (identified from the `lr 0x82378FFC` in the operator's own log) and it
+  has **no static callers** — it is reached only through vtables — so the call graph cannot
+  answer it.
+
+**Measured, and it is not encouraging**: `CZ_COOP_ACTING_TRACE=1` over a 300 s
+`AUTOCHUCK=EXPLORER` roam saw **20 objective-event responses and 0 nested
+`cMissionSetChuckState`** — `nested states 0, of which out of range 0`. That is consistent
+with *either* the responses on that route having no `SetChuckState` child (most objectives
+do not) *or* the dispatch being deferred. **The instrument cannot tell those apart**, so
+this is not yet evidence against the fix — but it is not the positive control the fix
+needs either, and it is the shape of gotcha 151: an arm with no counter cannot be shown to
+have engaged.
+
+**The one cheap thing that settles it is a single placement by the guest.** If
+`[acting] user-player lookup asked for index 9 ...` prints, both (A) and (B) hold and the
+fix is engaged. If it does not print, the response is deferred and the fix must be rebuilt
+around the queue instead of around the call stack. **One part is the whole test — not
+five.**
+
 ##### Known limits, said out loud
 
 The published value is trusted because it is in range, and `ctx+0x10` is a **type tag** in
