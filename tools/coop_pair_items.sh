@@ -20,10 +20,29 @@
 # `XenonLive-host` profile joins on peer port 3075 — the part-3 recipe), the
 # operator's own server, exactly as tools/coop_pair_reload.sh does it.
 #
-#   CASE=3 TIMEOUT=420 tools/coop_pair_items.sh
+#   CASE=2 TIMEOUT=420 tools/coop_pair_items.sh
 #
-# CASE is how many DOWNs the host presses on the DebugJump screen: 1 = Case 0-2
-# (outdoors, Still Creek), 3 = Case 0-4 (the safehouse garage, where the bike is).
+# CASE is how many DOWNs the host presses on the DebugJump screen. The Cases column
+# lists the three `ShowInDebugMenu` case missions in missions.txt order —
+# PrologueCase0-1, PrologueCase0-2, PrologueCase0-4 — so 1 = Case 0-2 (outdoors,
+# Still Creek) and **2 = Case 0-4** (the safehouse garage, where the bike is), measured
+# in part 10 by the landing position (-271.7, 3.3, -64.0) and by the level's own
+# Bike2/Bike4 prop commands appearing in the log. 3 also lands there because the list
+# does not wrap; 2 is the exact number.
+#
+# PART 10 (2026-09-26) ADDED THE ARMS THAT MATTER AND THEY ARE ON BY DEFAULT HERE:
+# CZ_COOP_PLACE_TRACE=1 (the effect path — the removal, the release, states 34/35, the
+# prop command and its lookup CENSUS) and CZ_COOP_POOL_CENSUS_MS (which instance names
+# name more than one live prop). The two lines the whole issue now turns on are
+# `[place] STATE 34 ... ctx+0x10 = N` and
+# `[place] PROPFIND ... N live pool entries match`; docs/coop-part10-kickoff.md §1 says
+# what each value means. PLACE_FIX=1 arms the candidate fix, PLACE_FIX=2 observes only.
+#
+# WHAT THIS SCRIPT STILL CANNOT DO: place a bike part. Both Chucks are driven by
+# EXPLORER, which never picks anything up, and the five interactable parts spawn out in
+# LEVEL_PROLOGUE rather than in the garage. So the pair is how the POOL CENSUS gets read
+# on two sides at once; the STATE 34 line needs a human to carry a part to the bike and
+# press the interact button as the GUEST.
 #
 # REFUSES TO RUN while another cz_runtime is alive: that is the operator's game.
 set -euo pipefail
@@ -32,6 +51,9 @@ OUT="${OUT:-$HOME/DR2CZ-troubleshooting/issue9}"
 TIMEOUT="${TIMEOUT:-420}"
 CASE="${CASE:-1}"
 TRACE="${TRACE:-1}"
+PLACE_TRACE="${PLACE_TRACE:-1}"          # part 10's effect-path trace
+POOL_CENSUS_MS="${POOL_CENSUS_MS:-3000}" # 0 switches the pool census off
+PLACE_FIX="${PLACE_FIX:-0}"              # 0 control, 1 engage, 2 observe only
 mkdir -p "$OUT"
 
 if pgrep -x cz_runtime >/dev/null; then
@@ -57,6 +79,8 @@ echo "joiner -> $JOINLOG"
 
 ( cd "$ROOT/runtime/build" && env \
     CZ_NO_WINDOW=1 CZ_VKDRAW=1 CZ_DEBUG_MENU=1 CZ_ITEM_TRACE="$TRACE" \
+    CZ_COOP_PLACE_TRACE="$PLACE_TRACE" CZ_COOP_POOL_CENSUS_MS="$POOL_CENSUS_MS" \
+    CZ_COOP_PLACE_FIX="$PLACE_FIX" \
     CZ_XLIVE_ONLINE=1 CZ_XLIVE_COOP=1 CZ_COOP_JOIN_PROMPT=0 XLIVE_ALLOW_INSECURE=1 \
     CZ_AUTOCHUCK=EXPLORER CZ_ONLINE_LOG=1 \
     CZ_FAKE_START_MS=8000 CZ_FAKE_PRESS_SEQ="$HOSTSEQ" \
@@ -67,6 +91,8 @@ sleep 20   # the host's head start: its session must exist before the joiner sea
 
 ( cd "$ROOT/runtime/build" && env \
     CZ_NO_WINDOW=1 CZ_VKDRAW=1 CZ_DEBUG_MENU=1 CZ_ITEM_TRACE="$TRACE" \
+    CZ_COOP_PLACE_TRACE="$PLACE_TRACE" CZ_COOP_POOL_CENSUS_MS="$POOL_CENSUS_MS" \
+    CZ_COOP_PLACE_FIX="$PLACE_FIX" \
     XLIVE_DATA_DIR="$HOME/.config/XenonLive-host" XLIVE_ALLOW_INSECURE=1 CZ_XLIVE_PEER_PORT=3075 \
     CZ_XLIVE_ONLINE=1 CZ_XLIVE_COOP=1 CZ_XLIVE_JOIN=1 CZ_ONLINE_LOG=1 \
     CZ_AUTOCHUCK=EXPLORER \
@@ -85,4 +111,15 @@ for side in host joiner; do
     grep -a "\[pos\] player . appeared" "$log" | head -4
     echo "=== $side: the answer"
     grep -a "\[item\]" "$log" | head -40
+    # Part 10's two deciding lines, and the census. Printed even when empty, because a
+    # missing line is a result here: "no PROPFIND for a bike part" means no placement
+    # happened, not that the lookup was exact.
+    echo "=== $side: STATE 34/35 — whose Chuck the response runs for (empty = no placement)"
+    grep -a "\[place\] STATE" "$log" | head -10
+    echo "=== $side: the prop lookup, with its candidate count"
+    grep -a "\[place\] PROPFIND" "$log" | grep -a "PROPCMD 17" | head -10
+    echo "=== $side: pool duplicates (the ambiguity, readable without a placement)"
+    grep -a "\[census\] .* instance name" "$log" | tail -4
+    echo "=== $side: anything the candidate fix said"
+    grep -a "\[placefix\]" "$log" | head -6
 done
