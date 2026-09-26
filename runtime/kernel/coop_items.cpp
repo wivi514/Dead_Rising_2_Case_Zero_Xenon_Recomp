@@ -962,6 +962,10 @@ uint64_t g_actingSubs = 0;
 // matches no known pool is reported as such instead of being given a wrong id —
 // a wrong id here would be worse than none, because the whole point is to
 // compare ids across machines.
+// The message type that grants a key item (0x822430D8), and the two ids
+// that exist (items.txt).
+constexpr uint32_t kKeyItemMessageType = 0x13;
+
 constexpr uint32_t kPoolBaseField = 0x6D00;
 constexpr uint32_t kPoolStride = 0x298;  // 664
 constexpr uint32_t kPoolEntries = 2048;
@@ -1844,11 +1848,32 @@ PPC_FUNC(sub_82243060)
         // been established, and guessing it wrong is how the last three days
         // went, so print the first eight words and let the co-op pair say which
         // one differs between the machines.
-        char words[160];
-        int n = 0;
-        for (uint32_t i = 0; i < 8 && obj; i++)
-            n += std::snprintf(words + n, sizeof words - size_t(n), "%s+%X=%08X",
-                               i ? " " : "", i * 4, PPC_LOAD_U32(obj + i * 4));
+        // THE FIELDS ARE KNOWN NOW, READ OFF THE IMAGE — no dereferencing and
+        // no guessing, which is what the previous version did.
+        //
+        //   8224307C  lwz   r11, 4(r4)        ; the message TYPE
+        //   822430D8  cmpwi cr6, r11, 0x13
+        //   822430DC  beq   cr6, 0x822439d8   ; type 0x13 is the KEY-ITEM branch
+        //   822439DC  lwz   r31, 8(r31)       ; r31 is still the message
+        //   822439E4  cmplw r31, 0x14C09      ; 85001 = Zombrex's KeyItemID
+        //
+        // So a key item is granted by message TYPE 0x13, and its id is at +8.
+        // Only two exist: 85001 (Zombrex) and 85038 (Key_MasterKey, the French
+        // "Cle de la remise").
+        const uint32_t msgType = obj ? PPC_LOAD_U32(obj + 4) : 0;
+        const uint32_t msgId = obj ? PPC_LOAD_U32(obj + 8) : 0;
+        char words[220];
+        int n = std::snprintf(words, sizeof words, "type %02X", msgType);
+        if (msgType == kKeyItemMessageType)
+            n += std::snprintf(words + n, sizeof words - size_t(n),
+                               " <<< KEY ITEM GRANT, id %u (%s)", msgId,
+                               msgId == 85001u   ? "Zombrex"
+                               : msgId == 85038u ? "Key_MasterKey / shed key"
+                                                 : "unknown key item");
+        else
+            for (uint32_t i = 2; i < 6 && obj; i++)
+                n += std::snprintf(words + n, sizeof words - size_t(n), " +%X=%08X", i * 4,
+                                   PPC_LOAD_U32(obj + i * 4));
         if (!obj)
             std::snprintf(words, sizeof words, "(null)");
         fprintf(stderr, "[keyitem] ObtainItem(this %08X, object %08X) %s hash %08X (%s) lr %08X "
