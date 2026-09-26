@@ -95,6 +95,7 @@ extern "C" PPC_FUNC(__imp__sub_8247B020);
 extern "C" PPC_FUNC(__imp__sub_823E7890);
 extern "C" PPC_FUNC(__imp__sub_821A7550);
 extern "C" PPC_FUNC(__imp__sub_8223B000);
+extern "C" PPC_FUNC(__imp__sub_82243060);
 
 using namespace coop;
 
@@ -1790,4 +1791,69 @@ PPC_FUNC(sub_8223B000)
     if (on)
         RegisterPool(base, ctx.r3.u32);
     __imp__sub_8223B000(ctx, base);
+}
+
+// THE OBTAIN-ITEM DISPATCHER (`sub_82243060`) — where a KEY ITEM is granted.
+//
+// The operator's capture settled what the pickup trace could not: the shed key
+// arrives in **OBJETS CLÉS**, the key-item list on the status screen, which is a
+// different structure from the twelve inventory slots — which is exactly why
+// `Inventory::InsertItemAt` was silent for it.
+//
+// Key items are a tiny, closed set. `items.txt` declares exactly TWO `cKeyItem`s
+// — `Zombrex` (KeyItemID 85001) and `Key_MasterKey` (85038, the French "Clé de
+// la remise") — and this function is the dispatcher that switches on that id:
+// `0x822439E0` compares against `0x00014C09`, which is 85001 (and subtype 7 of
+// the broadcast-event wire compares a payload word against the same constant,
+// which is worth remembering). One branch builds the "ObtainKeyItem"
+// notification at `0x82243A18`.
+//
+// IT TAKES AN OBJECT, NOT AN ID (`r4`), and derives the id from it — so this is
+// the one place that can answer the question the pool-id trace raised. The
+// gas-canister pickup replicated its IDENTITY correctly (both machines said
+// GasolineCanister) while the pool ids differed by two, 1055 against 1053. So
+// the drift is real but was not what produced the shed key. If the object handed
+// to this dispatcher on the HOST is a pool entry whose id matches what the guest
+// sent but whose name hash is `Key_MasterKey`, the drift IS the mechanism after
+// all, one layer up. If instead the id is simply wrong, it is not.
+//
+// Printed on entry, before the title acts on it, so a grant that is refused
+// downstream still shows.
+PPC_FUNC(sub_82243060)
+{
+    static const bool on = [] {
+        const char* e = std::getenv("CZ_COOP_PICKUP_TRACE");
+        return e && *e && *e != '0';
+    }();
+    if (on)
+    {
+        const uint32_t obj = ctx.r4.u32;
+        unsigned pool = 0;
+        const int32_t id = PoolIdOf(obj, &pool);
+        const uint32_t hash = (obj && id >= 0) ? PPC_LOAD_U32(obj + kItemNameHash) : 0;
+        char idbuf[48];
+        if (id >= 0)
+            std::snprintf(idbuf, sizeof idbuf, "POOL %u ID %d", pool, id);
+        else
+            std::snprintf(idbuf, sizeof idbuf, "not a pool item");
+        // DUMP THE HEAD OF THE OBJECT rather than a field I have guessed at.
+        // The verification run showed this is NOT a pool item — it is a message
+        // on the guest heap (vtable 82060FD8) whose small integer fields are
+        // ids, and the dispatcher's switch compares one of them against
+        // 0x00014C09 (85001, Zombrex's KeyItemID). Which offset that is has not
+        // been established, and guessing it wrong is how the last three days
+        // went, so print the first eight words and let the co-op pair say which
+        // one differs between the machines.
+        char words[160];
+        int n = 0;
+        for (uint32_t i = 0; i < 8 && obj; i++)
+            n += std::snprintf(words + n, sizeof words - size_t(n), "%s+%X=%08X",
+                               i ? " " : "", i * 4, PPC_LOAD_U32(obj + i * 4));
+        if (!obj)
+            std::snprintf(words, sizeof words, "(null)");
+        fprintf(stderr, "[keyitem] ObtainItem(this %08X, object %08X) %s hash %08X (%s) lr %08X "
+                        "| %s\n",
+                ctx.r3.u32, obj, idbuf, hash, NameOf(hash), uint32_t(ctx.lr), words);
+    }
+    __imp__sub_82243060(ctx, base);
 }
