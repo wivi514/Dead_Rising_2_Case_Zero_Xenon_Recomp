@@ -541,11 +541,25 @@ bool IsPlacementEvent(uint32_t eventHash)
     return false;
 }
 
+// OFF BY DEFAULT SINCE 2026-09-26, and the reason is in docs/coop-plan.md: the
+// operator's two-machine run REFUTED the premise. Both machines raised
+// WheelPawnPlaced for the guest's wheel — the mission event AGREED — and the
+// wheel still did not attach to the bike. So the event is not the mechanism, and
+// an arm that substitutes it cannot be the fix. It stays because the channel and
+// the published field are sound and are what the real repair will need, and
+// because it is now a control: `=1` engages it, and a run where it changes
+// nothing is evidence about the event rather than about the transport.
 int SyncMode()
 {
     static const int mode = [] {
         const char* e = std::getenv("CZ_COOP_ITEM_SYNC");
-        return (e && *e && *e == '0') ? 0 : 1; // ON unless explicitly disabled
+        const int on = (e && *e && *e != '0') ? 1 : 0;
+        if (on)
+            fprintf(stderr, "[itemsync] CZ_COOP_ITEM_SYNC=1 — the held item is published and a "
+                            "remote placement's mission event is substituted. REFUTED as the fix "
+                            "for issue #9 (the event agreed and the part still did not attach); "
+                            "this is an arm, not a repair.\n");
+        return on;
     }();
     return mode;
 }
@@ -661,6 +675,10 @@ RemoteHeld g_remoteHeld[kMaxPlayers];
 // test does not check — and a broken BOUND writes off the end of the array,
 // where no value check can see it at all.
 uint32_t g_syncFiled = 0;
+
+// What the receive half last PRINTED, so a value that keeps arriving unchanged
+// does not print five times a second.
+uint32_t g_lastLoggedIn[kMaxPlayers] = {};
 
 void PutBE32(uint8_t* p, uint32_t v)
 {
@@ -1055,15 +1073,27 @@ PPC_FUNC(sub_821AFE48)
             }
             else if (!fresh)
             {
-                static bool said = false;
-                if (!said)
-                {
-                    said = true;
-                    fprintf(stderr, "[itemsync] placement by player %d (remote here) but no fresh "
-                                    "held-item from that machine — the title's own answer %08X "
-                                    "(%s) stands. Is the peer running this build?\n",
-                            who, hash, NameOf(hash));
-                }
+                fprintf(stderr, "[itemsync] placement by player %d (remote here): NO FRESH "
+                                "held-item from that machine — the title's own answer %08X (%s) "
+                                "stands. Is the peer running this build, and is the channel up?\n",
+                        who, hash, NameOf(hash));
+            }
+            else if (!want)
+            {
+                // The far machine says that player holds something that is not one
+                // of the five parts — including "nothing at all" (hash 0). This
+                // used to be silent, and it is the case that made the 09-25 logs
+                // unreadable: it looks exactly like agreement.
+                fprintf(stderr, "[itemsync] placement by player %d (remote here): that machine "
+                                "says it holds %08X (%s), which is NOT a bike part — the title's "
+                                "own answer %08X (%s) stands\n",
+                        who, remoteItem, NameOf(remoteItem), hash, NameOf(hash));
+            }
+            else
+            {
+                fprintf(stderr, "[itemsync] placement by player %d (remote here): both machines "
+                                "agree on %08X (%s) — nothing to substitute\n",
+                        who, hash, NameOf(hash));
             }
         }
     }
@@ -1120,8 +1150,20 @@ void CoopLink_Deliver(uint64_t fromXuid, const void* data, size_t length)
     r.hash = hash;
     r.seq = seq;
     r.at = std::chrono::steady_clock::now();
+    const bool first = !r.valid;
     r.valid = true;
     g_syncFiled++;
+    // THE BLIND SPOT THIS CLOSES. The first version logged nothing on receipt, so
+    // "the peer is publishing and we are filing it" and "nothing has ever arrived"
+    // printed exactly the same thing — and the 09-25 run could not be read because
+    // of it. Once when the channel first carries anything, then only on change.
+    uint32_t& lastLogged = g_lastLoggedIn[who];
+    if (first || hash != lastLogged)
+    {
+        lastLogged = hash;
+        fprintf(stderr, "[itemsync] <- player %u holds %08X (%s)%s\n", who, hash, NameOf(hash),
+                first ? " — the inbound channel is alive" : "");
+    }
 }
 
 // -- the self-test (kernel/coop_link.h) --------------------------------------

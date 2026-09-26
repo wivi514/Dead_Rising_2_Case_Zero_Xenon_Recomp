@@ -1267,6 +1267,109 @@ on `sub_8223B000` printing `(id, object, name hash)` on both machines: if the me
 right, the two logs agree entry for entry until the first unmatched spawn and disagree by
 a constant offset thereafter.
 
+#### THE FIX IS REFUTED BY THE OPERATOR'S RUN (2026-09-26) — and the run names the real mechanism
+
+`CZ_COOP_ITEM_SYNC` is **OFF by default as of this entry**. It is kept as an arm, because
+the channel and the published field are sound and are what a real repair will need, but it
+is not the fix and must not be quoted as one.
+
+##### The refutation, in one row
+
+Both machines ran six `TryPlaceItem` actions, in the same order, agreeing on the acting
+player every time (1, 1, 0, 0, 0, 0 — the index is *still* correct, for the third session
+running). Their raises:
+
+| # | acting | host raised | joiner raised | agree? |
+|---|---|---|---|---|
+| 1 | guest | `WheelPawnPlaced` | `WheelPawnPlaced` | **✓** |
+| 2 | guest | `NoPartsPlaced` | `GasCanPlaced` | ✗ |
+| 3 | host | `BikeForksPlaced` | `GasCanPlaced` | ✗ |
+| 4 | host | `GasCanPlaced` | `HandleBarPlaced` | ✗ |
+| 5 | host | `HandleBarPlaced` | `NoPartsPlaced` | ✗ |
+| 6 | host | `NoPartsPlaced` | `NoPartsPlaced` | ✓ |
+
+**Row 1 is the refutation and it cost nothing to read.** The guest placed a wheel, *both
+machines raised `WheelPawnPlaced` for player 1* — the mission event was already in
+agreement, with no help from the arm — and the operator reports the wheel **appeared next
+to the bike and was not added to the bike parts.** So a correct, agreed mission event does
+not produce the placement. The whole premise of the arm ("make the two machines raise the
+same event and the bike works") is dead, independently of whether the channel delivered.
+
+That premise came from placement 1 of the 09-25 session, which *did* work and *did* agree.
+The inference "they agreed, therefore agreeing is sufficient" was a single sample
+(gotcha 133) and this run is the second: agreement is **necessary and not sufficient.**
+
+##### What the operator's three symptoms name
+
+1. *"gives some random key item like the shed key when the co-op partner grabs one of the
+   bike parts"* — **THIS IS THE MOST VALUABLE OBSERVATION IN THE INVESTIGATION.** The far
+   machine materialises a *different key item*. So a pickup **does** cross the wire, and it
+   crosses as an **identifier the far side resolves to the wrong object**. That is the LIFO
+   free-list drift, caught in the act: `objTable[id]` on the far machine holds the shed key
+   at the id the near machine used for a wheel.
+2. *"it appears next to the bike but is not added to the bike parts"* — the item is
+   released into the world instead of being attached. The attach did not happen even though
+   the event was raised.
+3. *"it makes the first player drop his currently held item"* — the **effect was applied to
+   the local player**. On the host, the guest's placement took the *host's* item out of the
+   host's hands.
+
+> **RETRACTED IN PLACE: "Case Zero's co-op layer never replicated item pickups at all — a
+> feature that was never written."** That inference (from the named event vocabulary having
+> no item entry, and from none of the eleven broadcast subtypes carrying one) is **wrong**.
+> Symptom 1 is a replicated pickup arriving and resolving to the wrong object. It was a
+> reasonable reading of an absence, and an absence in a vocabulary is not an absence in the
+> wire (gotcha 25 again). The pickup path exists and has not been found yet.
+
+##### State 61, read properly this time
+
+`0x8240AF7C`, and the correction matters: the action **decides and raises, and its effect
+path takes no actor at all.**
+
+```
+8240AF7C  r3 = world->0x7C                     ; user players
+8240AF80  bl  0x8247B020(players, playerIdx)   ; the acting actor  -- CORRECT
+8240AF90  r28 = game->0x5C                     ; mission manager
+8240AF94  bl  0x821A6C18(game->0x30, actor)    ; -> THE HELD ITEM
+8240AFA8..B064  five hash compares on item->0x100
+8240B084  bl  0x821AFE48(r28, <event>, 0)      ; the raise
+8240B094  r3 = game->0xBC
+8240B0A0  bl  0x821CF0E0(game->0xBC, 7)        ; <-- NO ACTOR
+8240B0A4  bl  0x82443DC0() -> vt[0x1C](r3, "BikePartPlaced", 0)   ; <-- NO ACTOR
+```
+
+`sub_821A6C18` is exactly `sub_8215D330` plus the selected-slot arithmetic, so the
+documented two-step model and the instrument that replicates it are both correct — a
+theory that the instrument read a different object than the game is **refuted**, not
+merely unproven.
+
+**The item is never removed and never attached anywhere in state 61.** So both happen in
+the mission's *response* to `WheelPawnPlaced` / the new string `BikePartPlaced`
+(`0x8205B61C`), and that response is where an actor is resolved — or, on the evidence of
+symptom 3, is not resolved and the local player is used instead. `world+0x80` is the
+standing candidate for that field.
+
+**THE NEXT WORK IS THE RESPONSE, NOT THE DECISION**: find the mission action that reacts to
+`BikePartPlaced`/`WheelPawnPlaced`, and read how it picks the player whose item it takes.
+Everything about the decision side is now measured and correct on both machines.
+
+##### Three blind spots in my own instrument, and they are why this run was hard to read
+
+Fixed in the same commit, and each is gotcha 25 in miniature:
+
+1. **The receive half logged nothing.** "The peer is publishing and we are filing it" and
+   "nothing has ever arrived" printed identical logs. It now says so once, then on change.
+2. **Silence was ambiguous.** "Both machines agree" and "the peer holds something that is
+   not a bike part (including nothing)" both printed nothing, so the host's six silent
+   placements could not be told apart. Each case now prints.
+3. **The publish line only printed when a peer was reached**, so a dead outbound channel
+   published invisibly. The host logged **6** `coop-link broadcast` lines for a whole
+   session that should have produced thousands — so the channel was mostly not connected,
+   and *that* was invisible too.
+
+Because of (1) and (2) the honest verdict on the transport is **unknown**, not working and
+not broken. It does not change the refutation, which rests on row 1 alone.
+
 #### THE FIX — `CZ_COOP_ITEM_SYNC`, one field across the link (2026-09-25)
 
 Built, gated and self-tested; **not yet run on two machines**, which is the one thing

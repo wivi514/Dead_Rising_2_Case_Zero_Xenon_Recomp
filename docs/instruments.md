@@ -4339,9 +4339,16 @@ CZ_ITEM_WATCH_MS=N THE PICKUP, AT THE INSTANT IT HAPPENS (with CZ_ITEM_TRACE=1;
                    the two accessors the bike path already calls, so it adds no new
                    guest address; the bill is eight guest calls and ~48 loads at most
                    four times a second, off the renderer thread
-CZ_COOP_ITEM_SYNC=0  THE CONTROL ARM FOR THE ISSUE #9 FIX (the fix is ON by default
-                   whenever a co-op session exists; `=0` restores the shipped behaviour
-                   exactly, and in single player the whole path is inert). Each machine
+CZ_COOP_ITEM_SYNC=1  **REFUTED AS THE FIX FOR ISSUE #9, 2026-09-26 — OFF by default, and
+                   do not quote it as a repair.** The operator's two-machine run raised
+                   `WheelPawnPlaced` on BOTH machines for the guest's wheel — the mission
+                   event already agreed — and the wheel still was not added to the bike.
+                   Agreement is necessary and NOT sufficient, so substituting the event
+                   cannot be the repair; the item removal and the attach happen in the
+                   mission's RESPONSE to the event, which state 61 never does itself. Kept
+                   as an arm because the channel and the published field are what a real
+                   repair needs, and because a run where it changes nothing is now evidence
+                   about the event rather than about the transport. Each machine
                    publishes the name hash of ITS OWN player's selected item every 200 ms
                    over a reserved port on the already-punched path (kernel/coop_link.h),
                    and when Chuck state 61 runs for a player who is REMOTE here, the
