@@ -105,6 +105,7 @@ extern "C" PPC_FUNC(__imp__sub_82408908);
 extern "C" PPC_FUNC(__imp__sub_821A2200);
 extern "C" PPC_FUNC(__imp__sub_82378FA0);
 extern "C" PPC_FUNC(__imp__sub_821898B0);
+extern "C" PPC_FUNC(__imp__sub_821898E8);
 
 using namespace coop;
 
@@ -2773,6 +2774,58 @@ PPC_FUNC(sub_821898B0)
                     uint32_t(ctx.lr));
     }
     __imp__sub_821898B0(ctx, base);
+}
+
+// The class-0x6B BATCH listener — `sub_821898E8`, and the one the bike's response
+// measurably goes through: the first honest `STATE 34` printed
+// `dispatched from 821899B8`, which is the `bl` inside this function.
+//
+//     if (header[5] != 0x6B) return;
+//     count = event->0x10;                        (a BYTE)
+//     for i in 0 .. count-1:
+//         entry = event + 0x14 + i*0x1C;          (guarded on entry->0x08 == 0x6A)
+//         action = entry->0x14;  if (!action) continue;
+//         ExecuteAction(action, world, entry)     <-- 0x821899B4
+//
+// **So a class-0x6B message is a BATCH of class-0x6A action records, 0x1C bytes each,
+// and each record carries its own player index at `+0x10`** — which is what
+// `cMissionSetChuckState::Execute` reads and hands to `GetUserPlayer`. The record's
+// constructor (`0x82161A18`, 25 records, entry vtable `0x8200B300`) initialises that
+// field to **4**, i.e. out of range for MAX_USER_PLAYERS and therefore a "nobody"
+// sentinel, so a 0 in it was WRITTEN by whoever queued the action.
+//
+// This prints every record of every batch: the class, the player and the action. On
+// the host with the guest placing a part, the record that carries the place animation
+// says in one field whose Chuck the response will run for — and if it says 0 while the
+// guest is player 1, the sender wrote the local player and that is the defect.
+PPC_FUNC(sub_821898E8)
+{
+    if (PlaceTrace())
+    {
+        static bool seen = false;
+        FirstCall("sub_821898E8 class-0x6B batch listener", seen);
+        const uint32_t header = ctx.r4.u32, event = ctx.r5.u32;
+        const uint32_t cls = header ? PPC_LOAD_U8(header + 5) : 0xFFu;
+        static uint64_t said = 0;
+        if (cls == 0x6B && event && ++said <= 200)
+        {
+            const uint32_t count = PPC_LOAD_U8(event + 0x10);
+            fprintf(stderr, "[place] BATCH class 6B (%s) event %08X, %u record(s), from lr %08X\n",
+                    Side(ctx, base), event, count, uint32_t(ctx.lr));
+            for (uint32_t i = 0; i < count && i < 25; i++)
+            {
+                const uint32_t e = event + 0x14 + i * 0x1C;
+                fprintf(stderr, "[place]   record %u at %08X: class %02X, +0x10 = %d (the player "
+                                "the action runs AS), +0x14 = %08X (the action)%s\n",
+                        i, e, PPC_LOAD_U32(e + 8), int32_t(PPC_LOAD_U32(e + 0x10)),
+                        PPC_LOAD_U32(e + 0x14),
+                        int32_t(PPC_LOAD_U32(e + 0x10)) == 4
+                            ? "  [4 = the constructor's \"nobody\" sentinel, never written]"
+                            : "");
+            }
+        }
+    }
+    __imp__sub_821898E8(ctx, base);
 }
 
 // cMissionSendCommandToProp::Execute(action, world, ...) — `0x82408908`.
