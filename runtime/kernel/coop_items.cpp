@@ -873,6 +873,61 @@ int ActingPlayerMode()
 // it.
 thread_local int32_t t_actingPlayer = -1;
 
+// AND THE SAME ANSWER THAT SURVIVES A DEFERRAL. The call-stack-only version of
+// this fix measured ZERO substitutions on the operator's two-machine run, while
+// the host raised WheelPawnPlaced for the guest correctly — so the objective-
+// event response does NOT run inside the raise. `sub_823E7890` publishes a
+// type-9 event object through `sub_82188488` and something drains it later,
+// which is exactly what the plan warned was unverified.
+//
+// So the acting player is also recorded with a timestamp, outside any thread,
+// and an out-of-range lookup falls back to it when the call stack no longer
+// carries one. It is only ever consulted where the title was about to read past
+// the end of its array, so a stale answer replaces a WRONG answer, never a right
+// one.
+//
+// WHICH SOURCE WAS USED IS PRINTED, and that is the measurement this owes: "on
+// the stack" means the dispatch was synchronous after all, "from the record"
+// names how many milliseconds late the response ran.
+struct RecentActing
+{
+    int32_t player = -1;
+    std::chrono::steady_clock::time_point at{};
+};
+std::mutex g_recentMu;
+RecentActing g_recentActing;
+
+int ActingWindowMs()
+{
+    static const int ms = [] {
+        const char* e = std::getenv("CZ_COOP_ACTING_WINDOW_MS");
+        const int n = (e && *e) ? std::atoi(e) : 3000;
+        return n > 0 ? n : 3000;
+    }();
+    return ms;
+}
+
+void RecordActing(int32_t player)
+{
+    std::lock_guard<std::mutex> lock(g_recentMu);
+    g_recentActing.player = player;
+    g_recentActing.at = std::chrono::steady_clock::now();
+}
+
+int32_t RecentActing_Get(long long* ageMsOut)
+{
+    std::lock_guard<std::mutex> lock(g_recentMu);
+    if (g_recentActing.player < 0)
+        return -1;
+    const auto age = std::chrono::duration_cast<std::chrono::milliseconds>(
+                         std::chrono::steady_clock::now() - g_recentActing.at)
+                         .count();
+    if (age > ActingWindowMs())
+        return -1;
+    *ageMsOut = age;
+    return g_recentActing.player;
+}
+
 uint64_t g_actingSubs = 0;
 
 // THE ASSUMPTION THIS FIX RESTS ON, AND THE ONLY ONE LEFT UNMEASURED:
@@ -970,7 +1025,10 @@ PPC_FUNC(sub_82409900)
     }
     const int32_t wasActing = t_actingPlayer;
     if (here >= 0 && here < kMaxUserPlayers)
+    {
         t_actingPlayer = here;
+        RecordActing(here);
+    }
 
     __imp__sub_82409900(ctx, base);
 
@@ -993,7 +1051,11 @@ PPC_FUNC(sub_8247B020)
     if (idx < 0 || idx >= kMaxUserPlayers)
     {
         const int mode = ActingPlayerMode();
-        const int32_t acting = t_actingPlayer;
+        long long ageMs = -1;
+        int32_t acting = t_actingPlayer;
+        const bool onStack = acting >= 0;
+        if (!onStack)
+            acting = RecentActing_Get(&ageMs);
         if (mode >= 1 && acting >= 0 && mode < 2)
         {
             // Once per (bad index -> acting player) pair, then counted. The
@@ -1013,14 +1075,21 @@ PPC_FUNC(sub_8247B020)
                     saidPairs[saidCount++] = pair;
                 g_actingSubs++;
             }
-            if (fresh)
-                // Deliberately NOT Side(): that resolves session objects, and this
-                // runs inside a mission action's own call stack. A log line is
-                // not worth a re-entry.
-                fprintf(stderr, "[acting] user-player lookup asked for index %d, which is out of "
-                                "range (MAX_USER_PLAYERS=%d) and would read past the end of the "
-                                "array — giving it the acting player %d instead\n",
+            // Deliberately NOT Side(): that resolves session objects, and this
+            // runs inside a mission action's own call stack. A log line is not
+            // worth a re-entry.
+            if (fresh && onStack)
+                fprintf(stderr, "[acting] user-player index %d is out of range "
+                                "(MAX_USER_PLAYERS=%d) and would read past the end of the array "
+                                "— giving it acting player %d, found ON THE STACK (so this "
+                                "dispatch was synchronous)\n",
                         idx, kMaxUserPlayers, acting);
+            else if (fresh)
+                fprintf(stderr, "[acting] user-player index %d is out of range "
+                                "(MAX_USER_PLAYERS=%d) and would read past the end of the array "
+                                "— giving it acting player %d from the RECORD, set %lld ms ago "
+                                "(so the dispatch is DEFERRED)\n",
+                        idx, kMaxUserPlayers, acting, ageMs);
             ctx.r4.u64 = uint32_t(acting);
         }
         else if (mode >= 2)
@@ -1028,8 +1097,9 @@ PPC_FUNC(sub_8247B020)
             static uint64_t seen = 0;
             if (++seen <= 20 || (seen % 500) == 0)
                 fprintf(stderr, "[acting] OBSERVE: out-of-range user-player index %d (acting "
-                                "player %d, occurrence %llu) — NOT substituted\n",
-                        idx, acting, (unsigned long long)seen);
+                                "player %d, %s, occurrence %llu) — NOT substituted\n",
+                        idx, acting, onStack ? "on the stack" : "from the record",
+                        (unsigned long long)seen);
         }
     }
     __imp__sub_8247B020(ctx, base);
