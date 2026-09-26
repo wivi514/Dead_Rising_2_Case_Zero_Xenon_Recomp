@@ -1267,6 +1267,124 @@ on `sub_8223B000` printing `(id, object, name hash)` on both machines: if the me
 right, the two logs agree entry for entry until the first unmatched spawn and disagree by
 a constant offset thereafter.
 
+#### THE RESPONSE CODE, AND THE DEFECT: `cMissionSetChuckState` READS A CONTEXT TYPE AS A PLAYER INDEX (2026-09-26)
+
+The operator's instruction was *"find the response code then"*. It is found, the chain is
+complete from the script to the out-of-bounds load, and it accounts for every symptom
+they reported — including why the host's own placements work.
+
+##### The response is DATA, and it is in the game's own missions.txt
+
+`data/datafile.big` -> `missions.txt` (222,152 bytes decompressed), line 6970:
+
+```
+cMissionObjectiveEvent GetWheelPawn
+{
+    EventString = "WheelPawnPlaced"
+    cMissionSetChuckState PlaceItemAnimation11 { ChuckState = "34" }
+    cMissionSendAudioEvent EmotePos       { AudioEvent = "ChuckEmotePositive" }
+    cMissionTimer WaitforPlacement7
+    {
+        DeltaTimeSecondsRealTime = "0.5"   TriggerXTimes = "1"
+        cMissionSendCommandToProp Destroy3 { PropCommand = "17"  PropName = "WheelPawn" }
+    }
+}
+```
+
+`HandleBarPlaced`, `GasCanPlaced` and the rest are identical in shape. So the response
+that puts the part on the bike is: **play Chuck state 34 (the place animation), emote, and
+half a second later destroy the world prop by NAME.** Note `PropName` — the prop is found
+by name, not by pool index, so the item-pool drift is *not* what breaks this one.
+
+##### The dispatch chain, all read from the image
+
+```
+0x8240B084  state 61: sub_821AFE48(missionMgr, <event hash>, 0)   <-- r5 = 0, NO PLAYER
+0x821AFE48  RaiseMissionEvent: two listener lists (+0x1404/+0x15E8, +0x15F0/+0x17D4)
+              -> sub_821AD6B0(mission, hash, param, listIndex) for each
+0x821AD6B0  per-mission: walks a linked list, RTTI-checks each node, then
+              -> sub_823E7890(objective, mission, hash, param)
+0x823E7890  0x823E7900  hash the objective's EventString; 0x823E7904 compare
+            0x823E790C  bl 0x825530D0          <-- IsHost()
+            0x823E7914  beq -> RETURN           <-- NOT HOST: THE WHOLE RESPONSE IS SKIPPED
+            0x823E7920  sub_821AD238(&ctx)      <-- a stack context
+            0x823E7934  sub_8248B838(&ctx, param, mission, objective)
+0x8248B838  stw r4,0x14(ctx)   ; param
+            stw r5,0x60(ctx)   ; mission
+            stw r6,0x64(ctx)   ; objective
+            stw 9, 0x10(ctx)   <<<< ctx+0x10 = 9, A CONTEXT TYPE TAG
+```
+
+And the consumer, `cMissionSetChuckState::Execute`:
+
+```
+0x82409910  lwz r11, 0x40(r3)   ; the action's ChuckState
+0x82409918  lwz r4,  0x10(r5)   <<<< THE PLAYER INDEX COMES FROM ctx+0x10
+0x8240AF80  bl  0x8247B020(world->0x7C, r4)
+```
+
+**The same offset is a player index in one context and a type tag in the other.** From a
+trigger, `ctx+0x10` really is the acting player — measured 0/1 correctly across three
+sessions, which is why the player index kept clearing. From an objective event it is
+**9**, the context's type id (the neighbouring constructor at `0x8248B850` writes 10, and
+`0x8247B108` bounds a different enum at 10, so 9 is an ordinary member of that enum and
+not a sentinel).
+
+##### And the load is out of bounds, with the guard rail disabled in a shipped build
+
+```
+0x8247B034  if (index < 0)  goto assert
+0x8247B03C  if (index < 4)  goto lookup        ; MAX_USER_PLAYERS = 4
+0x8247B0A8..0x8247B0EC  the assert: "index >= 0 && index < MAX_USER_PLAYERS",
+                        actormanager.cpp:749 — GATED ON THE 0x829EC974 DIAG BYTE
+0x8247B0F0  addi r11, r28, 3 ; slwi r11,r11,2 ; lwzx r3, r11, r27
+            return *(players + (index + 3) * 4)   <-- REACHED ANYWAY, EVEN FOR 9
+```
+
+**The assert falls THROUGH to the same load.** In the shipped build the diag byte is 1, so
+the assert neither prints nor traps (gotcha 266 — the release kill switch), and
+`sub_8247B020(players, 9)` quietly returns `*(players + 48)`: **five entries past the end
+of a four-entry array.** Whatever object sits there is what the place animation is applied
+to.
+
+##### Why this accounts for every symptom, including the one that made it look intermittent
+
+- *"it makes the first player drop his currently held item"* — state 34 is applied to
+  whatever `players[9]` reads, which is not the acting player. On the host, the item that
+  comes out of a Chuck's hands is not the guest's.
+- *"it appears next to the bike but is not added to the bike parts"* — the acting player's
+  item is never consumed by the animation, so it ends up in the world; the prop-destroy
+  fires 0.5 s later against a prop found **by name**.
+- *"everything works fine if it's the host doing it"* — the wrong answer is a fixed
+  address, so when the acting player *is* the one the wrong answer lands on (or is
+  harmless to), nothing looks broken. **This is also why the whole defect is invisible in
+  single player**, where there is one user player and no second Chuck to take an item
+  from. *(This last step is the one inference left in the chain: that `players[9]`
+  resolves to something benign for player 0. It is one print to settle.)*
+- The **host-only gate at `0x823E790C`** is why the joiner sees nothing happen on its own
+  screen: its copy of the response returns before doing anything.
+
+##### What this retires, and what the fix is
+
+It retires the whole *decision* side as a suspect. State 61 resolves the acting player
+correctly, reads the right item, and raises the right event — measured on both machines,
+three sessions. **`CZ_COOP_ITEM_SYNC` was aimed at a part of the system that was already
+correct**, which is exactly what gotcha 611 warns about and the second time this
+investigation has been caught by it (gotcha 612: the place a defect is visible is not
+where it lives).
+
+**The repair is one substitution and needs no wire.** State 61 already knows the acting
+player, and the raise it makes is synchronous — the response runs inside it, on the same
+thread. So: remember the acting player around state 61's raise, and when
+`cMissionSetChuckState` is handed a `ctx+0x10` that is **out of range for
+MAX_USER_PLAYERS**, use the remembered player instead of letting the out-of-bounds load
+happen. Nothing else changes; an in-range index is untouched, so every trigger-driven
+state change behaves exactly as it does today.
+
+Predictions it must be judged on: the guest places a wheel, **the guest's** Chuck plays
+the place animation, the **host keeps** his held item, and the wheel is added to the bike.
+And the arm must be a null in single player, where no index is ever out of range.
+
 #### THE FIX IS REFUTED BY THE OPERATOR'S RUN (2026-09-26) — and the run names the real mechanism
 
 `CZ_COOP_ITEM_SYNC` is **OFF by default as of this entry**. It is kept as an arm, because
