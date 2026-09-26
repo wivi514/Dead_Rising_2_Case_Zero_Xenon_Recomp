@@ -93,6 +93,8 @@ extern "C" PPC_FUNC(__imp__sub_821AFE48);
 extern "C" PPC_FUNC(__imp__sub_82245650);
 extern "C" PPC_FUNC(__imp__sub_8247B020);
 extern "C" PPC_FUNC(__imp__sub_823E7890);
+extern "C" PPC_FUNC(__imp__sub_821A7550);
+extern "C" PPC_FUNC(__imp__sub_8223B000);
 
 using namespace coop;
 
@@ -234,6 +236,14 @@ void DumpPlayer(PPCContext& ctx, uint8_t* base, uint32_t userPlayers, uint32_t i
 // the control arm for "did the watch itself change the run".
 constexpr uint32_t kMaxPlayers = 4;
 
+// Which player each inventory belongs to, cached by the watch (which already
+// resolves all four every sweep). Declared here rather than beside the pool
+// registry below because WatchPlayer, which fills it, comes first in this file.
+// Consulting the guest for this inside the item-insert hook would mean guest
+// calls on the pickup path; a cache costs nothing and a stale entry prints "?"
+// rather than a wrong player.
+uint32_t g_invOfPlayer[kMaxPlayers] = {};
+
 struct SlotState
 {
     uint32_t item;
@@ -301,6 +311,8 @@ void WatchPlayer(PPCContext& ctx, uint8_t* base, uint32_t userPlayers, uint32_t 
         st.seen = true;
         st.actor = actor;
         st.inv = inv;
+        if (index < kMaxPlayers)
+            g_invOfPlayer[index] = inv;
         st.selected = sel;
         std::memcpy(st.slot, now, sizeof now);
         fprintf(stderr, "[item] INV BASELINE player %u (%s): actor %08X inv %08X selected %d\n",
@@ -321,6 +333,8 @@ void WatchPlayer(PPCContext& ctx, uint8_t* base, uint32_t userPlayers, uint32_t 
                 index, side, st.actor, actor, st.inv, inv);
         st.actor = actor;
         st.inv = inv;
+        if (index < kMaxPlayers)
+            g_invOfPlayer[index] = inv;
     }
 
     for (uint32_t i = 0; i < kInvSlots; i++)
@@ -929,6 +943,82 @@ int32_t RecentActing_Get(long long* ageMsOut)
 }
 
 uint64_t g_actingSubs = 0;
+
+// ---------------------------------------------------------------------------
+// THE POOL REGISTRY — what turns "an item appeared" into "pool id N resolved to
+// this item", which is the only form of the observation that can be COMPARED
+// between two machines.
+//
+// The item-pool layout is established (see "WHO ALLOCATES A POOL ENTRY"): a
+// manager holds 2,048 records of 664 bytes at `*(mgr + 0x6D00)`, and the id is
+// popped off a LIFO free list private to that machine. So an item's id is pure
+// arithmetic — `(item - poolBase) / 664` — once `poolBase` is known, and the
+// spawner is where to learn it: `sub_8223B000`'s r3 IS the manager.
+//
+// Every distinct (manager, poolBase) is recorded rather than assuming there is
+// one, because the 09-25 session measured item addresses in TWO pools and it was
+// never settled whether that was two managers or something else. An item that
+// matches no known pool is reported as such instead of being given a wrong id —
+// a wrong id here would be worse than none, because the whole point is to
+// compare ids across machines.
+constexpr uint32_t kPoolBaseField = 0x6D00;
+constexpr uint32_t kPoolStride = 0x298;  // 664
+constexpr uint32_t kPoolEntries = 2048;
+
+struct Pool { uint32_t mgr = 0; uint32_t base = 0; };
+std::mutex g_poolMu;
+Pool g_pools[4];
+unsigned g_poolCount = 0;
+
+void RegisterPool(uint8_t* base, uint32_t mgr)
+{
+    if (!mgr)
+        return;
+    const uint32_t poolBase = LoadU32(base, mgr + kPoolBaseField);
+    if (!poolBase)
+        return;
+    std::lock_guard<std::mutex> lock(g_poolMu);
+    for (unsigned i = 0; i < g_poolCount; i++)
+        if (g_pools[i].mgr == mgr && g_pools[i].base == poolBase)
+            return;
+    if (g_poolCount >= 4)
+        return;
+    g_pools[g_poolCount++] = Pool{mgr, poolBase};
+    fprintf(stderr, "[pickup] item pool %u registered: manager %08X, records at %08X "
+                    "(%u x %u bytes)\n",
+            g_poolCount - 1, mgr, poolBase, kPoolEntries, kPoolStride);
+}
+
+// The pool id of an item, or -1 when it belongs to no pool we have seen.
+int32_t PoolIdOf(uint32_t item, unsigned* whichPool)
+{
+    if (!item)
+        return -1;
+    std::lock_guard<std::mutex> lock(g_poolMu);
+    for (unsigned i = 0; i < g_poolCount; i++)
+    {
+        const uint32_t b = g_pools[i].base;
+        if (item < b)
+            continue;
+        const uint32_t off = item - b;
+        if (off % kPoolStride)
+            continue;
+        const uint32_t id = off / kPoolStride;
+        if (id >= kPoolEntries)
+            continue;
+        *whichPool = i;
+        return int32_t(id);
+    }
+    return -1;
+}
+
+int InvPlayer(uint32_t inv)
+{
+    for (uint32_t i = 0; i < kMaxPlayers; i++)
+        if (inv && g_invOfPlayer[i] == inv)
+            return int(i);
+    return -1;
+}
 
 // THE ASSUMPTION THIS FIX RESTS ON, AND THE ONLY ONE LEFT UNMEASURED:
 // that the objective-event response runs SYNCHRONOUSLY inside the raise, on this
@@ -1610,4 +1700,94 @@ PPC_FUNC(sub_823E7890)
                     ranSomething ? "RAN" : "did NOT run", (unsigned long long)g_objEvents,
                     (unsigned long long)g_nestedStates, (unsigned long long)g_nestedOutOfRange);
     }
+}
+
+// ===========================================================================
+// THE PICKUP TRACE — CZ_COOP_PICKUP_TRACE=1
+// ===========================================================================
+//
+// WHY THIS EXISTS, and why it is an INSTRUMENT and not another fix. Three
+// attempts at the placement half of issue #9 were built from inference and all
+// three were refuted by the operator's own sessions. The reason is structural,
+// not carelessness: **this engine's interesting paths are virtual**, so a static
+// call graph dead-ends on exactly the questions that matter. `sub_8224AE20` and
+// `sub_8224AFB8` — the two callers of the give-item path — have ZERO static
+// callers, as does the mission action dispatcher `sub_82378FA0`. Reading upward
+// cannot work here. So: measure at the point of the write and print the caller.
+//
+// THE HOOK POINT. `sub_821A7550(inv, slot, item)` is `Inventory::InsertItemAt`,
+// and it is unambiguous from its own body: it bounds `slot` at 12, shifts the
+// slots above it up by one (`0x821A757C`-`0x821A7598`), stores the item at
+// `inv + slot*8 + 4` (`0x821A75A4`) and increments the count at `inv + 0x64`.
+// Every item that enters an inventory by any route comes through here.
+//
+// WHAT IT IS FOR. The operator's report, corrected by them: picking up a bike
+// part as the guest puts **an item the HOST had already taken** — a shed key —
+// into play, not a random one. That is the item-pool free list drifting
+// (`sub_8223B000` pops ids from a 2,048-entry LIFO private to each machine), and
+// it predicts exactly this: the far machine resolves an incoming id against its
+// own table and finds whatever it allocated there.
+//
+// So run this on BOTH machines and do ONE pickup. The guest's log will show a
+// `GasolineCanister` inserted; the host's will show whatever its own table had at
+// that id. The `lr` names the code that chose it, which is the thing three
+// sessions of reading upward could not find. Pair it with `CZ_ITEM_WATCH_MS`,
+// whose `INV BASELINE` lines map an inventory address to a player.
+PPC_FUNC(sub_821A7550)
+{
+    static const bool on = [] {
+        const char* e = std::getenv("CZ_COOP_PICKUP_TRACE");
+        const bool v = e && *e && *e != '0';
+        if (v)
+            fprintf(stderr, "[pickup] CZ_COOP_PICKUP_TRACE=1 — every insertion into any "
+                            "inventory, with the item's name hash and the CALLER. Pair with "
+                            "CZ_ITEM_WATCH_MS to map an inventory to a player.\n");
+        return v;
+    }();
+    if (on)
+    {
+        const uint32_t inv = ctx.r3.u32;
+        const int32_t slot = int32_t(ctx.r4.u32);
+        const uint32_t item = ctx.r5.u32;
+        const uint32_t hash = item ? PPC_LOAD_U32(item + kItemNameHash) : 0;
+        unsigned pool = 0;
+        const int32_t id = PoolIdOf(item, &pool);
+        const int player = InvPlayer(inv);
+        char who[16];
+        if (player >= 0)
+            std::snprintf(who, sizeof who, "player %d", player);
+        else
+            std::snprintf(who, sizeof who, "player ?");
+        char idbuf[48];
+        if (id >= 0)
+            std::snprintf(idbuf, sizeof idbuf, "POOL %u ID %d", pool, id);
+        else
+            std::snprintf(idbuf, sizeof idbuf, "in NO known pool");
+        // THE POOL ID IS THE FIELD THIS TRACE EXISTS FOR. Two machines can be
+        // compared on it and on nothing else here: the addresses are per-run, the
+        // slot is local bookkeeping, and the hash is the ANSWER rather than the
+        // key. If the same id names a different hash on the two sides, the free
+        // list has drifted and that is the defect, stated in one line.
+        fprintf(stderr, "[pickup] %s inv %08X slot %d <- item %08X %s, hash %08X (%s), count %u, "
+                        "from lr %08X\n",
+                who, inv, slot, item, idbuf, hash, NameOf(hash),
+                inv ? PPC_LOAD_U32(inv + 0x64) : 0u, uint32_t(ctx.lr));
+    }
+    __imp__sub_821A7550(ctx, base);
+}
+
+// The item spawner (`sub_8223B000`). Hooked only to learn where the pools are:
+// its r3 is the manager, and `*(mgr + 0x6D00)` is the 2,048 x 664 record array
+// every item instance lives in. Registering it here rather than guessing means
+// the pickup trace can state a pool id, which is the one field that is
+// comparable between two machines.
+PPC_FUNC(sub_8223B000)
+{
+    static const bool on = [] {
+        const char* e = std::getenv("CZ_COOP_PICKUP_TRACE");
+        return e && *e && *e != '0';
+    }();
+    if (on)
+        RegisterPool(base, ctx.r3.u32);
+    __imp__sub_8223B000(ctx, base);
 }
