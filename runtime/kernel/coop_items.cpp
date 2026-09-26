@@ -103,6 +103,8 @@ extern "C" PPC_FUNC(__imp__sub_8223BBB8);
 extern "C" PPC_FUNC(__imp__sub_8223CEF8);
 extern "C" PPC_FUNC(__imp__sub_82408908);
 extern "C" PPC_FUNC(__imp__sub_821A2200);
+extern "C" PPC_FUNC(__imp__sub_82378FA0);
+extern "C" PPC_FUNC(__imp__sub_821898B0);
 
 using namespace coop;
 
@@ -1407,7 +1409,9 @@ PPC_FUNC(sub_82409900)
                     int32_t(worldLocal), ctx.r6.u32, uint32_t(ctx.lr), t_dispatchLr,
                     t_dispatchLr == 0x821899B8   ? "event class 0x6B"
                     : t_dispatchLr == 0x8218A1BC ? "event class 0x6C, index straight off the wire"
-                    : t_dispatchLr == 0          ? "not through sub_82378FA0"
+                    : t_dispatchLr == 0          ? "NOT through sub_82378FA0's entry — the "
+                                                   "class-0x6A tail branch, or this hook never "
+                                                   "ran; check for its `hook alive` line"
                                                  : "class 0x6A (the tail branch) or unknown");
         }
     }
@@ -2526,6 +2530,90 @@ void PropNameOf(uint8_t* base, uint32_t strObj, char* out, size_t n)
 // unrelated caller and then suppressed the "Bike2" command it was built for.
 thread_local uint32_t t_propCmd = 0;          // the PropCommand currently executing, 0 = none
 thread_local char t_propCmdName[64] = {};
+
+// The mission-action dispatcher — `sub_82378FA0(action, world, ctx)`. Four useful
+// instructions: name the action for a debug print, then
+// `action->vt[0x38](action, world, ctx)`.
+//
+// Hooked ONLY to record who entered it, because part 9 recorded it as having "no
+// static callers — reached only through vtables", and a census over every `b`/`bl`
+// in the image finds three, all of them network event listeners gated on the class
+// byte at `header + 5` in the same shape as `sub_82245650`'s `0x68`:
+//
+//   0x821898E0  b   -> class 0x6A (`sub_821898B0`). `ExecuteAction(event->0x14,
+//                      world, event)` — the EVENT OBJECT ITSELF is the context.
+//   0x821899B4  bl  -> class 0x6B. A COUNT at `event+0x10` and an array of
+//                      0x1C-byte entries at `event+0x14`: several actions per
+//                      message.
+//   0x8218A1B8  bl  -> class 0x6C (`sub_8218A070`). Builds a stack context via
+//                      `sub_8248BE28(ctx, .., 0, event->0x10)`, and that function is
+//                      three stores — `+0x10 = r6`, `+0x14 = r4`, `+0x18 = r5`. So
+//                      the player index the action reads comes off the wire.
+//
+// THE FIRST CLASS IS A TAIL BRANCH, so it does not pass this entry at all. That
+// means `t_dispatchLr == 0` has TWO readings — "entered by the tail branch" and
+// "this hook is not running" — and they are the same silence. Which is why this
+// carries a FirstCall: once the `hook alive` line has printed, a later zero is a
+// measurement.
+PPC_FUNC(sub_82378FA0)
+{
+    if (!PlaceTrace())
+    {
+        __imp__sub_82378FA0(ctx, base);
+        return;
+    }
+    static bool seen = false;
+    FirstCall("sub_82378FA0 mission action dispatcher (its ENTRY; the class-0x6A path "
+              "tail-branches past it)", seen);
+    const uint32_t was = t_dispatchLr;
+    t_dispatchLr = uint32_t(ctx.lr);
+    __imp__sub_82378FA0(ctx, base);
+    t_dispatchLr = was;
+}
+
+// The class-0x6A action listener — `sub_821898B0`, five useful instructions:
+//
+//     if (header[5] != 0x6A) return;
+//     action = event->0x14;  if (!action) return;
+//     ExecuteAction(action, world, event)          <-- a TAIL BRANCH, 0x821898E0
+//
+// **THE EVENT OBJECT IS THE ACTION'S CONTEXT**, so `event + 0x10` is the player
+// index `cMissionSetChuckState::Execute` reads, and this is the listener the bike's
+// response actually goes through: the first observed state 34 printed
+// `dispatched from 00000000`, i.e. not through `sub_82378FA0`'s entry at all, which
+// is what a tail branch looks like from a hook on that entry.
+//
+// So this is the last link, and the field it prints is the one the whole issue now
+// turns on. On the host, with the guest placing a part: `+0x10 = 1` means the
+// response is running for the right Chuck and the prop lookup is the defect;
+// `+0x10 = 0` means it is running for the LOCAL Chuck and this field is. The `lr`
+// says who delivered the event, which separates "the title replicated the wrong
+// index" from "our layer delivered it to the wrong place".
+//
+// Printed for every class-0x6A event, including the ones this listener REFUSES,
+// because "no event arrived" and "an event arrived for another class" are otherwise
+// the same silence.
+PPC_FUNC(sub_821898B0)
+{
+    if (PlaceTrace())
+    {
+        static bool seen = false;
+        FirstCall("sub_821898B0 class-0x6A mission-action listener", seen);
+        const uint32_t header = ctx.r4.u32, event = ctx.r5.u32;
+        const uint32_t cls = header ? PPC_LOAD_U8(header + 5) : 0xFFu;
+        const uint32_t action = (cls == 0x6A && event) ? PPC_LOAD_U32(event + 0x14) : 0;
+        const int32_t player = (cls == 0x6A && event) ? int32_t(PPC_LOAD_U32(event + 0x10)) : -1;
+        static uint64_t said = 0;
+        if (cls == 0x6A || ++said <= 5)
+            fprintf(stderr, "[place] EVENT class %02X (%s) event %08X -> +0x10 = %d (the player "
+                            "the action will run AS), +0x14 = %08X (the action)%s, from lr %08X\n",
+                    cls, Side(ctx, base), event, player, action,
+                    cls != 0x6A ? "  [refused: not class 6A]"
+                                : action ? "" : "  [no action, nothing runs]",
+                    uint32_t(ctx.lr));
+    }
+    __imp__sub_821898B0(ctx, base);
+}
 
 // cMissionSendCommandToProp::Execute(action, world, ...) — `0x82408908`.
 PPC_FUNC(sub_82408908)
