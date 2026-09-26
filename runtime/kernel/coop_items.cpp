@@ -91,6 +91,7 @@ extern "C" PPC_FUNC(__imp__sub_823B0068);
 extern "C" PPC_FUNC(__imp__sub_823E79B8);
 extern "C" PPC_FUNC(__imp__sub_821AFE48);
 extern "C" PPC_FUNC(__imp__sub_82245650);
+extern "C" PPC_FUNC(__imp__sub_8247B020);
 
 using namespace coop;
 
@@ -790,6 +791,88 @@ void PublishHeldItem(PPCContext& ctx, uint8_t* base)
 // tell a bike placement from every other raise in the game, and for whom.
 thread_local bool t_placing = false;
 thread_local int32_t t_placingPlayer = -1;
+
+// ===========================================================================
+// THE FIX — CZ_COOP_ACTING_PLAYER. A context TYPE is not a player index.
+// ===========================================================================
+//
+// THE DEFECT, read out of the image and out of the game's own missions.txt.
+// `cMissionSetChuckState::Execute` takes its player from `ctx + 0x10`
+// (`0x82409918: lwz r4, 0x10(r5)`). From a mission TRIGGER that field really is
+// the acting player — measured correct on both machines for three sessions,
+// which is why the player index kept clearing as a suspect. But the bike's
+// placement response is not a trigger. It is data:
+//
+//     cMissionObjectiveEvent GetWheelPawn          (missions.txt:6970)
+//         EventString = "WheelPawnPlaced"
+//         cMissionSetChuckState PlaceItemAnimation11 { ChuckState = "34" }
+//         ... cMissionSendCommandToProp { PropCommand = 17, PropName = "WheelPawn" }
+//
+// and the objective-event dispatch builds a STACK context whose `+0x10` is the
+// context's TYPE TAG, not a player: `sub_8248B838` writes the constant **9**
+// there (`0x8248B844`), with the raise's param going to `+0x14` — and state 61
+// raises with param 0 anyway, so no player reaches the response at all.
+//
+// So the place animation asks for user player 9, and the lookup does not refuse
+// it. `sub_8247B020` bounds the index at MAX_USER_PLAYERS = 4 and its assert
+// ("index >= 0 && index < MAX_USER_PLAYERS", actormanager.cpp:749) is gated on
+// the 0x829EC974 diag byte — 1 in every shipped build, gotcha 266 — and then
+// FALLS THROUGH to the same load anyway (`0x8247B0F0`):
+//
+//     return *(players + (index + 3) * 4)
+//
+// For 9 that is five entries past the end of a four-entry array. Whatever object
+// lives there is what the animation is applied to, so the item comes out of the
+// wrong Chuck's hands, the acting player's item is never consumed and lands in
+// the world instead of on the bike, and — because the wrong answer is a FIXED
+// address — it looks fine whenever it happens to coincide with the acting
+// player. That is why the host's own placements work, and why single player has
+// never shown this.
+//
+// THE REPAIR. State 61's raise is SYNCHRONOUS: the response runs inside it, on
+// this thread, before it returns. So the acting player is still knowable. Every
+// `cMissionSetChuckState::Execute` whose context carries an IN-RANGE player
+// publishes it for the duration of its own call, and when the user-player lookup
+// is then handed an index that is out of range, it is given that player instead
+// of being allowed to read past the array.
+//
+// WHAT IT CANNOT DO, which is what makes it safe: an IN-RANGE index is never
+// touched, so every trigger-driven state change in the game — the whole rest of
+// the mission system — behaves exactly as it does today. It engages only where
+// the title was about to perform an out-of-bounds load, which is a defect
+// wherever it happens, in co-op or not.
+//
+// CZ_COOP_ACTING_PLAYER=0 is the control arm. **=2 OBSERVES WITHOUT
+// SUBSTITUTING** — it prints every out-of-range lookup and lets the title do
+// what it does today, which is the measurement arm for "does this actually
+// happen, and with which index", and the thing to run if the fix is ever
+// suspected of changing something it should not.
+constexpr int32_t kMaxUserPlayers = 4; // MAX_USER_PLAYERS, from the assert at 0x8247B0A8
+
+int ActingPlayerMode()
+{
+    static const int mode = [] {
+        const char* e = std::getenv("CZ_COOP_ACTING_PLAYER");
+        const int n = (e && *e) ? std::atoi(e) : 1;
+        if (n == 0)
+            fprintf(stderr, "[acting] CZ_COOP_ACTING_PLAYER=0 — the out-of-range user-player "
+                            "lookup is left alone (the control arm; the title reads past the "
+                            "end of its player array)\n");
+        else if (n >= 2)
+            fprintf(stderr, "[acting] CZ_COOP_ACTING_PLAYER=2 — OBSERVE ONLY: every out-of-range "
+                            "user-player lookup is printed and NOT substituted\n");
+        return n;
+    }();
+    return mode;
+}
+
+// The acting player of the innermost cMissionSetChuckState whose context carried
+// a real one. Thread-local because the raise and its response are one call stack
+// on one thread, and because two mission updates on two threads must not share
+// it.
+thread_local int32_t t_actingPlayer = -1;
+
+uint64_t g_actingSubs = 0;
 } // namespace
 
 // cMissionSetChuckState::Execute(action, world, ctx, ...) — state 61 is the bike.
@@ -835,12 +918,78 @@ PPC_FUNC(sub_82409900)
         t_placing = true;
         t_placingPlayer = ctx61 ? int32_t(PPC_LOAD_U32(ctx61 + kCtxPlayer)) : -1;
     }
+
+    // PUBLISH THE ACTING PLAYER for the duration of this action, whatever its
+    // Chuck state. A context that carries an IN-RANGE player is the only
+    // evidence that a real acting player exists; an out-of-range one is the
+    // objective-event context's type tag and must not overwrite the enclosing
+    // action's answer, so it is left alone and inherited.
+    const int32_t here = ctx61 ? int32_t(PPC_LOAD_U32(ctx61 + kCtxPlayer)) : -1;
+    const int32_t wasActing = t_actingPlayer;
+    if (here >= 0 && here < kMaxUserPlayers)
+        t_actingPlayer = here;
+
     __imp__sub_82409900(ctx, base);
+
+    t_actingPlayer = wasActing;
     if (isPlace)
     {
         t_placing = wasPlacing;
         t_placingPlayer = wasPlayer;
     }
+}
+
+// GetUserPlayer(userPlayerArray, index) — `0x8247B020`. THE POINT OF THE DEFECT:
+// the title bounds the index, logs an assert that a shipped build silences, and
+// then performs the load anyway. This is the one place the out-of-bounds read
+// can be stopped without touching guest memory: hand the guest a VALID index and
+// let it do its own lookup.
+PPC_FUNC(sub_8247B020)
+{
+    const int32_t idx = int32_t(ctx.r4.u32);
+    if (idx < 0 || idx >= kMaxUserPlayers)
+    {
+        const int mode = ActingPlayerMode();
+        const int32_t acting = t_actingPlayer;
+        if (mode >= 1 && acting >= 0 && mode < 2)
+        {
+            // Once per (bad index -> acting player) pair, then counted. The
+            // first line is what proves the fix engaged at all; a silent fix is
+            // indistinguishable from an absent one.
+            static std::mutex saidMu;
+            static uint32_t saidPairs[16] = {};
+            static unsigned saidCount = 0;
+            const uint32_t pair = (uint32_t(idx) << 8) | uint32_t(acting);
+            bool fresh = true;
+            {
+                std::lock_guard<std::mutex> lock(saidMu);
+                for (unsigned i = 0; i < saidCount; i++)
+                    if (saidPairs[i] == pair)
+                        fresh = false;
+                if (fresh && saidCount < 16)
+                    saidPairs[saidCount++] = pair;
+                g_actingSubs++;
+            }
+            if (fresh)
+                // Deliberately NOT Side(): that resolves session objects, and this
+                // runs inside a mission action's own call stack. A log line is
+                // not worth a re-entry.
+                fprintf(stderr, "[acting] user-player lookup asked for index %d, which is out of "
+                                "range (MAX_USER_PLAYERS=%d) and would read past the end of the "
+                                "array — giving it the acting player %d instead\n",
+                        idx, kMaxUserPlayers, acting);
+            ctx.r4.u64 = uint32_t(acting);
+        }
+        else if (mode >= 2)
+        {
+            static uint64_t seen = 0;
+            if (++seen <= 20 || (seen % 500) == 0)
+                fprintf(stderr, "[acting] OBSERVE: out-of-range user-player index %d (acting "
+                                "player %d, occurrence %llu) — NOT substituted\n",
+                        idx, acting, (unsigned long long)seen);
+        }
+    }
+    __imp__sub_8247B020(ctx, base);
 }
 
 // cMissionOnTrigger::Update(trigger, missionOwner, updateCtx). The POSITIVE CONTROL

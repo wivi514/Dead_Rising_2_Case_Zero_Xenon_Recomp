@@ -4339,6 +4339,23 @@ CZ_ITEM_WATCH_MS=N THE PICKUP, AT THE INSTANT IT HAPPENS (with CZ_ITEM_TRACE=1;
                    the two accessors the bike path already calls, so it adds no new
                    guest address; the bill is eight guest calls and ~48 loads at most
                    four times a second, off the renderer thread
+CZ_COOP_ACTING_PLAYER=0  **THE CONTROL ARM FOR THE ISSUE #9 FIX** (the fix is ON by
+                   default; `=0` leaves the title reading past the end of its player
+                   array, exactly as it ships). `cMissionSetChuckState::Execute` takes its
+                   player from `ctx+0x10`, which is the acting player from a mission
+                   TRIGGER but the context's TYPE TAG (9) from an objective-event response
+                   — and `sub_8247B020` bounds the index at MAX_USER_PLAYERS=4, silences
+                   its own assert via the 0x829EC974 release byte, then does the load
+                   anyway: `*(players + (index+3)*4)`, five entries past the end. The fix
+                   publishes the acting player around every SetChuckState whose context
+                   carries an in-range one (the raise is SYNCHRONOUS, so the response runs
+                   inside it) and hands it to any out-of-range lookup. An in-range index is
+                   never touched, so the whole trigger-driven mission system is unchanged.
+                   Measured null in single player: 0 out-of-range lookups over a 300 s roam
+CZ_COOP_ACTING_PLAYER=2  **OBSERVE ONLY** — print every out-of-range user-player lookup and
+                   substitute NOTHING. The measurement arm: it answers "does this happen at
+                   all, and with which index", and it is the first thing to run if the fix
+                   is ever suspected of changing something it should not
 CZ_COOP_ITEM_SYNC=1  **REFUTED AS THE FIX FOR ISSUE #9, 2026-09-26 — OFF by default, and
                    do not quote it as a repair.** The operator's two-machine run raised
                    `WheelPawnPlaced` on BOTH machines for the guest's wheel — the mission

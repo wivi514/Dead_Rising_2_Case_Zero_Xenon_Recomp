@@ -1267,6 +1267,78 @@ on `sub_8223B000` printing `(id, object, name hash)` on both machines: if the me
 right, the two logs agree entry for entry until the first unmatched spawn and disagree by
 a constant offset thereafter.
 
+#### THE FIX — `CZ_COOP_ACTING_PLAYER` (2026-09-26)
+
+One substitution, at the point of the out-of-bounds load. No network, no guest-memory
+write, no change to any in-range path.
+
+##### What it does
+
+Every `cMissionSetChuckState::Execute` whose context carries an **in-range** player
+publishes it, thread-locally, for the duration of its own call — and restores the previous
+value on the way out, so nothing leaks past the action. The hook on
+`sub_8247B020` (`GetUserPlayer`) then does one thing: when it is handed an index outside
+`[0, MAX_USER_PLAYERS)` **and** a published acting player exists, it rewrites `r4` to that
+player and lets the guest perform its own, now-valid, lookup.
+
+The nesting is what makes it work, and it is a property of the engine rather than
+something arranged: **state 61's raise is synchronous.** The objective-event response runs
+inside it, on the same thread, before it returns. So the enclosing action's acting player
+is still live when the response's `ChuckState = 34` asks for player 9 — and because 9 is
+out of range it does not overwrite the published value, it inherits it.
+
+The consumer was verified rather than assumed: the jump table at `0x82043388` resolves
+state 61 to `0x8240AF7C` (matching the disassembly already recorded) and state **34 to
+`0x8240A930`**, whose first two instructions are
+`lwz r3, 0x7C(r31)` / `bl 0x8247B020` — it really does call the lookup with the index from
+`ctx+0x10`, and it even tests the result for NULL.
+
+##### Why it is safe, stated as what it cannot do
+
+- **An in-range index is never touched.** The entire trigger-driven mission system — every
+  state change in the game that already works — takes the identical path.
+- It engages **only** where the title was about to read past the end of its player array,
+  which is a defect wherever it happens, co-op or not.
+- Nothing is written to guest memory. `ctx+0x10` is left holding its type tag, because it
+  *is* a type tag and something else may read it as one; only the argument register of one
+  call is changed.
+- The published value is restored unconditionally on exit, so an action cannot leak an
+  acting player to the next one.
+
+##### The arms
+
+- `CZ_COOP_ACTING_PLAYER=0` — the control. The out-of-range lookup is left alone and the
+  title reads past the array, exactly as it ships.
+- `=1` (default) — substitute. Prints once per distinct `(bad index -> acting player)`
+  pair; a silent fix is indistinguishable from an absent one.
+- **`=2` — OBSERVE ONLY.** Print every out-of-range lookup and substitute nothing. This is
+  the measurement arm: it answers "does this happen at all, and with which index", and it
+  is the first thing to run if the fix is ever suspected of changing something it should
+  not.
+
+##### Gates
+
+- `--smoke` OK.
+- **Single-player control, observe arm (`=2`): 0 out-of-range lookups** over a 300 s
+  `AUTOCHUCK=EXPLORER` roam that reached gameplay. So the fix does not fire during ordinary
+  single-player play and cannot change it.
+- **The honest limit of that control**: the headless route never places a bike part, so it
+  does not show the fix is a null *at the bike* in single player. It almost certainly fires
+  there — the objective response builds the same type-9 context offline — and substitutes
+  player 0, which in single player **is** the acting player. So the single-player effect at
+  the bike is "the out-of-bounds read stops happening and the same Chuck animates", which
+  is a correction rather than a change. Stated rather than measured; a solo run to the bike
+  would settle it and is the cheap thing to do next.
+- State 34's consumer verified by disassembly, not assumed (jump table `0x82043388` ->
+  `0x8240A930`, whose first two instructions are the `GetUserPlayer` call).
+
+##### Known limits, said out loud
+
+The published value is trusted because it is in range, and `ctx+0x10` is a **type tag** in
+the objective-event context. If some other context type's tag happened to fall in
+`[0, 4)`, that action would publish a bogus acting player. That would be wrong — but it is
+not a regression, because the title uses that same value as a player index today. The two
+tags actually observed are 9 and 10 (`0x8248B844`, `0x8248B85C`), both out of range.
 #### THE RESPONSE CODE, AND THE DEFECT: `cMissionSetChuckState` READS A CONTEXT TYPE AS A PLAYER INDEX (2026-09-26)
 
 The operator's instruction was *"find the response code then"*. It is found, the chain is
