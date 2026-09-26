@@ -114,6 +114,9 @@ constexpr uint32_t kFnUserPlayer = 0x8247B020; // (userPlayerArray, index) -> ac
 constexpr uint32_t kFnTriggerCtx = 0x823A4768;  // (missionObject) -> the mission ACTION CONTEXT
 constexpr uint32_t kCtxPlayer = 0x10;           // ... whose +0x10 every action reads as "who"
 constexpr uint32_t kFnPlayerInv = 0x8215D330;  // (inventoryMgr, actor) -> inventory block
+constexpr uint32_t kFnHeldItem = 0x821A6C18;   // (inventoryMgr, actor) -> the SELECTED slot's item
+                                               // (kFnPlayerInv plus the selected-slot arithmetic;
+                                               // exactly what state 61 calls at 0x8240AF94)
 constexpr uint32_t kPropNameHash = 0x98;       // a prop's INSTANCE name hash — the field
                                                // 0x821A2200 matches on. Measured: PropName="Bike2"
                                                // found +0x98 == hash("Bike2")
@@ -557,6 +560,9 @@ int InvPlayer(uint32_t inv);
 
 // The candidate fix, defined beside the lookup it steers (see CZ_COOP_PLACE_FIX);
 // declared here because state 61's hook, which feeds it, comes first in this file.
+int PlaceFix();
+void RememberPlacedItem(PPCContext& ctx, uint8_t* base, uint32_t world, int32_t player);
+
 // Which of the three network event listeners delivered the action currently
 // executing. Set by the sub_82378FA0 hook further down; 0 means the action did
 // not come through that dispatcher at all, which is itself an answer.
@@ -1445,6 +1451,14 @@ PPC_FUNC(sub_82409900)
     // it. Thread-local: two mission updates on two threads would otherwise
     // share one window.
     const uint32_t action61 = ctx.r3.u32, ctx61 = ctx.r5.u32;
+    // THE CANDIDATE FIX'S RECORD. State 61 is about to resolve the acting player's
+    // held item and raise an event for it; the mission's response then looks the
+    // prop up BY NAME half a second later and takes the lowest pool id. Remember
+    // the object state 61 actually read, so that lookup can be pinned to it when —
+    // and only when — it is ambiguous. Two guest calls, a few times a session.
+    if (PlaceFix() && action61 && PPC_LOAD_U32(action61 + 0x40) == kChuckStateTryPlaceItem)
+        RememberPlacedItem(ctx, base, ctx.r4.u32,
+                           ctx61 ? int32_t(PPC_LOAD_U32(ctx61 + kCtxPlayer)) : -1);
     const bool isPlace = SyncActive() && action61 &&
                          PPC_LOAD_U32(action61 + 0x40) == kChuckStateTryPlaceItem;
     const bool wasPlacing = t_placing;
@@ -2435,6 +2449,152 @@ void PoolCensus(PPCContext& ctx, uint8_t* base, uint32_t world)
 }
 } // namespace
 
+// ---------------------------------------------------------------------------
+// THE CANDIDATE FIX — CZ_COOP_PLACE_FIX. Pin the prop command to the item the
+// placement actually read.
+// ---------------------------------------------------------------------------
+//
+// READ PlaceTrace() ABOVE FIRST. This is a candidate and it ships OFF, because
+// the measurement that convicts or acquits it has not been run on two machines
+// yet and four fixes have already been refuted here for exactly that reason. What
+// makes it worth shipping anyway is that ITS OWN LOG LINE IS THE DIAGNOSIS: it
+// can only engage where `FindPropByNameHash` had MORE THAN ONE live candidate, so
+// "the arm fired" and "the lookup was ambiguous" are the same event, and a run
+// where it never fires has refuted the mechanism rather than merely failed.
+//
+// THE MECHANISM IT ADDRESSES, stated so it can be refuted.
+//
+//   * A prop's `+0x98` is its INSTANCE name hash and `+0x100` its item TYPE hash.
+//     Measured, not assumed: a `PROPCMD 22` on the bike found
+//     `id 147 ... itemHash 19CB1675` for `PropName = "Bike2"`, and
+//     `tools/name_hash.py` gives `04E332D7 Bike2` / `19CB1675 BikeBody` — the
+//     spawn action's own name and the item type, exactly as `missions.txt`
+//     declares them.
+//   * `missions.txt` contains NO spawn action named `WheelPawn`, `HandleBar`,
+//     `GasolineCanister`, `BikeEngine` or `BikeForks`. Those five names appear as
+//     a `PropName` in exactly five places — the five bike-part destroy commands.
+//     So the prop the command looks for is not a scripted spawn: it is a GENERIC
+//     item instance, whose instance name is its type name, i.e. the one a player
+//     is carrying.
+//   * `sub_821A2200` returns the FIRST such instance by pool id and consults
+//     nothing else. One player carries one at a time, so single player is exact.
+//     Two players can carry two — and the operator measured that they do, since a
+//     bike part the guest took could still be picked up a second time — and then
+//     the command takes the part out of whichever Chuck holds the lower pool id
+//     and releases it into the world with `actor = 0`.
+//
+// That accounts for all three of the operator's symptoms without needing a wrong
+// player index or a drifted inventory: *"it makes the first player drop his
+// currently held item"* is the detach at `0x82409194` applied to the holder the
+// lookup landed on, *"it appears next to the bike but is not added"* is the
+// release at `0x824091B4`, and *"everything works if the host does it"* is the
+// host's own instance usually being the older, lower id.
+//
+// THE REPAIR. State 61 already knows exactly which item object it decided on — it
+// is `r30` at `0x8240AF98`, the return of `sub_821A6C18(game->0x30, actor)`. So
+// remember that object across the mission's half-second timer, and when the prop
+// command's lookup is AMBIGUOUS, hand back the remembered one instead of the
+// lowest id. Nothing is written to guest memory; one return value of one call is
+// replaced.
+//
+// FIVE GUARDS, each the difference between a repair and a new defect:
+//   1. only inside `PropCommand = 17` (the bike's destroy), so no other prop
+//      command in the game is touched;
+//   2. only when the guest's own search found MORE THAN ONE live candidate, so an
+//      unambiguous lookup — every lookup in single player — is bit-identical;
+//   3. only when the remembered object's own `+0x98` still equals the hash asked
+//      for, and only when it is still LIVE in the pool table, so a recycled id
+//      cannot be resurrected;
+//   4. only within CZ_COOP_PLACE_FIX_MS of the state-61 that recorded it (default
+//      5000, against the mission's 500 ms timer), so a stale memory cannot steer
+//      an unrelated command later;
+//   5. one-way — it can only choose a DIFFERENT member of the set the title was
+//      already going to choose from, never a prop outside it.
+//
+// THE PREDICTION, so a run can refute it: the guest places a part, the GUEST's
+// Chuck loses it, the HOST keeps what he was holding, and the part is added. And
+// it must be a measured null in single player — where guard 2 makes it one by
+// construction, which the log states as `1 live pool entry match`.
+namespace
+{
+struct PlacedItem
+{
+    uint32_t object;
+    uint32_t nameHash;                                  // the instance name, +0x98
+    int32_t player;
+    std::chrono::steady_clock::time_point at;
+};
+std::mutex g_placedMu;
+PlacedItem g_placed{};
+
+int PlaceFix()
+{
+    static const int mode = [] {
+        const char* e = std::getenv("CZ_COOP_PLACE_FIX");
+        const int n = (e && *e) ? std::atoi(e) : 0;
+        if (n)
+            fprintf(stderr, "[placefix] CZ_COOP_PLACE_FIX=%d — the bike's destroy command will "
+                            "take the item STATE 61 READ, not the lowest pool id, and ONLY where "
+                            "the lookup had more than one candidate. %s\n",
+                    n,
+                    n >= 2 ? "=2 is OBSERVE ONLY: it reports what it would have done and changes "
+                             "nothing."
+                           : "=0 is the control arm and restores the shipped behaviour exactly.");
+        return n;
+    }();
+    return mode;
+}
+
+int PlaceFixWindowMs()
+{
+    static const int ms = [] {
+        const char* e = std::getenv("CZ_COOP_PLACE_FIX_MS");
+        const int n = (e && *e) ? std::atoi(e) : 5000;
+        return n > 0 ? n : 5000;
+    }();
+    return ms;
+}
+
+// Called from the state-61 branch below, with the world it was handed. Two guest
+// calls, a few times a session — it is not on any frame path.
+void RememberPlacedItem(PPCContext& ctx, uint8_t* base, uint32_t world, int32_t player)
+{
+    if (!PlaceFix() || !world || player < 0 || uint32_t(player) >= kMaxUserPlayers)
+        return;
+    const uint32_t userPlayers = LoadU32(base, world + 0x7C);
+    const uint32_t game = LoadU32(base, world + 0x78);
+    const uint32_t invMgr = game ? LoadU32(base, game + 0x30) : 0;
+    if (!userPlayers || !invMgr)
+        return;
+    PPCContext call = ctx;
+    call.r1.u64 = (ctx.r1.u32 - 0x400) & ~0xFu;
+    call.r3.u64 = userPlayers;
+    call.r4.u64 = uint32_t(player);
+    if (!GuestCall(call, base, kFnUserPlayer, "placefix-user-player"))
+        return;
+    const uint32_t actor = call.r3.u32;
+    if (!actor)
+        return;
+    call.r3.u64 = invMgr;
+    call.r4.u64 = actor;
+    if (!GuestCall(call, base, kFnHeldItem, "placefix-held-item"))
+        return;
+    const uint32_t item = call.r3.u32;
+    if (!item)
+        return;
+    std::lock_guard<std::mutex> lock(g_placedMu);
+    g_placed.object = item;
+    g_placed.nameHash = LoadU32(base, item + kPropNameHash);
+    g_placed.player = player;
+    g_placed.at = std::chrono::steady_clock::now();
+    fprintf(stderr, "[placefix] state 61: player %d is holding item %08X, instance name %08X "
+                    "(%s), type %08X (%s) — remembered for %d ms\n",
+            player, item, g_placed.nameHash, NameOf(g_placed.nameHash),
+            LoadU32(base, item + kItemNameHash), NameOf(LoadU32(base, item + kItemNameHash)),
+            PlaceFixWindowMs());
+}
+} // namespace
+
 // ===========================================================================
 // THE PROP COMMAND — how the mission's response actually reaches an item, and
 // the one step in the chain that is AMBIGUOUS BY CONSTRUCTION.
@@ -2682,6 +2842,48 @@ PPC_FUNC(sub_821A2200)
                                LoadU32(base, obj + kItemNameHash), obj == won ? " <-- TAKEN" : "");
     }
 
+    // THE SUBSTITUTION. Guard 2 is the load-bearing one: an unambiguous lookup is
+    // left exactly as the title computed it, which makes single player a null by
+    // construction rather than by hope.
+    bool substituted = false;
+    uint32_t wouldBe = 0;
+    if (PlaceFix() && t_propCmd == 17 && matches > 1)
+    {
+        std::lock_guard<std::mutex> lock(g_placedMu);
+        const auto age = std::chrono::duration_cast<std::chrono::milliseconds>(
+                             std::chrono::steady_clock::now() - g_placed.at)
+                             .count();
+        const bool fresh = g_placed.object && g_placed.at.time_since_epoch().count() &&
+                           age <= PlaceFixWindowMs();
+        // Guard 3: the remembered object must still BE the thing that was asked
+        // for. The pool is a LIFO free list, so an id released in between is handed
+        // straight back out as something else; checking the live instance name is
+        // what stops a recycled entry being resurrected.
+        const bool live = fresh && g_placed.nameHash == hash &&
+                          LoadU32(base, g_placed.object + kPropNameHash) == hash &&
+                          LoadU32(base, g_placed.object + kPropHolder) != 0;
+        if (live && g_placed.object != won)
+        {
+            wouldBe = won;
+            if (PlaceFix() < 2)
+            {
+                ctx.r3.u64 = g_placed.object;
+                substituted = true;
+            }
+            fprintf(stderr, "[placefix] PROPCMD 17 \"%s\": the title would take %08X (lowest pool "
+                            "id) but state 61 read %08X out of player %d's hands %lld ms ago — "
+                            "%s\n",
+                    t_propCmdName, wouldBe, g_placed.object, g_placed.player, (long long)age,
+                    substituted ? "SUBSTITUTED" : "OBSERVE ONLY (CZ_COOP_PLACE_FIX=2), unchanged");
+        }
+        else if (!live)
+            fprintf(stderr, "[placefix] PROPCMD 17 \"%s\": %u candidates and NO usable memory of "
+                            "the placement (object %08X, hash %08X vs %08X, age %lld ms) — left "
+                            "alone\n",
+                    t_propCmdName, matches, g_placed.object, g_placed.nameHash, hash,
+                    (long long)age);
+    }
+
     // ALWAYS print inside a prop command — that lookup is the subject. Otherwise
     // print an ambiguous one, a bike-part one, and the first few of anything else
     // (the positive control: a hook that never prints cannot be told from a dead
@@ -2698,9 +2900,12 @@ PPC_FUNC(sub_821A2200)
                         "[%s], from lr %08X%s\n",
                 hash, NameOf(hash), why, won, matches, matches == 1 ? "y" : "ies", Side(ctx, base),
                 matches ? list : "none", uint32_t(ctx.lr),
-                matches > 1 ? "   <<<< AMBIGUOUS: the lowest pool id wins and the acting "
-                              "player was never consulted"
-                            : "");
+                substituted ? "   <<<< AMBIGUOUS, and CZ_COOP_PLACE_FIX substituted the item "
+                              "state 61 read"
+                            : matches > 1
+                                  ? "   <<<< AMBIGUOUS: the lowest pool id wins and the acting "
+                                    "player was never consulted"
+                                  : "");
     }
 }
 
