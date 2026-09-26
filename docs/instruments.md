@@ -4339,7 +4339,14 @@ CZ_ITEM_WATCH_MS=N THE PICKUP, AT THE INSTANT IT HAPPENS (with CZ_ITEM_TRACE=1;
                    the two accessors the bike path already calls, so it adds no new
                    guest address; the bill is eight guest calls and ~48 loads at most
                    four times a second, off the renderer thread
-CZ_COOP_ACTING_PLAYER=0  **THE CONTROL ARM FOR THE ISSUE #9 FIX** (the fix is ON by
+CZ_COOP_ACTING_PLAYER  **REFUTED BY CENSUS, 2026-09-26 — DEAD CODE, it can never fire.**
+                   5,820,000 GetUserPlayer calls on a 240 s roam, 0 out of range, so the
+                   substitution is never reached. Kept only because its census is the
+                   standing proof, and as the worked example of why an arm needs an
+                   unconditional counter: two two-machine runs printed nothing, and
+                   "the index is never out of range" and "this hook is dead" are the same
+                   silence without one (gotcha 151). CZ_COOP_ACTING_TRACE=1 prints the
+                   census and the objective-event nesting. Was: the control arm for (the fix is ON by
                    default; `=0` leaves the title reading past the end of its player
                    array, exactly as it ships). `cMissionSetChuckState::Execute` takes its
                    player from `ctx+0x10`, which is the acting player from a mission

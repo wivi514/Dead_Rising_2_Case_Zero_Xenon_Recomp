@@ -1267,7 +1267,38 @@ on `sub_8223B000` printing `(id, object, name hash)` on both machines: if the me
 right, the two logs agree entry for entry until the first unmatched spawn and disagree by
 a constant offset thereafter.
 
-#### THE FIX — `CZ_COOP_ACTING_PLAYER` (2026-09-26)
+#### `CZ_COOP_ACTING_PLAYER` IS REFUTED BY CENSUS — it can never fire (2026-09-26)
+
+**5,820,000 `sub_8247B020` calls on a 240 s roam, 0 out of range.** The arm below is dead
+code: the substitution it performs is never reached, in co-op or out of it. Two
+two-machine runs printed nothing, and rather than leave that as an absence the hook was
+given an unconditional counter (gotcha 151 — an arm with no counter cannot be shown to
+have engaged, and "the index is never out of range" and "this hook is dead" are the same
+silence). The counter says the hook is emphatically alive and the index is always in range.
+
+**So the reading was wrong somewhere between two instructions that are both real:**
+`0x8248B844` writes the constant 9 to `ctx+0x10`, and `0x82409918` loads `ctx+0x10` as
+`cMissionSetChuckState`'s player index. What is false is the CONNECTION — almost certainly
+link (A) below: the type-9 event object is not what reaches the action as its third
+argument. `sub_823E7890` publishes that object to a listener
+(`sub_82188488(..., &ev, __FILE__, 51)`); the action dispatcher `sub_82378FA0` is reached
+only through vtables; and nothing established that the object the listener eventually hands
+an action is the same one. It was flagged as unverified and shipped anyway, which is the
+error.
+
+**Three attempts on this defect, all from inference, all refuted by the operator's own
+sessions** — the event-substitution arm (the event already agreed), the call-stack acting
+player (the dispatch is not synchronous), and this one (the index is never out of range).
+What survives every time is the same fact: **the host raises the CORRECT event for the
+guest's placement** (`WheelPawnPlaced`, then `FuelTankPlaced`/`GasCanPlaced` on the second
+run). The decision is right and something downstream takes the item from the wrong Chuck.
+
+**THE NEXT STEP IS NOT ANOTHER CANDIDATE.** It is to hook the item removal itself and print
+which actor it is called on — a measurement that names the culprit instead of reasoning
+about which field carries the player. Everything above is what reasoning about that field
+produced.
+
+#### THE REFUTED FIX — `CZ_COOP_ACTING_PLAYER` (2026-09-26)
 
 One substitution, at the point of the out-of-bounds load. No network, no guest-memory
 write, no change to any in-range path.

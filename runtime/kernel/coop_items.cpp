@@ -1048,6 +1048,20 @@ PPC_FUNC(sub_82409900)
 PPC_FUNC(sub_8247B020)
 {
     const int32_t idx = int32_t(ctx.r4.u32);
+    // AN UNCONDITIONAL COUNTER, because the operator's run printed nothing and
+    // "the index is never out of range" and "this hook is dead" are the same
+    // silence otherwise — gotcha 151. With the census, 0 substitutions is a
+    // MEASUREMENT instead of an absence.
+    if (ActingTraceOn())
+    {
+        static std::atomic<uint64_t> calls{0}, outOfRange{0};
+        const uint64_t n = ++calls;
+        if (idx < 0 || idx >= kMaxUserPlayers)
+            ++outOfRange;
+        if ((n % 20000) == 0)
+            fprintf(stderr, "[acting] GetUserPlayer census: %llu calls, %llu out of range\n",
+                    (unsigned long long)n, (unsigned long long)outOfRange.load());
+    }
     if (idx < 0 || idx >= kMaxUserPlayers)
     {
         const int mode = ActingPlayerMode();
