@@ -191,8 +191,35 @@ mask; trust the microcode's own swizzles.
     was built, but **two of its eight steps are retired and its item 0 is answered** —
     read `phase5-notes.md` §6ba before following anything in it.
   - **THE LIVE HAND-OFF IS ALWAYS THE HIGHEST-NUMBERED `partNN-kickoff.md`**, and it
-    supersedes every earlier kickoff on "where the port is". **AS OF 2026-09-26 THE LIVE
-    WORK IS PLAYER ISSUE #9 AND THE HAND-OFF IS `docs/coop-part10-kickoff.md`** — the
+    supersedes every earlier kickoff on "where the port is". **AS OF 2026-09-27 THE LIVE WORK IS PLAYER ISSUE #9 AND THE HAND-OFF IS
+    `docs/coop-part11-kickoff.md`. HALF OF IT IS FIXED AND OPERATOR-VERIFIED.** The
+    operator ran the two-machine session part 10 asked for and it confirmed the
+    prediction line by line: the guest places a bike part, the host's `STATE 34` record
+    says **player 0** while the acting player is **1**, and the HOST's held item — a
+    Broadsword — comes out of his hands onto the floor, which is what they reported by eye
+    without seeing the log. **`CZ_COOP_RESPONSE_PLAYER` fixes it and is ON BY DEFAULT**
+    (`=0` control, `=2` observe): state 61 resolved the acting player one call earlier in
+    the same frame, so remember it and answer the place animation's one user-player lookup
+    with it. Verified twice on two machines, with BOTH controls — positive
+    (`CZ_COOP_RESPONSE_PLAYER_TEST=1`, destructive, bring-up only) and null (single player,
+    state 34 reached, 0 substitutions). **The control pair that isolated it is in ONE log,
+    one process, one binary**: the operator placed one part solo in the same session, and
+    the only difference is the index match. **THE OTHER HALF IS NOT THE PLACEMENT.** Their
+    capture of the bike-parts screen
+    (`~/.config/XenonLive/captures/20260927-062223-9f9d/screenshot.png`) shows
+    `Bidon d'essence` **GREEN** and `Roue` **RED** on the same screen with *"Je n'ai pas
+    encore TROUVÉ cette pièce"* — **NOT FOUND, not "not placed"** — and the only difference
+    between those two parts is that the host had accidentally picked the canister up first.
+    **So a part the GUEST picks up is never marked FOUND, and placing an unfound part does
+    nothing**; same shape of bug one layer up. Part 11's §1 is the ordered next work and
+    the rule it opens with: **do not build the "fake a host pickup" fix before the flag is
+    found by measurement** — five mechanisms have now died from inference, and both of this
+    session's wins came from watching a store. **ALSO RETIRED: the prop lookup** (1 live
+    candidate in every arm, co-op and solo — `CZ_COOP_PLACE_FIX` is aimed at the innocent
+    half), **the destroy/release** (identical in the solo run that works), and **part 9's
+    owed doubt** about the tracker being broken for both players (solo works end to end).
+    ~~AS OF 2026-09-26 THE LIVE
+    WORK IS PLAYER ISSUE #9 AND THE HAND-OFF IS `docs/coop-part10-kickoff.md`~~ — the
     guest places a bike part, it lands on the floor and the HOST drops what he was
     holding. Part 9 refuted four mechanisms (its kickoff is still the authority on those:
     do not re-buy them) and asked for ONE measurement: find what removes the item, and do
@@ -210,7 +237,7 @@ mask; trust the microcode's own swizzles.
     nowhere. A census of that pool **in single player at the bike already finds four
     instance names naming two or more live entries** (`Nails` x5, `ChuckWalkieTalkie` x4,
     `fe_watch` x4, `WrenchLarge` x2). `[place] PROPFIND ... N live pool entries match`
-    decides it: `1` refutes lead 2 on one line, `2+` names it.
+    decides it: `1` refutes lead 2 on one line, `2+` names it. — IT READ 1, EVERY TIME.~~
     **The arms are `CZ_COOP_PLACE_TRACE=1` + `CZ_ITEM_TRACE=1` +
     `CZ_COOP_POOL_CENSUS_MS=3000` on BOTH machines**, `CZ_COOP_RAISE_EVENT=NAME@SEC` is the
     single-machine harness that runs a response without a part in hand (it MANUFACTURES a

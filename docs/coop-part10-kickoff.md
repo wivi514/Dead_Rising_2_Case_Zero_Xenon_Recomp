@@ -1,5 +1,11 @@
 # Co-op part 10 kickoff — issue #9, with the response read and one line left to measure
 
+> **SUPERSEDED, 2026-09-27, by `docs/coop-part11-kickoff.md`.** The operator ran the
+> two-machine session §1 asks for and it CONFIRMED the reading: the response runs as
+> player 0 while the acting player is 1. The fix is in and on by default; the prop-lookup
+> lead (§1 line 2) is REFUTED — one candidate every time. Read part 11 first; this is kept
+> because its §2 reading of the chain is what the session was built on and still stands.
+
 **Read `docs/coop-part9-kickoff.md` first** (it is still the authority on the four refuted
 mechanisms — do not re-buy any of them), then `docs/coop-plan.md`'s
 *"Player issue #9, part 10"* section, which is this session's record. Written overnight on

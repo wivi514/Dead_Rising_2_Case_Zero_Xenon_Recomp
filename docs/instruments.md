@@ -4339,6 +4339,39 @@ CZ_ITEM_WATCH_MS=N THE PICKUP, AT THE INSTANT IT HAPPENS (with CZ_ITEM_TRACE=1;
                    the two accessors the bike path already calls, so it adds no new
                    guest address; the bill is eight guest calls and ~48 loads at most
                    four times a second, off the renderer thread
+CZ_COOP_RESPONSE_PLAYER  **THE ISSUE-#9 FIX, ON BY DEFAULT since 2026-09-27** (`=0` is the
+                   control arm and restores the shipped behaviour exactly; `=2` observes and
+                   substitutes nothing). The bike's response runs `cMissionSetChuckState
+                   ChuckState="34"` — the PLACE ANIMATION — and the class-0x6B record that
+                   carries it says player **0** where the trigger's record said the acting
+                   player. Run on the wrong Chuck the animation takes THAT Chuck's held item
+                   out of his hands and puts it on the ground: measured on the operator's two
+                   machines as `REMOVE player 0 ... D0B48CA7` and reported independently by
+                   them as *"the host was holding a broadsword and when the gas canister was
+                   placed it was removed of his hand"*. The 0 is NOT "the local player" — the
+                   joiner's `world+0x80` is 1 and its record still read 0. State 61 resolved
+                   the acting player one call earlier in the same frame, so this remembers it
+                   and answers the animation's ONE user-player lookup with it. No guest memory
+                   is written. Guards: only state 34; only when the record says 0; only when
+                   the remembered acting player is NON-ZERO (which makes it inert in single
+                   player BY CONSTRUCTION, not by test); only within
+                   `CZ_COOP_RESPONSE_PLAYER_MS` (default 2000); and only the FIRST lookup
+                   inside that one action, the rest counted. A host placement records 0 from
+                   its own state 61 and disarms the substitution, so a host placing inside a
+                   guest placement's window is not a false positive. **Verified twice on two
+                   machines** (a gas canister and a wheel): arm engaged, no `REMOVE player 0`.
+                   It fixes the held-item symptom ONLY — the part is still not credited, and
+                   that half is the FOUND flag at pickup, not the placement
+CZ_COOP_RESPONSE_PLAYER_TEST=N  **THE POSITIVE CONTROL, and DESTRUCTIVE — bring-up only.**
+                   The same property that makes the fix inert in single player means it can
+                   never be exercised on one machine, so without this it would ship having
+                   never executed a line of its substitution path (gotchas 30, 151). It fakes
+                   the remembered acting player as N, so the event harness raising
+                   `GasCanPlaced` drives the whole path solo: the gate opens and the lookup is
+                   answered N. Solo there is no second Chuck, so it applies the place
+                   animation to something that is not the player. It announces itself every
+                   run. The matching NULL control is single player with nothing set: state 34
+                   is reached and printed, substitutions 0
 CZ_COOP_PLACE_TRACE=1  **THE EFFECT PATH — what the mission's RESPONSE to a placement does,
                    and to whom** (player issue #9 part 10, 2026-09-26). Everything above
                    traces the DECISION, which three two-machine sessions measured CORRECT;
@@ -4366,7 +4399,15 @@ CZ_COOP_PLACE_TRACE=1  **THE EFFECT PATH — what the mission's RESPONSE to a pl
                    `CZ_ITEM_TRACE=1`, which is what maps an inventory to a player number;
                    without it the lines read `player ?`
 CZ_COOP_POOL_CENSUS_MS=N  **THE PROP-LOOKUP HYPOTHESIS AS A NUMBER, readable without a
-                   placement.** Every N ms, walk the item pool's 2,048-entry object table and
+                   placement — and, since 2026-09-27, APPEARED/GONE per pool entry by name,
+                   which is what turns "the bike screen is red" into a positive statement.**
+                   Each of the five part missions spawns a NonInteractableProp of its part AT
+                   the bike half a second after its `...Placed` event, so
+                   `APPEARED 679E4F19 (WheelPilePawn2)` is the game saying the wheel is on the
+                   bike. The first spelling of that diff filtered to names this file can spell
+                   and printed ZERO lines in a run where none went live — correct output and
+                   also exactly what a broken diff produces, so it reports EVERY name now,
+                   capped at 400 lines, which makes a level load its own positive control. Every N ms, walk the item pool's 2,048-entry object table and
                    report any INSTANCE name hash that names more than one live entry, on
                    change. Prints the first twenty entries once with BOTH name fields, which
                    is the cross-check on the decode: `+0x98` is the instance name and

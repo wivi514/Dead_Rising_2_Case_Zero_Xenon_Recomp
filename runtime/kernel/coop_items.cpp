@@ -2512,13 +2512,32 @@ void PoolCensus(PPCContext& ctx, uint8_t* base, uint32_t world)
                     return true;
             return false;
         };
+        // EVERY name, not only the ones this file can spell. The first spelling filtered
+        // to known names and produced ZERO lines in a run where no watched name ever
+        // went live — which is the correct output AND exactly what a broken diff
+        // produces, so the instrument could not be told from a dead one (gotcha 151).
+        // Reporting all of them makes a level load a flood of APPEARED lines, which is
+        // the positive control, and the cap keeps that from drowning the log.
+        static uint64_t said = 0;
+        constexpr uint64_t kCap = 400;
         for (const Live& l : live)
-            if (std::strcmp(NameOf(l.name), "?") != 0 && !has(prev, l.name))
+            if (!has(prev, l.name) && ++said <= kCap)
                 fprintf(stderr, "[census] APPEARED %08X (%s) as pool id %u, holder %08X\n", l.name,
                         NameOf(l.name), l.id, l.holder);
         for (uint32_t h : prev)
-            if (std::strcmp(NameOf(h), "?") != 0 && !has(now, h))
+            if (!has(now, h) && ++said <= kCap)
                 fprintf(stderr, "[census] GONE     %08X (%s)\n", h, NameOf(h));
+        if (said > kCap)
+        {
+            static bool capped = false;
+            if (!capped)
+            {
+                capped = true;
+                fprintf(stderr, "[census] APPEARED/GONE capped at %llu lines — the pool churns "
+                                "constantly; grep for the hash you care about before the cap, or "
+                                "raise it here\n", (unsigned long long)kCap);
+            }
+        }
         prev.swap(now);
     }
 

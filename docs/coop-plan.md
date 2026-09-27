@@ -2291,3 +2291,113 @@ that vtable — most of them in the mission-action module at `0x823Axxxx` — an
 enqueue was not found. That is the next static question, and the batch trace narrows it to
 "whichever site produced the record that carried state 34", which the `lr` on the BATCH line
 plus the record index identifies.
+
+## Player issue #9, part 11: THE PLAYER INDEX IS FIXED AND OPERATOR-VERIFIED — and the remaining half is the FOUND flag, not the placement (2026-09-27)
+
+The operator ran the two-machine session part 10 asked for. **The defect part 10 predicted
+was confirmed line by line, the fix for it is verified and on by default, and their own
+screenshot then reframed what is left.** Read part 10's sections first; this supersedes
+nothing in them except where it says so.
+
+### 1. The defect, caught in one frame on the host
+
+The guest placed a gas canister at the Case 0-4 bike, with the arms on and the fix OFF:
+
+| host log | |
+|---|---|
+| `SetChuckState 61 ... -> playerIdx 1` | the decision: **correct**, for the fifth session running |
+| `RaiseMissionEvent D4AF6D06 (GasCanPlaced)` | the part: **correct** |
+| `STATE 34 ... ctx+0x10 = 0, that is player 0` | **the defect** |
+| `REMOVE player 0 ... loses D0B48CA7` | = **Broadsword**, the host's held item |
+| `REMOVE player 1 ... loses 5F8D0521` | the guest's canister |
+| `RELEASE ... actor 00000000 ... lr 824091B8` | the canister into the world — *"appears next to the bike"* |
+
+and the operator, playing the host, without being shown the log: *"the host was holding a
+broadsword and when the gas canister was placed it was removed of his hand and placed on
+the ground next to him and couldn't get picked up again."* State 34 is the place
+animation; run on the wrong Chuck it takes that Chuck's held item and puts it down.
+
+**The batch records say it in one field.** Same frame, two class-0x6B batches:
+
+```
+record at 88041294: +0x10 = 1   the TRIGGER's action (state 61)
+record at 8803CBE4: +0x10 = 0   the RESPONSE's action (state 34)
+```
+
+**And the 0 is not "the local player."** On the joiner `world+0x80` is **1** — its local
+player really is 1 — and its record still read **0**. Nothing stamps the acting player
+into the response's records at all. That is also exactly why `CZ_COOP_ACTING_PLAYER` could
+never fire: it substituted only for indices OUT OF RANGE, and 0 is perfectly in range.
+
+### 2. THE CONTROL PAIR, in one log, one process, one binary
+
+The operator then placed one **solo** in the same session, so both arms are in the same
+file with everything else held constant:
+
+| | co-op (guest placed) | solo (host placed) |
+|---|---|---|
+| state 61 | `playerIdx` **1** | `playerIdx` **0** |
+| response `STATE 34` | `ctx+0x10` **0** — mismatch | `ctx+0x10` **0** — match |
+| `PROPFIND` candidates | **1** | **1** |
+| removals | player 0 **Broadsword** + player 1 canister | player 0 canister **only** |
+| operator's eyes | floor, no tick | ***"without issue"*** |
+
+The response's record **always** says 0; solo that happens to be right. That isolates the
+defect to one field, and it retires two things at once: **the prop lookup** (one candidate
+in both arms — so part 10's `CZ_COOP_PLACE_FIX` is aimed at the innocent half and must not
+be quoted as the fix), and **part 9's owed doubt** about whether the tracker was simply
+broken for both players, which the solo arm answers with *no*.
+
+### 3. The fix, and the pair of controls it ships with
+
+`CZ_COOP_RESPONSE_PLAYER`, **ON by default** since this session. State 61 resolved the
+acting player one call earlier in the same frame; remember it, and when the place
+animation arrives claiming 0 while that remembered player is non-zero, answer its one
+user-player lookup with the remembered player. No guest memory is written.
+
+**Verified on two machines, twice** — a gas canister and a wheel, both showing
+`[respfix] ... SUBSTITUTING` and **no `REMOVE player 0`**.
+
+Default-on is safe as a property, not a hope: a host placement runs its own state 61 first
+and records **0**, disarming the substitution before its state 34 can reach it, so a host
+placement inside a guest placement's window is not a false positive. And single player
+never has a non-zero acting player, so the gate cannot open there.
+
+Both controls exist, which is what four previous attempts lacked: **positive** —
+`CZ_COOP_RESPONSE_PLAYER_TEST=1` with the event harness opens the gate and answers the
+lookup 1, clean exit; **null** — single player with nothing set reaches state 34, prints
+it, and substitutes **0** times.
+
+### 4. WHAT IS LEFT, AND THE SCREENSHOT THAT REFRAMED IT
+
+With the fix on, the guest placed a **wheel** the host had never touched. Both machines:
+correct actor, `WheelPawnPlaced` raised, the arm engaged, only the guest's item removed —
+and the part still was not credited. The operator captured the bike-parts screen on both
+machines (`~/.config/XenonLive/captures/20260927-062223-9f9d/screenshot.png`):
+
+* **`Bidon d'essence` — GREEN.** The gas canister, which the host had accidentally picked
+  up first.
+* **`Roue` — RED**, with `Roue: MANQUANT(E/S)` and
+  ***"Je n'ai pas encore TROUVÉ cette pièce"*** — *haven't **found** it yet*, not *not
+  placed*.
+
+**So the missing state is the FOUND registration at PICKUP, not the placement.** A part the
+guest picks up is never marked found on either machine, and placing a part that is not
+found does nothing. It is the same shape of bug one layer up — something in the
+mission/HUD layer counting only player 0 — which is the operator's own reading: *"we should
+make the call like the host picked it before but don't add it to his inventory."*
+
+**What this retires:** the destroy/release path. The `RELEASE ... actor = 0` is command 17
+doing what it is written to do, and it happens identically in the solo run that works.
+
+**What is NOT established:** what sets the found flag. Leads are `hud_bikeparts` (the
+screen in the capture), state 61's own tail `sub_821CF0E0(game->0xBC, 7)` +
+`"BikePartPlaced"` (`0x8205B61C`), and the five part missions' decorative spawns — each
+part mission starts on its `...Placed` event and half a second later spawns a
+NonInteractableProp of that part AT the bike, so `WheelPilePawn2` appearing in the item
+pool is the game's own statement that the wheel is on the bike. `CZ_COOP_POOL_CENSUS_MS`
+reports APPEARED/GONE by name now, so that is a positive statement rather than the absence
+a red row gives.
+
+**Do not build a "fake a host pickup" fix before that flag is found by measurement.** Four
+mechanisms died from being inferred, and both of tonight's wins came from watching a store.
