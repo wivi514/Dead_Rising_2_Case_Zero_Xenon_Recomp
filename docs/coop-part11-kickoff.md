@@ -22,6 +22,39 @@ canister up first. **So a part the GUEST picks up is never marked FOUND, and pla
 unfound part does nothing.** Same shape of bug one layer up: something counts only
 player 0.
 
+## 0b. WHAT THE 2026-09-27 MORNING ROUND ESTABLISHED
+
+**The guest's PLACEMENT is sound.** Host placed a wheel, guest placed a can, and on BOTH
+machines: right event raised, right Chuck's item consumed, the fix engaging for the
+guest's, and — the thing left unsettled overnight — **the decorative "on the bike" prop
+appearing for both** (`APPEARED 679E4F19 (WheelPilePawn2)`, `APPEARED A9B4A26D (GasCan4)`,
+identical on host and joiner). So the part missions start, the props are placed, and every
+physical thing the engine does is correct and identical on both sides.
+
+**And the rule is now four data points across two sessions, with the parts swapped:**
+
+| part | picked up by | placed by | bike screen |
+|---|---|---|---|
+| gas can (09-26) | **HOST** | guest | **GREEN** |
+| wheel (09-26) | guest | guest | red |
+| wheel (09-27) | **HOST** | host | **GREEN** |
+| gas can (09-27) | guest | guest | red |
+
+**If the host ever picked it up it counts, whoever places it.** The operator's accidental
+host pickup on 09-26 is what breaks the confound: a guest PLACEMENT of a host-picked part
+goes green. So the missing write happens at PICKUP and only for player 0.
+
+**FOUR STATIC ROUTES TO THE FLAG ARE DEAD — do not re-buy them:**
+
+* **the bike-parts screen's own data.** `ig_bikeparts.txt` (in `ingame.big`) drives
+  found/not-found from widget STATES set by code, not from a named data binding.
+* **`prologue_bikepart.tex`.** Loads for a GUEST pickup too — host's canister at log line
+  13413, guest's wheel at 248848.
+* **the type-`0x13` key-item grant.** ZERO in a session where a host pickup did register.
+* **`IDS_KEYITEM_BIKEPART1..5`**, the most convincing and still wrong: `items.txt`
+  declares exactly two `KeyItemID`s in the whole game — 85001 `Zombrex` and 85038
+  `Key_MasterKey` — and no bike part carries one. The string names are a convention.
+
 ## 1. THE NEXT WORK — find what sets the found flag, by measurement
 
 **Do not build the "fake a host pickup" fix first**, however well it fits. That is an
@@ -58,9 +91,23 @@ In order:
    * A first pass also found no `RaiseMissionEvent` within 300 lines of either, so the
      found flag is not a mission event.
 
-   What is needed instead is a **purpose-built instrument**: find the found state itself
-   (in the image, or by watching the store that sets it) and count it per pickup, per
-   player. That is the same shape as the two things that worked this session.
+   **THAT INSTRUMENT IS BUILT: `CZ_COOP_FLAGHUNT=1`.** It keeps a rolling snapshot of the
+   world, the game object and the mission manager, and for 3 s after a bike part enters
+   any inventory prints every dword that changed, old -> new. Keyed on the five parts
+   only, because every other pickup churns the same memory. The host-vs-guest comparison
+   is a set difference taken **within one session**, so the per-frame churn appears in
+   both windows and cancels.
+
+   **THE ROUND IT NEEDS IS TWO MINUTES AND NEEDS NO PLACING:** host picks up one part,
+   guest picks up another. Run it with a fast sweep so the write is caught —
+   `CZ_COOP_FLAGHUNT=1 CZ_COOP_PICKUP_TRACE=1 CZ_COOP_POOL_CENSUS_MS=500` on both
+   machines (the hunt is driven by the census sweep and gated behind the pickup trace).
+   The write in the host's window and not the guest's IS the flag.
+
+   `=2` holds the window permanently open and is the positive control; it is verified
+   reporting real changes. If the flag is outside those three regions the diff says
+   `0 changed across N bytes compared` rather than pretending — widen
+   `CZ_COOP_FLAGHUNT_BYTES`, do not believe the silence.
 
 3. **The decorative-prop idea is UNSETTLED, not refuted.** The harness raising
    `WheelPawnPlaced` solo produced state 34 and **no `WheelPilePawn2`** — with the census
