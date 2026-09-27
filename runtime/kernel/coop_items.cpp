@@ -606,6 +606,11 @@ thread_local uint32_t t_dispatchLr = 0;
 int PoolCensusMs();
 void PoolCensus(PPCContext& ctx, uint8_t* base, uint32_t world);
 
+// The flag hunt, defined beside the reasoning that motivates it.
+bool FlagHuntOn();
+void FlagHuntArm(int32_t player, const char* part);
+void FlagHuntSweep(uint8_t* base, uint32_t world);
+
 bool PlaceTrace()
 {
     static const bool on = [] {
@@ -2287,6 +2292,14 @@ PPC_FUNC(sub_821A7550)
                         "from lr %08X\n",
                 who, inv, slot, item, idbuf, hash, NameOf(hash),
                 inv ? PPC_LOAD_U32(inv + 0x64) : 0u, uint32_t(ctx.lr));
+        // A BIKE PART entering someone's hands is the event the flag hunt is keyed on:
+        // the five parts and nothing else, because every other pickup in the game
+        // changes the same memory and would bury the one write being looked for.
+        const bool isBikePart = hash == 0x878FC97Bu || hash == 0xC32E815Bu ||
+                                hash == 0x5F8D0521u || hash == 0xA55F8BABu ||
+                                hash == 0x52EA0EA6u;
+        if (isBikePart)
+            FlagHuntArm(player, NameOf(hash));
     }
     __imp__sub_821A7550(ctx, base);
 }
@@ -2565,6 +2578,8 @@ void PoolCensus(PPCContext& ctx, uint8_t* base, uint32_t world)
         prev.swap(now);
     }
 
+    FlagHuntSweep(base, world);
+
     // Duplicates, reported on change so a steady state is silent.
     std::string dups;
     unsigned dupNames = 0;
@@ -2785,6 +2800,156 @@ int32_t PlacingPlayer_Get(long long* ageMsOut)
 thread_local int32_t t_respSubPlayer = -1;
 thread_local unsigned t_respSubSeen = 0;
 uint64_t g_respSubs = 0;
+} // namespace
+
+namespace
+{
+// ---------------------------------------------------------------------------
+// THE FLAG HUNT — CZ_COOP_FLAGHUNT. Find the write a HOST pickup makes and a
+// GUEST pickup does not.
+// ---------------------------------------------------------------------------
+//
+// WHAT IS BEING LOOKED FOR, stated so the instrument can be judged. Across two
+// operator sessions with the parts swapped, four data points give one rule:
+//
+//   part               picked up by   placed by   bike screen
+//   gas can (09-26)    HOST           guest       GREEN
+//   wheel   (09-26)    guest          guest       red
+//   wheel   (09-27)    HOST           host        GREEN
+//   gas can (09-27)    guest          guest       red
+//
+// **If the host ever picked it up it counts, whoever places it.** Everything
+// downstream is measured correct on BOTH machines — the right event is raised, the
+// right Chuck loses the item, and the decorative "on the bike" prop appears on both
+// sides — so the only thing missing is one write that a player-0 pickup performs
+// and a player-1 pickup does not.
+//
+// FOUR STATIC ROUTES WERE TRIED FIRST AND ALL DEAD-ENDED, recorded so they are not
+// re-bought: the bike-parts screen's own code (`ig_bikeparts.txt` drives found/not
+// found from widget STATES set by code, not from a named data binding);
+// `prologue_bikepart.tex` (loads for a guest pickup too); the type-0x13 key-item
+// grant (ZERO of them in a session where a host pickup did register); and the
+// `IDS_KEYITEM_BIKEPART1..5` string names, which look decisive and are not —
+// `items.txt` declares exactly two `KeyItemID`s in the whole game, 85001 Zombrex and
+// 85038 Key_MasterKey, and no bike part carries one.
+//
+// So this stops reading and watches memory instead. It keeps a rolling snapshot of a
+// few guest regions and, for a few seconds after a BIKE PART enters any inventory,
+// prints every dword that changed. Run one round where the HOST picks up one part
+// and the GUEST picks up another: the write that appears in the host's window and
+// not the guest's IS the flag, and then it has an address instead of a theory.
+//
+// IT REPORTS HOW MANY BYTES IT COMPARED, every time. A diff that silently covers the
+// wrong region prints "no changes" exactly like a diff that covers the right region
+// and found none, and that ambiguity is what this file has been caught by twice in
+// two days (gotchas 109, 151). If the flag is not in these regions the fix is to
+// widen CZ_COOP_FLAGHUNT_BYTES, not to believe the silence.
+int FlagHuntBytes()
+{
+    static const int n = [] {
+        const char* e = std::getenv("CZ_COOP_FLAGHUNT_BYTES");
+        const int v = (e && *e) ? std::atoi(e) : 0x4000;
+        return v > 0 ? v : 0x4000;
+    }();
+    return n;
+}
+
+// =2 holds the window permanently open. That is the POSITIVE CONTROL: the hunt
+// cannot be armed without a bike-part pickup, which no headless route can perform,
+// so without this it would ship having never compared a byte — and "no changes"
+// from a broken diff reads exactly like "no changes" from a working one.
+int FlagHuntMode()
+{
+    static const int n = [] {
+        const char* e = std::getenv("CZ_COOP_FLAGHUNT");
+        return (e && *e) ? std::atoi(e) : 0;
+    }();
+    return n;
+}
+
+bool FlagHuntOn()
+{
+    static const bool on = [] {
+        const char* e = std::getenv("CZ_COOP_FLAGHUNT");
+        const bool v = e && *e && *e != '0';
+        if (v)
+            fprintf(stderr, "[flaghunt] CZ_COOP_FLAGHUNT=1 — every dword that changes in the "
+                            "watched regions for %d ms after a BIKE PART enters an inventory. "
+                            "Run ONE round: host picks up a part, guest picks up another. The "
+                            "write that shows for the host and not the guest is the found flag.\n",
+                    3000);
+        return v;
+    }();
+    return on;
+}
+
+struct HuntRegion
+{
+    const char* what;
+    uint32_t base;
+    std::vector<uint8_t> prev;
+};
+HuntRegion g_hunt[3] = {{"world", 0, {}}, {"game", 0, {}}, {"missionMgr", 0, {}}};
+std::chrono::steady_clock::time_point g_huntUntil{};
+int32_t g_huntPlayer = -1;
+const char* g_huntPart = "";
+
+// Called from the pickup hook. Opens the window; the sweeps below do the diffing.
+void FlagHuntArm(int32_t player, const char* part)
+{
+    if (!FlagHuntOn())
+        return;
+    g_huntUntil = std::chrono::steady_clock::now() + std::chrono::milliseconds(3000);
+    g_huntPlayer = player;
+    g_huntPart = part;
+    fprintf(stderr, "[flaghunt] ===== WINDOW OPEN: player %d picked up %s — reporting every "
+                    "changed dword for 3000 ms =====\n", player, part);
+}
+
+// Called from the census sweep, which already has the world and runs on a guest thread.
+void FlagHuntSweep(uint8_t* base, uint32_t world)
+{
+    if (!FlagHuntOn() || !world)
+        return;
+    const uint32_t game = LoadU32(base, world + 0x78);
+    const uint32_t mgr = game ? LoadU32(base, game + 0x5C) : 0;
+    const uint32_t bases[3] = {world, game, mgr};
+    const bool open = FlagHuntMode() >= 2 || std::chrono::steady_clock::now() < g_huntUntil;
+    const int bytes = FlagHuntBytes();
+    unsigned changed = 0, compared = 0;
+    for (int i = 0; i < 3; i++)
+    {
+        HuntRegion& r = g_hunt[i];
+        if (!bases[i])
+            continue;
+        if (r.base != bases[i])
+        {
+            r.base = bases[i];
+            r.prev.assign(size_t(bytes), 0);
+            for (int o = 0; o < bytes; o += 4)
+                *reinterpret_cast<uint32_t*>(&r.prev[size_t(o)]) = LoadU32(base, r.base + uint32_t(o));
+            continue;
+        }
+        compared += unsigned(bytes);
+        for (int o = 0; o < bytes; o += 4)
+        {
+            const uint32_t now = LoadU32(base, r.base + uint32_t(o));
+            uint32_t& was = *reinterpret_cast<uint32_t*>(&r.prev[size_t(o)]);
+            if (now == was)
+                continue;
+            if (open && changed < 60)
+                fprintf(stderr, "[flaghunt]   %s+%04X : %08X -> %08X\n", r.what, unsigned(o), was,
+                        now);
+            was = now;
+            changed++;
+        }
+    }
+    if (open)
+        fprintf(stderr, "[flaghunt] sweep after player %d / %s: %u dword(s) changed across %u "
+                        "bytes compared%s\n",
+                g_huntPlayer, g_huntPart, changed, compared,
+                changed > 60 ? " (first 60 shown)" : "");
+}
 } // namespace
 
 // ---------------------------------------------------------------------------
