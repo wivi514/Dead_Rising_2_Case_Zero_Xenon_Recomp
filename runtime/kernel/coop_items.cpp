@@ -124,6 +124,12 @@ constexpr uint32_t kPropNameHash = 0x98;       // a prop's INSTANCE name hash �
 constexpr uint32_t kPropHolder = 0x1BC;        // sub_822D4870 reads this; 0 = nobody holds it
 
 constexpr uint32_t kChuckStateTryPlaceItem = 61;
+// The PLACE ANIMATION the bike's response runs, `cMissionSetChuckState ChuckState="34"`
+// in missions.txt. Its handler is 0x8240A930 — verified against the image's own jump
+// table at 0x82043388 (77 entries, base 0x82409954, index = state - 1) — and its first
+// two instructions are `lwz r3, 0x7C(r31)` / `bl 0x8247B020`, i.e. the user-player lookup
+// this fix corrects.
+constexpr uint32_t kChuckStatePlaceAnimation = 34;
 constexpr uint32_t kInvSlots = 12;             // the guest's own bound at 0x821A6C3C
 constexpr uint32_t kInvSelected = 0x68;        // the selected slot index
 constexpr uint32_t kItemNameHash = 0x100;      // GetItemDefHashname()
@@ -563,6 +569,17 @@ int InvPlayer(uint32_t inv);
 // declared here because state 61's hook, which feeds it, comes first in this file.
 int PlaceFix();
 void RememberPlacedItem(PPCContext& ctx, uint8_t* base, uint32_t world, int32_t player);
+
+// The response-player fix, defined beside the reasoning that justifies it;
+// declared here because cMissionSetChuckState::Execute, which both feeds and uses
+// it, comes first in this file.
+int ResponsePlayerMode();
+int ResponseWindowMs();
+void RememberPlacingPlayer(int32_t player);
+int32_t PlacingPlayer_Get(long long* ageMsOut);
+extern thread_local int32_t t_respSubPlayer;
+extern thread_local unsigned t_respSubSeen;
+extern uint64_t g_respSubs;
 
 // Which of the three network event listeners delivered the action currently
 // executing. Set by the sub_82378FA0 hook further down; 0 means the action did
@@ -1452,6 +1469,35 @@ PPC_FUNC(sub_82409900)
     // it. Thread-local: two mission updates on two threads would otherwise
     // share one window.
     const uint32_t action61 = ctx.r3.u32, ctx61 = ctx.r5.u32;
+    // THE RESPONSE-PLAYER FIX. Both halves live here and the ORDER matters: the
+    // state-34 decision is taken BEFORE the general RecordActing() below, which
+    // would otherwise overwrite the remembered acting player with state 34's own 0.
+    const uint32_t state61v = action61 ? PPC_LOAD_U32(action61 + 0x40) : 0;
+    const int32_t here61 = ctx61 ? int32_t(PPC_LOAD_U32(ctx61 + kCtxPlayer)) : -1;
+    if (ResponsePlayerMode() && state61v == kChuckStateTryPlaceItem)
+        RememberPlacingPlayer(here61);
+    const int32_t wasRespSub = t_respSubPlayer;
+    const unsigned wasRespSeen = t_respSubSeen;
+    if (ResponsePlayerMode() && state61v == kChuckStatePlaceAnimation && here61 == 0)
+    {
+        long long ageMs = -1;
+        const int32_t placing = PlacingPlayer_Get(&ageMs);
+        if (placing > 0)
+        {
+            g_respSubs++;
+            if (ResponsePlayerMode() < 2)
+            {
+                t_respSubPlayer = placing;
+                t_respSubSeen = 0;
+            }
+            fprintf(stderr, "[respfix] state %u (the place animation) says player 0, but state 61 "
+                            "resolved player %d %lld ms ago — %s\n",
+                    state61v, placing, ageMs,
+                    ResponsePlayerMode() < 2
+                        ? "SUBSTITUTING for this action's first user-player lookup"
+                        : "OBSERVE ONLY (=2), unchanged");
+        }
+    }
     // THE CANDIDATE FIX'S RECORD. State 61 is about to resolve the acting player's
     // held item and raise an event for it; the mission's response then looks the
     // prop up BY NAME half a second later and takes the lowest pool id. Remember
@@ -1502,6 +1548,8 @@ PPC_FUNC(sub_82409900)
     __imp__sub_82409900(ctx, base);
 
     t_actingPlayer = wasActing;
+    t_respSubPlayer = wasRespSub;
+    t_respSubSeen = wasRespSeen;
     if (isPlace)
     {
         t_placing = wasPlacing;
@@ -1575,7 +1623,27 @@ PPC_FUNC(sub_8247B020)
                     (unsigned long long)n, (unsigned long long)outOfRange.load());
     }
     HarnessTick(ctx, base);
-    if (idx < 0 || idx >= kMaxUserPlayers)
+    // THE SUBSTITUTION. Only inside the window state 34 opened, only for the FIRST
+    // lookup in it — the handler's own call at 0x8240A934 — and the rest are counted
+    // rather than redirected, because the vtable calls it makes afterwards could ask
+    // for a player too and must be left alone.
+    if (t_respSubPlayer >= 0 && idx == 0)
+    {
+        if (t_respSubSeen++ == 0)
+        {
+            ctx.r4.u64 = uint32_t(t_respSubPlayer);
+            static bool said = false;
+            if (!said)
+            {
+                said = true;
+                fprintf(stderr, "[respfix] the place animation's user-player lookup asked for 0; "
+                                "answering %d. Said once, then counted.\n",
+                        t_respSubPlayer);
+            }
+        }
+    }
+    const int32_t idx2 = int32_t(ctx.r4.u32);
+    if (idx2 < 0 || idx2 >= kMaxUserPlayers)
     {
         const int mode = ActingPlayerMode();
         long long ageMs = -1;
@@ -2448,6 +2516,167 @@ void PoolCensus(PPCContext& ctx, uint8_t* base, uint32_t world)
                             "(%zu live) — a PropName lookup is exact right now\n", live.size());
     }
 }
+} // namespace
+
+namespace
+{
+// ---------------------------------------------------------------------------
+// THE FIX — CZ_COOP_RESPONSE_PLAYER. The response's records are never stamped
+// with the acting player, so stamp the one that matters.
+// ---------------------------------------------------------------------------
+//
+// MEASURED ON TWO MACHINES, 2026-09-27, and confirmed by the operator's eyes in
+// the same session. The guest placed a gas canister at the Case 0-4 bike. On the
+// HOST, in one frame:
+//
+//   [item]  SetChuckState 61 ... -> playerIdx 1          the decision: CORRECT
+//   [item]  RaiseMissionEvent D4AF6D06 (GasCanPlaced)    the part: CORRECT
+//   [place] STATE 34 ... ctx+0x10 = 0, that is player 0  <-- THE DEFECT
+//   [place] REMOVE player 0 ... loses D0B48CA7 (Broadsword)
+//   [place] REMOVE player 1 ... loses 5F8D0521 (GasolineCanister)
+//
+// and the operator, playing the host: *"the host was holding a broadsword and when
+// the gas canister was placed it was removed of his hand and placed on the ground
+// next to him"*. State 34 is the PLACE ANIMATION; run on the wrong Chuck it takes
+// that Chuck's held item out of his hands and puts it down.
+//
+// The batch records say it in one field. Same frame, two class-0x6B batches:
+//
+//   record at 88041294: +0x10 = 1   the TRIGGER's action (state 61)
+//   record at 8803CBE4: +0x10 = 0   the RESPONSE's action (state 34)
+//
+// **And the 0 is not "the local player".** On the joiner `world+0x80` is 1 — its
+// local player really is 1 — and its record still read 0. So nothing writes the
+// acting player into the response's records at all; they carry the zero they were
+// built with. That is also exactly why `CZ_COOP_ACTING_PLAYER` could never fire:
+// it substituted only for indices OUT OF RANGE, and 0 is perfectly in range.
+//
+// THE REPAIR. State 61 resolved the acting player one call earlier, in the same
+// frame. Remember it, and when the place animation arrives claiming player 0 while
+// that remembered player is NOT 0, let the animation's one user-player lookup read
+// the remembered player instead. Nothing is written to guest memory: the record
+// keeps its 0 — it may be read as something else by code that has not been
+// identified — and only the argument register of one call changes.
+//
+// FOUR GUARDS:
+//   1. only Chuck state 34, the place animation. No other state is touched.
+//   2. only when the record says 0. A record carrying a real player is obeyed.
+//   3. only when the remembered acting player is NON-ZERO, which is what makes
+//      this **inert in single player by construction** — there the acting player
+//      is always 0, so the gate can never open. That is a proof, not a test.
+//   4. only within CZ_COOP_RESPONSE_PLAYER_MS of that state 61 (default 2000,
+//      against a response measured in the same frame).
+// and the substitution applies to the FIRST user-player lookup inside that one
+// action only, with the rest counted, because state 34's handler calls
+// `GetUserPlayer` once at `0x8240A934` but the vtable calls it makes afterwards
+// could call it again and must not be redirected.
+//
+// THE PREDICTION, and the part of it I am NOT claiming. Predicted: the guest
+// places a part, the GUEST's Chuck plays the animation, and **the host keeps what
+// he was holding**. NOT predicted: that the part is added to the bike. The
+// operator also reports the bike showing no part and the mission tracker not
+// ticking, and `GasCanPlaced` was raised CORRECTLY on both machines — so that half
+// is not explained by this and may not be a co-op defect at all. The solo control
+// is what separates them.
+struct PlacingPlayer
+{
+    int32_t player = -1;
+    std::chrono::steady_clock::time_point at{};
+};
+std::mutex g_placingMu;
+PlacingPlayer g_placing;
+
+int ResponsePlayerMode()
+{
+    static const int mode = [] {
+        const char* e = std::getenv("CZ_COOP_RESPONSE_PLAYER");
+        const int n = (e && *e) ? std::atoi(e) : 0;
+        if (n)
+            fprintf(stderr, "[respfix] CZ_COOP_RESPONSE_PLAYER=%d — the bike's place animation "
+                            "(Chuck state 34) will run for the player STATE 61 resolved instead of "
+                            "the 0 its own record carries. %s Inert in single player by "
+                            "construction: the gate needs a NON-ZERO acting player.\n",
+                    n,
+                    n >= 2 ? "=2 is OBSERVE ONLY: it reports what it would have done and changes "
+                             "nothing."
+                           : "=0 is the control arm and restores the shipped behaviour exactly.");
+        return n;
+    }();
+    return mode;
+}
+
+int ResponseWindowMs()
+{
+    static const int ms = [] {
+        const char* e = std::getenv("CZ_COOP_RESPONSE_PLAYER_MS");
+        const int n = (e && *e) ? std::atoi(e) : 2000;
+        return n > 0 ? n : 2000;
+    }();
+    return ms;
+}
+
+// Set at state 61, which is the only action that raises the five bike events.
+void RememberPlacingPlayer(int32_t player)
+{
+    if (!ResponsePlayerMode() || player < 0 || player >= kMaxUserPlayers)
+        return;
+    std::lock_guard<std::mutex> lock(g_placingMu);
+    g_placing.player = player;
+    g_placing.at = std::chrono::steady_clock::now();
+}
+
+// THE POSITIVE CONTROL, and this fix needs one more than most. Its gate requires a
+// NON-ZERO acting player, which is what makes it inert in single player — and that
+// same property means it can never be exercised on one machine, so without this it
+// would ship having never executed a single line of its substitution path. That is
+// gotcha 30 exactly: a test that has never failed has not been shown capable of
+// failing, and an arm that cannot be shown to engage is indistinguishable from a
+// dead one (gotcha 151).
+//
+// `CZ_COOP_RESPONSE_PLAYER_TEST=N` makes the remembered acting player N, always and
+// fresh, so the whole path runs on one machine: the event harness raises
+// `GasCanPlaced`, state 34 arrives claiming player 0, the gate opens, and the
+// animation's lookup is answered N. It is DESTRUCTIVE by design — solo it applies
+// the place animation to a Chuck that is not the player — so it is a bring-up arm
+// and nothing else, and it says so every time it answers.
+int ResponseTestPlayer()
+{
+    static const int n = [] {
+        const char* e = std::getenv("CZ_COOP_RESPONSE_PLAYER_TEST");
+        const int v = (e && *e) ? std::atoi(e) : -1;
+        if (v >= 0)
+            fprintf(stderr, "[respfix] CZ_COOP_RESPONSE_PLAYER_TEST=%d — THE ACTING PLAYER IS "
+                            "FAKED. This is the bring-up positive control for the substitution "
+                            "path and it is DESTRUCTIVE: single player has no second Chuck to "
+                            "animate. Never leave it set.\n", v);
+        return v;
+    }();
+    return n;
+}
+
+int32_t PlacingPlayer_Get(long long* ageMsOut)
+{
+    if (const int t = ResponseTestPlayer(); t >= 0)
+    {
+        *ageMsOut = 0;
+        return int32_t(t);
+    }
+    std::lock_guard<std::mutex> lock(g_placingMu);
+    if (g_placing.player < 0)
+        return -1;
+    const auto age = std::chrono::duration_cast<std::chrono::milliseconds>(
+                         std::chrono::steady_clock::now() - g_placing.at)
+                         .count();
+    if (age > ResponseWindowMs())
+        return -1;
+    *ageMsOut = age;
+    return g_placing.player;
+}
+
+// The open window: the player to substitute, and how many lookups it has seen.
+thread_local int32_t t_respSubPlayer = -1;
+thread_local unsigned t_respSubSeen = 0;
+uint64_t g_respSubs = 0;
 } // namespace
 
 // ---------------------------------------------------------------------------
