@@ -145,6 +145,21 @@ constexpr Hashed kKnown[] = {
     {0xD0DF94E4u, "HandleBarPlaced"},  {0xD4AF6D06u, "GasCanPlaced"},
     {0x34746C95u, "FuelTankPlaced"},   {0x7D7806D9u, "BikeForksPlaced"},
     {0xF574775Au, "NoPartsPlaced"},
+    // THE DECORATIVE PARTS AT THE BIKE, and why they are worth naming. Each of the five
+    // part missions (`PrologueWheelPawn`, `PrologueGasCan`, ...) STARTS when its
+    // `...Placed` event is raised, and half a second later its `cMissionLevelReady`
+    // spawns a NonInteractableProp of that part AT the bike — `WheelPilePawn2` at
+    // -268.983,3.380,-60.600, two metres from the bike trigger. So one of these names
+    // APPEARING in the item pool is the game's own statement that the part is on the
+    // bike, and its ABSENCE after a correctly raised event says the part mission never
+    // started. That is the difference the operator photographed on 2026-09-27: the gas
+    // can green and the wheel red on the same bike-parts screen, with both events
+    // raised correctly on both machines.
+    // Hashes from tools/name_hash.py, not from memory: the first spelling of these five
+    // was invented and every one of them was wrong.
+    {0x679E4F19u, "WheelPilePawn2"},   {0xAEDC8618u, "HandleBarpile3"},
+    {0xA9B4A26Du, "GasCan4"},          {0x6E2F9428u, "FuelTankPile2"},
+    {0xB02BE354u, "BikeForks2"},
 };
 
 const char* NameOf(uint32_t hash)
@@ -2477,6 +2492,36 @@ void PoolCensus(PPCContext& ctx, uint8_t* base, uint32_t world)
                     live[i].name == live[i].type ? "  <-- generic" : "");
     }
 
+    // WHAT APPEARED AND WHAT WENT AWAY since the last sweep, for the names this trace
+    // can NAME. This is what answers the question the operator's screenshot raised:
+    // each of the five part missions spawns a decorative copy of its part AT the bike
+    // half a second after its `...Placed` event, so `WheelPilePawn2` appearing IS the
+    // game saying the wheel is on the bike. On 2026-09-27 the wheel's event was raised
+    // correctly on BOTH machines and the bike-parts screen still read MANQUANT, so
+    // whether that prop ever spawns is the next fact needed — and an appearance is a
+    // positive statement where a screenshot of a red row is only an absence.
+    {
+        static std::vector<uint32_t> prev;
+        std::vector<uint32_t> now;
+        now.reserve(live.size());
+        for (const Live& l : live)
+            now.push_back(l.name);
+        auto has = [](const std::vector<uint32_t>& v, uint32_t h) {
+            for (uint32_t x : v)
+                if (x == h)
+                    return true;
+            return false;
+        };
+        for (const Live& l : live)
+            if (std::strcmp(NameOf(l.name), "?") != 0 && !has(prev, l.name))
+                fprintf(stderr, "[census] APPEARED %08X (%s) as pool id %u, holder %08X\n", l.name,
+                        NameOf(l.name), l.id, l.holder);
+        for (uint32_t h : prev)
+            if (std::strcmp(NameOf(h), "?") != 0 && !has(now, h))
+                fprintf(stderr, "[census] GONE     %08X (%s)\n", h, NameOf(h));
+        prev.swap(now);
+    }
+
     // Duplicates, reported on change so a steady state is silent.
     std::string dups;
     unsigned dupNames = 0;
@@ -2586,20 +2631,40 @@ struct PlacingPlayer
 std::mutex g_placingMu;
 PlacingPlayer g_placing;
 
+// ON BY DEFAULT since 2026-09-27, on the operator's two-machine verification: two
+// placements by the guest (a gas canister and a wheel), both machines, the arm
+// confirmed engaged by its own log line, and **no `REMOVE player 0` in either** —
+// against the unfixed run, which took the host's Broadsword out of his hands and put
+// it on the floor beside him. `=0` is the control arm and restores the shipped
+// behaviour exactly; `=2` observes and substitutes nothing.
+//
+// WHY DEFAULT-ON IS SAFE, stated as what it cannot do. The gate needs a REMEMBERED
+// ACTING PLAYER THAT IS NOT ZERO, and the only thing that writes that memory is state
+// 61 — the bike's own TryPlaceItem. A host placement runs its own state 61 first and
+// records **0**, which disarms the substitution before its state 34 can reach it, so
+// the host placing a part within the window of a guest placing one is not a false
+// positive: the later state 61 always overwrites the memory first. And in single
+// player the acting player is always 0, so the gate can never open at all — that is a
+// property of the design, not a measurement that could go stale.
 int ResponsePlayerMode()
 {
     static const int mode = [] {
         const char* e = std::getenv("CZ_COOP_RESPONSE_PLAYER");
-        const int n = (e && *e) ? std::atoi(e) : 0;
+        const int n = (e && *e) ? std::atoi(e) : 1;
         if (n)
             fprintf(stderr, "[respfix] CZ_COOP_RESPONSE_PLAYER=%d — the bike's place animation "
-                            "(Chuck state 34) will run for the player STATE 61 resolved instead of "
+                            "(Chuck state 34) runs for the player STATE 61 resolved instead of "
                             "the 0 its own record carries. %s Inert in single player by "
                             "construction: the gate needs a NON-ZERO acting player.\n",
                     n,
                     n >= 2 ? "=2 is OBSERVE ONLY: it reports what it would have done and changes "
                              "nothing."
-                           : "=0 is the control arm and restores the shipped behaviour exactly.");
+                           : "ON BY DEFAULT; =0 is the control arm and restores the shipped "
+                             "behaviour exactly.");
+        else
+            fprintf(stderr, "[respfix] CZ_COOP_RESPONSE_PLAYER=0 — THE CONTROL ARM. The place "
+                            "animation will run for the player its record names, which in co-op "
+                            "takes the HOST's held item out of his hands.\n");
         return n;
     }();
     return mode;
