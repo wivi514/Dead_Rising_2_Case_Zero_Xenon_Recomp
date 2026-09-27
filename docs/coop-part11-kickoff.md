@@ -38,12 +38,39 @@ In order:
    `[census] APPEARED 679E4F19 (WheelPilePawn2)` is the game's own positive statement that
    the wheel is on the bike. Absence of it after a correctly raised event says the part
    mission never started — which is a much narrower question than "the screen is red".
-2. **Diff a host pickup against a guest pickup.** Both exist in
+2. **Diff a host pickup against a guest pickup** — both exist in
    `~/DR2CZ-troubleshooting/play/play_0927_0205.log`: the host's accidental gas canister
-   and the guest's wheel, same item class, same session. Whatever a host pickup does that
-   a guest pickup does not is the flag. A first pass found no `RaiseMissionEvent` within
-   300 lines of either, so it is not a mission event.
-3. **Only then** consider a repair, and pre-register what it must move: the guest picks up
+   (line 13389, that part ends GREEN) and the guest's wheel (line 248837, stays RED).
+   **BUT TWO WAYS OF DOING IT WERE TRIED AND BOTH ARE DEAD — read this before repeating
+   them:**
+
+   * **`prologue_bikepart.tex` is NOT the discriminator.** It looked like one: the
+     bike-part UI texture loads right after the host's pickup and not after the guest's.
+     It loads after the **guest's wheel** too (line 248848, sixteen lines after the
+     pickup). The first comparison had used the guest's *replicated copy* of the item the
+     host had just taken, which is not a new part at all.
+   * **A WINDOW DIFF BETWEEN AN EARLY AND A LATE EVENT IS CONTAMINATED BY EVERY ONE-SHOT
+     LINE IN THE RUN.** Done properly (host's canister vs guest's wheel) the only
+     game-relevant differences left were `hook alive:` and `... seen for the first time`,
+     which are printed once per run by construction and therefore always land on
+     whichever event happened first. Nothing survives that filter. The method cannot
+     answer this question; do not spend another hour on it.
+   * A first pass also found no `RaiseMissionEvent` within 300 lines of either, so the
+     found flag is not a mission event.
+
+   What is needed instead is a **purpose-built instrument**: find the found state itself
+   (in the image, or by watching the store that sets it) and count it per pickup, per
+   player. That is the same shape as the two things that worked this session.
+
+3. **The decorative-prop idea is UNSETTLED, not refuted.** The harness raising
+   `WheelPawnPlaced` solo produced state 34 and **no `WheelPilePawn2`** — with the census
+   proven alive by 158 `APPEARED` lines before the raise, so the silence is real. But the
+   harness is not a placement, and a `cMissionLevelReady` block may simply not re-fire
+   mid-level, in which case the decorative prop never spawns from any placement and the
+   bike's visual comes from elsewhere. **A real solo placement with
+   `CZ_COOP_POOL_CENSUS_MS` on settles it in one round** and costs the operator two
+   minutes; nothing should be built on the absence until then.
+4. **Only then** consider a repair, and pre-register what it must move: the guest picks up
    a part, the bike-parts screen goes green for it on **both** screens, and placing it
    credits the bike.
 
