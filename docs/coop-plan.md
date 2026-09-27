@@ -2401,3 +2401,53 @@ a red row gives.
 
 **Do not build a "fake a host pickup" fix before that flag is found by measurement.** Four
 mechanisms died from being inferred, and both of tonight's wins came from watching a store.
+
+### 11. THE FLAG HUNT'S FIRST ROUND — 31 mission-manager fields a HOST pickup writes and a GUEST pickup does not (2026-09-27)
+
+`CZ_COOP_FLAGHUNT=1` with a 500 ms sweep, one session, host picks up a wheel and guest
+picks up a gas canister, no placing:
+
+```
+host window  (player 0, WheelPawn):        51 distinct fields changed
+guest window (player 1, GasolineCanister): 20 distinct fields changed
+changed for the HOST and not the guest:    31
+changed for the GUEST and not the host:     0
+```
+
+**The guest's writes are a strict SUBSET.** It is not doing something different; it is
+doing strictly less. And the 31 are almost all in the mission manager:
+
+```
+missionMgr+15E8, +15F0, +17D4    the mission-event LISTENER LIST heads, which
+                                 sub_821AFE48 walks (identified in part 9)
+missionMgr+0AB8 .. +0AE8         13 consecutive dwords
+missionMgr+1448, +144C
+missionMgr+1648 .. +1664         8 consecutive dwords
+missionMgr+17E8, +19C0, +19C8, +0FA0
+game+0194
+```
+
+So **a host pickup advances mission state — registers listeners, fills arrays — and a
+guest pickup touches none of it.** That is the missing write, with addresses.
+
+**And the visible symptom was tied to it in the same session.** The operator then placed
+both parts and captured the bike-parts screen
+(`~/.config/XenonLive/captures/20260927-154010-f2e1/screenshot.png`): **`Roue:
+RAPPORTÉ(E/S)`** in green — *"J'ai trouvé cette pièce et je l'ai rapportée à la
+station-service !"* — with the wheel drawn in colour on the bike, and the gas canister
+still a red row and a black silhouette. Both parts were placed, both raised the correct
+event on both machines, and both spawned their decorative prop; only the one the HOST
+picked up is credited.
+
+**Store sites for the touched offsets**, as the next thread to pull: `missionMgr+0x19C0`
+is written at `0x821ADE28`, `0x821AE094`, `0x821B0478` and `0x821FAFCC` — all inside the
+mission system's own code — and `missionMgr+0x0FA0` at `0x82163714` / `0x821637B4`.
+`0x1648` has **no** static store site, so it is written through a computed offset (an
+array index), which fits the 8- and 13-dword runs.
+
+**What is NOT the answer, measured this round:** the part MISSION starting. Both
+`PrologueWheelPawn` and `PrologueGasCan` demonstrably started — each spawned its
+decorative prop at the bike, on both machines — so the screen is not reading "is the part
+mission active". `missions.txt` also shows `cMissionCondition Condition = "9"
+ConditionParamater = "<MissionName>"` testing mission state (e.g. `HaveItem4` on
+`PrologueWheelPawn` destroys the world spawn), which is a real mechanism but not this one.
