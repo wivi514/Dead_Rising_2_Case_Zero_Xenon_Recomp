@@ -2451,3 +2451,183 @@ decorative prop at the bike, on both machines — so the screen is not reading "
 mission active". `missions.txt` also shows `cMissionCondition Condition = "9"
 ConditionParamater = "<MissionName>"` testing mission state (e.g. `HaveItem4` on
 `PrologueWheelPawn` destroys the world spawn), which is a real mechanism but not this one.
+
+### 12. THE FOUND FLAG IS NAMED: a prereq that looks in ONE inventory (2026-09-27, unattended)
+
+Part 11 §1 asked for the found flag to be located **by measurement** and forbade building
+the "fake a host pickup" fix before that. This is that measurement. Every link below is a
+number from a log or a census; the one thing still owed is a positive control, and it is
+named at the end.
+
+#### 12.1 "Hook the store sites" could not have worked, and the census says why
+
+The obvious next move after §11 was to hook the code that writes the 31 offsets and print
+the caller. `tools/find_field_access.py` (new — a census of every D-form load/store in the
+image that touches a given structure offset, with the enclosing function from the
+recompiler's own function list) says that cannot work:
+
+```
++0x15E8   9 D-form sites   only 4 in the mission system, all storing ZERO
++0x15F0  13                    "        "        "        "        "
++0x17D4   4                    all four          "        "        "
++0x19C0   4                    all four          "        "        "
++0x19C8   4                    all four          "        "        "
++0x1648   2 (both stfs, a different structure)   -- no mission-system site at all
+```
+
+and the four are always the same four: `sub_821ADD18`, `sub_821ADFB8`, `sub_821B0388`,
+`sub_821FAF10` — the mission manager's reset and constructor, storing `0`. **Not one of the
+increments we measured has a static store site.** The mission manager keeps an ARRAY OF
+LISTS addressed by list number (`sub_82163708` does `stwx r11, (count + 0x28F)<<2, r3`), so
+every mutator is indexed and carries no displacement. That is also the real reason
+`+0x1648` "had no store site" — nothing special about that offset; the whole family is
+invisible to a static grep. Hooking the four zeroing sites would have produced a log of
+level loads.
+
+**Transferable:** when a measured field has no store site, ask whether the WHOLE
+STRUCTURE is indexed before concluding anything about that field. `find_field_access.py`
+prints the note "indexed forms carry no displacement and CANNOT appear here" on every run
+for this reason.
+
+#### 12.2 The 31 offsets are one object moving between lists, and the guest's own code says so
+
+Read as values instead of as addresses, §11's table is not a set of flags:
+
+```
++0AB8..+0AE8   each slot takes the value of the NEXT slot      erase(front)
++0FA0          0x2D -> 0x2C                                    that list's count--
++1448/+144C    B97C9160 inserted at [0], old [0] shifted       push_front
++15E8/+15F0    0x11 -> 0x12                                    that list's count++
++1648..+1664   shift down one, last slot zeroed                erase(front)
++17D4          0x1D -> 0x1C                                    that list's count--
++17E8          0 -> B97C9160                                    stored singly
++19C0/+19C8    0x02 -> 0x03                                     that list's count++
+```
+
+One pointer, `B97C9160`, leaves two lists and joins two others. The mission manager's own
+reset function states the layout that confirms it: three identical units of 0x1EC bytes at
+`+0x1408`, `+0x15F4`, `+0x17E0`, each an array of 0x79 pointers followed by its counts.
+`sub_821AEC40` names the members: a mission is 0x38 bytes with its DEFINITION at `+0x18`,
+its owner at `+0x1C`, its STATE at `+0x08`, appended to **`missionMgr+0x4D8`** and counted
+at **`missionMgr+0x10AC`**.
+
+#### 12.3 `B97C9160` is `PrologueWheelObjective`
+
+`CZ_COOP_MISSIONWATCH=MS` (new) diffs that table by name. The definition's name offset is
+not guessed: the instrument censuses every 4-aligned offset in the definition that decodes
+as one of the engine's small-string-optimisation strings and prints all of them, so the
+offset is **measured** — `+0x1C`, 7 of 128 offsets decoding, 67 of the 68 distinct names in
+`missions.txt` resolved. A headless DebugJump run reads:
+
+```
+[mw] baseline: 73 mission(s) in missionMgr AADAD250
+[mw]   B97C9160 def A52B34F0 state 0  PrologueWheelObjective
+[mw]   B97C9080 def A52B3270 state 0  PrologueGasolineCanisterObjective
+```
+
+The object the operator's host wheel pickup moved between lists **is the wheel's objective
+mission.** And `missions.txt` says what gates it:
+
+```
+cMissionDefinition PrologueWheelObjective
+    cMissionPrereq GetHandleBar5
+        cMissionObjectiveGiveItemToNPC FindHandleBar4
+            ITEM_NAME = "WheelPawn"
+    cMissionObjective GetGenerator6
+        cMissionObjectiveBringItem ... EventToWaitFor = "WheelPawnPlaced"
+```
+
+The objective that waits for the placement lives INSIDE the mission whose prerequisite is
+an item check. If the prereq never passes, the mission never starts and `WheelPawnPlaced`
+arrives with nobody listening — which is why placing an unfound part does nothing, and why
+the screen says *"Je n'ai pas encore TROUVÉ cette pièce"* rather than "not placed".
+
+#### 12.4 The prereq looks in exactly ONE inventory
+
+`cMissionObjectiveGiveItemToNPC` is class 57 in the mission class table at `0x829DB2A0`;
+factory `0x822F02E8`, constructor `0x823AF1B8` (0xAC bytes), vtable `0x8204E540`. Seven of
+that vtable's slots point into the class's own code and **`CZ_COOP_OBJTRACE=1` hooks all
+seven and counts them**, so which one evaluates the prereq is a measurement and not a
+reading. Six fired; slot 18 (`sub_823AF228`) did not. The one that matters is slot 20:
+
+```
+823AF424  lbz  r11, 0xa8(r3)      ; a latch -- already satisfied, return 1
+823AF44C  ...  hash the string at this+0x80 (the ITEM_NAME)
+823AF4A4  bl   0x823A4768         ; -> the owning mission
+823AF4AC  lwz  r31, 0x1c(r3)      ; mission->0x1C = the world
+823AF4B4  lwz  r4,  0x80(r31)     ; world->0x80 = THE LOCAL PLAYER INDEX
+823AF4B8  bl   0x82482AD8         ; GetUserPlayer(world->0x7C, that index)
+```
+
+`sub_82482AD8` is two instructions and a tail call to `sub_8247B020`, the same
+`GetUserPlayer` the shipped `CZ_COOP_RESPONSE_PLAYER` fix substitutes into. Measured
+headlessly, in single player:
+
+```
+[obj] A51D5650 ITEM_NAME "WheelPawn"        ... answer 0, asked GetUserPlayer for index 0
+[obj] A51D5210 ITEM_NAME "GasolineCanister" ... answer 0, asked GetUserPlayer for index 0
+[obj] A51D5430 ITEM_NAME "BikeForks"        ... answer 0, asked GetUserPlayer for index 0
+[obj] A51D4FF0 ITEM_NAME "BikeEngine"       ... answer 0, asked GetUserPlayer for index 0
+```
+
+One objective object per bike part, each asking about **one player**, the local one.
+
+#### 12.5 The operator's own log closes it, and it was recorded before this instrument existed
+
+`A51D5650` is the object that tests `WheelPawn`. In the operator's flag-hunt log, inside
+the HOST's pickup window:
+
+```
+41267: [item] Event subtype 9 (coop=1 isHost=1): player 0 f60 B97C9160 f64 A51D5650
+```
+
+— the wheel's objective MISSION and the `WheelPawn` GiveItemToNPC OBJECTIVE, in one
+broadcast event, for **player 0**. Inside the GUEST's pickup window: **zero** subtype-9
+events, and zero mission-manager writes. So the identification does not rest on heap
+addresses being stable between runs: the two addresses appear together in one line of the
+operator's log with the two names this session measured independently.
+
+#### 12.6 The diagnosis, in one paragraph
+
+**A bike part is marked FOUND when `cMissionObjectiveGiveItemToNPC` — the prerequisite of
+`Prologue<Part>Objective` — sees the item in an inventory, and it looks in exactly one
+inventory: `GetUserPlayer(world->0x7C, world->0x80)`, the LOCAL player. On the host that is
+player 0. A part in the GUEST's hands is invisible to it, so the objective mission never
+starts, the `<Part>Placed` event arrives with no listener, and both screens read NOT FOUND
+because the host is authoritative.** That is the same class of defect as the placement half
+this session already fixed — a single-player assumption spelled as "the local player" — one
+layer up.
+
+It also explains the four-data-point rule in one sentence: the flag is set at PICKUP and
+only for player 0, so whoever places it, only a part the host once held is credited.
+
+#### 12.7 A PREDICTION THAT IS NOT ABOUT BIKE PARTS, offered because it can refute all of this
+
+`missions.txt` has ELEVEN `cMissionObjectiveGiveItemToNPC` instances, and only five are
+bike parts. The others name `Zombrex`, `Key_MasterKey`, `Gems` and `BikeEngine` again, in
+`PrologueKateyZombrex`, `PrologueMasterKey`, `PrologueMoMoneyMoProblems`,
+`ProloguePawnshopHint01` and `ProloguePawnshopHint2`. If the mechanism above is right,
+**every one of those is broken in co-op the same way**: a guest who picks up the Zombrex,
+the shed key or the gems should fail to register it. If the operator finds that guests DO
+get credit for the master key, this whole reading is wrong.
+
+#### 12.8 WHAT IS OWED — the positive control, and it is one round
+
+No run has yet printed `answer 1`. Headless single player never picks a part up, so the
+test has only ever been observed returning 0. The round that closes it is two minutes and
+produces BOTH arms in ONE log, one process, one binary — the shape that has won twice here:
+
+**Host picks up one part, guest picks up a DIFFERENT part, nobody places anything.** Arms
+on both machines: `CZ_COOP_OBJTRACE=1 CZ_COOP_MISSIONWATCH=500`.
+
+Predicted, on the HOST's log:
+
+```
+[obj] ... ITEM_NAME "WheelPawn":        answer 0 -> 1, index 0     (the host's part)
+[obj] ... ITEM_NAME "GasolineCanister": answer 0, index 0, forever (the guest's part)
+[mw]  CHANGED ... PrologueWheelObjective : state(+08) 0 -> N
+      and NO line for PrologueGasolineCanisterObjective
+```
+
+Any of these refutes it: the answer never reaching 1 for the host's own part; the index
+being anything but 0; or `PrologueGasolineCanisterObjective` advancing anyway.

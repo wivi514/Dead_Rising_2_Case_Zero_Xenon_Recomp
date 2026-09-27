@@ -5010,3 +5010,51 @@ will then stay put while the clock moves — the two controls are independent by
 
 Derivation and the one retraction (the first version took `+0x48` of the root directly and
 read a plausible zero) are in `DebugMissionClock`'s comment in `cpu/debug_tunables.cpp`.
+
+## Co-op issue #9, the found-flag hunt (part 12)
+
+`CZ_COOP_MISSIONWATCH=MS` — every `MS` ms, diff **the mission manager's own mission table**
+(`missionMgr+0x4D8`, count at `+0x10AC`, one 0x38-byte mission per slot) by NAME, plus the
+four list counts the flag hunt measured (`+0x0FA0`, `+0x15E8`, `+0x15F0`, `+0x17D4`,
+`+0x19C0`, `+0x19C8`). Prints APPEARED / GONE / CHANGED with each mission's state (`+0x08`),
+and a `LISTS` line whenever a count moves, so a named mission and the offsets §11 measured
+appear in the same log.
+
+Two things it refuses to do silently, both because this file has been caught by the same
+shape twice in two days (gotchas 109, 151):
+
+* it prints **how many missions it compared**, every sweep that changed and every twentieth
+  that did not, so "the mission table never moved" and "this watch is reading the wrong
+  object" are different log lines;
+* it does **not guess** where the definition's name lives. It censuses every 4-aligned
+  offset in the definition object that decodes as one of the engine's small-string
+  strings (capacity byte at `+0x20`; inline below 0x1F, heap pointer at or above) and prints
+  all of them with the count tested — `+0x1C`, 7 of 128 offsets decoding, 67 of 68 names.
+  `CZ_COOP_MISSIONWATCH_NAMEOFF=0xNN` pins a different one. A decode that fails prints the
+  capacity byte and the first dword rather than an empty name.
+
+Identity in the diff is **(object, definition)**, not the object pointer. A level transition
+destroys every mission (`sub_82162A88`) and re-creates them from the same heap addresses in
+a different order; keying on the pointer alone printed 73 bogus "the definition changed"
+lines on this instrument's first run.
+
+`CZ_COOP_OBJTRACE=1` — hooks **all seven** class-specific vtable slots of
+`cMissionObjectiveGiveItemToNPC` (vtable `0x8204E540`) and counts them, so which slot
+evaluates the prereq is measured rather than read off a disassembly; a slot that never fires
+is the refutation, printed. Six of seven fire; slot 18 (`sub_823AF228`) does not. For slot
+20 (`sub_823AF418`) it also prints, on a change of the answer, the `ITEM_NAME` being tested,
+the answer, the three fields that can short-circuit it (`+0xA8` latch, `+0x7C`, `+0xA4`) and
+**the player index the call asked `GetUserPlayer` for**.
+
+That last one is read by hooking `sub_82482AD8` — `GetUserPlayer(world->0x7C, idx)` — gated
+on a thread-local set only while one of those seven methods is on the stack. The gate is not
+an optimisation: a census over the image finds **~440 callers** of `sub_82482AD8`, so "who
+asks for the local player" is the engine's ordinary idiom and the only useful question is
+which player THIS decision asked about.
+
+`tools/find_field_access.py OFFSET...` — a census of every D-form load/store in the image
+touching a structure offset, with the enclosing function taken from the recompiler's own
+function list so the names match the runtime's hooks. `--stores-only` narrows it. It prints,
+on every run, that **indexed forms carry no displacement and cannot appear** — which is the
+finding for the whole `+0x1408`/`+0x15F4`/`+0x17E0` list family in the mission manager, and
+the reason "this offset has no store site" must never be read as "nothing writes it".

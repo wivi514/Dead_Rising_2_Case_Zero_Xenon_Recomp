@@ -106,6 +106,14 @@ extern "C" PPC_FUNC(__imp__sub_821A2200);
 extern "C" PPC_FUNC(__imp__sub_82378FA0);
 extern "C" PPC_FUNC(__imp__sub_821898B0);
 extern "C" PPC_FUNC(__imp__sub_821898E8);
+extern "C" PPC_FUNC(__imp__sub_823AF2B8);
+extern "C" PPC_FUNC(__imp__sub_823AF248);
+extern "C" PPC_FUNC(__imp__sub_823AF308);
+extern "C" PPC_FUNC(__imp__sub_823AF368);
+extern "C" PPC_FUNC(__imp__sub_823AF768);
+extern "C" PPC_FUNC(__imp__sub_823AF228);
+extern "C" PPC_FUNC(__imp__sub_823AF418);
+extern "C" PPC_FUNC(__imp__sub_82482AD8);
 
 using namespace coop;
 
@@ -610,6 +618,10 @@ void PoolCensus(PPCContext& ctx, uint8_t* base, uint32_t world);
 bool FlagHuntOn();
 void FlagHuntArm(int32_t player, const char* part);
 void FlagHuntSweep(uint8_t* base, uint32_t world);
+
+// The mission watch, defined beside the reasoning that motivates it.
+int MissionWatchMs();
+void MissionWatch(uint8_t* base, uint32_t world);
 
 bool PlaceTrace()
 {
@@ -1605,7 +1617,7 @@ PPC_FUNC(sub_82409900)
 // without the guard that is unbounded recursion rather than a wrong number.
 void HarnessTick(PPCContext& ctx, uint8_t* base)
 {
-    if (!RaiseArmed() && PoolCensusMs() <= 0)
+    if (!RaiseArmed() && PoolCensusMs() <= 0 && MissionWatchMs() <= 0)
         return;
     static thread_local bool inTick = false;
     if (inTick)
@@ -1622,6 +1634,7 @@ void HarnessTick(PPCContext& ctx, uint8_t* base)
     const uint32_t world = ResolveWorld(ctx, base, why);
     MaybeRaise(ctx, base, world);
     PoolCensus(ctx, base, world);
+    MissionWatch(base, world);
     inTick = false;
 }
 
@@ -1746,12 +1759,13 @@ PPC_FUNC(sub_823E79B8)
     }
     // The harness, outside the trace gate because it is armed by its own variable
     // and has to run for a session that does not want the whole item trace.
-    if (RaiseArmed() || PoolCensusMs() > 0)
+    if (RaiseArmed() || PoolCensusMs() > 0 || MissionWatchMs() > 0)
     {
         const char* why = "";
         const uint32_t w = ResolveWorld(ctx, base, why);
         MaybeRaise(ctx, base, w);
         PoolCensus(ctx, base, w);
+        MissionWatch(base, w);
     }
     // Outside the trace gate: this is the FIX, not an instrument, and it has to
     // run for a player who never sets CZ_ITEM_TRACE. It is a straight return
@@ -2950,6 +2964,400 @@ void FlagHuntSweep(uint8_t* base, uint32_t world)
                 g_huntPlayer, g_huntPart, changed, compared,
                 changed > 60 ? " (first 60 shown)" : "");
 }
+
+// ---------------------------------------------------------------------------
+// THE MISSION WATCH — CZ_COOP_MISSIONWATCH=MS. Name the mission a HOST pickup
+// advances and a GUEST pickup does not.
+// ---------------------------------------------------------------------------
+//
+// WHY THIS EXISTS, and why it replaces "hook the store sites".
+//
+// The flag hunt above measured 31 mission-manager fields that a HOST bike-part
+// pickup writes and a GUEST pickup does not, with zero the other way round. The
+// obvious next move was to hook the code that writes them and print the caller.
+// A census of the image says that cannot work: `tools/find_field_access.py` over
+// all 31 offsets finds, for every counter among them (`+0x15E8`, `+0x15F0`,
+// `+0x17D4`, `+0x19C0`, `+0x19C8`), exactly FOUR D-form store sites, all four of
+// them the same reset/constructor pair (`sub_821ADD18`, `sub_821ADFB8`,
+// `sub_821B0388`, `sub_821FAF10`) storing ZERO. None of them is the increment we
+// measured. The mutators use `stwx` off a computed list index and therefore carry
+// no displacement at all, which is also why `+0x1648` appeared to have "no store
+// site": the mission manager holds an ARRAY OF LISTS addressed by list number, so
+// no static grep can name its mutators. Hooking the four zeroing sites would have
+// produced a log full of level loads and nothing else.
+//
+// WHAT THE 31 FIELDS ACTUALLY SAY, read as values instead of as addresses. They
+// are not flags; they are one object moving between lists:
+//
+//     +0AB8..+0AE8   each slot takes the value of the NEXT slot   -> erase(front)
+//     +0FA0          0x2D -> 0x2C                                -> that list's count--
+//     +1448/+144C    B97C9160 inserted at [0], old [0] shifts    -> push_front
+//     +15E8/+15F0    0x11 -> 0x12                                -> that list's count++
+//     +1648..+1664   shift down one, last slot zeroed            -> erase(front)
+//     +17D4          0x1D -> 0x1C                                -> that list's count--
+//     +17E8          0 -> B97C9160                               -> stored singly
+//     +19C0/+19C8    0x02 -> 0x03                                -> that list's count++
+//
+// One pointer, `B97C9160`, leaves two lists and joins two others. The guest's
+// reset function states the layout that confirms it: three identical units of
+// 0x1EC bytes at `+0x1408`, `+0x15F4` and `+0x17E0`, each an array of 0x79
+// pointers followed by its counts — and `sub_82163708` appends to a fourth list at
+// `+0x0A3C` counted at `+0x0FA0`, taking only missions whose state (`+0x08`) is 0
+// and whose start time (`+0x24`) has arrived. So `+0x0A3C` is the PENDING-START
+// queue, and leaving it is a mission STARTING.
+//
+// `sub_821AEC40` names the object: it allocates 0x38 bytes per mission, stores the
+// DEFINITION at `mission+0x18`, the owner at `+0x1C`, zeroes `+0x04/+0x08/+0x14/
+// +0x20`, appends to `missionMgr+0x4D8` and bumps `missionMgr+0x10AC`. So
+// `+0x4D8` is the mission array, `+0x10AC` its count, and every live mission is
+// reachable with two loads.
+//
+// AND THE HYPOTHESIS THIS IS BUILT TO CONVICT OR ACQUIT is now a NAME, because
+// `missions.txt` has one objective mission per bike part and each one's
+// prerequisite is an item check:
+//
+//     cMissionDefinition PrologueWheelObjective
+//         cMissionPrereq GetHandleBar5
+//             cMissionObjectiveGiveItemToNPC FindHandleBar4
+//                 ITEM_NAME = "WheelPawn"
+//         cMissionObjective GetGenerator6
+//             cMissionObjectiveBringItem ... EventToWaitFor = "WheelPawnPlaced"
+//
+// If that prereq is tested against ONE player's inventory, a guest pickup never
+// satisfies it, the objective mission never starts, the `...Placed` event it waits
+// for arrives with nobody listening, and the bike-parts screen says *"Je n'ai pas
+// encore TROUVÉ cette pièce"* — NOT FOUND rather than not placed, which is exactly
+// what the operator's capture shows. It also explains the four-data-point rule in
+// one sentence: whoever places it, the flag is set at PICKUP and only for player 0.
+//
+// SO THIS PRINTS THE MISSION TABLE AND DIFFS IT. A round where the host picks up
+// one part and the guest picks up another should read
+// `PrologueWheelObjective ... state 0 -> N` in the host's window and NOTHING in
+// the guest's. That names the mission, and a named mission has a definition whose
+// prereq is four instructions from the inventory call that must be wrong.
+//
+// TWO THINGS IT REFUSES TO DO SILENTLY. It prints the number of missions it
+// compared, so "no changes" cannot be confused with "watched the wrong object"
+// (gotchas 109, 151 — this file has been caught by exactly that twice). And it does
+// not guess where the definition's NAME lives: it censuses every 4-aligned offset
+// in the definition that decodes as one of this engine's strings and prints all of
+// them the first time, so the offset is measured. `CZ_COOP_MISSIONWATCH_NAMEOFF`
+// pins it afterwards if the first candidate turns out to be some other member.
+int MissionWatchMs()
+{
+    static const int ms = [] {
+        const char* e = std::getenv("CZ_COOP_MISSIONWATCH");
+        const int n = (e && *e) ? std::atoi(e) : 0;
+        if (n > 0)
+            fprintf(stderr,
+                    "[mw] CZ_COOP_MISSIONWATCH=%d — every %d ms, diff the mission manager's own "
+                    "mission table (missionMgr+0x4D8, count at +0x10AC) and its four list counts. "
+                    "Run ONE round: host picks up a part, guest picks up another, nobody places. "
+                    "The mission that changes state for the host and not the guest is the one the "
+                    "bike-parts screen reads.\n",
+                    n, n);
+        return n;
+    }();
+    return ms;
+}
+
+// Set once from CZ_COOP_MISSIONWATCH_NAMEOFF; -1 means "use the first offset the
+// census found".
+int32_t MissionNameOffOverride()
+{
+    static const int32_t o = [] {
+        const char* e = std::getenv("CZ_COOP_MISSIONWATCH_NAMEOFF");
+        return (e && *e) ? int32_t(std::strtol(e, nullptr, 0)) : int32_t(-1);
+    }();
+    return o;
+}
+
+// One of this engine's strings, decoded the way the guest decodes it: a CAPACITY
+// byte at +0x20 below 0x1F means the characters are inline, at or above it means
+// the object's first dword is a heap pointer (`0x823AF368`-`0x823AF398` is the
+// branch, and `PropNameOf` further down reads the same layout for prop names).
+// Returns false rather than a wrong answer whenever the bytes do not look like a
+// string at all, which is what makes it usable as an offset PROBE.
+bool DecodeGuestStr(uint8_t* base, uint32_t strObj, char* out, size_t n)
+{
+    const uint32_t cap = LoadU8(base, strObj + 0x20);
+    if (cap > 0xC0)
+        return false;
+    uint32_t chars = strObj;
+    if (cap >= 0x1F)
+    {
+        chars = LoadU32(base, strObj);
+        if (chars < 0x30000 || chars >= 0xE0000000u)
+            return false;
+    }
+    size_t i = 0;
+    for (; i + 1 < n; i++)
+    {
+        const uint8_t c = LoadU8(base, chars + uint32_t(i));
+        if (!c)
+            break;
+        if (c < 32 || c >= 127)
+            return false;
+        out[i] = char(c);
+    }
+    out[i] = 0;
+    // A mission name is an identifier. Anything with a space or a slash in it is
+    // some other member (a level name, a path) and is not worth locking onto.
+    if (i < 4)
+        return false;
+    for (size_t k = 0; k < i; k++)
+        if (!(out[k] == '_' || (out[k] >= '0' && out[k] <= '9') || (out[k] >= 'A' && out[k] <= 'Z')
+              || (out[k] >= 'a' && out[k] <= 'z')))
+            return false;
+    return true;
+}
+
+int32_t g_defNameOff = -1;
+
+// The offset census. Runs once, on the first definition object seen, and prints
+// EVERY offset that decodes plus how many it tested — so a definition with no
+// readable name is a reported measurement and not a silent empty name.
+void CensusDefNameOffset(uint8_t* base, uint32_t def)
+{
+    static bool done = false;
+    if (done)
+        return;
+    done = true;
+    if (MissionNameOffOverride() >= 0)
+    {
+        g_defNameOff = MissionNameOffOverride();
+        fprintf(stderr, "[mw] definition name offset PINNED to +0x%X by "
+                        "CZ_COOP_MISSIONWATCH_NAMEOFF\n", unsigned(g_defNameOff));
+        return;
+    }
+    char buf[96];
+    unsigned tested = 0, found = 0;
+    for (uint32_t o = 0; o < 0x200; o += 4)
+    {
+        tested++;
+        if (!DecodeGuestStr(base, def + o, buf, sizeof(buf)))
+            continue;
+        found++;
+        fprintf(stderr, "[mw]   definition %08X + 0x%03X decodes as \"%s\"\n", def, unsigned(o),
+                buf);
+        if (g_defNameOff < 0)
+            g_defNameOff = int32_t(o);
+    }
+    fprintf(stderr, "[mw] definition name-offset census: %u offset(s) tested, %u decoded, using "
+                    "+0x%X. Pin a different one with CZ_COOP_MISSIONWATCH_NAMEOFF=0xNN.\n",
+            tested, found, unsigned(g_defNameOff < 0 ? 0 : g_defNameOff));
+}
+
+void MissionNameOf(uint8_t* base, uint32_t def, char* out, size_t n)
+{
+    out[0] = 0;
+    if (!def || g_defNameOff < 0)
+    {
+        snprintf(out, n, "def %08X", def);
+        return;
+    }
+    if (!DecodeGuestStr(base, def + uint32_t(g_defNameOff), out, n))
+    {
+        // Say WHY rather than just "no". A decode that fails silently is
+        // indistinguishable from a definition with no name, and this file has
+        // already shipped that ambiguity twice (gotchas 109, 151). The capacity
+        // byte and the first dword are the whole of the decision the guest makes,
+        // so printing them lets the next reader finish the job without a rebuild.
+        snprintf(out, n, "def %08X (name did not decode: +0x%X cap=%02X word0=%08X)", def,
+                 unsigned(g_defNameOff), LoadU8(base, def + uint32_t(g_defNameOff) + 0x20),
+                 LoadU32(base, def + uint32_t(g_defNameOff)));
+    }
+}
+
+struct MissionSnap
+{
+    uint32_t obj, def, f04, f08, f10, f14, f20, f24;
+};
+
+// The four list counts the flag hunt named, so the log ties a NAMED mission to the
+// OFFSETS that were measured rather than leaving the reader to correlate two
+// instruments by hand.
+struct ListCounts
+{
+    uint32_t pending, a, a2, b, c, c2, missions;
+};
+
+void MissionWatch(uint8_t* base, uint32_t world)
+{
+    const int period = MissionWatchMs();
+    if (period <= 0 || !world)
+        return;
+    static std::chrono::steady_clock::time_point next{};
+    const auto now = std::chrono::steady_clock::now();
+    if (now < next)
+        return;
+    next = now + std::chrono::milliseconds(period);
+
+    const uint32_t game = LoadU32(base, world + 0x78);
+    const uint32_t mgr = game ? LoadU32(base, game + 0x5C) : 0;
+    if (!mgr)
+    {
+        static bool said = false;
+        if (!said)
+        {
+            said = true;
+            fprintf(stderr, "[mw] no mission manager yet (world %08X game %08X) — retrying\n",
+                    world, game);
+        }
+        return;
+    }
+
+    const uint32_t count = LoadU32(base, mgr + 0x10AC);
+    if (count > 0x158)
+    {
+        static bool said = false;
+        if (!said)
+        {
+            said = true;
+            fprintf(stderr, "[mw] mission count %u is above the game's own 0x158 limit — refusing "
+                            "to read the table rather than printing nonsense\n", count);
+        }
+        return;
+    }
+
+    std::vector<MissionSnap> cur;
+    cur.reserve(count);
+    for (uint32_t i = 0; i < count; i++)
+    {
+        const uint32_t m = LoadU32(base, mgr + 0x4D8 + i * 4);
+        if (!m)
+            continue;
+        MissionSnap s{};
+        s.obj = m;
+        s.def = LoadU32(base, m + 0x18);
+        s.f04 = LoadU32(base, m + 0x04);
+        s.f08 = LoadU32(base, m + 0x08);
+        s.f10 = LoadU8(base, m + 0x10);
+        s.f14 = LoadU32(base, m + 0x14);
+        s.f20 = LoadU32(base, m + 0x20);
+        s.f24 = LoadU32(base, m + 0x24);
+        cur.push_back(s);
+        if (s.def)
+            CensusDefNameOffset(base, s.def);
+    }
+
+    ListCounts lc{};
+    lc.pending = LoadU32(base, mgr + 0x0FA0);
+    lc.a = LoadU32(base, mgr + 0x15E8);
+    lc.a2 = LoadU32(base, mgr + 0x15F0);
+    lc.b = LoadU32(base, mgr + 0x17D4);
+    lc.c = LoadU32(base, mgr + 0x19C0);
+    lc.c2 = LoadU32(base, mgr + 0x19C8);
+    lc.missions = count;
+
+    static bool have = false;
+    static std::vector<MissionSnap> prev;
+    static ListCounts prevLc{};
+    static unsigned quiet = 0;
+    if (!have)
+    {
+        have = true;
+        prev = cur;
+        prevLc = lc;
+        fprintf(stderr, "[mw] baseline: %u mission(s) in missionMgr %08X; pending(+0FA0)=%u "
+                        "A(+15E8/+15F0)=%u/%u B(+17D4)=%u C(+19C0/+19C8)=%u/%u\n",
+                unsigned(cur.size()), mgr, lc.pending, lc.a, lc.a2, lc.b, lc.c, lc.c2);
+        for (const MissionSnap& s : cur)
+        {
+            char nm[96];
+            MissionNameOf(base, s.def, nm, sizeof(nm));
+            fprintf(stderr, "[mw]   %08X def %08X state %u  %s\n", s.obj, s.def, s.f08, nm);
+        }
+        return;
+    }
+
+    unsigned changes = 0;
+    char nm[96];
+    for (const MissionSnap& s : cur)
+    {
+        // IDENTITY IS (object, definition), NOT the object pointer alone. A level
+        // transition destroys every mission (`sub_82162A88`) and re-creates them
+        // from the same heap addresses in a DIFFERENT order, so matching on the
+        // pointer printed 73 bogus "the definition changed" lines on the first
+        // run of this watch instead of one clean GONE/APPEARED pair.
+        const MissionSnap* was = nullptr;
+        for (const MissionSnap& p : prev)
+            if (p.obj == s.obj && p.def == s.def)
+            {
+                was = &p;
+                break;
+            }
+        MissionNameOf(base, s.def, nm, sizeof(nm));
+        if (!was)
+        {
+            changes++;
+            fprintf(stderr, "[mw] APPEARED %08X def %08X state %u  %s\n", s.obj, s.def, s.f08, nm);
+            continue;
+        }
+        if (was->f04 == s.f04 && was->f08 == s.f08 && was->f10 == s.f10 && was->f14 == s.f14
+            && was->f20 == s.f20 && was->f24 == s.f24)
+            continue;
+        changes++;
+        fprintf(stderr, "[mw] CHANGED %08X def %08X  %s :", s.obj, s.def, nm);
+        if (was->f08 != s.f08)
+            fprintf(stderr, "  state(+08) %u -> %u", was->f08, s.f08);
+        if (was->f04 != s.f04)
+            fprintf(stderr, "  +04 %08X -> %08X", was->f04, s.f04);
+        if (was->f10 != s.f10)
+            fprintf(stderr, "  +10 %u -> %u", was->f10, s.f10);
+        if (was->f14 != s.f14)
+            fprintf(stderr, "  +14 %08X -> %08X", was->f14, s.f14);
+        if (was->f20 != s.f20)
+            fprintf(stderr, "  +20 %08X -> %08X", was->f20, s.f20);
+        if (was->f24 != s.f24)
+            fprintf(stderr, "  +24 %u -> %u", was->f24, s.f24);
+        fprintf(stderr, "\n");
+    }
+    for (const MissionSnap& p : prev)
+    {
+        bool still = false;
+        for (const MissionSnap& s : cur)
+            if (s.obj == p.obj && s.def == p.def)
+            {
+                still = true;
+                break;
+            }
+        if (still)
+            continue;
+        changes++;
+        MissionNameOf(base, p.def, nm, sizeof(nm));
+        fprintf(stderr, "[mw] GONE %08X def %08X  %s\n", p.obj, p.def, nm);
+    }
+    if (prevLc.pending != lc.pending || prevLc.a != lc.a || prevLc.a2 != lc.a2
+        || prevLc.b != lc.b || prevLc.c != lc.c || prevLc.c2 != lc.c2
+        || prevLc.missions != lc.missions)
+    {
+        changes++;
+        fprintf(stderr, "[mw] LISTS  missions(+10AC) %u -> %u  pending(+0FA0) %u -> %u  "
+                        "A(+15E8) %u -> %u  A(+15F0) %u -> %u  B(+17D4) %u -> %u  "
+                        "C(+19C0) %u -> %u  C(+19C8) %u -> %u\n",
+                prevLc.missions, lc.missions, prevLc.pending, lc.pending, prevLc.a, lc.a,
+                prevLc.a2, lc.a2, prevLc.b, lc.b, prevLc.c, lc.c, prevLc.c2, lc.c2);
+    }
+
+    // The instrument's own report. A sweep that found nothing says so every 20th
+    // time, with the population it examined, because "the mission table never
+    // moved" and "this watch is reading the wrong object" are otherwise the same
+    // silence — which is the failure this file has already shipped twice.
+    if (changes)
+    {
+        fprintf(stderr, "[mw] sweep: %u change(s) across %u mission(s) compared\n", changes,
+                unsigned(cur.size()));
+        quiet = 0;
+    }
+    else if (++quiet % 20 == 0)
+    {
+        fprintf(stderr, "[mw] still watching: %u mission(s) compared, no change in the last 20 "
+                        "sweeps\n", unsigned(cur.size()));
+    }
+    prev.swap(cur);
+    prevLc = lc;
+}
 } // namespace
 
 // ---------------------------------------------------------------------------
@@ -3184,6 +3592,177 @@ void PropNameOf(uint8_t* base, uint32_t strObj, char* out, size_t n)
         out[i] = (c >= 32 && c < 127) ? char(c) : '?';
     }
     out[i] = 0;
+}
+
+// ---------------------------------------------------------------------------
+// THE OBJECTIVE TRACE — CZ_COOP_OBJTRACE. Watch the decision that decides
+// whether a bike part counts as FOUND.
+// ---------------------------------------------------------------------------
+//
+// READ THE MISSION WATCH ABOVE FIRST. It established, by name, what the flag
+// hunt had only as offsets: the object that moved between the mission manager's
+// lists when the HOST picked up a wheel is `PrologueWheelObjective`. That mission's
+// definition in `missions.txt` is
+//
+//     cMissionDefinition PrologueWheelObjective
+//         cMissionPrereq GetHandleBar5
+//             cMissionObjectiveGiveItemToNPC FindHandleBar4
+//                 ITEM_NAME = "WheelPawn"
+//         cMissionObjective GetGenerator6
+//             cMissionObjectiveBringItem ...
+//                 EventToWaitFor = "WheelPawnPlaced"
+//
+// so the mission that the bike-parts screen reads is gated on a PREREQUISITE that
+// names the item, and the objective that waits for the placement event lives inside
+// it. If the prereq never passes, the mission never starts, the `...Placed` event
+// arrives with nobody listening, and the screen says *"Je n'ai pas encore TROUVÉ
+// cette pièce"* — NOT FOUND, which is exactly what the operator's capture shows.
+//
+// `cMissionObjectiveGiveItemToNPC` is class 57 in the mission class table at
+// `0x829DB2A0`; its factory is `0x822F02E8`, its constructor `0x823AF1B8` (0xAC
+// bytes) and its vtable `0x8204E540`. Seven of that vtable's slots point into the
+// class's own code, and NOTHING HERE ASSUMES WHICH ONE EVALUATES THE PREREQ: all
+// seven are hooked and counted, so the run says which ones the title actually
+// calls. That is the difference between a census and a guess, and it is the shape
+// that has won twice in this investigation.
+//
+// One of the seven, `sub_823AF418`, is the interesting one on inspection:
+//
+//     823AF424  lbz  r11, 0xa8(r3)      ; a latch: already satisfied -> return 1
+//     823AF44C  ...  hash the string at this+0x80 (the ITEM_NAME)
+//     823AF4A4  bl   0x823A4768         ; -> the owning mission
+//     823AF4AC  lwz  r31, 0x1c(r3)      ; mission->0x1C = the world
+//     823AF4B4  lwz  r4,  0x80(r31)     ; world->0x80 = THE LOCAL PLAYER INDEX
+//     823AF4B8  bl   0x82482AD8         ; GetUserPlayer(world->0x7C, that index)
+//
+// `world->0x80` is the field this file already measured at 0 on the host and 1 on
+// the joiner, and `sub_82482AD8` is a two-instruction wrapper that tail-calls
+// `sub_8247B020`, the very `GetUserPlayer` the shipped `CZ_COOP_RESPONSE_PLAYER`
+// fix substitutes into. So on the HOST this test asks about player 0 and nobody
+// else — and a part in the GUEST's hands is invisible to it.
+//
+// THAT IS A HYPOTHESIS, NOT A FINDING, and it is deliberately not acted on here.
+// A census over the image finds ~440 callers of `sub_82482AD8`, so "it asks for the
+// local player" is the engine's ordinary idiom and not by itself a defect; what
+// makes it one here would be this particular test being the thing that gates FOUND.
+// So this prints the decision and nothing else: the ITEM_NAME the test is asking
+// about, the player index it asked `GetUserPlayer` for, the three fields that can
+// short-circuit it, and the answer it returned.
+//
+// WHAT WOULD REFUTE IT, stated before the run so the run can say no:
+//   * `sub_823AF418` never firing at all -> the prereq is evaluated somewhere else
+//     and this whole reading is wrong. The seven-way counter says so on one line.
+//   * the index printed being anything other than `world->0x80` -> the test is not
+//     local-player-bound and the mechanism is dead.
+//   * the test returning TRUE for a part the guest is holding -> the prereq is not
+//     what gates the screen.
+//
+// The player index is read by hooking `sub_82482AD8` itself, gated on a
+// thread-local set only while one of these methods is running, so the print is
+// scoped to this class without any return-address arithmetic and the hook is a
+// single load-and-branch when the arm is off.
+bool ObjTrace()
+{
+    static const bool on = [] {
+        const char* e = std::getenv("CZ_COOP_OBJTRACE");
+        const bool v = e && *e && *e != '0';
+        if (v)
+            fprintf(stderr,
+                    "[obj] CZ_COOP_OBJTRACE=1 — every call into "
+                    "cMissionObjectiveGiveItemToNPC's own seven vtable methods, counted, plus for "
+                    "sub_823AF418 the ITEM_NAME it is testing, the player index it asks "
+                    "GetUserPlayer for, and the answer. A method that never fires is the "
+                    "refutation, printed rather than inferred.\n");
+        return v;
+    }();
+    return on;
+}
+
+// Set while one of the class's methods is on this thread's stack, so the
+// GetUserPlayer hook below knows the index belongs to THIS decision.
+thread_local uint32_t t_objThis = 0;
+thread_local int32_t t_objPlayerIdx = -1;
+
+struct ObjMethodCount
+{
+    uint32_t addr;
+    int slot;
+    const char* note;
+    unsigned long long calls;
+};
+
+// The seven class-specific slots of vtable 0x8204E540, in slot order. `note` is
+// only what the disassembly suggests; the COUNT is what decides.
+ObjMethodCount g_objMethods[] = {
+    {0x823AF2B8, 0, "slot 0 (destructor-shaped)", 0},
+    {0x823AF248, 1, "slot 1", 0},
+    {0x823AF308, 2, "slot 2", 0},
+    {0x823AF368, 3, "slot 3 (reads the ITEM_NAME string)", 0},
+    {0x823AF768, 7, "slot 7 (calls arg->vt[0x0C] with this+0xA8)", 0},
+    {0x823AF228, 18, "slot 18", 0},
+    {0x823AF418, 20, "slot 20 (ITEM_NAME + world->0x80 + GetUserPlayer)", 0},
+};
+
+void ObjMethodEnter(uint32_t addr, uint32_t self)
+{
+    for (ObjMethodCount& m : g_objMethods)
+    {
+        if (m.addr != addr)
+            continue;
+        if (m.calls++ == 0)
+            fprintf(stderr, "[obj] hook alive: sub_%08X — %s\n", addr, m.note);
+        break;
+    }
+    t_objThis = self;
+    t_objPlayerIdx = -1;
+}
+
+// Printed on a CHANGE of (item, index, answer) rather than every call, because the
+// mission system evaluates its prereqs every frame and an unthrottled print would
+// bury the transition this is built to catch. The counters above are what say the
+// method is being called at all, so throttling here cannot hide a dead hook.
+void ObjMethodLeave(uint8_t* base, uint32_t addr, uint32_t self, uint32_t ret)
+{
+    if (addr != 0x823AF418)
+    {
+        t_objThis = 0;
+        return;
+    }
+    char item[64];
+    PropNameOf(base, self + 0x80, item, sizeof(item));
+    const uint32_t latch = LoadU8(base, self + 0xA8);
+    const uint32_t skip = LoadU8(base, self + 0x7C);
+    const uint32_t npc = LoadU32(base, self + 0xA4);
+    static std::mutex mu;
+    std::lock_guard<std::mutex> lock(mu);
+    struct Last
+    {
+        uint32_t self, ret, latch, skip, npc;
+        int32_t idx;
+    };
+    static std::vector<Last> seen;
+    for (Last& l : seen)
+    {
+        if (l.self != self)
+            continue;
+        if (l.ret == ret && l.latch == latch && l.skip == skip && l.npc == npc
+            && l.idx == t_objPlayerIdx)
+        {
+            t_objThis = 0;
+            return;
+        }
+        l = Last{self, ret, latch, skip, npc, t_objPlayerIdx};
+        fprintf(stderr, "[obj] %08X ITEM_NAME \"%s\": answer %u, asked GetUserPlayer for index "
+                        "%d, latch(+A8)=%u skip(+7C)=%u npc(+A4)=%08X\n",
+                self, item, ret, t_objPlayerIdx, latch, skip, npc);
+        t_objThis = 0;
+        return;
+    }
+    seen.push_back(Last{self, ret, latch, skip, npc, t_objPlayerIdx});
+    fprintf(stderr, "[obj] %08X ITEM_NAME \"%s\" seen for the first time: answer %u, asked "
+                    "GetUserPlayer for index %d, latch(+A8)=%u skip(+7C)=%u npc(+A4)=%08X\n",
+            self, item, ret, t_objPlayerIdx, latch, skip, npc);
+    t_objThis = 0;
 }
 
 // The window that makes the census below unconditional for the lookups that
@@ -3564,4 +4143,53 @@ PPC_FUNC(sub_82243060)
                 ctx.r3.u32, obj, idbuf, hash, NameOf(hash), uint32_t(ctx.lr), words);
     }
     __imp__sub_82243060(ctx, base);
+}
+
+// ---------------------------------------------------------------------------
+// The cMissionObjectiveGiveItemToNPC hooks — CZ_COOP_OBJTRACE.
+// ---------------------------------------------------------------------------
+//
+// One hook per class-specific vtable slot, all seven, because the point is the
+// CENSUS: a slot that never fires refutes a reading of the disassembly on one line,
+// where reasoning about which slot "must" be the evaluator is how four earlier
+// mechanisms in this issue died. Each prints once that it is alive, so a silent
+// arm and an arm that was never added cannot be confused (gotcha 151 — and this
+// file has already paid for that exact mistake, in the class-0x6A tail branch).
+#define CZ_OBJ_HOOK(addr)                                                                          \
+    PPC_FUNC(sub_##addr)                                                                           \
+    {                                                                                              \
+        if (!ObjTrace())                                                                           \
+        {                                                                                          \
+            __imp__sub_##addr(ctx, base);                                                          \
+            return;                                                                                \
+        }                                                                                          \
+        const uint32_t self = ctx.r3.u32;                                                          \
+        const uint32_t prevThis = t_objThis;                                                       \
+        const int32_t prevIdx = t_objPlayerIdx;                                                    \
+        ObjMethodEnter(0x##addr, self);                                                            \
+        __imp__sub_##addr(ctx, base);                                                              \
+        ObjMethodLeave(base, 0x##addr, self, ctx.r3.u32 & 0xFF);                                   \
+        t_objThis = prevThis;                                                                      \
+        t_objPlayerIdx = prevIdx;                                                                  \
+    }
+
+CZ_OBJ_HOOK(823AF2B8)
+CZ_OBJ_HOOK(823AF248)
+CZ_OBJ_HOOK(823AF308)
+CZ_OBJ_HOOK(823AF368)
+CZ_OBJ_HOOK(823AF768)
+CZ_OBJ_HOOK(823AF228)
+CZ_OBJ_HOOK(823AF418)
+#undef CZ_OBJ_HOOK
+
+// `sub_82482AD8(world, index)` — two instructions and a tail call to
+// `GetUserPlayer`. It has ~440 callers across the image, which is why this records
+// the index ONLY while one of the objective methods above is on the stack: the
+// question is not "who asks for the local player" (everyone does) but "which player
+// did THIS decision ask about". Costs one thread-local load when the arm is off.
+PPC_FUNC(sub_82482AD8)
+{
+    if (t_objThis)
+        t_objPlayerIdx = int32_t(ctx.r4.u32);
+    __imp__sub_82482AD8(ctx, base);
 }
