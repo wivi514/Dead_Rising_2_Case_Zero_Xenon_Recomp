@@ -2518,24 +2518,48 @@ void PoolCensus(PPCContext& ctx, uint8_t* base, uint32_t world)
         // produces, so the instrument could not be told from a dead one (gotcha 151).
         // Reporting all of them makes a level load a flood of APPEARED lines, which is
         // the positive control, and the cap keeps that from drowning the log.
-        static uint64_t said = 0;
+        // THE CAP APPLIES ONLY TO NAMES THIS FILE CANNOT SPELL. The first spelling capped
+        // everything at 400 lines and the level load spent the entire budget before
+        // gameplay began: in the operator's 2026-09-27 session the cap fired at log line
+        // 2169 and the pickup under investigation was at line 27941, so the instrument
+        // recorded nothing about the very event it was built for. A capped log line is
+        // not a count (gotcha 109), and an instrument that silently stops is worse than
+        // one that was never armed.
+        //
+        // So the sixteen names in kKnown — the five bike parts, their five decorative
+        // copies at the bike, and the six events — are ALWAYS reported, and the cap
+        // exists only to stop the anonymous churn of the pool drowning the log. The
+        // level-load flood of unknown names still happens and is still the positive
+        // control that the diff works at all.
+        static uint64_t saidUnknown = 0;
         constexpr uint64_t kCap = 400;
+        auto report = [&](const char* what, uint32_t hash, const Live* l) {
+            const bool known = std::strcmp(NameOf(hash), "?") != 0;
+            if (!known && ++saidUnknown > kCap)
+                return;
+            if (l)
+                fprintf(stderr, "[census] %s %08X (%s) as pool id %u, holder %08X%s\n", what, hash,
+                        NameOf(hash), l->id, l->holder, known ? "   <<<< WATCHED NAME" : "");
+            else
+                fprintf(stderr, "[census] %s %08X (%s)%s\n", what, hash, NameOf(hash),
+                        known ? "   <<<< WATCHED NAME" : "");
+        };
         for (const Live& l : live)
-            if (!has(prev, l.name) && ++said <= kCap)
-                fprintf(stderr, "[census] APPEARED %08X (%s) as pool id %u, holder %08X\n", l.name,
-                        NameOf(l.name), l.id, l.holder);
+            if (!has(prev, l.name))
+                report("APPEARED", l.name, &l);
         for (uint32_t h : prev)
-            if (!has(now, h) && ++said <= kCap)
-                fprintf(stderr, "[census] GONE     %08X (%s)\n", h, NameOf(h));
-        if (said > kCap)
+            if (!has(now, h))
+                report("GONE    ", h, nullptr);
+        if (saidUnknown > kCap)
         {
             static bool capped = false;
             if (!capped)
             {
                 capped = true;
-                fprintf(stderr, "[census] APPEARED/GONE capped at %llu lines — the pool churns "
-                                "constantly; grep for the hash you care about before the cap, or "
-                                "raise it here\n", (unsigned long long)kCap);
+                fprintf(stderr, "[census] UNNAMED appearances capped at %llu lines — the pool "
+                                "churns constantly. The sixteen WATCHED names (the bike parts, "
+                                "their decorative copies at the bike, and the events) are NEVER "
+                                "capped and keep printing.\n", (unsigned long long)kCap);
             }
         }
         prev.swap(now);
