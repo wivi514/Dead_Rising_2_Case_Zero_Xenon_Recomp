@@ -46,6 +46,11 @@ tools/__pycache__/
 #   tools/build_sdl2.sh          real SDL2, not Fedora's sdl2-compat shim
 #   tools/build_ffmpeg_lgpl.sh   LGPL ffmpeg with the two XMA decoders and nothing else
 /dist/
+# ANY packaged tree, not just `dist/`. `/dist/` alone let `dist-steamdeck/` and
+# `dist-steamdeck-1.0.2-old/` sit untracked-but-not-ignored, and one `git add -A`
+# on 2026-09-28 committed 233 MB of build output to a PUBLIC repo because of it.
+# A pattern that only covers the name you happened to use is not a policy.
+/dist-*/
 /thirdparty/sdl2/
 /thirdparty/ffmpeg-lgpl/
 # The old-base (container) build of the release (tools/release_build_oldbase.sh, part 104)
