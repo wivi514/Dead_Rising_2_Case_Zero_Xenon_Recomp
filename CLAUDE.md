@@ -191,8 +191,35 @@ mask; trust the microcode's own swizzles.
     was built, but **two of its eight steps are retired and its item 0 is answered** —
     read `phase5-notes.md` §6ba before following anything in it.
   - **THE LIVE HAND-OFF IS ALWAYS THE HIGHEST-NUMBERED `partNN-kickoff.md`**, and it
-    supersedes every earlier kickoff on "where the port is". **AS OF 2026-09-27 THE LIVE WORK IS PLAYER ISSUE #9 AND THE HAND-OFF IS
-    `docs/coop-part11-kickoff.md`. HALF OF IT IS FIXED AND OPERATOR-VERIFIED.** The
+    supersedes every earlier kickoff on "where the port is". **AS OF 2026-09-28 THE LIVE
+    WORK IS PLAYER ISSUE #9 AND THE HAND-OFF IS `docs/coop-part12-kickoff.md`. THE
+    PLACEMENT HALF IS FIXED AND OPERATOR-VERIFIED; THE FOUND HALF IS DIAGNOSED AND OWES
+    ONE TWO-MINUTE ROUND.** Part 11 forbade building the fix before the flag was found by
+    MEASUREMENT, and it now is (`coop-plan.md` §12). **A bike part is marked FOUND when the
+    prerequisite of the mission `Prologue<Part>Objective` — a `cMissionObjectiveGiveItemToNPC`
+    naming the item — sees it in an inventory, and that test looks in exactly ONE inventory:
+    `GetUserPlayer(world->0x7C, world->0x80)`, the LOCAL player, which on the host is player
+    0.** So a part in the guest's hands is invisible to it, the objective mission never
+    starts, the `<Part>Placed` event arrives with no listener, and both screens read NOT
+    FOUND because the host is authoritative — the same single-player assumption as the
+    placement half, one layer up. **"HOOK THE STORE SITES FOR THE 31 OFFSETS" IS REFUTED BY
+    CENSUS AND WAS NEVER TRIED**: every counter among them has exactly four D-form store
+    sites and all four are the mission manager's reset and constructor storing zero, because
+    the mutators are indexed (`tools/find_field_access.py`, new). Part 11's reading of
+    `+0x15E8`/`+0x17D4`/`+0x19C0` as listener-list heads is **RETRACTED** — they are list
+    COUNTS, and the 31 fields are ONE object (`B97C9160` = `PrologueWheelObjective`) moving
+    between four lists. The instruments are `CZ_COOP_MISSIONWATCH=MS` (the mission table
+    diffed BY NAME, the name offset found by census not guess) and `CZ_COOP_OBJTRACE=1` (all
+    seven of that class's own vtable slots, counted, plus the `ITEM_NAME`, the answer and the
+    player index asked for). **`CZ_COOP_FOUND_ANY_PLAYER=1` IS A CANDIDATE FIX SHIPPED OFF**
+    and `tools/issue9_found_host.sh` is the round: host picks up one part, guest picks up a
+    different one, nobody places. **WHAT IS OWED: no run has yet seen that test answer YES**,
+    so the positive control is the operator's. `coop-part12-kickoff.md` §2 has the predicted
+    lines and the three observations that refute it, and §4 offers a cheaper refutation that
+    is not about bike parts at all — eleven of these objectives exist and only five are
+    parts, so **Zombrex, the shed key and the gems should be broken for a guest the same
+    way.** ~~AS OF 2026-09-27 THE LIVE WORK IS PLAYER ISSUE #9 AND THE HAND-OFF IS
+    `docs/coop-part11-kickoff.md`. HALF OF IT IS FIXED AND OPERATOR-VERIFIED.~~ The
     operator ran the two-machine session part 10 asked for and it confirmed the
     prediction line by line: the guest places a bike part, the host's `STATE 34` record
     says **player 0** while the acting player is **1**, and the HOST's held item — a

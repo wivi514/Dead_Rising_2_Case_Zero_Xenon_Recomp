@@ -2631,3 +2631,61 @@ Predicted, on the HOST's log:
 
 Any of these refutes it: the answer never reaching 1 for the host's own part; the index
 being anything but 0; or `PrologueGasolineCanisterObjective` advancing anyway.
+
+#### 12.9 The candidate fix, its controls, and a claim that had to be retracted the same day
+
+`CZ_COOP_FOUND_ANY_PLAYER=1` — shipped **OFF**. When the item prerequisite answers NO for
+the local player, re-run the guest's own test once per other user player and take a YES.
+The repair is a re-run and not an argument substitution because the defect is not *"the
+wrong player"* — substituting the index would ask about player 1 INSTEAD of player 0 and
+break the host's own case — it is *"only one player"*. The test is side-effect free on the
+path that returns 0 (`0x823AF518` falls straight to the return), so a retry after a NO costs
+a read-only pass, and the run that says YES takes the success path for the player who
+actually holds the item.
+
+There is **no observe-only mode**, and that is a statement about this fix rather than an
+omission: the measurement IS the side effect. A mode that ran the retry and discarded the
+answer would already have completed the objective; a mode that did not run it could not know
+the answer.
+
+**The null control, and what it does NOT cover.** Armed, single player, DebugJump to the
+bike: the banner prints, the trace still answers for all four objectives, and the fix makes
+zero substitutions. But the counters say why, and the why matters — `[found] consulted`
+never printed at all, because with no session layer the retry block is never entered. **So
+the solo null proves the gate works and proves nothing whatever about the retry.** Left
+there, the first co-op round with the fix armed would have been the first time that code
+ever ran, on the operator's machine, where a mistake in the player-existence guard is a null
+dereference and not a wrong answer.
+
+**So there is a positive control**, `CZ_COOP_FOUND_ANY_PLAYER_TEST=1`, which drops the co-op
+gate only and is bring-up only — the same shape as `CZ_COOP_RESPONSE_PLAYER_TEST`. It
+exercised the machinery end to end in single player: no crash, the answer unchanged, and
+
+```
+[found] consulted 1 time(s): 0 had no second player to ask, 3 retries run, 0 RESCUED
+[found] consulted 10 time(s): 0 had no second player to ask, 30 retries run, 0 RESCUED
+```
+
+**`3 retries run` in SINGLE PLAYER, which retracts a claim this session had already written
+down twice.** Guard 4 — "only an index whose player object exists" — was described in the
+code comment and printed in the arm's own banner as the thing that makes the fix *"inert in
+single player by construction: one user player, so no other index has an object"*. That was
+an inference about a container nobody had looked at, and it is false: `world->0x7C` holds
+**four pre-allocated player slots** whether or not anyone is in them, so the loop body runs
+three times per consult in a solo game. Both the comment and the banner are corrected in
+place, and the real inertness guard is now the session's own is-co-op byte (`+0x98`, the same
+one `Side()` reads and `coop_host.cpp` writes), which is 0 in a solo session.
+
+What the same run established is worth more than the claim was: **30 retries over dormant
+player slots changed the answer 0 times and crashed 0 times**, so the re-run is measurably
+answer-preserving for a slot with nobody in it. That is the property the fix needs and it is
+now measured rather than assumed.
+
+**Transferable, and it is the third time this investigation has paid for the same thing:** an
+arm's own banner is a claim, and a claim in a banner is read by every future session as
+established. Guard 4's inertness sentence was written, compiled, printed and believed before
+anything checked the container — and the control that caught it cost one run. The lesson is
+not "check your guards"; it is that **a guard which asserts something about the GAME's data
+needs a control that reaches it, and a guard which only asserts something about our own
+configuration does not.** Guard 3 (the co-op byte) is the second kind. Guard 4 was the first
+kind dressed as the second.

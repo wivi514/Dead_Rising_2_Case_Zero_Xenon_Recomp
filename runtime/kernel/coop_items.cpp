@@ -3765,6 +3765,162 @@ void ObjMethodLeave(uint8_t* base, uint32_t addr, uint32_t self, uint32_t ret)
     t_objThis = 0;
 }
 
+// ---------------------------------------------------------------------------
+// THE CANDIDATE FIX — CZ_COOP_FOUND_ANY_PLAYER. Ask every player, not just the
+// local one, whether the quest item has been found.
+// ---------------------------------------------------------------------------
+//
+// READ ObjTrace() ABOVE FIRST, AND `docs/coop-plan.md` §12. This ships **OFF** and
+// it is a CANDIDATE, for one honest reason: **no run has yet observed
+// `sub_823AF418` return 1.** Headless single player never picks a bike part up, so
+// every measurement of this test so far is of it saying NO. The mechanism is
+// supported by five independent measurements (§12.2-§12.6) and the one control that
+// would convict it is the operator's, so this is built, documented, predicted and
+// left off — the same shape as `CZ_COOP_PLACE_FIX`, and for the same reason four
+// earlier mechanisms in this issue were refuted after being inferred.
+//
+// WHAT IT DOES. `sub_823AF418` decides whether a `cMissionObjectiveGiveItemToNPC`
+// is satisfied, and it resolves the player it asks about as
+// `GetUserPlayer(world->0x7C, world->0x80)` — the LOCAL player, which on the host
+// is player 0. So it re-runs the guest's own decision once per OTHER user player,
+// and if any of them says yes, that is the answer.
+//
+// WHY THE REPAIR IS A RE-RUN AND NOT AN ARGUMENT SUBSTITUTION. Substituting the
+// index would ask about player 1 INSTEAD of player 0, which breaks the host's own
+// case — the defect is not "the wrong player", it is "only one player". The test is
+// side-effect free on the path that returns 0 (`0x823AF518` falls straight to the
+// return with `r27 == 0`); everything it DOES, it does after deciding yes, at
+// `0x823AF520`. So re-running after a NO costs a read-only pass, and the run that
+// says yes takes the success path for the player who actually holds the item, which
+// is the intended behaviour rather than a simulation of it.
+//
+// SIX GUARDS, each the difference between a repair and a new defect:
+//   1. only inside `sub_823AF418`, so no other objective class is touched;
+//   2. only when the guest's own unmodified call answered NO — a YES is returned
+//      bit-identically and the host's own pickup is untouched;
+//   3. only when the session layer is up at all. This is a cheap early-out and NOT
+//      the reason single player is safe — `Side()`'s own comment records that the
+//      title keeps a session object with no link, so "a session exists" is not
+//      "co-op". Guard 4 is the one that carries that weight;
+//   4. only for an index whose player object actually EXISTS, read directly out of
+//      the container (`sub_8247B020` is `*(players + 0xC + idx*4)` for 0..3) rather
+//      than by calling it and hoping. This is a correctness guard and not an
+//      optimisation: `0x823AF520` DEREFERENCES the player the test resolved, so a
+//      retry for an absent player would be a null dereference rather than a wrong
+//      answer.
+//
+//      **RETRACTED IN PLACE:** this guard was first written down, and its banner
+//      first printed, as the thing that makes the arm "inert in single player by
+//      construction" — one user player, so no other index has an object. **That is
+//      false and the bring-up control measured it false**: with guard 3 dropped, a
+//      SOLO run reports `3 retries run` per consult, because the container holds
+//      four pre-allocated player slots whether or not anyone is in them. The claim
+//      was an inference about the container that nobody had looked at. What the same
+//      run DID establish is worth more than the claim was: 30 retries over dormant
+//      slots changed the answer 0 times and crashed 0 times, so the re-run is
+//      measurably answer-preserving for a slot with nobody in it. Guard 3b below is
+//      what actually makes it inert;
+//   3b. only when the session's own is-co-op byte is set — the same `+0x98` that
+//      `Side()` reads and that `coop_host.cpp` writes. THIS is the inertness guard:
+//      a solo session keeps a session object with no link, and its byte is 0;
+//   5. a re-entrancy flag, so the retried call's own hook cannot retry again;
+//   6. the entry register state is snapshotted and restored before each retry, so
+//      the re-run starts from exactly the state the guest handed us.
+//
+// THERE IS NO OBSERVE-ONLY MODE, and that is a statement about the fix rather than
+// an omission: the measurement IS the side effect. A mode that ran the retry and
+// discarded the answer would have already completed the objective; a mode that did
+// not run it could not know the answer. `=0` is the control arm and is the default.
+//
+// ITS OWN LOG LINE IS THE DIAGNOSIS. It can only fire where the local player said
+// NO and another player said YES, so "the arm engaged" and "a quest item was in the
+// other player's hands and invisible" are the same event. A co-op round where it
+// never fires has REFUTED the mechanism rather than merely failed to help.
+int FoundAnyPlayerMode()
+{
+    static const int mode = [] {
+        const char* e = std::getenv("CZ_COOP_FOUND_ANY_PLAYER");
+        const int v = (e && *e) ? std::atoi(e) : 0;
+        if (v)
+            fprintf(stderr,
+                    "[found] CZ_COOP_FOUND_ANY_PLAYER=%d — when a mission's item prerequisite "
+                    "says NO for the LOCAL player, ask every other user player too. OFF by "
+                    "default; =0 is the control arm and restores the shipped behaviour exactly. "
+                    "Inert outside co-op: the gate is the session's own is-co-op byte, not the "
+                    "player count -- the container holds four pre-allocated slots either way, "
+                    "which a bring-up run measured after the first spelling assumed otherwise.\n",
+                    v);
+        return v;
+    }();
+    return mode;
+}
+
+// THE POSITIVE CONTROL, and it is needed for a specific reason. The single-player
+// null run has the arm engaged and the retry loop NEVER REACHED, because guard 3
+// (`XliveSession_Enabled()`) is false with no session layer. So a solo null proves
+// guard 3 works and proves NOTHING about the retry itself — and the first co-op round
+// with the fix armed would otherwise be the first time that code ever ran, on the
+// operator's machine, where a mistake in guard 4 is a null dereference rather than a
+// wrong answer.
+//
+// `CZ_COOP_FOUND_ANY_PLAYER_TEST=1` drops guard 3 only. Single player then reaches the
+// loop, guard 4 rejects every other index because no other player object exists, and
+// the run prints `consulted N ... N had no second player to ask` — which is the whole
+// machinery exercised end to end with the answer necessarily unchanged. BRING-UP ONLY;
+// it is the same shape as `CZ_COOP_RESPONSE_PLAYER_TEST` and, like it, has no business
+// in a session anyone is playing.
+bool FoundAnyPlayerTest()
+{
+    static const bool on = [] {
+        const char* e = std::getenv("CZ_COOP_FOUND_ANY_PLAYER_TEST");
+        const bool v = e && *e && *e != '0';
+        if (v)
+            fprintf(stderr, "[found] CZ_COOP_FOUND_ANY_PLAYER_TEST=1 — the co-op gate is "
+                            "DROPPED so the retry path runs in single player. This is a bring-up "
+                            "control for the retry machinery, not a fix. It is what measured "
+                            "that the container holds four player slots in solo and that "
+                            "retrying a dormant one changes no answer.\n");
+        return v;
+    }();
+    return on;
+}
+
+thread_local bool t_foundRetrying = false;
+thread_local int32_t t_foundForceIdx = -1;
+std::atomic<unsigned long long> g_foundRetries{0};
+std::atomic<unsigned long long> g_foundRescued{0};
+// AN ARM WITH NO COUNTER CANNOT BE SHOWN TO HAVE ENGAGED (gotcha 151). Without these
+// three, the single-player null control reads "0 rescues" for the intended reason —
+// there is no second player to ask — in exactly the same way it would read "0
+// rescues" if the arm never reached its loop at all. `consults` is every time the
+// local player answered NO while armed, `noPeer` is how many of those found no other
+// player object, and `g_foundRetries` is how many re-runs actually happened.
+std::atomic<unsigned long long> g_foundConsults{0};
+std::atomic<unsigned long long> g_foundNoPeer{0};
+
+// Printed at 1, then every power of ten, so every armed run carries at least one line
+// saying how many times the fix was asked and what it did — without a per-frame print
+// on a path the mission system walks every tick.
+void FoundReport()
+{
+    const unsigned long long c = g_foundConsults.load(std::memory_order_relaxed);
+    bool decade = (c == 1);
+    for (unsigned long long d = 10; d <= 1000000 && !decade; d *= 10)
+        decade = (c == d);
+    if (!decade)
+        return;
+    fprintf(stderr, "[found] consulted %llu time(s): %llu had no second player to ask, %llu "
+                    "retr%s run, %llu RESCUED\n",
+            c, g_foundNoPeer.load(std::memory_order_relaxed),
+            g_foundRetries.load(std::memory_order_relaxed),
+            g_foundRetries.load(std::memory_order_relaxed) == 1 ? "y" : "ies",
+            g_foundRescued.load(std::memory_order_relaxed));
+}
+
+// The world the test resolved, captured from the GetUserPlayer hook so the retry
+// does not have to re-derive it through two vtable calls of its own.
+thread_local uint32_t t_objWorld = 0;
+
 // The window that makes the census below unconditional for the lookups that
 // matter. A prop command's lookup is the one this issue turns on, and a throttle
 // that hides it is the same defect as no instrument at all: the first version of
@@ -4179,8 +4335,102 @@ CZ_OBJ_HOOK(823AF308)
 CZ_OBJ_HOOK(823AF368)
 CZ_OBJ_HOOK(823AF768)
 CZ_OBJ_HOOK(823AF228)
-CZ_OBJ_HOOK(823AF418)
 #undef CZ_OBJ_HOOK
+
+// `sub_823AF418` — cMissionObjectiveGiveItemToNPC's slot 20, the test that decides
+// whether a quest item has been found. It carries BOTH the trace and the candidate
+// fix, because they are the same call: the fix can only act on the answer the trace
+// prints. Read `FoundAnyPlayerMode()` above for the six guards and for why there is
+// no observe-only mode.
+PPC_FUNC(sub_823AF418)
+{
+    const bool trace = ObjTrace();
+    const int fix = FoundAnyPlayerMode();
+    if (!trace && !fix)
+    {
+        __imp__sub_823AF418(ctx, base);
+        return;
+    }
+
+    const uint32_t self = ctx.r3.u32;
+    const uint32_t prevThis = t_objThis;
+    const int32_t prevIdx = t_objPlayerIdx;
+    const uint32_t prevWorld = t_objWorld;
+
+    // GUARD 6: the retry must start from exactly the state the guest handed us.
+    const PPCContext entry = ctx;
+
+    if (trace)
+        ObjMethodEnter(0x823AF418, self);
+    else
+        t_objThis = self, t_objPlayerIdx = -1;
+    t_objWorld = 0;
+
+    __imp__sub_823AF418(ctx, base);
+    uint32_t answer = ctx.r3.u32 & 0xFF;
+
+    // GUARD 2 (the local player already said yes), GUARD 5 (no recursion), GUARD 3
+    // (a co-op session, read from the same session object `Side` reads) and the
+    // world the test itself resolved, which GUARD 4 needs.
+    const uint32_t world = t_objWorld;
+    bool coop = false;
+    if (fix && !answer && !t_foundRetrying && world && XliveSession_Enabled())
+    {
+        const Objects o = Resolve(ctx, base);
+        coop = o.session && LoadU8(base, o.session + kSessionIsCoopByte) != 0;
+    }
+    if (fix && !answer && !t_foundRetrying && world && (coop || FoundAnyPlayerTest()))
+    {
+        const uint32_t players = LoadU32(base, world + 0x7C);
+        const int32_t localIdx = t_objPlayerIdx;
+        if (players && localIdx >= 0)
+        {
+            g_foundConsults.fetch_add(1, std::memory_order_relaxed);
+            unsigned peers = 0;
+            t_foundRetrying = true;
+            for (int32_t p = 0; p < int32_t(kMaxPlayers) && !answer; p++)
+            {
+                if (p == localIdx)
+                    continue;
+                // GUARD 4: `sub_8247B020(players, idx)` is `*(players + 0xC + idx*4)`
+                // for 0..3. Read it rather than call it, because 0x823AF520
+                // DEREFERENCES the player it resolved, so a retry for an absent
+                // player would be a null dereference and not a wrong answer.
+                if (!LoadU32(base, players + 0xC + uint32_t(p) * 4))
+                    continue;
+                peers++;
+                g_foundRetries.fetch_add(1, std::memory_order_relaxed);
+                t_foundForceIdx = p;
+                ctx = entry;
+                __imp__sub_823AF418(ctx, base);
+                t_foundForceIdx = -1;
+                const uint32_t again = ctx.r3.u32 & 0xFF;
+                if (!again)
+                    continue;
+                answer = again;
+                char item[64];
+                PropNameOf(base, self + 0x80, item, sizeof(item));
+                fprintf(stderr, "[found] RESCUED: \"%s\" — the local player (index %d) said NO, "
+                                "player %d says YES. objective %08X, %llu rescue(s) so far. "
+                                "CZ_COOP_FOUND_ANY_PLAYER=0 is the control arm.\n",
+                        item, localIdx, p, self,
+                        (unsigned long long)g_foundRescued.fetch_add(1, std::memory_order_relaxed)
+                            + 1);
+            }
+            t_foundRetrying = false;
+            if (!peers)
+                g_foundNoPeer.fetch_add(1, std::memory_order_relaxed);
+            FoundReport();
+            ctx.r3.u64 = answer;
+        }
+    }
+
+    if (trace)
+        ObjMethodLeave(base, 0x823AF418, self, answer);
+    t_objThis = prevThis;
+    t_objPlayerIdx = prevIdx;
+    t_objWorld = prevWorld;
+}
 
 // `sub_82482AD8(world, index)` — two instructions and a tail call to
 // `GetUserPlayer`. It has ~440 callers across the image, which is why this records
@@ -4190,6 +4440,16 @@ CZ_OBJ_HOOK(823AF418)
 PPC_FUNC(sub_82482AD8)
 {
     if (t_objThis)
+    {
         t_objPlayerIdx = int32_t(ctx.r4.u32);
+        // `sub_82482AD8(world, idx)` — its first argument IS the world, which is how
+        // the fix above gets it without re-deriving it through two vtable calls.
+        t_objWorld = ctx.r3.u32;
+        // The substitution the candidate fix's retry is made of, and the ONLY place
+        // any guest state is changed: one argument of one call, on a retry the
+        // unmodified call has already answered NO to.
+        if (t_foundForceIdx >= 0)
+            ctx.r4.u64 = uint32_t(t_foundForceIdx);
+    }
     __imp__sub_82482AD8(ctx, base);
 }
