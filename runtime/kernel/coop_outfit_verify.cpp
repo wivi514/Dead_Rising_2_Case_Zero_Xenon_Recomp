@@ -474,15 +474,20 @@ void CoopOutfitVerify_Tick(PPCContext& ctx, uint8_t* base)
     const uint32_t localIdx = PPC_LOAD_U32(world + kWorldLocalPlayer);
     Row rows[kMaxPlayers];
     bool present[kMaxPlayers] = {};
-    int dressedCount = 0;
+    int playerCount = 0;
     for (int i = 0; i < kMaxPlayers; ++i)
     {
         present[i] = ReadPlayer(ctx, base, world, mgr, i, rows[i]);
-        if (present[i] && rows[i].dressed)
-            dressedCount++;
+        if (present[i])
+            playerCount++;
     }
 
-    if (dressedCount < (SoloControl() ? 1 : 2))
+    // COUNT PLAYERS, NOT DRESSED PLAYERS. The first cut required two DRESSED players,
+    // and a player wearing nothing at all is precisely the "invisible" report this file
+    // exists for — so the sweep returned in silence on the very session it was built to
+    // read (2026-09-29, the first two-machine run). A gate written from the healthy case
+    // excludes the defect.
+    if (playerCount < (SoloControl() ? 1 : 2))
     {
         inSweep = false;
         return;                       // single player: nothing to check, nothing to say
@@ -501,25 +506,34 @@ void CoopOutfitVerify_Tick(PPCContext& ctx, uint8_t* base)
     {
         announcedOnce = true;
         fprintf(stderr, "[outfit] co-op clothing check is running (local player %u, %d "
-                        "dressed player%s, %u in the clothing manager, every %d ms; "
+                        "player%s, %u in the clothing manager, every %d ms; "
                         "CZ_COOP_OUTFIT_CHECK=0 is off, CZ_COOP_OUTFIT_REPAIR=0 is the "
                         "control)%s\n",
-                localIdx, dressedCount, dressedCount == 1 ? "" : "s",
+                localIdx, playerCount, playerCount == 1 ? "" : "s",
                 PPC_LOAD_U32(mgr + kMgrPlayerCount), PeriodMs(),
                 SoloControl() ? " [SOLO POSITIVE CONTROL: one player is enough and "
                                 "nothing will be repaired]" : "");
+        // The clothing manager's own four-entry player array, printed raw beside the
+        // player objects GetUserPlayer hands out. Everything downstream — the load
+        // records AND the row applier's per-part events — is indexed through it, so a
+        // player missing from it is dressed into somebody else's Chuck.
+        fprintf(stderr, "[outfit] clothing manager %08X players: [%08X %08X %08X %08X]; "
+                        "GetUserPlayer: [%08X %08X %08X %08X]\n", mgr,
+                PPC_LOAD_U32(mgr + kMgrPlayers), PPC_LOAD_U32(mgr + kMgrPlayers + 4),
+                PPC_LOAD_U32(mgr + kMgrPlayers + 8), PPC_LOAD_U32(mgr + kMgrPlayers + 12),
+                rows[0].player, rows[1].player, rows[2].player, rows[3].player);
         for (int i = 0; i < kMaxPlayers; ++i)
-            if (present[i] && rows[i].dressed)
+            if (present[i])
                 PrintRow(i, uint32_t(i) == localIdx, rows[i]);
         if (DumpOn())
             for (int i = 0; i < kMaxPlayers; ++i)
-                if (present[i] && rows[i].dressed && rows[i].mgrIdx >= 0)
+                if (present[i] && rows[i].mgrIdx >= 0)
                     DumpRecords(base, mgr, rows[i].mgrIdx);
     }
 
     for (int i = 0; i < kMaxPlayers; ++i)
     {
-        if (!present[i] || !rows[i].dressed)
+        if (!present[i])
             continue;
         Watch& w = g_watch[i];
         if (w.clothing != rows[i].clothing)
@@ -554,6 +568,20 @@ void CoopOutfitVerify_Tick(PPCContext& ctx, uint8_t* base)
         {
             w.lastMask = both;
             w.announced = false;
+        }
+        if (!rows[i].namedMask)
+        {
+            if (!w.announced)
+            {
+                w.announced = true;
+                fprintf(stderr, "[outfit] PLAYER %d%s IS WEARING NOTHING — all seven of "
+                                "his piece names are empty on this machine, so he renders "
+                                "INVISIBLE here. Nothing dressed him: either his outfit "
+                                "report was empty and the default-outfit dress landed on "
+                                "another player, or it never arrived.\n", i, who);
+                PrintRow(i, local, rows[i]);
+            }
+            continue;
         }
         if (!mask)
         {
