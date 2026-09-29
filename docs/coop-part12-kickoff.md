@@ -1,4 +1,9 @@
-# Co-op part 12 — the FOUND flag is named, and one round closes it
+# Co-op part 12 — the FOUND flag is named, and one round closed it
+
+**STATUS: ISSUE #9 IS CLOSED (2026-09-29).** Both halves fixed, both ON by default, both
+operator-verified on two machines. `coop-plan.md` §12.10-§12.12 is the record of the rounds
+and of the two predictions this document made that measurement had to retract. Nothing here
+is open work; it is kept as the derivation and as the map of the guest structures in §1.
 
 **Supersedes `coop-part11-kickoff.md` on "where issue #9 is".** Part 11's rule still
 stands and is the reason this part exists: *do not build the fix before the flag is found

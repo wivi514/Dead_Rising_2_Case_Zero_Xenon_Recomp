@@ -191,10 +191,29 @@ mask; trust the microcode's own swizzles.
     was built, but **two of its eight steps are retired and its item 0 is answered** —
     read `phase5-notes.md` §6ba before following anything in it.
   - **THE LIVE HAND-OFF IS ALWAYS THE HIGHEST-NUMBERED `partNN-kickoff.md`**, and it
-    supersedes every earlier kickoff on "where the port is". **AS OF 2026-09-28 THE LIVE
+    supersedes every earlier kickoff on "where the port is". **AS OF 2026-09-29 PLAYER ISSUE #9 IS CLOSED — BOTH HALVES FIXED,
+    BOTH ON BY DEFAULT, BOTH OPERATOR-VERIFIED ON TWO MACHINES — AND THE NEXT WORK IS TWO
+    SMALL FIXES THE OPERATOR HAS IN HAND, THEN v1.1.2.** Their instruction closing the
+    evening: *"before we do v1.1.2 I got two small fixes ... we'll do them in a fresh
+    conversation."* **DO NOT START A RELEASE LEG BEFORE THOSE LAND.** The issue-#9 hand-off
+    is `docs/coop-part12-kickoff.md` and `coop-plan.md` §12 is the whole derivation; the two
+    fixes are `CZ_COOP_RESPONSE_PLAYER` (the host dropping his held item when the guest
+    places a part) and `CZ_COOP_FOUND_ANY_PLAYER` (a part the guest picks up never counting
+    as FOUND, so placing it did nothing), `=0` the control arm on each. **THE BLAST RADIUS
+    IS SMALLER THAN THIS FILE CLAIMED TWICE**: of the eleven
+    `cMissionObjectiveGiveItemToNPC` instances, only the five in a `cMissionPrereq`
+    (`+0x7C = 0`) ever reached the local-player lookup — `Gems` short-circuits before it
+    (`+0x7C = 8`, satisfied by the `+0xA8` latch) and the two `KeyItemID` items take the
+    type-0x13 grant, which lands on the host regardless. Both narrowings are measured and
+    both are retractions of a prediction made here (§12.11, §12.12). **OWED, NOT URGENT:**
+    czwin's `C:\cz\play.bat` still carries `CZ_COOP_OBJTRACE=1` /
+    `CZ_COOP_MISSIONWATCH=500`, which are diagnostics; and commit `5117597` pushed 233 MB of
+    `dist-steamdeck*` build output into this PUBLIC repo's history — untracked in `8917e8e`
+    and `.gitignore` now carries `/dist-*/`, but removing the blobs needs a rewrite and a
+    force push, which is the operator's call. ~~AS OF 2026-09-28 THE LIVE
     WORK IS PLAYER ISSUE #9 AND THE HAND-OFF IS `docs/coop-part12-kickoff.md`. THE
     PLACEMENT HALF IS FIXED AND OPERATOR-VERIFIED; THE FOUND HALF IS DIAGNOSED AND OWES
-    ONE TWO-MINUTE ROUND.** Part 11 forbade building the fix before the flag was found by
+    ONE TWO-MINUTE ROUND.~~ Part 11 forbade building the fix before the flag was found by
     MEASUREMENT, and it now is (`coop-plan.md` §12). **A bike part is marked FOUND when the
     prerequisite of the mission `Prologue<Part>Objective` — a `cMissionObjectiveGiveItemToNPC`
     naming the item — sees it in an inventory, and that test looks in exactly ONE inventory:
