@@ -60,3 +60,10 @@ void CoopOutfit_ApplyPendingDefault(PPCContext& ctx, uint8_t* base);
 void CoopOutfit_Tick(PPCContext& ctx, uint8_t* base);   // per frame: the host's deferred dress
 void CoopOutfit_OnReportPiece(PPCContext& ctx, uint8_t* base, uint32_t clothing, uint32_t part,
                               bool nameEmpty);   // the host side: an all-empty report
+
+// coop_outfit_verify.cpp: the other machine's player arrives dressed and renders here
+// with pieces missing. OnReport keeps what the wire said; Tick sweeps every player's
+// seven pieces (recorded vs attached) and re-posts the ones that never came back.
+void CoopOutfitVerify_OnReport(uint8_t* base, uint32_t clothing, uint32_t part,
+                               uint32_t namePtr);
+void CoopOutfitVerify_Tick(PPCContext& ctx, uint8_t* base);

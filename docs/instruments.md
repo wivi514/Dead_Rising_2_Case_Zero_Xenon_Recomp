@@ -4283,6 +4283,43 @@ CZ_OUTFIT_TRACE=1  THE CLOTHING PIPELINE, STEP BY STEP (co-op part 4,
                    Per-part, not per-frame; inert without the variable. The register
                    readings on TexCreate/ModelCreate/LoadDone are approximate (the size
                    fields print a string length) — the names and the results are right
+CZ_COOP_OUTFIT_CHECK=0  THE POST-LOAD CLOTHING CHECK, OFF (it is ON by default;
+                   runtime/kernel/coop_outfit_verify.cpp, co-op part 13). Every 2 s,
+                   once two dressed players exist, it follows each player's seven
+                   clothing pieces down the whole chain: REPORTED (what the other
+                   machine's outfit report said) -> RECORDED (clothing + part*0x30 +
+                   0x4AE8, and clothing = *(player + 0xCE74), A LOAD) -> LOADED (the
+                   clothing manager's per-player load record, mgr + 0x10 +
+                   (slot*13 + part)*0x128, present iff +0x38 holds a real model handle
+                   and its own name at +0x00 matches). A piece recorded and not loaded
+                   is a piece the player is wearing and cannot be seen in — all seven
+                   is "invisible", part 3 alone is "no torso". Lines: `co-op clothing
+                   check is running ...` once, then `PLAYER n ... IS MISSING CLOTHING`
+                   with each missing piece's LIVE streaming budget, and `player n ...
+                   has all N of the pieces he is wearing` when it clears
+CZ_COOP_OUTFIT_CHECK_MS=N  the sweep period, default 2000
+CZ_COOP_OUTFIT_REPAIR=0  THE CONTROL ARM for the repair half. By default a piece that
+                   has read missing for three consecutive sweeps (~6 s, past any honest
+                   async load) is asked for again: the title's own change-part event,
+                   rebuilt field for field from the co-op flow's own site
+                   (0x82582A60..0x82582AD4), with the name taken from the record — and
+                   if the record itself lost the name, the one the wire delivered is
+                   written back first (sub_82371978, the receiver's own writer). At most
+                   three attempts per part. `=0` checks and reports and changes nothing
+CZ_COOP_OUTFIT_CHECK_SOLO=1  THE POSITIVE CONTROL, and it needs no second machine: sweep
+                   with ONE dressed player. In single player the local Chuck is visibly
+                   correct, so the check MUST print `player 0 (this machine) has all 6
+                   of the pieces he is wearing`. Anything else means the offsets are
+                   wrong and nothing the check says about a co-op session means anything
+                   — this arm is what caught a first cut that read clothing + part*0x2C
+                   + 0x49A4 (a real attached-model array that is never written for the
+                   player) and called a correctly dressed Chuck naked. Repair is forced
+                   off in this mode
+CZ_COOP_OUTFIT_VERBOSE=1  print the whole table every sweep instead of only on a change
+CZ_COOP_OUTFIT_DUMP=1  dump all 13 load records per player once, non-zero words only —
+                   how the record layout above was measured, and part 2 (facewear) is
+                   empty on Chuck's default outfit so every dump carries its own
+                   negative control
 CZ_COOP_JOIN_PROMPT=0  THE CONTROL ARM for the host's "<player> wants to join your game"
                    prompt (co-op part 5, runtime/kernel/coop_call.cpp). By default a
                    joining player is ASKED ABOUT with the title's own dialog

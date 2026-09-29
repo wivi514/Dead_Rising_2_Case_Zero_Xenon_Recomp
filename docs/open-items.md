@@ -7,6 +7,21 @@ NOT the cause is what stops the next session re-buying it.
 
 Next, in order:
 
+0ze. **THE GUEST WHO ARRIVES DRESSED AND RENDERS INVISIBLE OR WITHOUT A TORSO — THE
+    CHECK AND THE REPAIR ARE IN, NEITHER HAS SEEN A TWO-MACHINE SESSION.** Co-op part 13
+    (`coop-plan.md` §13, `runtime/kernel/coop_outfit_verify.cpp`). Both ship ON;
+    `CZ_COOP_OUTFIT_REPAIR=0` is the control and the one-word rollback. What is owed, in
+    order: (1) a join with the default arms, and the host log's `[outfit]` lines —
+    either `player 1 (the other machine) has all N of the pieces he is wearing` or
+    `PLAYER 1 ... IS MISSING CLOTHING` naming the parts, their LIVE budgets and up to
+    three repair attempts; (2) the same join with `CZ_COOP_OUTFIT_REPAIR=0`, same
+    evening, same two machines, as the control; (3) **if a piece still fails after three
+    attempts the repair is not the answer and the BUDGET is the next suspect** — the
+    per-part table at `0x829D42F0` is halved for two players (chest 2006 -> 1003 KB) and
+    the check prints both numbers, so that log decides it without another experiment.
+    **Housekeeping that will otherwise bury the evidence:** czwin's `C:\cz\play.bat`
+    still carries `CZ_COOP_OBJTRACE=1` / `CZ_COOP_MISSIONWATCH=500` from issue #9.
+
 0zd. ~~**THE SPEEDRUN BLOCK'S CUTSCENE-NAME DECODE**~~ — **CLOSED 2026-09-25 by a
     COMPLETED PLAYTHROUGH.** The one case a headless route could not reach —
     `707_give_katey_zombrex_psycho_intro`, 35 bytes against the engine string class's

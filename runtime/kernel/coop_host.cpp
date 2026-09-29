@@ -316,6 +316,7 @@ PPC_FUNC(sub_82537FA0)
 PPC_FUNC(sub_824C0668)
 {
     CoopOutfit_Tick(ctx, base);   // a save-less joiner's outfit, applied here by the host
+    CoopOutfitVerify_Tick(ctx, base);   // and the check that every player's pieces attached
     if (HostRequested())
     {
         static char lastReason[320] = "";

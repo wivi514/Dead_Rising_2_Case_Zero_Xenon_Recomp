@@ -2860,3 +2860,153 @@ Zero crashes across the whole evening.
 
 **ISSUE #9 IS CLOSED.** Both halves fixed, both on by default, both operator-verified, and
 the blast radius is now bounded by measurement rather than by argument.
+
+## Part 13: the guest arrives dressed and renders naked — the post-load clothing check (2026-09-29)
+
+**The report (operator, relaying players):** *"when the guest arrives in a session they
+are fully clothed but often they appear invisible to the host or with the torso
+missing."* Fully clothed on his own screen, so his save and his own player are fine; it
+is the COPY of him on the other machine that is wrong. And **intermittent**, which is
+what separates it from part 4's `chest_NONE` — that one was deterministic, it is fixed as
+data, and it is not this.
+
+### The two symptoms are one defect at two magnitudes
+
+In this engine a character IS his seven clothing pieces. The load requester's own prefix
+table (`0x829D42B8`, seven pointers) names them and settles it without a guess:
+
+| part | 0 | 1 | 2 | 3 | 4 | 5 | 6 |
+|---|---|---|---|---|---|---|---|
+| prefix | `headwear_` | `head_` | `facewear_` | `chest_` | `hands_` | `leg_` | `feet_` |
+
+Nothing else of Chuck is drawn. So **"no torso" is exactly "piece 3 never arrived" and
+"invisible" is exactly "none of the seven arrived"** — one measurable predicate, not two
+bug reports.
+
+### The chain, and the two addresses that decide it
+
+1. **REPORT** — the joiner sends seven `tEventOutfit` messages; the receiver
+   (`sub_82570E78`) hands each to `sub_82371978(clothing, part, name)`.
+   **`clothing = *(player + 0xCE74)` — a LOAD**, not an offset (`lwzx r3, r27, 0xCE74`
+   there; `lwz r3, 0(player + 0xCE74)` in the co-op flow at `0x82582A9C`).
+   `coop_outfit.cpp`'s `IsWearing` hook had been printing `player + 0xCE74`, i.e. seven
+   records out of the middle of the player object; **fixed in this part.**
+2. **RECORD** — `clothing + part*0x30`: `+0x4AE8` the name (a 0x24-byte SSO string),
+   `+0x4B0C` its hash, `+0x4B10` the clothingdatabase row. The co-op setter writes the
+   name and the hash and nothing else; the single-player setter `sub_8238C6F8` also
+   writes the tag and the db row.
+3. **LOAD** — one change-part event per part; `sub_82271BB0` takes it and calls the
+   requester `sub_82270290`, which builds `<prefix><name>` and streams.
+4. **ARRIVE** — the piece lands in the clothing manager's per-player **load record**,
+   `mgr + 0x10 + (mgrPlayerIdx*13 + part) * 0x128`.
+
+### The record's layout was MEASURED, and part 2 paid for it
+
+Chuck's default outfit has an **empty facewear**, so record 2 is a piece that was never
+requested sitting in the same dump as six that were — a negative control that costs
+nothing and is always there (`CZ_COOP_OUTFIT_DUMP=1` prints it again any time):
+
+| field | a piece that arrived (rec 0,1,3,4,5,6) | the empty one (rec 2) |
+|---|---|---|
+| `+0x00` | the piece's own name, inline SSO (`young_chuck`, `naked`, `young_chuck_under`) | empty |
+| `+0x38` | a model handle (`0x175`, `0x176`, …) | `FFFFFFFF` |
+| `+0x78` | a texture handle (`0x166`, `0x167`, …) | `FFFFFFFF` |
+| `+0xB8` | 1 — files landed | 0 |
+| `+0xBC` | the part index it serves | 13 = idle |
+| `+0x11C` | the streaming budget, in BYTES | the part's budget |
+
+So **a piece is present iff its record's `+0x38` is a real handle**, and the record's own
+name at `+0x00` is a free cross-check that the right record is being read at all.
+
+**Two corrections to `coop_outfit.cpp`'s own comments** fall out of that dump:
+`+0x110` is not the record's buffer size (it read 46 for a 1460 KB budget) — **`+0x11C`
+is**, and `+0xBC` is the part the record serves with 13 meaning idle, not an expected
+file count.
+
+### RETRACTED IN PLACE, and it cost this part two runs
+
+**`clothing + part*0x2C + 0x49A4` is a real seven-slot attached-model array** — written
+by `sub_82371B88`, read by `sub_82371A70` — **and it is never written for the PLAYER**.
+All seventeen of its call sites are inside `sub_82165DE8`, a different actor path. The
+first cut of this work used it as the "is this piece attached" test and reported a
+correctly dressed **single-player** Chuck as missing all six of his pieces, with the
+right names beside every one of them. Do not re-buy it.
+
+### What shipped: `runtime/kernel/coop_outfit_verify.cpp`
+
+Every 2 s, once two dressed players exist, it reads all four `GetUserPlayer` slots
+(`sub_82482AD8(world, idx)`, bounds-checked 0..3 by `sub_8247B020` itself), resolves each
+player's index in the clothing manager the way the change-part handler does
+(`0x82271EA4`: find the player pointer in `mgr+0x428C`), and compares, per part,
+**reported → recorded → loaded**. `world = *(*(0x82A57428) + 0x2C)`, which is
+`sub_82483230(mgr, 1)` — two instructions, `*(mgr + (idx+0xA)*4)` — so no guest call is
+needed for it.
+
+**Three controls, and they are why this is allowed to act on what it finds:**
+
+* the **LOCAL player** is swept by the same code as the remote one and is visibly correct
+  by definition, so if he reads BAD the repair refuses and says so;
+* the **load record's own name** must match the clothing record's name, or we are reading
+  the wrong record;
+* **`CZ_COOP_OUTFIT_CHECK_SOLO=1`** runs the whole sweep in single player, where the
+  answer must be "all seven". That arm is what caught the `+0x49A4` error above, before
+  any operator session — a check that has only ever been silent has not been shown
+  capable of reading a correct player (gotcha 30).
+
+**The repair** is the title's own change-part event, rebuilt field for field from the
+co-op flow's own per-part post (`0x82582A60..0x82582AD4`): vtable `0x8200AFD4`, type
+`0x2F` at `+0x8`, `3` at `+0x10`, `-1` at `+0x18`/`+0x1C`, then
+`sub_8247CAA8(evt, player, part, -1, name, 1)` and
+`sub_82188488(eventMgr, evt, 0x8207EC20, 0x85B)` with
+`eventMgr = *(*(world+0x78)+0x70)`. It is not a new mechanism — it is the same event the
+join posts, posted again for the one part that did not come back. It fires only after
+three consecutive missing sweeps (~6 s, past any honest async load), at most three times
+per part, never while a control is bad. If the record itself lost the name, the one the
+WIRE delivered is written back first (`sub_82371978`'s impl, called directly so our own
+report hook does not re-enter and re-arm part 6's save-less dress).
+
+Scratch for the event is the guest stack below the hook's own frame (`r1 - 0x200`), with
+the callee's stack pointer pushed to `r1 - 0x400`. The sweep runs from `sub_824C0668`,
+the per-frame game-session update that already carries part 6's deferred dress.
+
+Arms: `CZ_COOP_OUTFIT_CHECK=0`, `CZ_COOP_OUTFIT_CHECK_MS=N` (2000),
+`CZ_COOP_OUTFIT_REPAIR=0` (**the control**), `CZ_COOP_OUTFIT_VERBOSE=1`,
+`CZ_COOP_OUTFIT_CHECK_SOLO=1`, `CZ_COOP_OUTFIT_DUMP=1`.
+
+### The next suspect, and this part prints the number that decides it
+
+If a piece fails because its streaming BUDGET is too small it will fail again the same
+way, the repair will burn its three tries, and the log will say so. That is the honest
+limit of this work, and the suspect behind it is already on the table (part 4 recorded it
+as a non-defect **for `young_chuck`** and did not ask the general question):
+
+**`0x829D42F0` is a KB budget table with two columns, solo and "more than one player",
+the second EXACTLY HALF the first**, chosen on `mgr + 0x4374 > 1`:
+
+| part | headwear | head | facewear | chest | hands | leg | feet |
+|---|---|---|---|---|---|---|---|
+| solo KB | 1460 | 1530 | 440 | 2006 | 1296 | 1900 | 716 |
+| co-op KB | 730 | 765 | 220 | **1003** | 648 | 950 | 358 |
+
+Confirmed live: in the single-player control run record 0's `+0x11C` read `0x16D000` =
+1,495,040 bytes = exactly 1460 KB. **A chest over 1003 KB would be invisible in co-op and
+fine solo, for either player** — which fits "often", fits "the torso specifically", and
+fits "he is fully clothed on his own screen" (his own machine is two-player too, but the
+host's Chuck loads while the manager still holds one player). The sweep prints the
+record's LIVE budget beside every missing piece, so **one operator log decides it**. If
+that is the mechanism the fix is upstream of this file — the halving itself, or the
+two-player texture flag at `g_82AC4878 + 0xB54` the create path sets
+(`0x822271F4..0x82227208`).
+
+### What is owed
+
+* A two-machine session. The predicted lines, in order: `co-op clothing check is
+  running`, then either `player 1 (the other machine) has all N of the pieces he is
+  wearing` or `PLAYER 1 ... IS MISSING CLOTHING` naming the parts and their budgets, then
+  up to three `asking for player 1's chest ... again` lines and either a `has all N` or
+  the last-attempt line.
+* The control pair the same evening: `CZ_COOP_OUTFIT_REPAIR=0` on one join, default on
+  the next, same two machines.
+* **Two free nulls that were run here and must stay true:** single player produces no
+  `[outfit]` line at all (fewer than two dressed players), and
+  `CZ_COOP_OUTFIT_CHECK_SOLO=1` in single player must read all seven.

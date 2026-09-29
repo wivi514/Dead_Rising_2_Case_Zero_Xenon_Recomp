@@ -47,8 +47,10 @@
 //
 // Per-part records live at clothing + part*0x30: +0x4AE4 tag, +0x4AE8 name
 // (a 0x24-byte SSO string, length at +0x20, heap pointer at +0 when >= 0x1F),
-// +0x4B0C hash, +0x4B10 clothing-db row. The clothing object is the player
-// object + 0xCE74 (the receiver's `lwzx r3, r27, 0xCE74`).
+// +0x4B0C hash, +0x4B10 clothing-db row. The clothing object is *(player +
+// 0xCE74) — A LOAD, not an offset: the receiver's `lwzx r3, r27, 0xCE74` and the
+// co-op flow's `lwz r3, 0(player + 0xCE74)` both dereference (corrected in part 13;
+// the IsWearing hook below had been printing the offset).
 //
 // Every print is gated on the variable and the hooks pass straight through
 // otherwise; a hook on a per-part path is not on the frame path.
@@ -117,6 +119,12 @@ const char* OutfitName(uint8_t* base, int idx)
     return GuestStr(base, PPC_LOAD_U32(kOutfitNames + uint32_t(idx) * 4));
 }
 
+// NOTE (co-op part 13): the "attached model" column below — clothing + part*0x2C +
+// 0x49A4 — is a real array, written by sub_82371B88 and read by sub_82371A70, but it is
+// NEVER WRITTEN FOR THE PLAYER: all of sub_82371B88's callers are inside sub_82165DE8, a
+// different actor path. A player's pieces live in the clothing manager's load records
+// instead (coop_outfit_verify.cpp). Expect this column to read 00000000 for Chuck and do
+// not read that as a defect.
 void PrintRecord(uint8_t* base, uint32_t clothing, uint32_t part)
 {
     const uint32_t r = clothing + part * 0x30;
@@ -180,10 +188,15 @@ PPC_FUNC(sub_82371978)
     // host-side half of the default-outfit rule (coop_outfit_default.cpp).
     const char* name = GuestStr(base, ctx.r5.u32);
     const bool empty = !name || !*name;
+    const uint32_t namePtr = ctx.r5.u32;
     __imp__sub_82371978(ctx, base);
     if (Enabled() && part < 7)
         PrintRecord(base, clothing, part);
     CoopOutfit_OnReportPiece(ctx, base, clothing, part, empty);
+    // What the wire said, kept for the post-load check (coop_outfit_verify.cpp): the
+    // record this just wrote is the only other copy, and it is the thing that can be
+    // wrong.
+    CoopOutfitVerify_OnReport(base, clothing, part, namePtr);
 }
 
 PPC_FUNC(sub_82371B88)
@@ -216,16 +229,25 @@ PPC_FUNC(sub_82167318)
         for (uint32_t i = 0; i < 7 && entry; ++i)
             fprintf(stderr, "[outfit]     entry piece %u: hash %08X '%s'\n", i,
                     PPC_LOAD_U32(entry + i * 4), SsoStr(base, entry + 0x1C + i * 0x24));
-        for (uint32_t i = 0; i < 7 && player; ++i)
-            PrintRecord(base, player + 0xCE74, i);
+        // *(player + 0xCE74), not player + 0xCE74: the receiver's own instruction is
+        // `lwzx r3, r27, 0xCE74` and the co-op flow's is `lwz r3, 0(player + 0xCE74)`
+        // — both LOAD the clothing object. This site had been printing seven records
+        // out of the middle of the player object.
+        const uint32_t clothing = player ? PPC_LOAD_U32(player + 0xCE74) : 0;
+        for (uint32_t i = 0; i < 7 && clothing; ++i)
+            PrintRecord(base, clothing, i);
     }
 }
 
 // ---- the load side: from a part name to a model and a texture in memory ----
 //
 // The clothing manager keeps, per player, 13 load records of 0x128 bytes (from
-// mgr+0x10); +0xB8 counts completed files, +0xBC the expected count (13 = idle),
-// +0x110 the record's buffer size, +0x11C its buffer. sub_82165C68 sizes a
+// mgr+0x10). CORRECTED IN CO-OP PART 13 by dumping one (CZ_COOP_OUTFIT_DUMP=1):
+// +0x00 is the piece's own name (inline SSO), +0x38 sixteen model handles
+// (FFFFFFFF = empty) and +0x78 sixteen texture handles, +0xB8 the files that
+// landed, +0xBC THE PART THIS RECORD SERVES (13 = idle, not an expected file
+// count), and +0x11C THE BUFFER SIZE — +0x110 is not it, it read 46 for a
+// 1460 KB budget. sub_82165C68 sizes a
 // record's buffer from a KB table at 0x829D42F0 that has TWO columns — solo
 // and "more than one player" (mgr+0x4374 > 1), the second exactly half the
 // first (chest 2006 -> 1003 KB) — and the texture-create path sets a byte

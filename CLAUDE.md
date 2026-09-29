@@ -191,7 +191,21 @@ mask; trust the microcode's own swizzles.
     was built, but **two of its eight steps are retired and its item 0 is answered** —
     read `phase5-notes.md` §6ba before following anything in it.
   - **THE LIVE HAND-OFF IS ALWAYS THE HIGHEST-NUMBERED `partNN-kickoff.md`**, and it
-    supersedes every earlier kickoff on "where the port is". **AS OF 2026-09-29 PLAYER ISSUE #9 IS CLOSED — BOTH HALVES FIXED,
+    supersedes every earlier kickoff on "where the port is". **ALSO 2026-09-29, CO-OP PART 13
+    (`coop-plan.md` §13): THE GUEST WHO ARRIVES DRESSED AND RENDERS INVISIBLE OR WITHOUT A
+    TORSO NOW HAS A POST-LOAD CHECK AND A REPAIR, BOTH ON BY DEFAULT, NEITHER YET SEEN IN A
+    TWO-MACHINE SESSION** (`runtime/kernel/coop_outfit_verify.cpp`; `CZ_COOP_OUTFIT_CHECK=0`
+    off, `CZ_COOP_OUTFIT_REPAIR=0` the control). "Invisible" and "no torso" are ONE defect at
+    two magnitudes — a character IS his seven clothing pieces (0 headwear, 1 head, 2 facewear,
+    3 chest, 4 hands, 5 leg, 6 feet, from the requester's own prefix table 0x829D42B8). The
+    chain is reported -> recorded (`*(player+0xCE74) + part*0x30 + 0x4AE8`, **a LOAD**) ->
+    loaded (the clothing manager's per-player record `mgr+0x10+(slot*13+part)*0x128`, present
+    iff `+0x38` is a real model handle). **RETRACTED IN PLACE: `clothing + part*0x2C + 0x49A4`
+    is a real attached-model array and is NEVER WRITTEN FOR THE PLAYER** — a first cut used it
+    and called a correctly dressed single-player Chuck naked; `CZ_COOP_OUTFIT_CHECK_SOLO=1`,
+    the single-machine positive control, is what caught it. The standing next suspect is
+    printed by the check itself: the part budgets at 0x829D42F0 are HALVED for two players
+    (chest 2006 -> 1003 KB). **AS OF 2026-09-29 PLAYER ISSUE #9 IS CLOSED — BOTH HALVES FIXED,
     BOTH ON BY DEFAULT, BOTH OPERATOR-VERIFIED ON TWO MACHINES — AND THE NEXT WORK IS TWO
     SMALL FIXES THE OPERATOR HAS IN HAND, THEN v1.1.2.** Their instruction closing the
     evening: *"before we do v1.1.2 I got two small fixes ... we'll do them in a fresh
