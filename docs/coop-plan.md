@@ -2798,9 +2798,65 @@ it tests the claim that the repair is in the CLASS rather than in the wiring. Re
 needs `PrologueWinSomeLoseSome` done, Jemi and Fausto both rescued, and 7:00; the gems then
 spawn at `-104.856, 3.276, -127.693`.
 
+**RUN, AND IT IS A NULL — see §12.12.** The gems short-circuit before the player lookup
+(`+0x7C = 8`) and are satisfied through the `+0xA8` latch, so the repaired path is never
+entered for them. The class claim narrows to PREREQ-position instances, i.e. the five bike
+parts and nothing else.
+
 **Transferable:** a prediction that enumerates instances of a CLASS is only as good as the
 check that those instances take the same PATH. Three of the eleven here did not, and the
 evidence was already written down two sections earlier in the same document.
 
 Also from the same session, unremarked at the time: the armed round rescued **twice**, not
 once — `GasolineCanister` and then `WheelPawn`, both guest pickups.
+
+#### 12.12 The gems are a NULL, and `+0x7C` splits the eleven three ways (2026-09-29)
+
+The operator reached `PrologueMoMoneyMoProblems` and did the gems, plus more bike parts.
+
+**The gems never enter the repaired path at all.** The instrument says so on one line:
+
+```
+Gems:       answer 1, asked GetUserPlayer for index -1, latch(+A8)=1 skip(+7C)=8
+WheelPawn:  answer 1, asked GetUserPlayer for index  0, latch(+A8)=0 skip(+7C)=0
+```
+
+`index -1` is the hook's *never called* sentinel — `GetUserPlayer` was not invoked during
+that evaluation. `skip(+7C) = 8` is non-zero, which short-circuits at `0x823AF448` before the
+lookup; `latch(+0xA8) = 1` returns 1 at `0x823AF424`, the top of the function. The mission
+still completed (`PrologueMoMoneyMoProblems state 1 -> 2`), through whatever sets that latch.
+
+**So the gems neither confirm nor refute the class-level claim** — the code path was never
+entered. Recorded as a null rather than as a win, because an instrument that reports
+`index -1` is the only reason the difference is visible at all; the answer was `1` either way
+and a coarser trace would have read it as a success.
+
+**What it does establish is a discriminator.** The eleven
+`cMissionObjectiveGiveItemToNPC` instances split three ways, and only one group ever had the
+defect:
+
+| position in the data | `+0x7C` | consults a player? | verdict |
+|---|---|---|---|
+| inside `cMissionPrereq` (the 5 bike parts) | `0` | yes, the LOCAL player only | **was broken, now fixed** |
+| inside `cMissionObjective` (`Gems`) | `8` | **never** — satisfied through the latch | never broken |
+| key items (`Key_MasterKey`, `Zombrex`) | `0` | yes, and the type-0x13 grant lands on the host regardless | never broken (§12.11) |
+
+**So §12.7's claim that "the repair is in the CLASS and not in the part" is narrowed, for the
+second time today, to: prereq-position instances.** That is exactly the five bike parts, and
+nothing else in the game was ever affected by this defect. Smaller than claimed twice, and it
+is the claim the evidence supports.
+
+**Transferable, and it is the same lesson as §12.11 one level finer:** enumerating instances
+of a class is not enough, and neither is checking they take the same PATH — two instances can
+enter the same FUNCTION and leave it by different branches. `+0x7C` and the `+0xA8` latch are
+both printed by the trace only because a field that can short-circuit a decision was worth
+printing next to the decision. That choice is what turned a false positive into a null.
+
+**The bike-part evidence, cumulative across both games:** four `[found] RESCUED` lines —
+`GasolineCanister`, `WheelPawn` (twice, in two different games and against two different
+objective objects, `A51D5650` and `A51D5100`), and `BikeForks` — every one a guest pickup,
+every one credited, with `GasCanPlaced`, `WheelPawnPlaced` and `BikeForksPlaced` all raised.
+Zero crashes across the whole evening.
+
+**ISSUE #9 IS CLOSED.** Both halves fixed, both on by default, both operator-verified, and
+the blast radius is now bounded by measurement rather than by argument.
