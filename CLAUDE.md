@@ -193,19 +193,35 @@ mask; trust the microcode's own swizzles.
   - **THE LIVE HAND-OFF IS ALWAYS THE HIGHEST-NUMBERED `partNN-kickoff.md`**, and it
     supersedes every earlier kickoff on "where the port is". **ALSO 2026-09-29, CO-OP PART 13
     (`coop-plan.md` §13): THE GUEST WHO ARRIVES DRESSED AND RENDERS INVISIBLE OR WITHOUT A
-    TORSO NOW HAS A POST-LOAD CHECK AND A REPAIR, BOTH ON BY DEFAULT, NEITHER YET SEEN IN A
-    TWO-MACHINE SESSION** (`runtime/kernel/coop_outfit_verify.cpp`; `CZ_COOP_OUTFIT_CHECK=0`
+    TORSO IS FIXED BY A POST-LOAD CHECK AND A REPAIR, BOTH ON BY DEFAULT AND PERMANENT
+    (the operator's instruction), AND BOTH OPERATOR-VERIFIED ON TWO MACHINES THE SAME DAY:
+    the guest arrived with all six named pieces NOT LOADED, six re-posts went out on attempt
+    1, every one answered `LoadDone ... 1 of 1 files`, the next sweep read `has all 6 of the
+    pieces he is wearing`, and they reported *"this time he is visible"* (attempts 2 and 3
+    never fired, 0 desyncs). **THE DEFECT IS UPSTREAM AND STILL OPEN: his names ARRIVE and
+    are RECORDED correctly and NOTHING ASKS FOR THE FILES** — the join's own per-part
+    change-part posts do not take effect while re-posting the identical events does, the
+    same timing shape part 6 met. This is the BACKSTOP, not the cure. **SEPARATE AND STILL
+    OPEN: a guest with NO SAVE is dressed onto the HOST's Chuck** — run 1 printed `dressing
+    slot 1 in row 17` and `SetOutfit player 1`, then every `SetPart` landed on `B926EA40`
+    (the host) while the guest's clothing is `B9288350`; the `CZ_COOP_RESPONSE_PLAYER` shape
+    again, and the repair cannot touch it because a guest with no outfit has no name to
+    re-post** (`runtime/kernel/coop_outfit_verify.cpp`; `CZ_COOP_OUTFIT_CHECK=0`
     off, `CZ_COOP_OUTFIT_REPAIR=0` the control). "Invisible" and "no torso" are ONE defect at
     two magnitudes — a character IS his seven clothing pieces (0 headwear, 1 head, 2 facewear,
     3 chest, 4 hands, 5 leg, 6 feet, from the requester's own prefix table 0x829D42B8). The
     chain is reported -> recorded (`*(player+0xCE74) + part*0x30 + 0x4AE8`, **a LOAD**) ->
     loaded (the clothing manager's per-player record `mgr+0x10+(slot*13+part)*0x128`, present
-    iff `+0x38` is a real model handle). **RETRACTED IN PLACE: `clothing + part*0x2C + 0x49A4`
-    is a real attached-model array and is NEVER WRITTEN FOR THE PLAYER** — a first cut used it
-    and called a correctly dressed single-player Chuck naked; `CZ_COOP_OUTFIT_CHECK_SOLO=1`,
-    the single-machine positive control, is what caught it. The standing next suspect is
-    printed by the check itself: the part budgets at 0x829D42F0 are HALVED for two players
-    (chest 2006 -> 1003 KB). **AS OF 2026-09-29 PLAYER ISSUE #9 IS CLOSED — BOTH HALVES FIXED,
+    iff `+0x38` is a real model handle). **FOUR RETRACTIONS IN PLACE, ALL MEASURED:** `clothing + part*0x2C +
+    0x49A4` is a real attached-model array and is NEVER WRITTEN FOR THE PLAYER (a first cut
+    used it and called a correctly dressed single-player Chuck naked;
+    `CZ_COOP_OUTFIT_CHECK_SOLO=1`, the single-machine positive control, caught it); the
+    sweep's own gate required two DRESSED players and so was BLIND to the all-empty case it
+    was written for (run 1 printed nothing at all); **the guest IS registered with the
+    clothing manager** (all four `+0x428C` entries matched `GetUserPlayer`); and **the
+    two-player budget halving was NOT in play** — `mgr+0x4374` read 1, so the SOLO column was
+    selected and the chest kept its full 2006 KB. The check still prints the live budget
+    beside every missing piece, which is what made that answerable in ONE log. **AS OF 2026-09-29 PLAYER ISSUE #9 IS CLOSED — BOTH HALVES FIXED,
     BOTH ON BY DEFAULT, BOTH OPERATOR-VERIFIED ON TWO MACHINES — AND THE NEXT WORK IS TWO
     SMALL FIXES THE OPERATOR HAS IN HAND, THEN v1.1.2.** Their instruction closing the
     evening: *"before we do v1.1.2 I got two small fixes ... we'll do them in a fresh

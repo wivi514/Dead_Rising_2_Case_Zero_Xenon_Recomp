@@ -7,8 +7,15 @@ NOT the cause is what stops the next session re-buying it.
 
 Next, in order:
 
-0ze. **THE GUEST WHO ARRIVES DRESSED AND RENDERS INVISIBLE OR WITHOUT A TORSO — THE
-    CHECK AND THE REPAIR ARE IN, NEITHER HAS SEEN A TWO-MACHINE SESSION.** Co-op part 13
+0ze. **THE GUEST WHO ARRIVES DRESSED AND RENDERS INVISIBLE OR WITHOUT A TORSO —
+    REPAIRED AND OPERATOR-VERIFIED ON TWO MACHINES (2026-09-29), BOTH HALVES ON BY DEFAULT
+    AND PERMANENT.** `coop-plan.md` §13 is the record. **What remains is not the symptom:**
+    (a) the CONTROL, `CZ_COOP_OUTFIT_REPAIR=0` on a join that also reports him missing — he
+    should stay missing and stay invisible; (b) **the CURE** — his names arrive and are
+    recorded and NOTHING ASKS FOR THE FILES, so the join's own per-part change-part posts
+    are being dropped and only a re-post takes; (c) **a guest with NO SAVE is dressed onto
+    the HOST's Chuck**, a separate open defect the repair cannot touch (no name to re-post).
+    ~~**THE CHECK AND THE REPAIR ARE IN, NEITHER HAS SEEN A TWO-MACHINE SESSION.**~~ Co-op part 13
     (`coop-plan.md` §13, `runtime/kernel/coop_outfit_verify.cpp`). Both ship ON;
     `CZ_COOP_OUTFIT_REPAIR=0` is the control and the one-word rollback. What is owed, in
     order: (1) a join with the default arms, and the host log's `[outfit]` lines —

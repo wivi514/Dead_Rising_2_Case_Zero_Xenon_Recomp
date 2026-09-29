@@ -2998,15 +2998,71 @@ that is the mechanism the fix is upstream of this file — the halving itself, o
 two-player texture flag at `g_82AC4878 + 0xB54` the create path sets
 (`0x822271F4..0x82227208`).
 
+### OPERATOR-VERIFIED ON TWO MACHINES, 2026-09-29 — and the first run refuted the check itself
+
+**Run 1 (`play_0929_1452.log`) printed NOT ONE line from the check.** The sweep required
+two *dressed* players, and the guest's outfit report arrived with all seven names EMPTY —
+which is precisely the "invisible" case this was written for. **A gate written from the
+healthy case excluded the defect.** It counts players that EXIST now, and `PLAYER n IS
+WEARING NOTHING` is its own reported state.
+
+That same log carried a finding the check had nothing to do with: part 6's save-less
+joiner dress fired correctly (`dressing slot 1 in row 17`, `SetOutfit player 1`,
+`ApplyRow player 1`) and **every `SetPart` that followed landed on clothing `B926EA40` —
+the HOST's own Chuck — while the guest's clothing object is `B9288350`.** A guest with no
+save is still dressed onto the wrong player. That is open, it is the same shape as issue
+#9's `CZ_COOP_RESPONSE_PLAYER`, and it is NOT what run 2 fixed.
+
+**Run 2 (`play_0929_1455.log`), the guest with a save: the repair worked, and the log and
+the operator's eye agree.**
+
+```
+player 0 (this machine) has all 6 of the pieces he is wearing          <- the control
+PLAYER 1 (the other machine) IS MISSING CLOTHING — ... renders INVISIBLE here:
+  headwear=young_chuck NOT LOADED  head=... NOT LOADED  chest=... NOT LOADED
+  hands=naked NOT LOADED  leg=... NOT LOADED  feet=... NOT LOADED
+  asking for player 1's headwear ('young_chuck') again — attempt 1 of 3   [x6]
+player 1 (the other machine) has all 6 of the pieces he is wearing     <- after the re-post
+```
+
+Every re-post answered `LoadDone player 1 part N: 1 of 1 files`. **Attempts 2 and 3 never
+fired**; 0 `[title:desync]`; no crash. Operator: *"this time he is visible"*.
+
+**WHAT THAT SAYS THE DEFECT IS, and it is upstream of this file.** His names ARRIVED and
+were RECORDED correctly — nothing was ever wrong with the report. **Nothing asked for the
+FILES.** The title's own per-part change-part events at join do not take effect, and
+re-posting the identical events does. That is a timing defect in the join, the same shape
+part 6 found when a row applied at level start went nowhere because the player did not
+exist yet. **This file is the backstop, not the cure.**
+
+**TWO SUSPECTS THIS PART CARRIED AND RUN 2 KILLED — do not re-buy either:**
+
+* *"the guest is not registered with the clothing manager"* (this file's own hypothesis
+  after run 1). **He is.** `players: [B925ABE0 B92744F0 B928DE00 B92A7710]` matched
+  `GetUserPlayer` entry for entry, all four. The engine preallocates four slots, so the
+  `mgrIdx < 0` branch is effectively unreachable and is kept only as an assertion.
+* *"the two-player budget halving starves the chest"* — the standing next suspect above.
+  **`mgr+0x4374` read 1, not 2**, so the SOLO column was selected and the chest kept its
+  full 2006 KB. The halving was not in play. The live budget is still printed beside every
+  missing piece, because that is what made this answerable in one log instead of a round
+  of experiments, and because a session where `+0x4374` does read 2 may yet exist.
+
+**Shipped state: check and repair both ON by default, permanently** (operator's
+instruction, 2026-09-29). `CZ_COOP_OUTFIT_REPAIR=0` remains the control arm.
+
 ### What is owed
 
-* A two-machine session. The predicted lines, in order: `co-op clothing check is
-  running`, then either `player 1 (the other machine) has all N of the pieces he is
-  wearing` or `PLAYER 1 ... IS MISSING CLOTHING` naming the parts and their budgets, then
-  up to three `asking for player 1's chest ... again` lines and either a `has all N` or
-  the last-attempt line.
-* The control pair the same evening: `CZ_COOP_OUTFIT_REPAIR=0` on one join, default on
-  the next, same two machines.
+* ~~A two-machine session~~ — **DONE, and it is the section above.**
+* **The control is still owed**: `CZ_COOP_OUTFIT_REPAIR=0` on a join that ALSO reports him
+  missing. He should then stay missing and stay invisible. Run 2 is a within-run causal
+  chain (measured missing -> one repair round -> measured present -> seen present), which
+  is stronger than "he arrived fine" and weaker than a controlled pair.
+* **The real cure, now that the backstop works**: why does the join's own per-part post
+  not take effect? Its names arrive and are recorded; nothing requests the files. Part 6
+  already met this shape once (a row applied before the player existed).
+* **And the save-less guest is still dressed onto the HOST** (run 1, above) — a separate,
+  open defect that this repair does not touch, because a guest with no outfit has no name
+  to re-post.
 * **Two free nulls that were run here and must stay true:** single player produces no
   `[outfit]` line at all (fewer than two dressed players), and
   `CZ_COOP_OUTFIT_CHECK_SOLO=1` in single player must read all seven.

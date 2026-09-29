@@ -69,14 +69,30 @@
 // a part has read missing for three consecutive sweeps (~6 s, past any honest async
 // load), at most three times per part, and never while a control is bad.
 //
-// WHAT THIS CANNOT DO, said out loud: if a piece fails because its BUDGET is too small
-// it will fail again the same way, burn its three tries and report that it did. That is
-// the standing next suspect and this file prints the number that decides it — the
-// manager sizes each part's buffer from a table at 0x829D42F0 with TWO columns, solo and
-// "more than one player", **the second exactly half the first** (chest 2006 -> 1003 KB),
-// chosen on `mgr+0x4374 > 1`. A chest over 1003 KB would be invisible in co-op and fine
-// solo, which fits "often" and fits "the torso" better than anything else on the table.
-// The sweep prints the record's LIVE budget beside every missing piece.
+// OPERATOR-VERIFIED ON TWO MACHINES, 2026-09-29, and the log and their eye agree. The
+// guest arrived with all six of his named pieces NOT LOADED and rendering invisible; six
+// re-posts went out on attempt 1; every one answered `LoadDone player 1 part N: 1 of 1
+// files`; the next sweep read `player 1 (the other machine) has all 6 of the pieces he is
+// wearing`, and they reported him visible. Attempts 2 and 3 never fired, 0 desyncs.
+//
+// WHAT THAT RUN SAYS THE DEFECT IS, and it is upstream of this file: his names ARRIVED
+// and were RECORDED correctly (`young_chuck`, `naked`, `young_chuck_under`) — so nothing
+// was ever wrong with the report. Nothing asked for the FILES. The title's own per-part
+// change-part events at join do not take effect; re-posting the identical events does.
+// That is a timing defect in the join, the same shape part 6 found when a row applied at
+// level start went nowhere because the player did not exist yet. This file is the
+// backstop, not the cure; the cure is finding why the join's own posts are dropped.
+//
+// TWO SUSPECTS THIS FILE CARRIED AND THAT RUN KILLED — do not re-buy either:
+//   * "the guest is not registered with the clothing manager". He IS:
+//     `players: [B925ABE0 B92744F0 B928DE00 B92A7710]` matched GetUserPlayer entry for
+//     entry, all four. The engine preallocates four, so the mgrIdx < 0 branch below is
+//     effectively unreachable and is kept only as an assertion.
+//   * "the two-player budget halving starves the chest". `mgr+0x4374` read **1**, not 2,
+//     so the SOLO column was selected and the chest kept its full 2006 KB. The halving
+//     was not in play at all. The sweep still prints the live budget beside every missing
+//     piece, because that is what made this answerable in one log rather than in a round
+//     of experiments — and because a session where +0x4374 does read 2 may yet exist.
 //
 // ARMS
 //   CZ_COOP_OUTFIT_CHECK=0    the whole sweep off (ON by default; one pass over two
@@ -228,6 +244,7 @@ struct Watch
     uint16_t lastMask = 0;   // badMask | wrongRecordMask<<8: re-announce when EITHER moves
     bool announced = false;
     bool refused = false;
+    uint8_t nothingStreak = 0;   // sweeps in a row with not one named piece
 };
 Watch g_watch[kMaxPlayers];
 
@@ -571,6 +588,15 @@ void CoopOutfitVerify_Tick(PPCContext& ctx, uint8_t* base)
         }
         if (!rows[i].namedMask)
         {
+            // WAIT TWO SWEEPS, for the same reason the missing case does. During the
+            // level load NOBODY is dressed yet, including the player at this machine,
+            // and the first two-machine run printed "PLAYER 0 (this machine) IS WEARING
+            // NOTHING" about a host who was visibly fine four seconds later. A line that
+            // cries wolf on every join teaches the operator to skip the line that matters.
+            if (w.nothingStreak < 255)
+                w.nothingStreak++;
+            if (w.nothingStreak < 2)
+                continue;
             if (!w.announced)
             {
                 w.announced = true;
@@ -583,6 +609,7 @@ void CoopOutfitVerify_Tick(PPCContext& ctx, uint8_t* base)
             }
             continue;
         }
+        w.nothingStreak = 0;
         if (!mask)
         {
             std::memset(w.badStreak, 0, sizeof w.badStreak);
