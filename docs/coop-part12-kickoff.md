@@ -98,13 +98,21 @@ commit** or the joiner's half of the log is empty; that has already happened onc
 
 ## 4. A prediction that is not about bike parts, and why it is worth testing
 
-`missions.txt` holds ELEVEN `cMissionObjectiveGiveItemToNPC` instances and only five are
-bike parts. The rest name **Zombrex**, **Key_MasterKey** and **Gems**, in
-`PrologueKateyZombrex`, `PrologueMasterKey`, `PrologueMoMoneyMoProblems`,
-`ProloguePawnshopHint01` and `ProloguePawnshopHint2`. If the mechanism is right, every one
-is broken in co-op the same way and a guest who picks up the shed key gets no credit for
-it. **If a guest DOES get credit for the master key, this reading is wrong** — which makes
-this the cheapest available refutation and worth asking the operator for either way.
+**CORRECTED 2026-09-29 — see `coop-plan.md` §12.11.** The original form of this said all
+eleven `cMissionObjectiveGiveItemToNPC` instances should be broken the same way, and named
+the shed key as the cheapest refutation. The operator ran it: a guest picked up the shed
+key and the host credited it with **no rescue and no pickup line**, because
+`Key_MasterKey` is a KEY item (id 85038) granted by a type-0x13 network message rather than
+picked up into an inventory. `items.txt` declares exactly two `KeyItemID`s — 85038 and
+85001 Zombrex — so **both of those were always fine**, and the prediction should never have
+included them.
+
+What is left is **`Gems`** (`PrologueMoMoneyMoProblems`), the only non-key, non-bike-part
+instance, and it is the better test anyway: its objective sits inside a `cMissionObjective`
+with `NPCName = "srv_jemi"`, **not** inside a `cMissionPrereq` the way every bike part's
+does, so it tests whether the repair is really in the CLASS. Reaching it needs
+`PrologueWinSomeLoseSome` done, Jemi and Fausto both rescued, and 7:00; the gems spawn at
+`-104.856, 3.276, -127.693`.
 
 ## 5. What is retired, so it is not re-bought
 

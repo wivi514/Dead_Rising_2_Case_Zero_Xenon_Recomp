@@ -2753,7 +2753,54 @@ and nothing finer. If it ever needs to be cheaper, the retry should skip dormant
 the presence test that works is the one `WatchPlayer` uses (a player with no INVENTORY is not
 in the game), not the pointer.
 
-**§12.7's prediction is now the thing to test next**, and it costs one pickup: eleven of
-these objectives exist and only five are bike parts. A guest picking up **Zombrex**, the
-**shed key** or the **gems** should have been broken the same way and should now be fixed.
-The same arm covers all of them, because the repair is in the class and not in the part.
+**§12.7's prediction is the thing to test next** — but see **§12.11, which corrects it**:
+the shed key and Zombrex are KEY items granted by a type-0x13 network message rather than
+picked up into an inventory, so they were never broken. **`Gems` is the only untested case
+left**, and it is the interesting one, because its objective sits in a `cMissionObjective`
+rather than a `cMissionPrereq`.
+
+#### 12.11 §12.7's prediction is WRONG about the key items, and the repo already said so
+
+Tested the same evening: the operator started a new game and picked the shed key up **as the
+guest**. On the host,
+
+```
+[obj] A51E2030 ITEM_NAME "Key_MasterKey": answer 0 -> 1, index 0
+```
+
+with **no `[found] RESCUED` line and no `[pickup]` line anywhere**. The host answered YES on
+its own, because the key never goes through an inventory at all:
+
+```
+[keyitem] ObtainItem(...) | type 13 <<< KEY ITEM GRANT, id 85038 (Key_MasterKey / shed key)
+```
+
+**So the shed key was never broken in co-op**, and §12.7's list is corrected in place. The
+mistake was enumerating the eleven `cMissionObjectiveGiveItemToNPC` instances by class name
+without asking which of their items are KEY items — and this repo already carried the fact
+that settles it, in the dead-end list at §12.3: **`items.txt` declares exactly two
+`KeyItemID`s, 85001 Zombrex and 85038 Key_MasterKey**, and the type-0x13 grant is a network
+message, not a pickup. Both of those were on a different path the whole time.
+
+The corrected prediction, which is smaller and therefore worth more:
+
+| item | KeyItemID? | expected |
+|---|---|---|
+| the five bike parts | no | **was broken, now fixed** — measured, twice |
+| `Key_MasterKey` | 85038 | **never broken** — measured |
+| `Zombrex` | 85001 | never broken, same grant path. Not worth a run |
+| `Gems` | no | **the only untested case left** |
+
+`Gems` is also the most interesting of the eleven for a second reason: its
+`cMissionObjectiveGiveItemToNPC` sits inside a `cMissionObjective` (with
+`NPCName = "srv_jemi"`), **not inside a `cMissionPrereq`** the way every bike part's does. So
+it tests the claim that the repair is in the CLASS rather than in the wiring. Reaching it
+needs `PrologueWinSomeLoseSome` done, Jemi and Fausto both rescued, and 7:00; the gems then
+spawn at `-104.856, 3.276, -127.693`.
+
+**Transferable:** a prediction that enumerates instances of a CLASS is only as good as the
+check that those instances take the same PATH. Three of the eleven here did not, and the
+evidence was already written down two sections earlier in the same document.
+
+Also from the same session, unremarked at the time: the armed round rescued **twice**, not
+once — `GasolineCanister` and then `WheelPawn`, both guest pickups.
