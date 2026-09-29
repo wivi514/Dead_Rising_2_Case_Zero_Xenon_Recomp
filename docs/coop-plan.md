@@ -2689,3 +2689,71 @@ not "check your guards"; it is that **a guard which asserts something about the 
 needs a control that reaches it, and a guard which only asserts something about our own
 configuration does not.** Guard 3 (the co-op byte) is the second kind. Guard 4 was the first
 kind dressed as the second.
+
+#### 12.10 BOTH ROUNDS RUN, AND THE FIX IS ON BY DEFAULT (2026-09-29, operator-verified)
+
+The operator ran §12.8's round on two machines, and then the armed round. Every predicted
+line appeared and nothing that would have refuted it did.
+
+**Round 1 — the fix OFF. The host picked up the wheel, the guest the gas canister.**
+
+```
+[pickup] player 0 ... hash 878FC97B (WheelPawn)
+[pickup] player 1 ... hash 5F8D0521 (GasolineCanister)
+
+[obj] A51D5650 ITEM_NAME "WheelPawn":        answer 0 -> 1, index 0
+[obj] A51D5210 ITEM_NAME "GasolineCanister": answer 0, index 0 -- ONE line, never changed
+[mw]  CHANGED B97C9160  PrologueWheelObjective : state(+08) 0 -> 1
+      no state line for PrologueGasolineCanisterObjective
+```
+
+`answer 1` is the positive control §12.8 said was owed. The two arms are the two parts, in
+one log, one process, one binary.
+
+**And the `LISTS` line reproduced §11's raw numbers exactly**, which is what ties the named
+mission to the 31 offsets that started this:
+
+```
+[mw] LISTS  pending(+0FA0) 45 -> 44  A(+15E8) 17 -> 18  A(+15F0) 17 -> 18
+            B(+17D4) 29 -> 28  C(+19C0) 2 -> 3  C(+19C8) 2 -> 3
+```
+
+**The joiner's log closed the last step of the chain, and by absence.** On the guest machine
+`sub_823AF418` **never fires at all** — only slot 3's hook reports alive — while its mission
+watch shows `PrologueWheelObjective state 0 -> 1` arriving anyway. So the guest does not
+evaluate these prerequisites; it receives the host's mission state. That is *why* both
+screens say NOT FOUND rather than just the host's, and it was measured rather than assumed.
+
+**Round 2 — the fix ON, guest picks up a part, host picks up NOTHING**, so anything credited
+is attributable to the arm:
+
+```
+[found] RESCUED: "GasolineCanister" — the local player (index 0) said NO, player 1 says YES.
+        objective A51D5210, 1 rescue(s) so far.
+[obj]   A51D5210 ITEM_NAME "GasolineCanister": answer 1
+[mw]    CHANGED B97C9080  PrologueGasolineCanisterObjective : state(+08) 0 -> 1 -> ... -> 2
+```
+
+Exactly **one** rescue, for the right item, and the objective mission then ran to state 2.
+The operator's own words: *"it worked it placed the bike part for both players"*. Zero
+crashes on either machine.
+
+**SO THE DEFAULT IS NOW ON** (`=0` is the control arm), the same call that was made for
+`CZ_COOP_RESPONSE_PLAYER`, and on the same evidence: a negative control (round 1, the part
+not credited), a positive control (round 2, credited once), a null (single player, zero
+consults) and a bring-up control (the retry machinery, answer-preserving over empty slots).
+
+**Its cost is not measurable and the method used cannot claim more than that.** The armed
+session made **300,000 retries** — three per consult, because three of the four player slots
+are dormant — which is about seven extra calls a frame. Binned by draw count against round 1
+(`gotcha 237`'s method, medians not means): 9.04 vs 9.01 ms at 6,000-9,000 draws, 5.10 vs
+5.99 below 3,000, with guest-main-thread time lower in the armed arm. **Two different play
+routes with 3-23 windows a band cannot resolve a small effect** — this rules out a large one
+and nothing finer. If it ever needs to be cheaper, the retry should skip dormant slots, and
+the presence test that works is the one `WatchPlayer` uses (a player with no INVENTORY is not
+in the game), not the pointer.
+
+**§12.7's prediction is now the thing to test next**, and it costs one pickup: eleven of
+these objectives exist and only five are bike parts. A guest picking up **Zombrex**, the
+**shed key** or the **gems** should have been broken the same way and should now be fixed.
+The same arm covers all of them, because the repair is in the class and not in the part.

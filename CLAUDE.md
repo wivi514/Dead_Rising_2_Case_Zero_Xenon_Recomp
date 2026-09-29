@@ -211,14 +211,24 @@ mask; trust the microcode's own swizzles.
     between four lists. The instruments are `CZ_COOP_MISSIONWATCH=MS` (the mission table
     diffed BY NAME, the name offset found by census not guess) and `CZ_COOP_OBJTRACE=1` (all
     seven of that class's own vtable slots, counted, plus the `ITEM_NAME`, the answer and the
-    player index asked for). **`CZ_COOP_FOUND_ANY_PLAYER=1` IS A CANDIDATE FIX SHIPPED OFF**
-    and `tools/issue9_found_host.sh` is the round: host picks up one part, guest picks up a
-    different one, nobody places. **WHAT IS OWED: no run has yet seen that test answer YES**,
-    so the positive control is the operator's. `coop-part12-kickoff.md` §2 has the predicted
-    lines and the three observations that refute it, and §4 offers a cheaper refutation that
-    is not about bike parts at all — eleven of these objectives exist and only five are
-    parts, so **Zombrex, the shed key and the gems should be broken for a guest the same
-    way.** ~~AS OF 2026-09-27 THE LIVE WORK IS PLAYER ISSUE #9 AND THE HAND-OFF IS
+    player index asked for). **`CZ_COOP_FOUND_ANY_PLAYER` FIXES IT AND IS NOW ON BY
+    DEFAULT** (`=0` the control), operator-verified on two machines the same evening
+    (`coop-plan.md` §12.10). Round 1 with it OFF confirmed every predicted line: the host
+    took the wheel and the guest the gas canister, `WheelPawn` answered **0 -> 1** at index
+    0 while `GasolineCanister` printed ONE line and never changed, `PrologueWheelObjective`
+    started and the canister's objective did not — and the `LISTS` line reproduced part 11's
+    raw numbers exactly (`pending 45->44 A 17->18 B 29->28 C 2->3`), tying the named mission
+    to the 31 offsets. **The joiner's log closed the chain BY ABSENCE: `sub_823AF418` never
+    fires at all on the guest**, which receives the host's mission state — so both screens
+    say NOT FOUND because only the host decides. Round 2 with it ON, guest picking up and
+    host picking up nothing: exactly ONE `[found] RESCUED`, the objective ran to state 2, and
+    the operator reported *"it worked it placed the bike part for both players"*. Zero
+    crashes. **Its cost is not measurable** — 300k retries a session, ~7 calls a frame,
+    9.04 vs 9.01 ms median at matched draw bands — though two uncontrolled routes can only
+    rule out a LARGE effect. **THE NEXT THING TO TEST IS §12.7 AND IT COSTS ONE PICKUP:**
+    eleven of these objectives exist and only five are bike parts, so a guest picking up
+    **Zombrex, the shed key or the gems** was broken the same way and should now be fixed by
+    the same arm, because the repair is in the CLASS and not in the part. ~~AS OF 2026-09-27 THE LIVE WORK IS PLAYER ISSUE #9 AND THE HAND-OFF IS
     `docs/coop-part11-kickoff.md`. HALF OF IT IS FIXED AND OPERATOR-VERIFIED.~~ The
     operator ran the two-machine session part 10 asked for and it confirmed the
     prediction line by line: the guest places a bike part, the host's `STATE 34` record

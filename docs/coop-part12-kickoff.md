@@ -13,9 +13,11 @@ derivation with every number; this is the hand-off.
   the mission `Prologue<Part>Objective` — a `cMissionObjectiveGiveItemToNPC` naming the
   item — sees it in an inventory, and that test looks in exactly ONE inventory: the LOCAL
   player's (`GetUserPlayer(world->0x7C, world->0x80)`, index 0 on the host).
-* **A candidate fix exists and ships OFF**: `CZ_COOP_FOUND_ANY_PLAYER=1`.
-* **ONE thing is owed and it needs the operator**: no run has yet seen that test answer
-  YES. §2 is the round; it is two minutes and produces both arms in one log.
+* **`CZ_COOP_FOUND_ANY_PLAYER` FIXES IT AND IS ON BY DEFAULT** (`=0` the control).
+  Operator-verified on two machines, 2026-09-29 — `coop-plan.md` §12.10 is the record of
+  both rounds. §2 below is the round as it was asked for; it has been RUN and every
+  predicted line appeared.
+* **What is open is no longer about bike parts**: §4's prediction, which costs one pickup.
 
 ## 1. What already exists, so it is not rebuilt from the plan text
 
@@ -55,7 +57,7 @@ sub_82482AD8(world, idx) = world->0x7C then sub_8247B020, which for 0..3 is
   is the engine's ordinary idiom and not by itself a defect
 ```
 
-## 2. THE ROUND THAT CLOSES IT — two minutes, both arms in one log
+## 2. THE ROUND THAT CLOSED IT — RUN 2026-09-29, every predicted line appeared
 
 ```
 host:   tools/issue9_found_host.sh
@@ -85,13 +87,14 @@ The whole test there is whether `[found] RESCUED: "<the guest's part>"` appears 
 bike-parts screen turns that row green. `[found] consulted N time(s)` prints at 1 and every
 power of ten, so an armed run that did nothing says how many times it was asked.
 
-## 3. OWED: czwin's launcher
+## 3. czwin's launcher — DONE, and what is still owed there
 
-czwin was off when this was written, so `C:\cz\play.bat` still carries part 10's arms. It
-needs `CZ_COOP_OBJTRACE=1` and `CZ_COOP_MISSIONWATCH=500` added, and it may as well lose
-`CZ_COOP_FLAGHUNT=1` and `CZ_COOP_POOL_CENSUS_MS=500`, which are answered. The original is
-saved as `play.bat.pre-part10`. **Both machines must be on the same commit** or the joiner's
-half of the log is empty — that has already happened once here.
+Patched 2026-09-29: `CZ_COOP_OBJTRACE=1` and `CZ_COOP_MISSIONWATCH=500` added, part 10's
+`CZ_COOP_PLACE_TRACE` / `CZ_COOP_POOL_CENSUS_MS` / `CZ_COOP_FLAGHUNT` commented out rather
+than deleted. `play.bat.pre-part12` is the pre-part-12 copy and `play.bat.pre-part10` the
+original. **STILL OWED: take the two trace lines back out now that the measurement is done**
+— they are diagnostics, not arms a player should carry. **Both machines must be on the same
+commit** or the joiner's half of the log is empty; that has already happened once here.
 
 ## 4. A prediction that is not about bike parts, and why it is worth testing
 

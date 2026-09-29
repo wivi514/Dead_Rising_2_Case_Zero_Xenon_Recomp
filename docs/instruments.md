@@ -5058,3 +5058,13 @@ function list so the names match the runtime's hooks. `--stores-only` narrows it
 on every run, that **indexed forms carry no displacement and cannot appear** — which is the
 finding for the whole `+0x1408`/`+0x15F4`/`+0x17E0` list family in the mission manager, and
 the reason "this offset has no store site" must never be read as "nothing writes it".
+
+`CZ_COOP_FOUND_ANY_PLAYER` — **the fix, ON by default**, `=0` the control arm. When a
+mission's item prerequisite answers NO for the local player, the guest's own test is re-run
+once per other user player and a YES is taken. Operator-verified on two machines
+(`coop-plan.md` §12.10). `CZ_COOP_FOUND_ANY_PLAYER_TEST=1` drops the co-op gate so the retry
+path runs in single player — bring-up only, and it is what measured that `world->0x7C` holds
+four pre-allocated player slots rather than one per player, retracting a guard this arm's own
+banner had already claimed. `[found] consulted N time(s)` prints at 1 and every power of ten
+with the retry and rescue counts, so an armed run that did nothing still says how often it
+was asked.

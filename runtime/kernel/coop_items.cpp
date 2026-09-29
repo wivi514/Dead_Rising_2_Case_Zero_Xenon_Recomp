@@ -3840,16 +3840,21 @@ int FoundAnyPlayerMode()
 {
     static const int mode = [] {
         const char* e = std::getenv("CZ_COOP_FOUND_ANY_PLAYER");
-        const int v = (e && *e) ? std::atoi(e) : 0;
+        const int v = (e && *e) ? std::atoi(e) : 1;
         if (v)
             fprintf(stderr,
                     "[found] CZ_COOP_FOUND_ANY_PLAYER=%d — when a mission's item prerequisite "
-                    "says NO for the LOCAL player, ask every other user player too. OFF by "
-                    "default; =0 is the control arm and restores the shipped behaviour exactly. "
+                    "says NO for the LOCAL player, ask every other user player too. ON BY "
+                    "DEFAULT; =0 is the control arm and restores the shipped behaviour exactly. "
                     "Inert outside co-op: the gate is the session's own is-co-op byte, not the "
                     "player count -- the container holds four pre-allocated slots either way, "
                     "which a bring-up run measured after the first spelling assumed otherwise.\n",
                     v);
+        else
+            fprintf(stderr, "[found] CZ_COOP_FOUND_ANY_PLAYER=0 — THE CONTROL ARM. A quest item "
+                            "only the GUEST has ever held will not be marked FOUND, so placing "
+                            "it does nothing and the bike-parts screen keeps saying \"not "
+                            "found\". That is the shipped 360 behaviour and the defect.\n");
         return v;
     }();
     return mode;
