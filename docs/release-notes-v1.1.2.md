@@ -17,14 +17,21 @@ below before attaching.
 
 ---
 
+# ⚠️ ONLINE PLAY — READ THIS FIRST
+
+> [!WARNING]
+> **DO NOT launch the game executable directly if you want online features.**
+>
+> Launch the game through the **[XenonLive Launcher](https://github.com/wivi514/XenonLive_Launcher)** for:
+>
+> **🎮 Online / Co-op · 🏆 Achievements · 👤 Gamertag · 👥 Friends**
+>
+> Starting the game any other way = **OFFLINE MODE ONLY**.
+
 A fix release. Everything players reported through the launcher's Issues tab since
 v1.1.1 is in it, plus the first release that a Case Zero speedrunner's load remover can
 actually talk to. Co-op, XenonLive, the launcher-only online rule and per-profile saves
 are as in v1.1.0/v1.1.1, unchanged.
-
-> **To play online — gamertag, achievements, friends, co-op — start the game from the
-> [XenonLive launcher](https://github.com/wivi514/XenonLive_Launcher).** Started any
-> other way, the game is offline: the full single-player game, nothing online.
 
 **Upgrading from v1.1.1:** unpack over your existing folder, or let the launcher install
 it — settings and saves live outside the game folder and are untouched. Your unpacked
