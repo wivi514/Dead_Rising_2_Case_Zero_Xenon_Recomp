@@ -236,8 +236,12 @@ mask; trust the microcode's own swizzles.
     (`+0x7C = 8`, satisfied by the `+0xA8` latch) and the two `KeyItemID` items take the
     type-0x13 grant, which lands on the host regardless. Both narrowings are measured and
     both are retractions of a prediction made here (§12.11, §12.12). **OWED, NOT URGENT:**
-    czwin's `C:\cz\play.bat` still carries `CZ_COOP_OBJTRACE=1` /
-    `CZ_COOP_MISSIONWATCH=500`, which are diagnostics; and commit `5117597` pushed 233 MB of
+    ~~czwin's `C:\cz\play.bat` still carries `CZ_COOP_OBJTRACE=1` /
+    `CZ_COOP_MISSIONWATCH=500`~~ — **WRONG WHEN WRITTEN AND CHECKED 2026-09-29: those two
+    were already commented out there.** What WAS still live were issue #9's
+    `CZ_ITEM_TRACE=1` / `CZ_COOP_PICKUP_TRACE=1`, now commented out as well;
+    `CZ_OUTFIT_TRACE=1` is kept ON deliberately (per-PART, not per-frame, and its
+    `PieceFile`/`LoadDone` lines are the depth co-op part 13's check points at). And commit `5117597` pushed 233 MB of
     `dist-steamdeck*` build output into this PUBLIC repo's history — untracked in `8917e8e`
     and `.gitignore` now carries `/dist-*/`, but removing the blobs needs a rewrite and a
     force push, which is the operator's call. ~~AS OF 2026-09-28 THE LIVE
