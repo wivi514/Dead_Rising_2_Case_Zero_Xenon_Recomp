@@ -1082,10 +1082,17 @@ std::atomic<bool> g_deviceWorkerUp{ false };
 struct SwapGlyph
 {
     std::string name;
-    uint8_t fp[16];
+    uint8_t fp[16];                 // the decoded record's header, UNUSED: measured
+                                    // absent from the 4 KB before the live texels in
+                                    // every one of the 26 glyphs (the textures sit
+                                    // page-aligned in the physical arena with no
+                                    // record beside them), so it cannot identify a
+                                    // copy. Kept because the file format carries it.
     std::vector<uint8_t> padTex, kbTex;
     std::vector<uint32_t> addrs;
+    bool kbShared = false;          // another entry has byte-identical keyboard art
 };
+size_t g_kbAmbiguousRefusals = 0;   // claims denied by the kbShared guard
 std::vector<SwapGlyph> g_swapGlyphs;
 
 bool LoadGlyphSwap()
@@ -1119,6 +1126,28 @@ bool LoadGlyphSwap()
             return false;
         g_swapGlyphs.push_back(std::move(g));
     }
+    // TWO ENTRIES WITH IDENTICAL KEYBOARD ART CANNOT BE TOLD APART BY CONTENT,
+    // and content is the only handle the scan has. That is not hypothetical: it
+    // shipped. x_button_ig (melee attack) and RTbutton_ig (fire/throw) are both
+    // LEFT MOUSE on the PC layout, so their chips were byte-identical; with the
+    // patched bank booting both textures into that art, every address was claimed
+    // by BOTH entries, and the first flip to PAD stamped RT art into x_button_ig's
+    // texture — which then failed its own stale check and was dropped, so the X
+    // prompt read RT for the rest of the session ("Attaque : appuyer sur RT").
+    // The bank now ships stock art for that pair (overlay_gen.cpp / the Python's
+    // RUNTIME_ONLY) so the FIRST scan pins each address correctly. This flag is
+    // the belt: a glyph whose keyboard art is shared refuses to claim an address
+    // by that art, so re-introducing a duplicate chip is a counted refusal and a
+    // glyph that stays stock — never a glyph wearing its twin's face.
+    for (size_t i = 0; i < g_swapGlyphs.size(); ++i)
+        for (size_t j = i + 1; j < g_swapGlyphs.size(); ++j)
+            if (g_swapGlyphs[i].kbTex == g_swapGlyphs[j].kbTex)
+            {
+                g_swapGlyphs[i].kbShared = g_swapGlyphs[j].kbShared = true;
+                fprintf(stderr, "[kbm] glyph_swap: %s and %s carry identical "
+                                "keyboard art — neither will be located by it\n",
+                        g_swapGlyphs[i].name.c_str(), g_swapGlyphs[j].name.c_str());
+            }
     return true;
 }
 
@@ -1346,9 +1375,15 @@ bool ConfirmGlyphAt(uint8_t* base, SwapGlyph& g, size_t po, const uint8_t* hit)
     if (size_t(hit - base) < po)
         return false;
     const uint8_t* texBase = hit - po;
-    if (memcmp(texBase, g.kbTex.data(), g.kbTex.size()) != 0 &&
-        memcmp(texBase, g.padTex.data(), g.padTex.size()) != 0)
+    const bool isPad = memcmp(texBase, g.padTex.data(), g.padTex.size()) == 0;
+    const bool isKb = !isPad && memcmp(texBase, g.kbTex.data(), g.kbTex.size()) == 0;
+    if (!isPad && !isKb)
         return false;
+    if (isKb && g.kbShared)
+    {
+        ++g_kbAmbiguousRefusals;   // see LoadGlyphSwap: this art names two glyphs
+        return false;
+    }
     const uint32_t addr = uint32_t(texBase - base);
     for (uint32_t a2 : g.addrs)
         if (a2 == addr)
@@ -1483,7 +1518,8 @@ void ScanForGlyphs(uint8_t* base, bool physOnly)
     for (const SwapGlyph& g : g_swapGlyphs)
         located += !g.addrs.empty();
     fprintf(stderr, "[kbm] device-follow scan: %zu of %zu glyphs located "
-                    "(%zu copies)\n", located, g_swapGlyphs.size(), found);
+                    "(%zu copies, %zu ambiguous claims refused)\n",
+            located, g_swapGlyphs.size(), found, g_kbAmbiguousRefusals);
 }
 
 void DeviceWorker(uint8_t* base)

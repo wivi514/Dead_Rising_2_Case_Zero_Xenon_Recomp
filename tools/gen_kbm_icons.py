@@ -136,6 +136,36 @@ LEGENDS = {
     "analog_move_right": ("key", "D"),
 }
 
+# GLYPHS THE BANK KEEPS STOCK, swapped at RUN TIME ONLY.
+#
+# WHY THIS EXISTS (the v1.1.2 "Attaque : appuyer sur RT" report). The device-
+# follow scanner in cpu/native_kbm.cpp finds each glyph's live texture BY ITS
+# TEXEL CONTENT — it is the only handle it has, because the decoded textures
+# sit page-aligned in the physical arena with no record header next to them
+# (measured: the 16-byte fingerprint this file also writes is NOT present in
+# the 4 KB before the texels, for any of the 26 glyphs).
+#
+# `x_button_ig` (melee attack) and `RTbutton_ig` (fire/throw) are both LEFT
+# MOUSE on the PC layout, so their keyboard chips are BYTE-IDENTICAL — and the
+# bank we serve boots BOTH textures holding that identical art. Content could
+# then no longer tell them apart: each address was claimed by both entries, and
+# on the first flip to PAD, RTbutton_ig (earlier in the bank) stamped RT art
+# into x_button_ig's texture, which made every one of x's own addresses fail
+# the swapper's stale check and be dropped. X was never restored and both
+# attack prompts read RT for the rest of the session.
+#
+# The repair is to deny the scanner that ambiguous starting state: these two
+# ship the game's OWN art (a blue X and a grey RT — unique), so the very first
+# scan pins each address to the right glyph, and every flip afterwards is
+# correct. The cost is that a keyboard player sees pad art for these two until
+# the first key press arms the swap, which is the same deal every glyph already
+# makes in the other direction for a pad player.
+#
+# The runtime carries a matching guard: an entry whose keyboard art is shared
+# with another entry refuses to claim an address by that art, so re-introducing
+# a duplicate chip here is a logged refusal and never a wrong glyph again.
+RUNTIME_ONLY = {"x_button_ig", "RTbutton_ig"}
+
 
 def h33(s):
     v = 0
@@ -427,6 +457,9 @@ def main():
             cdir = Path(args.export_chips)
             cdir.mkdir(parents=True, exist_ok=True)
             (cdir / f"{base}.dxt").write_bytes(raw[48:])
+        if base in RUNTIME_ONLY:
+            continue        # see RUNTIME_ONLY: the bank keeps the stock art so
+                            # the scanner can tell this glyph from its twin
         window = struct.unpack(">I", data[e["rec"][4] + 4:e["rec"][4] + 8])[0]
         pay = make_entry_payload(raw, window)
         # GATE 3: round-trip through the real decompressor.

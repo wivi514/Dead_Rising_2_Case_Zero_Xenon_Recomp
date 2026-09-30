@@ -1836,10 +1836,30 @@ void GenerateKbmLayer(const Paths& p,
                    std::to_string(texels.size()) + " — a different SKU's bank?");
         Bytes raw = hdr;
         raw.insert(raw.end(), chip.begin(), chip.end());
-        const Bytes pay = LzxEncodeStream(raw);
-        // GATE 3: round-trip through the real decompressor.
-        VerifyEncodedStream(pay, raw, e.name.c_str());
-        patches[e.name] = pay;
+        // GLYPHS THE BANK KEEPS STOCK, swapped at RUN TIME ONLY (the v1.1.2
+        // "Attaque : appuyer sur RT" report; gen_kbm_icons.py RUNTIME_ONLY has
+        // the derivation). x_button_ig (melee attack) and RTbutton_ig (fire)
+        // are both LEFT MOUSE on the PC layout, so their chips are BYTE-
+        // IDENTICAL — and cpu/native_kbm.cpp locates a glyph's live texture by
+        // its texel CONTENT, the only handle it has. Serving both textures that
+        // identical art made them indistinguishable: each address was claimed by
+        // both entries, and the first flip to PAD stamped RT art into
+        // x_button_ig's texture, so the attack prompts read RT for good. These
+        // two therefore ship the game's own (unique) art and are painted only by
+        // the device-follow swap, which pins each address correctly on the very
+        // first scan. KEEP THIS LIST IN STEP WITH THE PYTHON — the two
+        // generators are gated byte-for-byte against each other.
+        static const char* kRuntimeOnly[] = { "x_button_ig", "RTbutton_ig" };
+        bool runtimeOnly = false;
+        for (const char* n : kRuntimeOnly)
+            runtimeOnly = runtimeOnly || base == n;
+        if (!runtimeOnly)
+        {
+            const Bytes pay = LzxEncodeStream(raw);
+            // GATE 3: round-trip through the real decompressor.
+            VerifyEncodedStream(pay, raw, e.name.c_str());
+            patches[e.name] = pay;
+        }
         swapEntries.push_back({base, Bytes(hdr.begin(), hdr.begin() + 16), texels, chip});
         ++done;
     }
@@ -1947,7 +1967,11 @@ void GenerateKbmLayer(const Paths& p,
 // art change (re-export tools/release/kbm_chips with gen_kbm_icons.py
 // --export-chips in the same commit): a shipped update must not keep serving a
 // player's stale banks (the gotcha-13 shape, on disk).
-constexpr int kGeneratorVersion = 5;   // 5: co-op — outfits.csv rows, the JOIN CO-OP
+constexpr int kGeneratorVersion = 6;   // 6: x_button_ig/RTbutton_ig keep the
+                                       //    bank's stock art (identical chips
+                                       //    made them indistinguishable to the
+                                       //    device-follow scanner);
+                                       // 5: co-op — outfits.csv rows, the JOIN CO-OP
                                        //    GAME row, the TitleScreen -> JoinGame edge;
                                        // 4: the bootskip layer (part 99);
                                        // 3: id-4049 MASH in all six banks;
