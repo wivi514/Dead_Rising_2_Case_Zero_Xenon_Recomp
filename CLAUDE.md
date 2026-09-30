@@ -221,8 +221,16 @@ mask; trust the microcode's own swizzles.
     clothing manager** (all four `+0x428C` entries matched `GetUserPlayer`); and **the
     two-player budget halving was NOT in play** — `mgr+0x4374` read 1, so the SOLO column was
     selected and the chest kept its full 2006 KB. The check still prints the live budget
-    beside every missing piece, which is what made that answerable in ONE log. **AS OF 2026-09-30 BOTH OF THE OPERATOR'S TWO SMALL PRE-v1.1.2 FIXES ARE
-    IN AND OPERATOR-VERIFIED, SO THE RELEASE LEG IS UNBLOCKED.** Their instruction closing
+    beside every missing piece, which is what made that answerable in ONE log. **v1.1.2 IS PUBLISHED (2026-09-30T06:50:46Z) AND IS `Latest`** —
+    tag `v1.1.2` = `b21e3af`, artifacts built at `efe50fb`, five assets, all four
+    downloads verified byte-identical from the public internet after publication. It
+    carries everything owed since v1.1.1: the speedrun block, issue #10's clip planes,
+    the co-op issue-#9 pair and the guest-invisible repair, the ultrawide fills, the
+    night/interior exposure fix and the X attack prompt. The record is
+    `docs/release-notes-v1.1.2.md`; **its body is the text BELOW the first `---`** and
+    the header above it is internal. **The ONE change no machine QA'd on the release
+    build is the ultrawide fill fix** — czwin clamps to 1280x720. It shipped because both
+    of the operator's two small pre-v1.1.2 fixes landed and were verified: Their instruction closing
     2026-09-29 was *"before we do v1.1.2 I got two small fixes ... we'll do them in a fresh
     conversation"*, and they named them on 2026-09-30: **(1) the co-op guest arriving
     invisible/without a torso for the host** (co-op part 13, `f2d8c9b`/`f5c95c8`/`4d26d49`,

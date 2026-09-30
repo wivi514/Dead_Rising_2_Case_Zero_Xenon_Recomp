@@ -1,7 +1,8 @@
 # Release notes — v1.1.2
 
-**STATUS 2026-09-30: all four artifacts BUILT AND GATED, staged in
-`~/Release/Case Zero/1.1.2/`. Tag NOT pushed, no GitHub draft — the operator publishes.**
+**PUBLISHED 2026-09-30T06:50:46Z and `Latest`. The four downloads were pulled back over
+the public internet after publication and are BYTE-IDENTICAL to the gated originals in
+`~/Release/Case Zero/1.1.2/`. Operator-QA'd on two machines before publication.**
 
 **This is the text to paste into the GitHub Release body.** Binaries are the tag
 `v1.1.2` (efe50fb + this hashes commit); the hashes below are the artifacts built at
