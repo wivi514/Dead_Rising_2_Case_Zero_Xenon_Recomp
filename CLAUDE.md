@@ -221,15 +221,24 @@ mask; trust the microcode's own swizzles.
     clothing manager** (all four `+0x428C` entries matched `GetUserPlayer`); and **the
     two-player budget halving was NOT in play** — `mgr+0x4374` read 1, so the SOLO column was
     selected and the chest kept its full 2006 KB. The check still prints the live budget
-    beside every missing piece, which is what made that answerable in ONE log. **AS OF 2026-09-29 PLAYER ISSUE #9 IS CLOSED — BOTH HALVES FIXED,
-    BOTH ON BY DEFAULT, BOTH OPERATOR-VERIFIED ON TWO MACHINES — AND THE NEXT WORK IS TWO
-    SMALL FIXES THE OPERATOR HAS IN HAND, THEN v1.1.2.** Their instruction closing the
-    evening: *"before we do v1.1.2 I got two small fixes ... we'll do them in a fresh
-    conversation."* **DO NOT START A RELEASE LEG BEFORE THOSE LAND.** The issue-#9 hand-off
-    is `docs/coop-part12-kickoff.md` and `coop-plan.md` §12 is the whole derivation; the two
-    fixes are `CZ_COOP_RESPONSE_PLAYER` (the host dropping his held item when the guest
-    places a part) and `CZ_COOP_FOUND_ANY_PLAYER` (a part the guest picks up never counting
-    as FOUND, so placing it did nothing), `=0` the control arm on each. **THE BLAST RADIUS
+    beside every missing piece, which is what made that answerable in ONE log. **AS OF 2026-09-30 BOTH OF THE OPERATOR'S TWO SMALL PRE-v1.1.2 FIXES ARE
+    IN AND OPERATOR-VERIFIED, SO THE RELEASE LEG IS UNBLOCKED.** Their instruction closing
+    2026-09-29 was *"before we do v1.1.2 I got two small fixes ... we'll do them in a fresh
+    conversation"*, and they named them on 2026-09-30: **(1) the co-op guest arriving
+    invisible/without a torso for the host** (co-op part 13, `f2d8c9b`/`f5c95c8`/`4d26d49`,
+    check + repair both default-on, verified on two machines) and **(2) the X ATTACK PROMPT
+    showing RT** (`fe775c0`, verified by eye against a 360 capture; gotchas 613-614 — two
+    KB/M glyphs whose key art was byte-identical became one glyph to a content-keyed
+    scanner). **RETRACTED IN PLACE: this file predicted the two would be
+    `CZ_COOP_RESPONSE_PLAYER` and `CZ_COOP_FOUND_ANY_PLAYER` — they were not; both of those
+    shipped as part of issue #9 the evening before.** Do not re-derive which two they were.
+    **v1.1.2's notes owe a line for the prompt fix AND for the overlay stamp going 5 -> 6,
+    which makes every existing install regenerate its KB/M assets once on first launch.**
+    Player issue #9 itself is closed — both halves fixed, on by default, verified on two
+    machines; the hand-off is `docs/coop-part12-kickoff.md` and `coop-plan.md` §12 is the
+    whole derivation, and `CZ_COOP_RESPONSE_PLAYER` (the host dropping his held item when
+    the guest places a part) / `CZ_COOP_FOUND_ANY_PLAYER` (a part the guest picks up never
+    counting as FOUND) are `=0` the control arm on each. **THE BLAST RADIUS
     IS SMALLER THAN THIS FILE CLAIMED TWICE**: of the eleven
     `cMissionObjectiveGiveItemToNPC` instances, only the five in a `cMissionPrereq`
     (`+0x7C = 0`) ever reached the local-player lookup — `Gems` short-circuits before it
