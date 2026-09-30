@@ -35,7 +35,35 @@ env:
   XENOS_BASE: 990d03b28a27b50277ee5d8d942e1c5f873869d1
 
 jobs:
+  # libxlive lives in a PRIVATE sibling repo (wivi514/XenonLive) and
+  # runtime/CMakeLists.txt requires it, so both build jobs need the read-only
+  # deploy key in secrets.XLIVE_DEPLOY_KEY. A pull request from a FORK is given
+  # no secrets at all, so there the checkout is unreachable and the builds
+  # cannot run. They SKIP rather than fail: a permanently red job on every
+  # outside contribution teaches people to ignore the whole workflow, which is
+  # the same reason macOS is absent above.
+  #
+  # This job exists only because `secrets` is not a context you may read from a
+  # job-level `if:` — it has to be turned into an output first.
+  gate:
+    runs-on: ubuntu-latest
+    outputs:
+      have_xlive: ${{ steps.check.outputs.have_xlive }}
+    steps:
+      - id: check
+        env:
+          XLIVE_DEPLOY_KEY: ${{ secrets.XLIVE_DEPLOY_KEY }}
+        run: |
+          if [ -n "$XLIVE_DEPLOY_KEY" ]; then
+            echo "have_xlive=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "have_xlive=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::No XLIVE_DEPLOY_KEY (fork PR?) — skipping the build jobs."
+          fi
+
   linux:
+    needs: gate
+    if: needs.gate.outputs.have_xlive == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -44,7 +72,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y ninja-build clang libsdl2-dev libvulkan-dev \
-            libavcodec-dev libavutil-dev
+            libavcodec-dev libavutil-dev libcurl4-openssl-dev
 
       - name: clone recompilers at pinned bases and apply local patches
         run: |
@@ -64,6 +92,27 @@ jobs:
             -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++
           cmake --build ../XenonRecomp/build --target XenonUtils fmt xxhash
 
+
+      # libxlive, from the PRIVATE sibling repo, over a READ-ONLY deploy key.
+      # It is not optional: kernel/xlive_glue.cpp and the four other xlive_*.cpp
+      # translation units are unconditionally in the build, so without this the
+      # runtime's configure step dies at the FATAL_ERROR in runtime/CMakeLists.txt
+      # that names this checkout. Depth 1 — no history is needed to compile it.
+      - name: clone XenonLive (private; read-only deploy key)
+        shell: bash
+        env:
+          XLIVE_DEPLOY_KEY: ${{ secrets.XLIVE_DEPLOY_KEY }}
+        run: |
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          printf '%s\n' "$XLIVE_DEPLOY_KEY" > ~/.ssh/xlive_ci
+          chmod 600 ~/.ssh/xlive_ci
+          ssh-keyscan -t ed25519,rsa github.com >> ~/.ssh/known_hosts 2>/dev/null
+          # IdentitiesOnly: the runner's agent may already hold other keys, and a
+          # deploy key that is offered SECOND is a "repository not found" that
+          # reads exactly like a permissions problem.
+          GIT_SSH_COMMAND="ssh -i ~/.ssh/xlive_ci -o IdentitiesOnly=yes" \
+            git clone --depth 1 git@github.com:wivi514/XenonLive.git ../XenonLive
+
       - name: generate the stub image
         run: python3 tools/gen_stub_ppc.py --out ../stub-ppc --xenon ../XenonRecomp
 
@@ -73,13 +122,16 @@ jobs:
             -DCZ_PPC_DIR="$PWD/../stub-ppc" \
             -DXENON_ROOT="$PWD/../XenonRecomp" \
             -DXENON_BUILD="$PWD/../XenonRecomp/build" \
-            -DXENOS_ROOT="$PWD/../XenosRecomp"
+            -DXENOS_ROOT="$PWD/../XenosRecomp" \
+            -DXLIVE_ROOT="$PWD/../XenonLive"
           cmake --build runtime/build -j"$(nproc)"
 
       - name: smoke against the stub image
         run: runtime/build/cz_runtime --smoke
 
   windows:
+    needs: gate
+    if: needs.gate.outputs.have_xlive == 'true'
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -110,7 +162,8 @@ jobs:
           VCPKG_BINARY_SOURCES: clear;x-gha,readwrite
         run: |
           & "$env:VCPKG_INSTALLATION_ROOT/vcpkg" install `
-            sdl2 ffmpeg[avcodec]:x64-windows vulkan-headers vulkan-loader --triplet x64-windows
+            sdl2 ffmpeg[avcodec]:x64-windows vulkan-headers vulkan-loader curl `
+            --triplet x64-windows
 
       - name: clone recompilers at pinned bases and apply local patches
         shell: bash
@@ -136,6 +189,27 @@ jobs:
             -DCMAKE_C_COMPILER=clang-cl -DCMAKE_CXX_COMPILER=clang-cl
           cmake --build ../XenonRecomp/build --target XenonUtils fmt xxhash
 
+
+      # libxlive, from the PRIVATE sibling repo, over a READ-ONLY deploy key.
+      # It is not optional: kernel/xlive_glue.cpp and the four other xlive_*.cpp
+      # translation units are unconditionally in the build, so without this the
+      # runtime's configure step dies at the FATAL_ERROR in runtime/CMakeLists.txt
+      # that names this checkout. Depth 1 — no history is needed to compile it.
+      - name: clone XenonLive (private; read-only deploy key)
+        shell: bash
+        env:
+          XLIVE_DEPLOY_KEY: ${{ secrets.XLIVE_DEPLOY_KEY }}
+        run: |
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          printf '%s\n' "$XLIVE_DEPLOY_KEY" > ~/.ssh/xlive_ci
+          chmod 600 ~/.ssh/xlive_ci
+          ssh-keyscan -t ed25519,rsa github.com >> ~/.ssh/known_hosts 2>/dev/null
+          # IdentitiesOnly: the runner's agent may already hold other keys, and a
+          # deploy key that is offered SECOND is a "repository not found" that
+          # reads exactly like a permissions problem.
+          GIT_SSH_COMMAND="ssh -i ~/.ssh/xlive_ci -o IdentitiesOnly=yes" \
+            git clone --depth 1 git@github.com:wivi514/XenonLive.git ../XenonLive
+
       - name: generate the stub image
         run: python tools/gen_stub_ppc.py --out ../stub-ppc --xenon ../XenonRecomp
 
@@ -154,6 +228,7 @@ jobs:
             -DXENON_ROOT="$PWD/../XenonRecomp" `
             -DXENON_BUILD="$PWD/../XenonRecomp/build" `
             -DXENOS_ROOT="$PWD/../XenosRecomp" `
+            -DXLIVE_ROOT="$PWD/../XenonLive" `
             -DCMAKE_PREFIX_PATH="$vcpkg" `
             -DCZ_SDL2_PREFIX="$vcpkg" `
             -DCZ_FFMPEG_PREFIX="$vcpkg" `
