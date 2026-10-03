@@ -157,6 +157,8 @@ Keep the normal icon as well and you have one install with two ways to start it 
 ordinary play, and play with the menu. On Linux and macOS the same flag works from a
 terminal: `./cz_runtime --debug-menu`.
 
+*The flag is newer than v1.1.2 — on v1.1.2 and earlier, use the file route below.*
+
 **A text file, if you want it on permanently.** Open `cz_defaults.env` (next to the
 executable) in any text editor and add one line:
 
