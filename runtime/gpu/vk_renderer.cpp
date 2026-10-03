@@ -6745,6 +6745,42 @@ size_t TexSize()
     return g_flatCacheOff ? R->texturesMap.size() : R->textures.Size();
 }
 
+// THE BRING-UP VERDICT (player issue #12, 2026-10-02). A player on a Ryzen 4800H
+// laptop got a white window with audio. The report proved the renderer had failed —
+// gpu "unknown", Vulkan 0.0.0, so it never got as far as naming a device — and could
+// not say WHERE: the log's 60 s window began after bring-up, and the screen gave the
+// player nothing to read. So the FIRST failure of bring-up is kept here in words,
+// VkRenderer_Init hands it to the bug report's system.txt and to a message box, and
+// the next report of this shape names its own step. First-only on purpose: a later
+// failure is usually a consequence of the first.
+char g_bringupWhy[320] = "";
+
+const char* VkResultName(VkResult r)
+{
+    switch (r)
+    {
+    case VK_ERROR_OUT_OF_HOST_MEMORY: return "VK_ERROR_OUT_OF_HOST_MEMORY";
+    case VK_ERROR_OUT_OF_DEVICE_MEMORY: return "VK_ERROR_OUT_OF_DEVICE_MEMORY";
+    case VK_ERROR_INITIALIZATION_FAILED: return "VK_ERROR_INITIALIZATION_FAILED";
+    case VK_ERROR_DEVICE_LOST: return "VK_ERROR_DEVICE_LOST";
+    case VK_ERROR_LAYER_NOT_PRESENT: return "VK_ERROR_LAYER_NOT_PRESENT";
+    case VK_ERROR_EXTENSION_NOT_PRESENT: return "VK_ERROR_EXTENSION_NOT_PRESENT";
+    case VK_ERROR_FEATURE_NOT_PRESENT: return "VK_ERROR_FEATURE_NOT_PRESENT";
+    case VK_ERROR_INCOMPATIBLE_DRIVER: return "VK_ERROR_INCOMPATIBLE_DRIVER";
+    default: return "VkResult";
+    }
+}
+
+void NoteBringupFailure(const char* fmt, ...)
+{
+    if (g_bringupWhy[0])
+        return;
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(g_bringupWhy, sizeof g_bringupWhy, fmt, ap);
+    va_end(ap);
+}
+
 #define VK_CHECK(expr, what)                                                           \
     do                                                                                 \
     {                                                                                  \
@@ -6752,6 +6788,8 @@ size_t TexSize()
         if (vkr_ != VK_SUCCESS)                                                        \
         {                                                                              \
             fprintf(stderr, "[vk] %s failed: VkResult %d\n", what, int(vkr_));         \
+            NoteBringupFailure("%s failed: %s (%d)", what, VkResultName(vkr_),         \
+                               int(vkr_));                                             \
             return false;                                                              \
         }                                                                              \
     } while (0)
@@ -7961,15 +7999,21 @@ bool CreateDevice()
         ici.enabledLayerCount = 0;
         ir = vkCreateInstance(&ici, nullptr, &R->instance);
     }
-    VK_CHECK(ir, "vkCreateInstance");
-
     uint32_t count = 0;
-    vkEnumeratePhysicalDevices(R->instance, &count, nullptr);
+    VkResult er = VK_SUCCESS;
+    if (ir == VK_SUCCESS)
+        er = vkEnumeratePhysicalDevices(R->instance, &count, nullptr);
+
+    VK_CHECK(ir, "vkCreateInstance");
+    VK_CHECK(er, "vkEnumeratePhysicalDevices");
+
     std::vector<VkPhysicalDevice> devices(count);
     vkEnumeratePhysicalDevices(R->instance, &count, devices.data());
+    devices.resize(count);
     if (devices.empty())
     {
         fprintf(stderr, "[vk] no Vulkan physical devices\n");
+        NoteBringupFailure("the Vulkan loader lists no GPU (no Vulkan driver installed?)");
         return false;
     }
     // Prefer a discrete GPU, else take the first. Named in the log either way: a
@@ -8078,6 +8122,7 @@ bool CreateDevice()
     if (R->queueFamily == UINT32_MAX)
     {
         fprintf(stderr, "[vk] no graphics queue family\n");
+        NoteBringupFailure("%s has no graphics queue", props.deviceName);
         return false;
     }
     // A queue family that cannot write timestamps makes the GPU-time column impossible;
@@ -8152,6 +8197,11 @@ bool CreateDevice()
                 VK_VERSION_MAJOR(caps.props.apiVersion),
                 VK_VERSION_MINOR(caps.props.apiVersion),
                 VK_VERSION_PATCH(caps.props.apiVersion));
+        NoteBringupFailure("%s reports Vulkan %u.%u.%u; the renderer needs 1.3 (update the "
+                           "graphics driver)",
+                           caps.props.deviceName, VK_VERSION_MAJOR(caps.props.apiVersion),
+                           VK_VERSION_MINOR(caps.props.apiVersion),
+                           VK_VERSION_PATCH(caps.props.apiVersion));
         return false;
     }
     VkPhysicalDeviceVulkan12Features v12{
@@ -8176,6 +8226,8 @@ bool CreateDevice()
                             "prints the whole table; running without a renderer.\n",
                     missing.size() == 1 ? "" : "s", list.c_str(), caps.props.deviceName,
                     caps.haveDriverProps ? caps.driver.driverInfo : "driver unknown");
+            NoteBringupFailure("%s lacks required Vulkan feature%s: %s", caps.props.deviceName,
+                               missing.size() == 1 ? "" : "s", list.c_str());
             return false;
         }
         // ANISOTROPIC FILTERING (part 41 item 1). Xenos filters up to 16:1 and the
@@ -29421,7 +29473,19 @@ bool VkRenderer_Init()
         return false;
     }
     // InitCommon names its own failure on every path.
-    return InitCommon();
+    if (InitCommon())
+    {
+        BugReport_SetRenderer("up");
+        return true;
+    }
+    // ...and the player is told, rather than left at a blank window with audio (issue
+    // #12). The verdict goes to the bug report and to a message box, in the same words.
+    char verdict[400];
+    snprintf(verdict, sizeof verdict, "FAILED: %s",
+             g_bringupWhy[0] ? g_bringupWhy : "see the [vk] lines in cz_runtime.log");
+    BugReport_SetRenderer(verdict);
+    Host_ShowRendererFailure(g_bringupWhy[0] ? g_bringupWhy : nullptr);
+    return false;
 }
 
 void VkRenderer_Draw(uint8_t* base, const Pm4Draw& draw)

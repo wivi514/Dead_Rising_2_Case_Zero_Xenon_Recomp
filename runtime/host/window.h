@@ -280,6 +280,12 @@ bool Host_VulkanCreateSurface(void* instance, uint64_t* outSurface);
 // size. The swapchain is created at this extent and re-created when it changes.
 void Host_VulkanDrawableSize(uint32_t* w, uint32_t* h);
 
+// The renderer could not come up (player issue #12: a white window with audio, and
+// nothing on screen to say why). Shows a message box naming the step that failed
+// (`why`, may be null) and where the log is, on a detached thread so the caller — the
+// pump — is not held. No-op without a window, and under CZ_NO_RENDERER_DIALOG=1.
+void Host_ShowRendererFailure(const char* why);
+
 // The desktop size of the DISPLAY the window currently sits on (part 60): what the
 // settings panel clamps its resolution list against, so the menu reads like a game's
 // and not like a debug knob — no 5120x2880 entry on a 1440p monitor. Refreshed by the

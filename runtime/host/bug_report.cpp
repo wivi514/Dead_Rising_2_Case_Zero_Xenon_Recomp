@@ -110,6 +110,7 @@ std::thread g_worker;
 std::atomic<bool> g_quit{ false };
 std::string g_gpu = "unknown", g_driver = "unknown";
 uint32_t g_apiVersion = 0;
+std::string g_renderer = "not started";
 
 // ---- the machine ---------------------------------------------------------------
 
@@ -496,9 +497,14 @@ void WriteReport(std::unique_ptr<Pending> p)
     char vk[32];
     snprintf(vk, sizeof vk, "%u.%u.%u", VK_VERSION_MAJOR_(g_apiVersion), VK_VERSION_MINOR_(g_apiVersion),
              VK_VERSION_PATCH_(g_apiVersion));
+    std::string renderer;
+    {
+        std::lock_guard<std::mutex> lock(g_mutex);
+        renderer = g_renderer;
+    }
     std::string sys;
     {
-        char b[1024];
+        char b[1280];
         snprintf(b, sizeof b,
                  "game: Dead Rising 2: Case Zero (recomp) %s\n"
                  "os: %s\n"
@@ -506,12 +512,14 @@ void WriteReport(std::unique_ptr<Pending> p)
                  "gpu: %s\n"
                  "driver: %s\n"
                  "vulkan: %s\n"
+                 "renderer: %s\n"
                  "ram_mb: %llu\n"
                  "resolution: %ux%u (%s), msaa %d, vsync %s, fps cap %d, shadows %d, fov %d\n"
                  "signed_in: %s\n"
                  "trigger: %s at %s\n",
                  CZ_GAME_VERSION, os.c_str(), cpu.c_str(), std::thread::hardware_concurrency(),
-                 g_gpu.c_str(), g_driver.c_str(), vk, (unsigned long long)ram, rw, rh,
+                 g_gpu.c_str(), g_driver.c_str(), vk, renderer.c_str(),
+                 (unsigned long long)ram, rw, rh,
                  DisplayModeName(Settings_DisplayMode()), Settings_Msaa(),
                  Settings_VSync() ? "on" : "off", Settings_FpsCap(), Settings_ShadowTier(),
                  Settings_Fov(), CzXlive_SignedIn() ? "yes" : "no", p->trigger.c_str(),
@@ -636,6 +644,12 @@ void BugReport_SetGpu(const char* device, const char* driver, uint32_t apiVersio
     g_gpu = device ? device : "unknown";
     g_driver = driver ? driver : "unknown";
     g_apiVersion = apiVersion;
+}
+
+void BugReport_SetRenderer(const char* verdict)
+{
+    std::lock_guard<std::mutex> lock(g_mutex);
+    g_renderer = verdict ? verdict : "unknown";
 }
 
 void BugReport_Request(const char* trigger, unsigned frames)

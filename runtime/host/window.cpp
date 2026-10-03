@@ -174,6 +174,7 @@ bool Host_VulkanSwapchainWanted() { return false; }
 std::vector<const char*> Host_VulkanInstanceExtensions() { return {}; }
 bool Host_VulkanCreateSurface(void*, uint64_t*) { return false; }
 void Host_VulkanDrawableSize(uint32_t* w, uint32_t* h) { if (w) *w = 0; if (h) *h = 0; }
+void Host_ShowRendererFailure(const char*) {}
 bool Host_DisplaySize(uint32_t* w, uint32_t* h) { if (w) *w = 0; if (h) *h = 0; return false; }
 int Host_DisplayModeList(uint32_t*, int) { return 0; }
 
@@ -185,6 +186,8 @@ int Host_DisplayModeList(uint32_t*, int) { return 0; }
 #include <cstring>
 #include <algorithm>
 #include <mutex>
+#include <string>
+#include <thread>
 #include <vector>
 
 #include <SDL.h>
@@ -2785,6 +2788,31 @@ bool Host_DebugOverlayRender(std::vector<uint8_t>& rgba, uint32_t& width, uint32
 bool Host_VulkanSwapchainWanted()
 {
     return g_active && g_wantVulkanSwapchain;
+}
+
+void Host_ShowRendererFailure(const char* why)
+{
+    if (!g_active || !g_window || getenv("CZ_NO_RENDERER_DIALOG"))
+        return;
+    std::string msg =
+        "The game is running, but its renderer could not start, so the window will stay "
+        "blank.\n\n";
+    msg += why ? std::string("What failed: ") + why + "\n\n"
+               : std::string("What failed: see the [vk] lines in the log.\n\n");
+    msg += "The usual fix is the newest graphics driver from AMD, Intel or NVIDIA's own "
+           "website (not Windows Update). On a laptop with two GPUs, update both.\n\n";
+    const std::string log = LogFile::Path().string();
+    if (!log.empty())
+        msg += "Log: " + log + "\n";
+    msg += "Please attach that log to a bug report.";
+    fprintf(stderr, "[host] renderer failure dialog shown: %s\n", why ? why : "(no reason)");
+    // No parent window: the box is raised from the pump thread, and a parent owned by
+    // another thread is one more thing that can wedge. The thread is detached because
+    // the box blocks until dismissed and nothing waits for it.
+    std::thread([msg] {
+        SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "Dead Rising 2: Case Zero — renderer failed",
+                                 msg.c_str(), nullptr);
+    }).detach();
 }
 
 std::vector<const char*> Host_VulkanInstanceExtensions()

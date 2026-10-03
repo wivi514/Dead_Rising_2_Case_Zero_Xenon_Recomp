@@ -30,6 +30,13 @@ void BugReport_Init();
 // and version text, the Vulkan version the device reports).
 void BugReport_SetGpu(const char* device, const char* driver, uint32_t apiVersion);
 
+// The renderer's bring-up VERDICT: "up", or "FAILED: <the step and the VkResult>".
+// Written to system.txt as its own line. It exists because issue #12 (a white window
+// with audio, 2026-10-02) arrived with gpu "unknown" and a log whose 60 s window began
+// AFTER bring-up — the report proved the renderer had failed and could not say where.
+// Unset reads "not started" (the pump never reached VkRenderer_Init).
+void BugReport_SetRenderer(const char* verdict);
+
 // The key. `trigger` is what the player pressed ("F9" / "F8"); `frames` how many
 // presented frames to keep (1, or 20 consecutive for F8 — the report keeps what fits
 // its caps, the whole burst goes full-size to ../bursts/<name>/). The report
