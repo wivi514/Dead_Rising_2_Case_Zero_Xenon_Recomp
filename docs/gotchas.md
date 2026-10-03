@@ -6973,3 +6973,21 @@ From phase C part 18 (the frame rate — and none of it was work):
     page-aligned in the physical arena with no record beside them, so the field is
     unreachable from the only address the scan ever holds. It cost one instrumented run to
     learn, and would have cost a rewrite to assume. (Case Zero, KB/M prompt art)
+
+615. **A DIAGNOSTIC PRINTED BEFORE THE LOG TEE OPENS IS NOT IN THE LOG — AND THE LOG IS
+    THE ONLY CHANNEL A PLAYER CAN HAND YOU.** A new `--debug-menu` flag had to be
+    consumed at the very top of `main()`, because the normal path reads `argv[1]` as the
+    XEX path and every subcommand matches on `argv[1]` too. Its `[option]` confirmation
+    line was printed there, which is **before `LogFile::Begin`** — so it went to a console
+    a double-clicking player never sees and was MISSING from `cz_runtime.log`, the one
+    file an issue report attaches. Reading the file rather than the terminal is what
+    caught it: `grep` found one mention, the guest-side `[debug] CZ_DEBUG_MENU=1`, at
+    **line 123** — so the README's "check the top of the log" would have been wrong twice
+    over, once about the marker and once about where to look. The repair is to ACCUMULATE
+    the message at consume time and flush it the moment the tee exists (line 2 for the
+    flag, line 3 for the `cz_defaults.env` route). The general rule: anything that runs
+    before logging is initialised must defer its output, not print it — and the way to
+    check is to read the artifact the user will send, never the stream you happen to be
+    watching. Same shape as 109 and 25, one layer earlier: the line was emitted, so every
+    console check passed, and only the FILE could report the absence. (Case Zero, player
+    support; transfers to Case West, which inherits the same tee)
