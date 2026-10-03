@@ -109,6 +109,47 @@ prompt): it prints one line per fact, writes the same to `cz_diag.txt`, and exit
 Paste both into the issue. Say what you SAW — "closed after the progress bar", "black
 window", "slow" — rather than "didn't work"; the log usually says the rest.
 
+## Debug menu (optional)
+
+The retail game still carries the developers' own menu, and this build can switch it
+back on: **F4** opens it, and **F2** opens the DebugJump screen, which warps straight
+to any case or mission from the title menu. It is off by default, so F4 does nothing
+until you turn it on. Three ways, all equivalent:
+
+**A second shortcut — easiest if you want both.** Right-click `cz_runtime.exe` →
+**Send to** → **Desktop (create shortcut)**. Right-click the shortcut →
+**Properties**, and add a space and `--debug-menu` at the end of **Target**:
+
+```
+"C:\Games\CaseZeroRecomp\cz_runtime.exe" --debug-menu
+```
+
+Now the original icon starts the game normally and this one starts it with the menu,
+from the same install. (Linux/macOS: `./cz_runtime --debug-menu`.)
+
+**Permanently.** Open `cz_defaults.env` beside the executable in a text editor and add:
+
+```
+CZ_DEBUG_MENU=1
+```
+
+Note that Windows hides known file extensions, so the file may appear as just
+`cz_defaults` — right-click it and choose **Open with** → **Notepad**. If you use
+*Save As* rather than *Save*, set "Save as type" to **All Files** so it is not
+renamed to `cz_defaults.env.txt`.
+
+**Or as an environment variable**, `CZ_DEBUG_MENU=1`. The flag beats the file and the
+environment; the environment beats the file.
+
+In the menu: **Up/Down** move, **Enter** uses, **Left/Right** changes a value, **F4**
+closes. The game window must have keyboard focus. To check it took effect, look at the
+first few lines of `cz_runtime.log` — the shortcut prints `[option] --debug-menu ...`
+and the file prints `[defaults] CZ_DEBUG_MENU=1 ...`.
+
+This is leftover development scaffolding rather than something built for players:
+some entries do nothing and a few can put the game in an odd state. Back up a save
+you care about first.
+
 ## What is in this bundle
 
 * `cz_runtime` / `cz_runtime.exe` — the game: recompiled code plus the host runtime.

@@ -293,8 +293,75 @@ bool RunDiag()
 
 } // namespace
 
+static std::string g_optionFlagReport;
+
+// PLAYER-FACING OPTION FLAGS, consumed before anything else looks at argv.
+//
+// They are REMOVED from argv as they are recognised, because the normal path reads
+// `argv[1]` as the XEX path and every subcommand below matches on `argv[1]` too — so a
+// flag left in place would either be opened as a game image or mask `--smoke`. Compacting
+// here is what lets a flag be combined with any of them, in any order.
+//
+// Why a flag at all when cz_defaults.env already exists: on Windows a SHORTCUT carries
+// arguments in its Target field but cannot carry environment variables, so a flag is the
+// only way to have a normal icon and a debug icon side by side pointing at ONE install.
+// That was a player's request, and editing a text file to switch back and forth is the
+// thing it replaces.
+//
+// A flag OVERRIDES both cz_defaults.env and the environment — explicit beats ambient, and
+// it happens before the defaults loader, which skips any key that is already set. Every
+// one of them prints, for the same reason the defaults do: a variable the player cannot
+// see being set is a bisection that starts from a lie.
+static void ConsumeOptionFlags(int& argc, char** argv)
+{
+    int out = 1;
+    for (int i = 1; i < argc; ++i)
+    {
+        const char* a = argv[i];
+        const char* key = nullptr;
+        if (strcmp(a, "--debug-menu") == 0)
+            key = "CZ_DEBUG_MENU";
+        if (!key)
+        {
+            argv[out++] = argv[i]; // not ours: hand it on untouched
+            continue;
+        }
+#ifdef _WIN32
+        _putenv_s(key, "1");
+#else
+        setenv(key, "1", /*overwrite=*/1);
+#endif
+        // RECORDED, NOT PRINTED YET. This runs before LogFile::Begin, so anything
+        // written here goes to the console and is MISSING from cz_runtime.log — which
+        // is the one channel a player attaches to an issue. Measured: the line was
+        // absent from the file while the guest-side `[debug] CZ_DEBUG_MENU=1` landed at
+        // line 123, so "check the top of the log" would have been wrong twice over.
+        g_optionFlagReport += "[option] ";
+        g_optionFlagReport += a;
+        g_optionFlagReport += " -> ";
+        g_optionFlagReport += key;
+        g_optionFlagReport += "=1 (the title's own debug menu: F4 opens it, F2 the "
+                              "DebugJump screen)\n";
+    }
+    argc = out;
+    argv[out] = nullptr;
+}
+
+// Flushed once the log tee exists, so the flags a run was started with are in the file
+// as well as on screen. A subcommand that returns before the tee opens (--smoke and
+// friends) never calls this; none of them read these flags.
+static void ReportOptionFlags()
+{
+    if (g_optionFlagReport.empty())
+        return;
+    fputs(g_optionFlagReport.c_str(), stderr);
+    g_optionFlagReport.clear();
+}
+
 int main(int argc, char** argv)
 {
+    ConsumeOptionFlags(argc, argv);
+
     if (argc > 1 && strcmp(argv[1], "--smoke") == 0)
         return RunSmoke();
 
@@ -422,6 +489,7 @@ int main(int argc, char** argv)
     // the data root — the bundle directory, or beside the .AppImage — rotated once.
     // A player who double-clicked has no console; this is what they attach instead.
     LogFile::Begin(HostPaths::Root(), "cz_runtime.log");
+    ReportOptionFlags();
 
     // Where everything is, decided once and printed once. It used to be
     // "../../assets/game/default.xex" — CWD-relative, which is why every recipe in

@@ -136,6 +136,45 @@ game folder at any time without losing progress.
 - **No macOS build yet** — nothing blocks it in principle; it awaits test
   hardware.
 
+## Debug menu (optional)
+
+The retail disc still carries Blue Castle's own development menu, and this port can
+switch it back on. **F4** opens it; **F2** opens the DebugJump screen, which warps
+straight to any case or mission from the title menu.
+
+It is off by default, so pressing F4 in a normal install does nothing. Pick whichever
+of these suits you — they all do the same thing:
+
+**A shortcut, if you want to switch back and forth.** Right-click `cz_runtime.exe`
+→ **Send to** → **Desktop (create shortcut)**, then right-click the new shortcut →
+**Properties**, and add a space and `--debug-menu` to the end of the **Target** box:
+
+```
+"C:\Games\CaseZeroRecomp\cz_runtime.exe" --debug-menu
+```
+
+Keep the normal icon as well and you have one install with two ways to start it —
+ordinary play, and play with the menu. On Linux and macOS the same flag works from a
+terminal: `./cz_runtime --debug-menu`.
+
+**A text file, if you want it on permanently.** Open `cz_defaults.env` (next to the
+executable) in any text editor and add one line:
+
+```
+CZ_DEBUG_MENU=1
+```
+
+**An environment variable, if you prefer that.** `CZ_DEBUG_MENU=1` anywhere the game
+can see it. The command-line flag overrides both of the above; the environment
+overrides the file.
+
+Once it is on, the menu takes **Up/Down** to move, **Enter** to use, **Left/Right** to
+change a value and **F4** to close. The game window has to have keyboard focus.
+
+> This is retained developer scaffolding, not a feature we wrote: some entries do
+> nothing, and a few can leave the game in a strange state. It cannot corrupt a save
+> that is not written, but take a backup if you are attached to one.
+
 ## Building from source
 
 The repository contains no game data, so a build needs your own package plus

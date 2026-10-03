@@ -1651,7 +1651,15 @@ prove. Both are free when off (one env-var read on a function that runs once per
 process, three hops off the XEX entry point) and neither has any per-frame component.
 
 ```
-CZ_DEBUG_MENU=1    debug preset: the 26-reader master, debug-jump leaf, and
+CZ_DEBUG_MENU=1    debug preset. ALSO SPELLED `--debug-menu` ON THE COMMAND LINE,
+                   which is the player-facing spelling: a Windows SHORTCUT carries
+                   arguments in its Target field but cannot carry environment
+                   variables, so the flag is what lets one install have a normal icon
+                   and a debug icon (both READMEs document it). The flag overrides
+                   cz_defaults.env AND the environment — explicit beats ambient — and
+                   its `[option]` line is deliberately deferred until the log tee is
+                   open, or it would be missing from the one file a player attaches to
+                   an issue. The preset: the 26-reader master, debug-jump leaf, and
                    frontend-screen witness. At the title menu F2 requests the shipped
                    DebugJump screen through the frontend's own captured transition
                    manager. F4 opens the host-rendered Case Zero debug menu in the

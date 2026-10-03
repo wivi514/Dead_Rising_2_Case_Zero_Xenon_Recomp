@@ -1310,7 +1310,10 @@ CZ_VK_SYNC_VALIDATION=1  **synchronization validation** — that a memory depend
                    change. STANDING GATE: 0 hazards. `CZ_VK_BARRIER_POISON=1` is its
                    positive control and must produce 30. Slow enough to change the route —
                    use `CZ_VK_RES=1280x720 PRESSMS=9000 SECS=45 TIMEOUT=420`
-CZ_DEBUG_MENU=1    enables retained debug scaffolding; at the title menu press F2 to
+CZ_DEBUG_MENU=1    enables retained debug scaffolding — `--debug-menu` is the same
+                   thing as a command-line flag, which is the spelling the READMEs give
+                   players because a Windows shortcut can carry an argument but not an
+                   env var; at the title menu press F2 to
                    open the shipped, operator-confirmed DebugJump testing screen; F4
                    opens the host-rendered Case Zero debug submenus (Left goes back)
 
