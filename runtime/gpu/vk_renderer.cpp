@@ -8004,6 +8004,63 @@ bool CreateDevice()
     if (ir == VK_SUCCESS)
         er = vkEnumeratePhysicalDevices(R->instance, &count, nullptr);
 
+    // THE IMPLICIT-LAYER RETRY (player issue #12). An instance that cannot be created,
+    // or one that lists no device, on a machine whose game otherwise runs, is the
+    // signature of an IMPLICIT LAYER failing — a layer the loader injects from the
+    // registry without the application asking. The best-known one is AMD's
+    // VK_LAYER_AMD_switchable_graphics, which ships with AMD's Windows driver on
+    // every Radeon-iGPU laptop and has a long public record of failing instance
+    // creation or hiding every device on hybrid machines; overlay layers (recorders,
+    // FPS counters) are the other usual suspects. So on failure — and ONLY on failure,
+    // so a working machine creates its instance exactly as before — retry twice:
+    // first with the AMD layer disabled by its own manifest's disable variable, then
+    // with every implicit layer disabled (VK_LOADER_LAYERS_DISABLE, loader 1.3.234+;
+    // an older loader ignores it and the rung simply fails again). The loader re-reads
+    // the layer manifests and these variables at each vkCreateInstance. Which rung
+    // brought the instance up is printed, because that line IS the diagnosis.
+    //
+    // NOT measured on the failing machine (we have no Radeon iGPU): this is a
+    // candidate for issue #12, chosen because it cannot change a machine that already
+    // works. CZ_VK_NO_LAYER_RETRY=1 is the control arm.
+    if ((ir != VK_SUCCESS || er != VK_SUCCESS || count == 0) &&
+        !EnvOn("CZ_VK_NO_LAYER_RETRY"))
+    {
+        struct Rung { const char* var; const char* value; const char* what; };
+        static const Rung kRungs[] = {
+            { "DISABLE_LAYER_AMD_SWITCHABLE_GRAPHICS_1", "1",
+              "AMD switchable-graphics layer disabled" },
+            { "VK_LOADER_LAYERS_DISABLE", "~implicit~", "every implicit layer disabled" },
+        };
+        fprintf(stderr, "[vk] instance %s (vkCreateInstance %d, vkEnumeratePhysicalDevices %d, "
+                        "%u device(s)) — retrying without implicit layers "
+                        "(CZ_VK_NO_LAYER_RETRY=1 is the control)\n",
+                ir != VK_SUCCESS ? "creation FAILED" : "lists no usable device", int(ir),
+                int(er), count);
+        for (const Rung& rung : kRungs)
+        {
+            if (R->instance)
+            {
+                vkDestroyInstance(R->instance, nullptr);
+                R->instance = VK_NULL_HANDLE;
+            }
+#if defined(_WIN32)
+            _putenv_s(rung.var, rung.value);
+#else
+            setenv(rung.var, rung.value, 1);
+#endif
+            count = 0;
+            er = VK_SUCCESS;
+            ir = vkCreateInstance(&ici, nullptr, &R->instance);
+            if (ir == VK_SUCCESS)
+                er = vkEnumeratePhysicalDevices(R->instance, &count, nullptr);
+            fprintf(stderr, "[vk]   retry, %s (%s=%s): vkCreateInstance %d, "
+                            "vkEnumeratePhysicalDevices %d, %u device(s)%s\n",
+                    rung.what, rung.var, rung.value, int(ir), int(er), count,
+                    ir == VK_SUCCESS && er == VK_SUCCESS && count ? " — THIS RUNG WORKED" : "");
+            if (ir == VK_SUCCESS && er == VK_SUCCESS && count)
+                break;
+        }
+    }
     VK_CHECK(ir, "vkCreateInstance");
     VK_CHECK(er, "vkEnumeratePhysicalDevices");
 
