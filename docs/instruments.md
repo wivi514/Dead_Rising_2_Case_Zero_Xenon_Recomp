@@ -4532,6 +4532,9 @@ CZ_COOP_ITEM_SYNC=1  **THE CANDIDATE FOR PLAYER ISSUE #11 (2026-10-04), still OF
                    garage, so at the bike it almost never published, and the 09-26 run below
                    could not have measured the substitution. `[itemsync] publisher running`
                    is the line that shows the driver is alive (gotcha 151).
+                   Message v2 carries the owner's whole inventory, and the found test takes
+                   the owner's word too: `[found] RESCUED BY THE OWNER: "<item>"` is a quest
+                   item the host's drifted copy said the guest did NOT have.
                    The history: **REFUTED AS THE FIX FOR ISSUE #9, 2026-09-26 — OFF by default, and
                    do not quote it as a repair.** The operator's two-machine run raised
                    `WheelPawnPlaced` on BOTH machines for the guest's wheel — the mission

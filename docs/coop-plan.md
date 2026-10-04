@@ -3163,3 +3163,40 @@ the mission if the gas can's `cMissionObjectiveGiveItemToNPC` has STARTED on the
 which needs the host to have seen it as FOUND. If the host's copy drifted (rather than
 lagged), it may never have, and the substituted event lands with no listener. A
 `[found] RESCUED: "GasolineCanister"` line earlier in the host's log is what says it did.
+
+### ANSWERED by the reporter, 2026-10-04: the guest was NOT carrying the forks
+
+So the host's copy of the guest's bag was not late, it was WRONG: it named the gas can's
+slot as forks. That is the 09-25 drift, unchanged. And it makes the risk flagged above the
+expected case. FOUND is decided from the same drifted copy, so on the host the gas can was
+never found (`FOUND_ANY_PLAYER`'s retry re-reads that copy and sees forks), while the forks'
+objective was started on the host's word. That is why `BikeForksPlaced` had a listener and
+ticked. A substituted `GasCanPlaced` alone would have landed on nothing.
+
+**So the found flag takes the owner's word too.** Item-sync message **v2** (`kSyncVersion = 2`,
+64 bytes) carries the owner's whole 12-slot inventory after the v1 header. In
+`sub_823AF418`'s hook, after every copy-based retry has said NO, a remote player whose own
+machine says he carries `ITEM_NAME` gets the title's own success path. It is re-spelled
+from `0x823AF520..0x823AF560`, and that path uses only the PLAYER, never the matched item:
+`who = player->vt[0xC4]()`, then `this->vt[0x2C](this, mission->0x1C, mission, who, 0)`.
+The title's two gates are honoured first: `+0x7C == 0` (else no player is consulted; the
+Gems), and `+0xA4` set with `vt[0xE0]` answering 0 (else it is the online branch, not an
+inventory test). One-way: it only adds a YES. It prints
+`[found] RESCUED BY THE OWNER: "GasolineCanister" ...`.
+
+What it does NOT do: a part the host's copy wrongly says the guest holds (the forks here)
+can still be found on that wrong word. Removing a YES the title gave was judged a larger
+risk than a spurious "found" that still needs a real placement to tick, and with the
+placement now substituted, the forks cannot be PLACED unless the guest really holds them.
+
+Measured here, all on one machine: the self-test passes, and fails on purpose when the
+inventory parse is broken (1 failure, `a carried item is not in the filed inventory`). An
+online solo host at the bike printed `publisher running`, consulted the found test 10
+times, ran 30 retries, rescued 0 (no peer to ask) and did not crash.
+
+**The prediction for the two-machine round**, with `CZ_COOP_ITEM_SYNC=1` on BOTH: the guest
+picks up the gas can and the host picks up nothing. The host prints
+`[found] RESCUED BY THE OWNER: "GasolineCanister"` (or the copy-based `[found] RESCUED`, if
+its copy happens to be right this time), then, when the guest places it,
+`[itemsync] placement by player 1 ...` either substituting or agreeing, and the gas can
+ticks. A guest who never carried the forks must not tick the forks.

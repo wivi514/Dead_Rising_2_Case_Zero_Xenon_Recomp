@@ -907,8 +907,15 @@ void MaybeRaise(PPCContext& ctx, uint8_t* base, uint32_t world)
 // exactly; every substitution prints one line either way.
 
 constexpr uint32_t kSyncMagic = 0x435A4831u; // 'CZH1' — held-item, version 1
-constexpr uint8_t kSyncVersion = 1;
-constexpr size_t kSyncBytes = 16;
+// Version 2 (2026-10-04, player issue #11) carries the owner's WHOLE inventory
+// after the 16-byte v1 header, not just the held item: the found flag needs
+// "does he have it", and the host's copy of his bag answers that wrongly once it
+// has drifted (the guest held the gas can and NOT the forks; the host's copy
+// said forks). A v1 peer is refused by the version byte, which is the right
+// failure: both ends of a session run the same build.
+constexpr uint8_t kSyncVersion = 2;
+constexpr size_t kSyncHeaderBytes = 16;
+constexpr size_t kSyncBytes = 16 + 12 * 4; // header + kInvSlots slot hashes
 constexpr uint32_t kNoPartsPlaced = 0xF574775Au;
 
 // The five (held item -> mission event) pairs state 61 switches on. Taken from
@@ -964,7 +971,8 @@ int SyncMode()
         if (on)
             fprintf(stderr, "[itemsync] CZ_COOP_ITEM_SYNC=1 — the held item is published (on "
                             "change, plus a heartbeat) and a remote placement's mission event is "
-                            "substituted with the owning machine's answer. The CANDIDATE for "
+                            "substituted with the owning machine's answer, and a quest item the "
+                            "owner says he carries counts as FOUND. The CANDIDATE for "
                             "player issue #11 (a guest's gas can placed as forks); its "
                             "\"placement by player N\" line is the diagnosis.\n");
         return on;
@@ -1078,6 +1086,7 @@ int LocalPlayerIndex(PPCContext& ctx, uint8_t* base)
 struct RemoteHeld
 {
     uint32_t hash = 0;
+    uint32_t inv[12] = {}; // every slot's item name hash, 0 = empty
     uint32_t seq = 0;
     std::chrono::steady_clock::time_point at{};
     bool valid = false;
@@ -1097,6 +1106,28 @@ uint32_t g_syncFiled = 0;
 // does not print five times a second.
 uint32_t g_lastLoggedIn[kMaxPlayers] = {};
 
+// Does player `who`'s OWN machine say he carries an item with this name hash?
+// 1 yes, 0 no, -1 no fresh word from that machine (so the caller falls back to
+// what it did before item sync existed). Read by the found-flag rescue.
+int RemoteInventoryHas(uint32_t who, uint32_t itemHash)
+{
+    if (who >= kMaxPlayers || !itemHash)
+        return -1;
+    std::lock_guard<std::mutex> lock(g_heldMu);
+    const RemoteHeld& r = g_remoteHeld[who];
+    if (!r.valid)
+        return -1;
+    const auto age = std::chrono::duration_cast<std::chrono::milliseconds>(
+                         std::chrono::steady_clock::now() - r.at)
+                         .count();
+    if (age > SyncMaxAgeMs())
+        return -1;
+    for (uint32_t i = 0; i < kInvSlots; i++)
+        if (r.inv[i] == itemHash)
+            return 1;
+    return 0;
+}
+
 void PutBE32(uint8_t* p, uint32_t v)
 {
     p[0] = uint8_t(v >> 24); p[1] = uint8_t(v >> 16);
@@ -1106,6 +1137,41 @@ void PutBE32(uint8_t* p, uint32_t v)
 uint32_t GetBE32(const uint8_t* p)
 {
     return (uint32_t(p[0]) << 24) | (uint32_t(p[1]) << 16) | (uint32_t(p[2]) << 8) | p[3];
+}
+
+// Resolve one player's whole inventory: every slot's item name hash into
+// `slots` (0 for an empty slot) and the SELECTED slot's hash as the return. 0
+// when the chain is not up yet or the hand is empty — the two are not
+// distinguished because neither is publishable as a held item.
+uint32_t InventoryHashes(PPCContext& ctx, uint8_t* base, uint32_t userPlayers, uint32_t invMgr,
+                         uint32_t playerIdx, uint32_t* slots)
+{
+    for (uint32_t i = 0; i < kInvSlots; i++)
+        slots[i] = 0;
+    PPCContext call = ctx;
+    call.r3.u64 = userPlayers;
+    call.r4.u64 = playerIdx;
+    if (!GuestCall(call, base, kFnUserPlayer, "sync-user-player"))
+        return 0;
+    const uint32_t actor = call.r3.u32;
+    if (!actor)
+        return 0;
+    call.r3.u64 = invMgr;
+    call.r4.u64 = actor;
+    if (!GuestCall(call, base, kFnPlayerInv, "sync-player-inventory"))
+        return 0;
+    const uint32_t inv = call.r3.u32;
+    if (!inv)
+        return 0;
+    for (uint32_t i = 0; i < kInvSlots; i++)
+    {
+        const uint32_t item = LoadU32(base, inv + i * 8 + 4);
+        slots[i] = item ? LoadU32(base, item + kItemNameHash) : 0;
+    }
+    const int32_t sel = int32_t(LoadU32(base, inv + kInvSelected));
+    if (sel < 0 || uint32_t(sel) >= kInvSlots)
+        return 0;
+    return slots[sel];
 }
 
 // Resolve one player's selected item hash. 0 when the chain is not up yet or
@@ -1219,7 +1285,8 @@ void PublishHeldItem(PPCContext& ctx, uint8_t* base)
         return;
     }
 
-    const uint32_t hash = SelectedItemHash(ctx, base, userPlayers, invMgr, uint32_t(local));
+    uint32_t slots[kInvSlots];
+    const uint32_t hash = InventoryHashes(ctx, base, userPlayers, invMgr, uint32_t(local), slots);
     // LocalPlayerIndex just asked; this reads that answer rather than asking twice.
     const int host = g_ourSide.load(std::memory_order_relaxed);
     samples++;
@@ -1240,7 +1307,9 @@ void PublishHeldItem(PPCContext& ctx, uint8_t* base)
     // player index, so the first message under the new index must not wait for
     // the heartbeat.
     static int lastLocal = -1;
-    const bool changed = hash != lastSent || local != lastLocal;
+    static uint32_t lastSlots[kInvSlots] = {};
+    const bool slotsChanged = std::memcmp(slots, lastSlots, sizeof lastSlots) != 0;
+    const bool changed = hash != lastSent || local != lastLocal || slotsChanged;
     if (!changed && now < nextBeat)
     {
         inPublish = false;
@@ -1255,6 +1324,9 @@ void PublishHeldItem(PPCContext& ctx, uint8_t* base)
     msg[7] = 0;
     PutBE32(msg + 8, hash);
     PutBE32(msg + 12, ++seq);
+    msg[7] = uint8_t(kInvSlots);
+    for (uint32_t i = 0; i < kInvSlots; i++)
+        PutBE32(msg + kSyncHeaderBytes + i * 4, slots[i]);
     const int reached = CoopLink_Broadcast(msg, sizeof msg);
     nextBeat = now + std::chrono::milliseconds(SyncPeriodMs());
 
@@ -1275,6 +1347,7 @@ void PublishHeldItem(PPCContext& ctx, uint8_t* base)
         {
             lastSent = hash;
             lastLocal = local;
+            std::memcpy(lastSlots, slots, sizeof lastSlots);
             fprintf(stderr, "[itemsync] player %d now holds %08X (%s) — sent on change "
                             "(%llu samples, %llu sends so far)\n",
                     local, hash, NameOf(hash), (unsigned long long)samples,
@@ -2152,6 +2225,8 @@ void CoopLink_Deliver(uint64_t fromXuid, const void* data, size_t length)
     if (r.valid && int32_t(seq - r.seq) <= 0)
         return;
     r.hash = hash;
+    for (uint32_t i = 0; i < kInvSlots; i++)
+        r.inv[i] = i < p[7] ? GetBE32(p + kSyncHeaderBytes + i * 4) : 0;
     r.seq = seq;
     r.at = std::chrono::steady_clock::now();
     const bool first = !r.valid;
@@ -2201,6 +2276,9 @@ void MakeSyncMsg(uint8_t* out, uint8_t player, bool host, uint32_t hash, uint32_
     out[7] = 0;
     PutBE32(out + 8, hash);
     PutBE32(out + 12, seq);
+    out[7] = uint8_t(kInvSlots);
+    for (uint32_t i = 0; i < kInvSlots; i++)
+        PutBE32(out + kSyncHeaderBytes + i * 4, i == 0 ? hash : (i == 5 ? 0x878FC97Bu : 0));
 }
 
 uint32_t SyncFiled()
@@ -2256,6 +2334,11 @@ void CoopItems_SyncSelfTest()
     MakeSyncMsg(msg, 1, /*host*/ false, 0x878FC97Bu, 10);
     CoopLink_Deliver(1, msg, sizeof msg);
     SyncExpect(SyncHeldOf(1) == 0x878FC97Bu, "a well-formed message was not filed");
+    // v2: the inventory travels too. MakeSyncMsg puts the held item in slot 0 and
+    // a WheelPawn in slot 5; anything else must read as absent.
+    SyncExpect(RemoteInventoryHas(1, 0x878FC97Bu) == 1, "a carried item is not in the filed inventory");
+    SyncExpect(RemoteInventoryHas(1, 0x52EA0EA6u) == 0, "an item nobody carries is in the filed inventory");
+    SyncExpect(RemoteInventoryHas(2, 0x878FC97Bu) == -1, "a player with no message reads as known");
 
     // Unordered transport: an older datagram must not roll the value back.
     MakeSyncMsg(msg, 1, false, 0x5F8D0521u, 9);
@@ -4525,6 +4608,69 @@ PPC_FUNC(sub_823AF418)
                         item, localIdx, p, self,
                         (unsigned long long)g_foundRescued.fetch_add(1, std::memory_order_relaxed)
                             + 1);
+            }
+            // THE OWNER'S WORD (CZ_COOP_ITEM_SYNC v2, player issue #11). Every
+            // retry above read THIS machine's copy of the other player's bag, and
+            // that copy drifts: pokisal's guest carried the gas can and not the
+            // forks, and the host's copy said forks, so the gas can was never
+            // FOUND here and a correctly substituted GasCanPlaced would have had
+            // no objective listening for it. So when the copy says no, ask the
+            // machine that owns the player. One-way, like the placement
+            // substitution: it can only add a YES the title would have given had
+            // its copy been right, never remove one.
+            //
+            // It takes the title's OWN success path, re-spelled with no change of
+            // meaning (0x823AF520..0x823AF560 — it uses only the player, never the
+            // item it matched): `who = player->vt[0xC4]()`, then
+            // `this->vt[0x2C](this, mission->0x1C, mission, who, 0)`. And it
+            // honours the title's two gates first, because the test only reads an
+            // inventory behind them: `this+0x7C` must be 0 (else it never
+            // consults a player — the Gems case, §12.12), and `this+0xA4` must be
+            // set with `vt[0xE0]` answering 0 (else it is the online branch at
+            // 0x823AF4E4, not an inventory test at all).
+            if (!answer && SyncActive() && LoadU8(base, self + 0x7C) == 0)
+            {
+                char item[64];
+                PropNameOf(base, self + 0x80, item, sizeof(item));
+                uint32_t want = 0; // the title's own hash, sub_8276E398: h*33 ^ (signed char)c
+                for (const char* c = item; *c; c++)
+                    want = (want * 33u) ^ uint32_t(int32_t(int8_t(*c)));
+                for (int32_t p = 0; p < int32_t(kMaxPlayers) && !answer; p++)
+                {
+                    if (p == localIdx)
+                        continue;
+                    const uint32_t playerObj = LoadU32(base, players + 0xC + uint32_t(p) * 4);
+                    if (!playerObj || RemoteInventoryHas(uint32_t(p), want) != 1)
+                        continue;
+                    const uint32_t npc = LoadU32(base, self + 0xA4);
+                    if (!npc)
+                        break;
+                    PPCContext call = entry;
+                    if (VCall(call, base, npc, 0xE0, 0, "found-owner-npc-kind") != 0)
+                        break;
+                    call = entry;
+                    const uint32_t who = VCall(call, base, playerObj, 0xC4, 0, "found-owner-player");
+                    call = entry;
+                    call.r3.u64 = self;
+                    if (!GuestCall(call, base, 0x823A4768, "found-owner-mission"))
+                        break;
+                    const uint32_t mission = call.r3.u32;
+                    const uint32_t fn = LoadU32(base, LoadU32(base, self) + 0x2C);
+                    call = entry;
+                    call.r3.u64 = self;
+                    call.r4.u64 = LoadU32(base, mission + 0x1C);
+                    call.r5.u64 = mission;
+                    call.r6.u64 = who;
+                    call.r7.u64 = 0;
+                    if (!GuestCall(call, base, fn, "found-owner-success"))
+                        break;
+                    answer = 1;
+                    fprintf(stderr, "[found] RESCUED BY THE OWNER: \"%s\" (%08X) — this machine's "
+                                    "copy of player %d's bag does not have it, player %d's own "
+                                    "machine says it does. objective %08X. CZ_COOP_ITEM_SYNC=0 "
+                                    "is the control arm.\n",
+                            item, want, p, p, self);
+                }
             }
             t_foundRetrying = false;
             if (!peers)
