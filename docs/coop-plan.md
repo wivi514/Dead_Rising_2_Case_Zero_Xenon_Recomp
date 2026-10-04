@@ -3066,3 +3066,100 @@ instruction, 2026-09-29). `CZ_COOP_OUTFIT_REPAIR=0` remains the control arm.
 * **Two free nulls that were run here and must stay true:** single player produces no
   `[outfit]` line at all (fewer than two dressed players), and
   `CZ_COOP_OUTFIT_CHECK_SOLO=1` in single player must read all seven.
+
+## Player issue #11: the guest's gas can is placed as BIKE FORKS — the decision half of #9 (OPEN, 2026-10-04)
+
+`~/XenonLive/Player Issues/#11 - Dead Rising 2_ Case Zero - pokisal`, filed
+2026-09-30 against `v1.1.1-70-gf2d8c9b` (so it carries `CZ_COOP_RESPONSE_PLAYER` and
+`CZ_COOP_FOUND_ANY_PLAYER`, both on): *"Key Items still desynced — Gasoline placed on the
+Bike by the coop partner was replaced by bike forks."* The reporter added, directly to the
+operator:
+
+> *"Host placed Handlebars, Client placed Wheel then Gasoline. We both placed handlebar and
+> wheel at the same time which worked, then I quickly swapped items and placed Gasoline
+> which became bike forks for both players. Could be something with swapping and placing."*
+
+### What the report already establishes
+
+- **The F9 log is the HOST's.** `[respfix] state 34 ... says player 0, but state 61
+  resolved player 1 ... SUBSTITUTING` fires twice: the guest placed, and the response half
+  of #9 (`CZ_COOP_RESPONSE_PLAYER`) engaged for him, as designed.
+- **The HUD's three ticks are PLACEMENTS, not FOUND flags** (the 09-25 notebook already
+  showed the tracker ticking exactly the host's placements). They read wheel, forks and
+  handlebar, which is the reporter's sentence exactly: handlebar (host), wheel (guest),
+  then the guest's gas can scored as forks.
+- *"Forks for both players"* is #9 being fixed and not regressed: the host is
+  authoritative, so both screens now agree, on the host's answer.
+- **No `[itemsync]` line**: `CZ_COOP_ITEM_SYNC` was off in the shipped build.
+
+### The mechanism, and it is the one #9 measured and left open
+
+State 61 decides which part was placed by reading the acting player's SELECTED SLOT out
+of **this machine's** copy of that player's inventory (§"ANSWERED on two real machines").
+That copy drifts: in the 09-25 tables the same slot held different items on the two
+machines four times in seven, and once the two machines disagreed about which slot was
+even selected. `CZ_COOP_RESPONSE_PLAYER` fixed what happens AFTER the decision, and
+`CZ_COOP_FOUND_ANY_PLAYER` fixed the found flag. **The decision itself was never
+repaired**, so a guest placement is now scored correctly only when the host's copy of
+his hands happens to agree. *"Quickly swapped and placed"* is the case where it is least
+likely to: the host's copy of a selection change that only just happened.
+
+What is NOT established: whether the host's copy was merely STALE (the guest also held
+the forks and the selection had not crossed yet) or DRIFTED (the guest never held forks
+and the host's copy names the gas can's slot as forks). The two are told apart by one
+question to the reporter (did the guest also carry the forks?) or by the line below.
+
+### The repair is the arm that already exists — and its publisher was dead at the bike
+
+`CZ_COOP_ITEM_SYNC` (above, "THE FIX — `CZ_COOP_ITEM_SYNC`") is exactly the decision
+repair: the machine a player is local to publishes what he holds, and when state 61 runs
+for a REMOTE player the event is replaced with the owner's answer. It was switched off on
+09-26 because row 1 of that run agreed without help and the wheel still did not attach.
+That refutation stands **as a refutation of the arm being the WHOLE fix**: the missing
+half was the response, since fixed.
+
+**But that run could not have measured the substitution at all.** The publisher was
+driven from `cMissionOnTrigger::Update` (`sub_823E79B8`), and part 10 §5 measured that
+hook entered ONCE in the safehouse garage, which is where the bike is. Nobody moved the
+publisher when the instruments were moved, so at the bike the far machine never had a
+fresh value to substitute with. That is why the 09-26 host logged 6 `coop-link broadcast`
+lines for a whole session, and why its transport verdict was "unknown". (Gotcha 30 again:
+an arm whose driver never runs is indistinguishable from an arm that does nothing.)
+
+Changed 2026-10-04:
+
+1. **The driver** is the GetUserPlayer hook (`sub_8247B020`), the one the harness moved
+   to in part 10. It declines inside the respfix window (its own sample asks for index 0,
+   which is exactly the lookup that window is waiting to substitute) and inside a state-61
+   placement.
+2. **Sampled every 33 ms, sent on change**, with the 200 ms period kept as a heartbeat.
+   With a 200 ms period, a swap followed quickly by a placement can reach the host as the
+   previous item. The host's stale copy and the stale published value then AGREE, and
+   guard 3 (the substitution must change the answer) lets the wrong part stand. That is
+   exactly the reporter's *"quickly swapped and placed"*. `CZ_COOP_ITEM_SYNC_SAMPLE_MS`.
+3. **The host/joiner side is no longer cached on first ask.** Driven from GetUserPlayer,
+   the first ask happens at the frontend, where a joiner that has not joined yet
+   truthfully answers "host" of its own solo session. Cached, that made it publish as
+   player 0 for ever, and the real host refuses every such message as a same-side peer.
+   The same-box pair showed it: the joiner printed `this machine is the HOST` about 340
+   log lines before its join began. Now it is asked once per sample and printed on change.
+4. `[itemsync] publisher running: ...` prints unconditionally once (gotcha 151).
+
+### The prediction, so a run can refute it
+
+On two machines, with `CZ_COOP_ITEM_SYNC=1` on BOTH: the guest carries the gas can AND
+another part, swaps to the gas can and places it immediately. The host's log prints
+
+```
+[itemsync] placement by player 1 (remote here): this machine read 7D7806D9 (BikeForksPlaced)
+           out of its own copy, player 1's own machine says 5F8D0521 (GasolineCanister)
+           -> raising D4AF6D06 (GasCanPlaced)
+```
+
+and the HUD ticks the gas can. If that line reads `both machines agree`, the host's copy
+was right and the defect is elsewhere. If it reads `NO FRESH held-item`, the channel is
+not arriving. **One risk to watch, said in advance:** the substituted event only advances
+the mission if the gas can's `cMissionObjectiveGiveItemToNPC` has STARTED on the host,
+which needs the host to have seen it as FOUND. If the host's copy drifted (rather than
+lagged), it may never have, and the substituted event lands with no listener. A
+`[found] RESCUED: "GasolineCanister"` line earlier in the host's log is what says it did.

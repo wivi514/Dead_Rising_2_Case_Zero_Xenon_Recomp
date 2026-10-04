@@ -940,6 +940,14 @@ bool IsPlacementEvent(uint32_t eventHash)
     return false;
 }
 
+// 2026-10-04, PLAYER ISSUE #11: THE CANDIDATE AGAIN, still OFF until a
+// two-machine round. With CZ_COOP_RESPONSE_PLAYER fixing the response and
+// CZ_COOP_FOUND_ANY_PLAYER the found flag, the DECISION is the half left, and
+// pokisal's report is it: the guest swapped to the gas can, placed it, and the
+// host — authoritative — raised BikeForksPlaced out of its own copy. The 09-26
+// run below also never had a live publisher at the bike (PublishHeldItem's
+// retraction note), so it could not have measured the substitution at all.
+//
 // OFF BY DEFAULT SINCE 2026-09-26, and the reason is in docs/coop-plan.md: the
 // operator's two-machine run REFUTED the premise. Both machines raised
 // WheelPawnPlaced for the guest's wheel — the mission event AGREED — and the
@@ -954,10 +962,11 @@ int SyncMode()
         const char* e = std::getenv("CZ_COOP_ITEM_SYNC");
         const int on = (e && *e && *e != '0') ? 1 : 0;
         if (on)
-            fprintf(stderr, "[itemsync] CZ_COOP_ITEM_SYNC=1 — the held item is published and a "
-                            "remote placement's mission event is substituted. REFUTED as the fix "
-                            "for issue #9 (the event agreed and the part still did not attach); "
-                            "this is an arm, not a repair.\n");
+            fprintf(stderr, "[itemsync] CZ_COOP_ITEM_SYNC=1 — the held item is published (on "
+                            "change, plus a heartbeat) and a remote placement's mission event is "
+                            "substituted with the owning machine's answer. The CANDIDATE for "
+                            "player issue #11 (a guest's gas can placed as forks); its "
+                            "\"placement by player N\" line is the diagnosis.\n");
         return on;
     }();
     return mode;
@@ -1004,18 +1013,27 @@ constexpr uint32_t kFnIsHost = 0x825530D0;
 // which has no guest context of its own to ask with.
 std::atomic<int> g_ourSide{-1};
 
+// NOT CACHED, and that is a correction (2026-10-04). It was cached on the first
+// call, which was harmless while the publisher was driven from a mission
+// trigger update — the first call happened in-level, after the join. Driven from
+// GetUserPlayer, the first call happens at the FRONTEND, where a joiner that has
+// not joined yet truthfully answers "host" of its own solo session; the cache
+// then made it publish as player 0 for the rest of the run, and the real host
+// refuses every one of those messages as a same-side peer. Measured on the
+// same-box pair: the joiner printed "this machine is the HOST" ~340 log lines
+// before its join began. So it is asked once per SAMPLE (33 ms; one guest call)
+// and printed whenever the answer changes.
 int HostSide(PPCContext& ctx, uint8_t* base)
 {
-    static int cached = -1; // -1 unknown, 0 joiner, 1 host
-    if (cached >= 0)
-        return cached;
     PPCContext call = ctx;
     if (!GuestCall(call, base, kFnIsHost, "item-sync-is-host"))
-        return -1;
-    cached = (call.r3.u32 & 0xFF) ? 1 : 0;
-    g_ourSide.store(cached, std::memory_order_relaxed);
-    fprintf(stderr, "[itemsync] this machine is the %s\n", cached ? "HOST" : "JOINER");
-    return cached;
+        return g_ourSide.load(std::memory_order_relaxed);
+    const int side = (call.r3.u32 & 0xFF) ? 1 : 0;
+    const int was = g_ourSide.exchange(side, std::memory_order_relaxed);
+    if (was != side)
+        fprintf(stderr, "[itemsync] this machine is the %s%s\n", side ? "HOST" : "JOINER",
+                was < 0 ? "" : " (it changed — a join or a session end)");
+    return side;
 }
 
 // WHICH USER-PLAYER INDEX IS OURS. The host's Chuck is index 0 and the joiner's
@@ -1118,12 +1136,57 @@ uint32_t SelectedItemHash(PPCContext& ctx, uint8_t* base, uint32_t userPlayers, 
     return item ? LoadU32(base, item + kItemNameHash) : 0;
 }
 
-// Publishes this machine's own player's held item. Driven from the mission
-// trigger update, which runs every frame; throttled to SyncPeriodMs, and a
-// straight return whenever there is no session to publish into.
+// How often the held item is SAMPLED. Separate from the publish period on
+// purpose: a value that has not changed is re-sent every SyncPeriodMs as a
+// heartbeat, but a value that HAS changed goes out on the sample that sees it.
+//
+// WHY (player issue #11, pokisal, 2026-09-30): "we both placed handlebar and
+// wheel at the same time which worked, then I quickly swapped items and placed
+// Gasoline which became bike forks for both players". With a 200 ms publish
+// period a swap followed quickly by a placement can arrive at the host as the
+// PREVIOUS item, and then guard 3 (the substitution must change the answer)
+// sees the host's stale copy and the stale published value AGREE, and the
+// wrong part stands. Sampling every ~33 ms and sending on change puts the new
+// item on the wire before a human can press interact.
+bool t_placingNow();
+
+int SyncSampleMs()
+{
+    static const int ms = [] {
+        const char* e = std::getenv("CZ_COOP_ITEM_SYNC_SAMPLE_MS");
+        const int n = (e && *e) ? std::atoi(e) : 33;
+        return n > 0 ? n : 33;
+    }();
+    return ms;
+}
+
+// Publishes this machine's own player's held item. Driven from the
+// GetUserPlayer hook (`sub_8247B020`, millions of calls a minute on every
+// level); sampled every SyncSampleMs, sent immediately when the held item
+// changes and every SyncPeriodMs otherwise, and a straight return whenever
+// there is no session to publish into.
+//
+// RETRACTED IN PLACE: this was driven from `cMissionOnTrigger::Update`
+// (`sub_823E79B8`) until 2026-10-04, on the same "it runs every frame"
+// reasoning that coop-plan.md issue #9 part 10 §5 measured FALSE for the
+// inventory watch: in the safehouse garage that hook is entered ONCE. So at the
+// bike — the only place the substitution matters — the publisher almost never
+// ran, which is why the 09-26 two-machine run logged 6 coop-link broadcasts for
+// a whole session and why its transport verdict was "unknown". That run's
+// refutation of THIS ARM AS THE WHOLE FIX still stands (its row 1 agreed
+// without help and the part still did not attach — the response half, since
+// fixed by CZ_COOP_RESPONSE_PLAYER); what it could not have measured is the
+// substitution, because the far machine had nothing fresh to substitute with.
 void PublishHeldItem(PPCContext& ctx, uint8_t* base)
 {
     if (!SyncActive())
+        return;
+
+    // Never from inside a window another fix has opened on this thread: the
+    // sample makes its own GetUserPlayer call, and on the host that call asks
+    // for index 0 — exactly the lookup CZ_COOP_RESPONSE_PLAYER's window is
+    // waiting to substitute. Publishing from there would steal its one shot.
+    if (t_respSubPlayer >= 0 || t_placingNow())
         return;
 
     static thread_local bool inPublish = false;
@@ -1131,14 +1194,17 @@ void PublishHeldItem(PPCContext& ctx, uint8_t* base)
         return;
 
     static std::mutex mu;
-    static std::chrono::steady_clock::time_point next{};
+    static std::chrono::steady_clock::time_point nextSample{};
+    static std::chrono::steady_clock::time_point nextBeat{};
     static uint32_t seq = 0;
+    static uint32_t lastSent = 0xFFFFFFFFu;
+    static uint64_t samples = 0, sends = 0;
 
     const auto now = std::chrono::steady_clock::now();
     std::unique_lock<std::mutex> lock(mu, std::try_to_lock);
-    if (!lock.owns_lock() || now < next)
+    if (!lock.owns_lock() || now < nextSample)
         return;
-    next = now + std::chrono::milliseconds(SyncPeriodMs());
+    nextSample = now + std::chrono::milliseconds(SyncSampleMs());
 
     inPublish = true;
     const char* why = "";
@@ -1154,7 +1220,32 @@ void PublishHeldItem(PPCContext& ctx, uint8_t* base)
     }
 
     const uint32_t hash = SelectedItemHash(ctx, base, userPlayers, invMgr, uint32_t(local));
-    const int host = HostSide(ctx, base);
+    // LocalPlayerIndex just asked; this reads that answer rather than asking twice.
+    const int host = g_ourSide.load(std::memory_order_relaxed);
+    samples++;
+
+    // AN UNCONDITIONAL "THE DRIVER IS ALIVE" LINE (gotcha 151). The first
+    // version printed only once a peer was reached, so a publisher that never
+    // ran and a channel that never connected printed the same nothing.
+    static bool alive = false;
+    if (!alive)
+    {
+        alive = true;
+        fprintf(stderr, "[itemsync] publisher running: player %d, sampled every %d ms, sent on "
+                        "change and every %d ms otherwise\n",
+                local, SyncSampleMs(), SyncPeriodMs());
+    }
+
+    // A change of SIDE (the join) is a change too: the far machine files by
+    // player index, so the first message under the new index must not wait for
+    // the heartbeat.
+    static int lastLocal = -1;
+    const bool changed = hash != lastSent || local != lastLocal;
+    if (!changed && now < nextBeat)
+    {
+        inPublish = false;
+        return;
+    }
 
     uint8_t msg[kSyncBytes] = {};
     PutBE32(msg + 0, kSyncMagic);
@@ -1165,29 +1256,40 @@ void PublishHeldItem(PPCContext& ctx, uint8_t* base)
     PutBE32(msg + 8, hash);
     PutBE32(msg + 12, ++seq);
     const int reached = CoopLink_Broadcast(msg, sizeof msg);
+    nextBeat = now + std::chrono::milliseconds(SyncPeriodMs());
 
     // Once, when the channel first carries something, and once when the held
-    // item changes after that. A per-tick line would be 5 a second forever.
-    static uint32_t lastSent = 0xFFFFFFFFu;
+    // item changes after that. A per-send line would be 5 a second forever.
     static bool announced = false;
     if (reached && !announced)
     {
         announced = true;
-        fprintf(stderr, "[itemsync] publishing player %d's held item to %d peer(s) every %d ms "
+        fprintf(stderr, "[itemsync] publishing player %d's held item to %d peer(s) "
                         "(CZ_COOP_ITEM_SYNC=0 is the control arm)\n",
-                local, reached, SyncPeriodMs());
+                local, reached);
     }
-    if (reached && hash != lastSent)
+    if (reached)
     {
-        lastSent = hash;
-        fprintf(stderr, "[itemsync] player %d now holds %08X (%s)\n", local, hash, NameOf(hash));
+        sends++;
+        if (changed)
+        {
+            lastSent = hash;
+            lastLocal = local;
+            fprintf(stderr, "[itemsync] player %d now holds %08X (%s) — sent on change "
+                            "(%llu samples, %llu sends so far)\n",
+                    local, hash, NameOf(hash), (unsigned long long)samples,
+                    (unsigned long long)sends);
+        }
     }
+    // Not reached: lastSent is left alone, so the change is retried on the next
+    // sample rather than lost to a peer that was still being punched.
     inPublish = false;
 }
 
 // The placement window: state 61's hook opens it so the mission-event hook can
 // tell a bike placement from every other raise in the game, and for whom.
 thread_local bool t_placing = false;
+bool t_placingNow() { return t_placing; }
 thread_local int32_t t_placingPlayer = -1;
 
 // ===========================================================================
@@ -1656,6 +1758,9 @@ PPC_FUNC(sub_8247B020)
                     (unsigned long long)n, (unsigned long long)outOfRange.load());
     }
     HarnessTick(ctx, base);
+    // The item-sync publisher (CZ_COOP_ITEM_SYNC): a straight return outside a
+    // co-op session, and it declines on its own inside the respfix window.
+    PublishHeldItem(ctx, base);
     // THE SUBSTITUTION. Only inside the window state 34 opened, only for the FIRST
     // lookup in it — the handler's own call at 0x8240A934 — and the rest are counted
     // rather than redirected, because the vtable calls it makes afterwards could ask
@@ -1767,10 +1872,9 @@ PPC_FUNC(sub_823E79B8)
         PoolCensus(ctx, base, w);
         MissionWatch(base, w);
     }
-    // Outside the trace gate: this is the FIX, not an instrument, and it has to
-    // run for a player who never sets CZ_ITEM_TRACE. It is a straight return
-    // when there is no co-op session.
-    PublishHeldItem(ctx, base);
+    // PublishHeldItem used to be driven from here; it hangs off the
+    // GetUserPlayer hook now (see its retraction note — this hook runs once in
+    // the safehouse garage, which is where the bike is).
     __imp__sub_823E79B8(ctx, base);
 }
 

@@ -4522,7 +4522,17 @@ CZ_COOP_ACTING_PLAYER=2  **OBSERVE ONLY** — print every out-of-range user-play
                    substitute NOTHING. The measurement arm: it answers "does this happen at
                    all, and with which index", and it is the first thing to run if the fix
                    is ever suspected of changing something it should not
-CZ_COOP_ITEM_SYNC=1  **REFUTED AS THE FIX FOR ISSUE #9, 2026-09-26 — OFF by default, and
+CZ_COOP_ITEM_SYNC=1  **THE CANDIDATE FOR PLAYER ISSUE #11 (2026-10-04), still OFF until a
+                   two-machine round.** The guest swapped to the gas can and placed it; the
+                   host, now authoritative, raised `BikeForksPlaced` from its own copy of the
+                   guest's hands. As of 2026-10-04 the publisher hangs off the GetUserPlayer
+                   hook and SAMPLES every `CZ_COOP_ITEM_SYNC_SAMPLE_MS` (33), sending at once
+                   on a change and every `CZ_COOP_ITEM_SYNC_MS` (200) otherwise. Before that it
+                   hung off `cMissionOnTrigger::Update`, which runs ONCE in the safehouse
+                   garage, so at the bike it almost never published, and the 09-26 run below
+                   could not have measured the substitution. `[itemsync] publisher running`
+                   is the line that shows the driver is alive (gotcha 151).
+                   The history: **REFUTED AS THE FIX FOR ISSUE #9, 2026-09-26 — OFF by default, and
                    do not quote it as a repair.** The operator's two-machine run raised
                    `WheelPawnPlaced` on BOTH machines for the guest's wheel — the mission
                    event already agreed — and the wheel still was not added to the bike.
