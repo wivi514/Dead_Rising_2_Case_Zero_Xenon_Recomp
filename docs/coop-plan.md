@@ -1259,6 +1259,12 @@ else to be wrong, and it is consistent with the one row that worked being the ea
 
 ##### What it does NOT settle
 
+> **RETRACTED IN PART, 2026-10-06 (issue #11 below): an id IS what arrives, as a LOOKUP
+> key rather than a spawn key.** An item's wire handle is `+0x9C`, which equals its pool
+> id (149 of 149 live entries), and `sub_821A2250` resolves a received handle against the
+> receiver's OWN pool. The sentence below was right that nothing spawns at an id and wrong
+> to conclude the id cannot be on the wire.
+
 It does not show what crosses the wire. It shows only that **an id cannot be what
 arrives** — nothing can spawn at a given id — so if items are replicated at all, they are
 replicated by something else, and that is still the second open question. It also does not
@@ -3200,3 +3206,50 @@ picks up the gas can and the host picks up nothing. The host prints
 its copy happens to be right this time), then, when the guest places it,
 `[itemsync] placement by player 1 ...` either substituting or agreeing, and the gas can
 ticks. A guest who never carried the forks must not tick the forks.
+
+### The 2026-10-06 two-machine round: the arm engages, and the ROOT is the item handle
+
+Logs: `~/DR2CZ-troubleshooting/issue11/` (both full logs, both F9 captures). Both machines
+ran `CZ_COOP_ITEM_SYNC=1` at `7ac4063`.
+
+**The arm did what it was built for.** The publisher ran on both sides, and the host
+printed `RESCUED BY THE OWNER` for the guest's `WheelPawn` and then his `GasolineCanister`,
+each followed by the objective starting (`Event subtype 9`) and replicating to the guest.
+The operator's eye found what it cannot fix:
+
+1. **The guest's gas can became a SHED KEY on the host.** The guest picked up pool id 1059
+   (`GasolineCanister` on his machine); the host never inserted anything for player 1 and
+   instead processed a type-0x13 `KEY ITEM GRANT, id 85038`, one reliable message after
+   the rescue, and `PrologueMasterKey` (`B97C8050`) started on both machines. The key
+   normally lies on the hotel's second floor. This is part 9's *"gives some random key item
+   like the shed key"* again, now with the message in the log.
+2. **The host's pickups land on the wrong item for the guest.** The host took its gas can
+   (its id 1058) and the guest's machine inserted `BikeEngine` (its id 1059) for player 0,
+   which the guest saw as the motor block; the host's wheel (1062) became the guest's 1063.
+3. **After a zone change both players could take the same parts again**, and the host's
+   tracker never showed the guest's wheel. The guest's id 146 is `GasolineCanister` where
+   the host's id 146 is `WheelPawn`: each machine removed a different object from its world.
+
+**The decode.** `sub_821A2250(mgr, handle)` is the title's handle resolver (~150 callers):
+a handle with bit `0x40000000` indexes a global table at `*(0x82A46294)+0x34`; any other is
+matched against `+0x9C` of every live pool entry. The base constructor `sub_822F6F68`
+stores -1 there; a single-player census at the bike (`process_vm_readv`, 149 live entries)
+read **`+0x9C == pool id` for every one of them**. So an item is named on the wire by its
+LOCAL pool id, the receiver looks it up in its own pool, and the free-list drift measured
+on 09-25 turns every remote pickup into a lookup of whatever the receiver allocated at that
+number. One mechanism covers all three symptoms. `CZ_COOP_ITEM_SYNC` repairs the host's
+idea of what the guest HOLDS and cannot repair which world object was taken, so it is not
+the fix for #11 on its own.
+
+**What is not yet established:** which network handler calls the resolver for a remote
+pickup, and the handle value in the 9-byte message. `CZ_COOP_PICKUP_TRACE=1` now answers
+both on the next round: every inventory insertion and every key grant prints the guest call
+chain (back chain at `[r1]`, saved LR at `back - 8`) and the last four pool handles
+resolved on that thread. `=2` also prints the first five resolutions, which is how the
+chain walker was checked on one machine: each return address sits after a `bl` into the
+frame below it (`8238C4F0 bl 0x821a2250`, `8220DC54 bl 0x8248f4e8`).
+
+**The fix this points at** (not built): translate the handle by IDENTITY. The sender knows
+the object behind the handle it sends (type `+0x100`, instance `+0x98`, position), so it
+can publish that on the coop link. The receiver replaces the resolver's answer, only inside
+the remote-pickup handler, with its own live entry of the same type nearest that position.

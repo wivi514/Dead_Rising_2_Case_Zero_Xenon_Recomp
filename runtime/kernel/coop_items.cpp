@@ -103,6 +103,7 @@ extern "C" PPC_FUNC(__imp__sub_8223BBB8);
 extern "C" PPC_FUNC(__imp__sub_8223CEF8);
 extern "C" PPC_FUNC(__imp__sub_82408908);
 extern "C" PPC_FUNC(__imp__sub_821A2200);
+extern "C" PPC_FUNC(__imp__sub_821A2250);
 extern "C" PPC_FUNC(__imp__sub_82378FA0);
 extern "C" PPC_FUNC(__imp__sub_821898B0);
 extern "C" PPC_FUNC(__imp__sub_821898E8);
@@ -2454,6 +2455,104 @@ PPC_FUNC(sub_823E7890)
 // that id. The `lr` names the code that chose it, which is the thing three
 // sessions of reading upward could not find. Pair it with `CZ_ITEM_WATCH_MS`,
 // whose `INV BASELINE` lines map an inventory address to a player.
+// THE HANDLE RESOLVER (`sub_821A2250`) — how an item named over the network
+// becomes an object (issue #11, 2026-10-06).
+//
+// A handle with bit 0x40000000 set indexes a global table at `*(0x82A46294)+0x34`;
+// any other handle is matched against `+0x9C` of every live entry of the item
+// pool. A single-player census at the bike read `+0x9C == pool id` on 149 of 149
+// live entries (the constructor `sub_822F6F68` stores -1 there, the spawner then
+// numbers it). So an item's wire handle is its LOCAL pool id, and the far machine
+// resolves it against its OWN pool — the free-list drift, applied at lookup.
+//
+// The resolver has ~150 callers, so rather than read them all this keeps the last
+// few resolutions per thread. A remote pickup and a key grant print them together
+// with the guest call chain, which names the network handler and the handle it
+// was given, in one line, on the next two-machine round.
+namespace
+{
+struct Resolution { uint32_t handle, obj, lr, type; };
+thread_local Resolution t_resolved[4];
+thread_local unsigned t_resolvedNext = 0;
+
+bool PickupTraceOn()
+{
+    static const bool on = [] {
+        const char* e = std::getenv("CZ_COOP_PICKUP_TRACE");
+        return e && *e && *e != '0';
+    }();
+    return on;
+}
+
+// The guest's own return chain. Every non-leaf frame stores its back chain at
+// [r1] (`stwu`) and the prologue saves LR at `back - 8` (`__savegprlr` and the
+// inline `stw r12, -8(r1)` both), so the chain is readable without host help.
+void FormatGuestChain(PPCContext& ctx, uint8_t* base, char* out, size_t n)
+{
+    int k = std::snprintf(out, n, "%08X", uint32_t(ctx.lr));
+    uint32_t sp = ctx.r1.u32;
+    for (int depth = 0; depth < 10 && k < int(n) - 12; depth++)
+    {
+        if (sp < 0x40000000u || sp >= 0xF0000000u)
+            break;
+        const uint32_t back = LoadU32(base, sp);
+        if (back <= sp || back - sp > 0x10000u)
+            break;
+        const uint32_t ret = LoadU32(base, back - 8);
+        if (ret < 0x82150000u || ret >= 0x829C4000u)
+            break;
+        k += std::snprintf(out + k, n - size_t(k), " < %08X", ret);
+        sp = back;
+    }
+}
+
+void FormatResolutions(char* out, size_t n)
+{
+    int k = 0;
+    out[0] = 0;
+    for (unsigned i = 0; i < 4 && k < int(n) - 64; i++)
+    {
+        const Resolution& r = t_resolved[(t_resolvedNext + i) & 3];
+        if (!r.lr)
+            continue;
+        k += std::snprintf(out + k, n - size_t(k), " [h %08X -> %08X %08X (%s) lr %08X]",
+                           r.handle, r.obj, r.type, NameOf(r.type), r.lr);
+    }
+    if (!k)
+        std::snprintf(out, n, " (none on this thread)");
+}
+}  // namespace
+
+PPC_FUNC(sub_821A2250)
+{
+    const uint32_t handle = ctx.r4.u32, lr = uint32_t(ctx.lr);
+    __imp__sub_821A2250(ctx, base);
+    if (!PickupTraceOn())
+        return;
+    const uint32_t obj = ctx.r3.u32;
+    // Only pool handles: the 0x40000000 table holds the session's other objects
+    // and would flush the ring before the pickup it is waiting for.
+    if (!obj || (handle & 0x40000000u) || handle >= kPoolEntries)
+        return;
+    t_resolved[t_resolvedNext & 3] = {handle, obj, lr, LoadU32(base, obj + kItemNameHash)};
+    t_resolvedNext++;
+    // CZ_COOP_PICKUP_TRACE=2: the single-machine check on the chain walker. A solo
+    // run never inserts an item, so the lines above never print there; the first
+    // five pool resolutions do, and their chain can be read against gdis.
+    static const bool selfTest = [] {
+        const char* e = std::getenv("CZ_COOP_PICKUP_TRACE");
+        return e && std::atoi(e) >= 2;
+    }();
+    static std::atomic<int> shown{0};
+    if (selfTest && shown.fetch_add(1) < 5)
+    {
+        char chain[160];
+        FormatGuestChain(ctx, base, chain, sizeof chain);
+        fprintf(stderr, "[pickup] resolve check: handle %08X -> %08X (%s), chain %s\n", handle,
+                obj, NameOf(LoadU32(base, obj + kItemNameHash)), chain);
+    }
+}
+
 PPC_FUNC(sub_821A7550)
 {
     static const bool on = [] {
@@ -2493,6 +2592,12 @@ PPC_FUNC(sub_821A7550)
                         "from lr %08X\n",
                 who, inv, slot, item, idbuf, hash, NameOf(hash),
                 inv ? PPC_LOAD_U32(inv + 0x64) : 0u, uint32_t(ctx.lr));
+        {
+            char chain[160], res[400];
+            FormatGuestChain(ctx, base, chain, sizeof chain);
+            FormatResolutions(res, sizeof res);
+            fprintf(stderr, "[pickup]   chain %s | last handles resolved:%s\n", chain, res);
+        }
         // A BIKE PART entering someone's hands is the event the flag hunt is keyed on:
         // the five parts and nothing else, because every other pickup in the game
         // changes the same memory and would bury the one write being looked for.
@@ -4489,6 +4594,13 @@ PPC_FUNC(sub_82243060)
         fprintf(stderr, "[keyitem] ObtainItem(this %08X, object %08X) %s hash %08X (%s) lr %08X "
                         "| %s\n",
                 ctx.r3.u32, obj, idbuf, hash, NameOf(hash), uint32_t(ctx.lr), words);
+        if (msgType == kKeyItemMessageType)
+        {
+            char chain[160], res[400];
+            FormatGuestChain(ctx, base, chain, sizeof chain);
+            FormatResolutions(res, sizeof res);
+            fprintf(stderr, "[keyitem]   chain %s | last handles resolved:%s\n", chain, res);
+        }
     }
     __imp__sub_82243060(ctx, base);
 }

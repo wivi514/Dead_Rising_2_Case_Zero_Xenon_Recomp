@@ -4558,6 +4558,15 @@ CZ_COOP_ITEM_SYNC=1  **THE CANDIDATE FOR PLAYER ISSUE #11 (2026-10-04), still OF
                    answers. CZ_COOP_ITEM_SYNC_MS=N the publish period,
                    CZ_COOP_ITEM_SYNC_MAX_AGE_MS=N how stale a published value may be
                    (3000), CZ_COOP_LOCAL_PLAYER=N overrides the host-is-0 assumption
+CZ_COOP_PICKUP_TRACE=1  every inventory insertion (`sub_821A7550`) with the item's POOL ID,
+                   name hash and caller, every key-item grant (message type 0x13 in
+                   `sub_82243060`), and since 2026-10-06 the guest CALL CHAIN and the last
+                   four pool handles the resolver `sub_821A2250` answered on that thread.
+                   An item's wire handle is its local pool id (`+0x9C`), so on two machines
+                   these lines name the handle a remote pickup arrived with and what this
+                   machine resolved it to (coop-plan.md, issue #11). `=2` also prints the
+                   first five resolutions with their chain, the one-machine check on the
+                   chain walker
 CZ_COOP_ITEM_SYNC_TEST=1  the held-item contract, offline and with no second machine:
                    the part/event tables, the message encoding, and every rule the
                    receive half enforces — version, runt, sequence order, player bound,
