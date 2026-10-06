@@ -3312,3 +3312,29 @@ the guest sees the ENGINE; no second gas can lies at the gas station.
 Not covered, said in advance: any OTHER per-machine difference in spawn order (a zombie's
 drop, a prop broken on one side) offsets the serials the same way. This arm removes the
 one source measured; the trace stays on to catch the next.
+
+### The fifth round: the condition fix holds, and the wheel respawns for a different reason
+
+`CZ_COOP_CONDITION_ANY_PLAYER=1` on both machines. The host printed `[cond] "does not carry
+GasolineCanister" ... player 0 (asked) does not, but player 1 does (this machine's copy) ->
+answering 0` once, and the operator found every handle in step for the rest of the session:
+**engine, forks, gas can and placements all correct on both machines.** Two things remained:
+
+1. **The pawnshop wheel could be taken twice.** Not drift: the host took the second one with
+   handle `0x42A` and the guest resolved it to his own copy, so BOTH machines spawned it.
+   It is `GotBikeWheel` (condition 9 on `PrologueWheelObjective`, true at mission state 1,
+   read off case `0x823A782C`) spawning `WheelPawnWorldSpawn` on each LEVEL_PROLOGUE load.
+   **The operator ran the single-player control the same afternoon: a carried wheel never
+   respawns, a misplaced one does.** The carrier check is in the spawn action itself,
+   `sub_823A5238` (cMissionSpawnItem, vtable `0x8204BE74`): for a definition with `+0xB9`
+   set it walks all four user players' bags and spawns only if none carries one. The loop is
+   right; it runs in the load's gap, when both logs show every player's bag being cleared
+   and re-inserted, so in co-op nobody carries anything at that instant.
+   **Candidate: `CZ_COOP_SPAWN_CARRIED=1`** (OFF): per-player bag snapshots that ignore an
+   empty bag for 15 s, consulted before the spawn. Prediction: the guest carries the wheel
+   out and back in, the host prints `[spawn] ... player 1 carried it before this load -> NOT
+   spawning`, and no wheel lies in the pawnshop on either machine. (Why single player does
+   not hit the gap is not established; it is enough that the snapshot covers it.)
+2. **The right-hand tracker** shows only what the LOCAL Chuck carries (captures, rounds 2-3),
+   so a partner's part never appears there. Single-player behaviour of a single-player HUD;
+   not addressed.

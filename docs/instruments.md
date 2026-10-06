@@ -4567,6 +4567,14 @@ CZ_COOP_CONDITION_ANY_PLAYER=1  **THE CANDIDATE FOR THE ITEM-HANDLE DRIFT (issue
                    With this arm the condition asks every user player (this machine's copy,
                    or the owner's word under CZ_COOP_ITEM_SYNC), so both machines skip the
                    spawn. `=2` observe only. Prints `[cond] ... -> answering 0`
+CZ_COOP_SPAWN_CARRIED=1  **CANDIDATE (issue #11, 2026-10-06), OFF until a two-machine round.** A
+                   unique quest item (definition `+0xB9`) is not respawned while any co-op
+                   player carried it before the load. The title's own check
+                   (`sub_823A5238`) walks all four bags but runs in the load's gap, when every
+                   bag is being rebuilt, so the pawnshop wheel respawned while the guest
+                   carried it. Bags are snapshotted every 100 ms; an empty bag is believed
+                   only after 15 s. `=2` observe, `=3` also prints the first 12 spawn checks
+                   (`+0x5C` is the hash of `ItemName`, verified on BikeBody/BikeStand)
 CZ_COOP_PICKUP_TRACE=1  every inventory insertion (`sub_821A7550`) with the item's POOL ID,
                    name hash and caller, every key-item grant (message type 0x13 in
                    `sub_82243060`), and since 2026-10-06 the guest CALL CHAIN and the last

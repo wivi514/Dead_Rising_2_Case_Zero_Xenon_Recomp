@@ -105,6 +105,7 @@ extern "C" PPC_FUNC(__imp__sub_82408908);
 extern "C" PPC_FUNC(__imp__sub_821A2200);
 extern "C" PPC_FUNC(__imp__sub_821A2250);
 extern "C" PPC_FUNC(__imp__sub_823A7530);
+extern "C" PPC_FUNC(__imp__sub_823A5238);
 extern "C" PPC_FUNC(__imp__sub_82378FA0);
 extern "C" PPC_FUNC(__imp__sub_821898B0);
 extern "C" PPC_FUNC(__imp__sub_821898E8);
@@ -1245,6 +1246,8 @@ int SyncSampleMs()
 // without help and the part still did not attach — the response half, since
 // fixed by CZ_COOP_RESPONSE_PLAYER); what it could not have measured is the
 // substitution, because the far machine had nothing fresh to substitute with.
+void SampleBagsForSpawn(PPCContext& ctx, uint8_t* base);
+
 void PublishHeldItem(PPCContext& ctx, uint8_t* base)
 {
     if (!SyncActive())
@@ -1836,6 +1839,7 @@ PPC_FUNC(sub_8247B020)
     // The item-sync publisher (CZ_COOP_ITEM_SYNC): a straight return outside a
     // co-op session, and it declines on its own inside the respfix window.
     PublishHeldItem(ctx, base);
+    SampleBagsForSpawn(ctx, base);
     // THE SUBSTITUTION. Only inside the window state 34 opened, only for the FIRST
     // lookup in it — the handler's own call at 0x8240A934 — and the rest are counted
     // rather than redirected, because the vtable calls it makes afterwards could ask
@@ -4931,4 +4935,176 @@ PPC_FUNC(sub_823A7530)
             ctx.r3.u64 = 0;
         return;
     }
+}
+
+// ---------------------------------------------------------------------------
+// CZ_COOP_SPAWN_CARRIED — a quest item respawns while a co-op player carries it.
+// ---------------------------------------------------------------------------
+//
+// The operator, 2026-10-06: the guest carried the pawnshop wheel through a zone
+// change and BOTH machines spawned a second one (the host took it with handle
+// 0x42A, which the guest resolved to his own copy of it, so the two spawns agreed).
+// In single player, measured by the operator the same day, a CARRIED wheel never
+// respawns; only a misplaced one does.
+//
+// The spawn action is `sub_823A5238` (cMissionSpawnItem, vtable at 0x8204BE74).
+// It looks the item's definition up through `*(*(0x82A4626C)+0x7EA0)->vt[0xC]`
+// with `this+0x5C`, and when the definition's `+0xB9` flag is set it walks ALL FOUR
+// user players (`sub_82482AD8(world, 0..3)`) and every slot of each bag, comparing
+// `item+0xF8 -> +4` with the definition's `+4`, and spawns only if nobody carries
+// one. That loop is right. What is wrong in co-op is WHEN it runs: on a level load
+// every player's bag is cleared and rebuilt (both logs re-insert player 1's items
+// after each load, on both machines), and the LevelReady block that spawns runs in
+// that gap, so nobody seems to carry anything.
+//
+// So this keeps a per-player snapshot of every bag, sampled from the GetUserPlayer
+// hook every 100 ms, which IGNORES a bag that empties for under 15 s (a load's
+// gap) and accepts it after that (a real drop). When the spawn action is about to
+// run in co-op, an item whose name is in any player's snapshot is not spawned.
+// Cost of the 15 s: a player who drops the part as his LAST item and changes zone
+// within 15 s gets the respawn on his NEXT load instead.
+namespace
+{
+int SpawnCarriedMode()
+{
+    static const int mode = [] {
+        const char* e = std::getenv("CZ_COOP_SPAWN_CARRIED");
+        const int m = e && *e ? std::atoi(e) : 0;
+        if (m)
+            fprintf(stderr, "[spawn] CZ_COOP_SPAWN_CARRIED=%d — a quest item is not respawned "
+                            "while any co-op player carried it before the load.%s\n",
+                    m, m == 2 ? " OBSERVE ONLY." : "");
+        return m;
+    }();
+    return mode;
+}
+
+struct BagSnap
+{
+    uint32_t slots[kInvSlots] = {};
+    bool valid = false;
+    std::chrono::steady_clock::time_point emptySince{};
+    bool emptyPending = false;
+};
+std::mutex g_bagMu;
+BagSnap g_bags[kMaxPlayers];
+constexpr int kBagEmptyGraceMs = 15000;
+
+bool SnapshotCarries(uint32_t hash, int* who)
+{
+    std::lock_guard<std::mutex> lock(g_bagMu);
+    for (uint32_t p = 0; p < kMaxPlayers; p++)
+    {
+        if (!g_bags[p].valid)
+            continue;
+        for (uint32_t i = 0; i < kInvSlots; i++)
+            if (g_bags[p].slots[i] == hash)
+            {
+                *who = int(p);
+                return true;
+            }
+    }
+    return false;
+}
+
+void SampleBagsForSpawn(PPCContext& ctx, uint8_t* base)
+{
+    if (!SpawnCarriedMode() || !XliveSession_Enabled())
+        return;
+    static thread_local bool inSample = false;
+    if (inSample)
+        return;
+    static std::mutex mu;
+    static std::chrono::steady_clock::time_point next{};
+    const auto now = std::chrono::steady_clock::now();
+    std::unique_lock<std::mutex> lock(mu, std::try_to_lock);
+    if (!lock.owns_lock() || now < next)
+        return;
+    next = now + std::chrono::milliseconds(100);
+    inSample = true;
+    const char* why = "";
+    const uint32_t world = ResolveWorld(ctx, base, why);
+    const uint32_t userPlayers = world ? LoadU32(base, world + 0x7C) : 0;
+    const uint32_t game = world ? LoadU32(base, world + 0x78) : 0;
+    const uint32_t invMgr = game ? LoadU32(base, game + 0x30) : 0;
+    if (userPlayers && invMgr)
+    {
+        for (uint32_t p = 0; p < kMaxPlayers; p++)
+        {
+            uint32_t slots[kInvSlots];
+            const bool present = LoadU32(base, userPlayers + 0xC + p * 4) != 0;
+            if (present)
+                InventoryHashes(ctx, base, userPlayers, invMgr, p, slots);
+            bool any = false;
+            for (uint32_t i = 0; present && i < kInvSlots; i++)
+                any |= slots[i] != 0;
+            std::lock_guard<std::mutex> g(g_bagMu);
+            BagSnap& b = g_bags[p];
+            if (any)
+            {
+                std::memcpy(b.slots, slots, sizeof slots);
+                b.valid = true;
+                b.emptyPending = false;
+            }
+            else if (b.valid)
+            {
+                // Absent or empty: a load's gap, or a real drop. Hold the old
+                // contents until the emptiness has lasted the grace.
+                if (!b.emptyPending)
+                {
+                    b.emptyPending = true;
+                    b.emptySince = now;
+                }
+                else if (now - b.emptySince > std::chrono::milliseconds(kBagEmptyGraceMs))
+                {
+                    b = BagSnap{};
+                }
+            }
+        }
+    }
+    inSample = false;
+}
+}  // namespace
+
+PPC_FUNC(sub_823A5238)
+{
+    const int mode = SpawnCarriedMode();
+    if (!mode)
+    {
+        __imp__sub_823A5238(ctx, base);
+        return;
+    }
+    const uint32_t self = ctx.r3.u32;
+    const uint32_t key = self ? LoadU32(base, self + 0x5C) : 0;
+    // The definition and its "only one of these may exist" flag, asked exactly
+    // the way 0x823A526C..0x823A52A8 asks it.
+    uint32_t def = 0;
+    {
+        const uint32_t mgr = LoadU32(base, LoadU32(base, 0x82A4626Cu) + 0x7EA0);
+        if (mgr)
+        {
+            PPCContext call = ctx;
+            call.r5.u64 = 0;
+            def = VCall(call, base, mgr, 0xC, key, "spawn-item-def");
+        }
+    }
+    const bool unique = def && LoadU8(base, def + 0xB9) != 0;
+    static std::atomic<int> shown{0};
+    if (mode == 3 && shown.fetch_add(1) < 12)
+        fprintf(stderr, "[spawn] check: action %08X key(+5C) %08X (%s) def %08X unique %d\n", self,
+                key, NameOf(key), def, int(unique));
+    int who = -1;
+    if (unique && XliveSession_Enabled() && SnapshotCarries(key, &who))
+    {
+        const Objects o = Resolve(ctx, base);
+        if (o.session && LoadU8(base, o.session + kSessionIsCoopByte) != 0)
+        {
+            fprintf(stderr, "[spawn] %s (%08X): player %d carried it before this load -> %s\n",
+                    NameOf(key), key, who,
+                    mode == 2 ? "OBSERVE ONLY, spawning anyway" : "NOT spawning, as in single player");
+            if (mode != 2)
+                return;
+        }
+    }
+    __imp__sub_823A5238(ctx, base);
 }
