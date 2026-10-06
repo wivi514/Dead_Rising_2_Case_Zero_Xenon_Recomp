@@ -5246,8 +5246,15 @@ int TrackerAllMode()
 constexpr uint32_t kTrackerParts[5] = {0x5F8D0521u, 0xA55F8BABu, 0xC32E815Bu, 0x52EA0EA6u,
                                        0x878FC97Bu};  // the order of +0x300 + i*12
 constexpr const char* kTrackerNames[5] = {"gas", "engine", "handlebar", "fork", "wheel"};
-constexpr uint32_t kWidgetHidden = 0x00800000u;
-uint32_t g_trackerForced[5] = {};  // the +0x10 word this arm wrote, 0 = not forced
+// SHOWN, not hidden: measured on the guest's own tracker when he picked up the
+// wheel — its icon word went 1B400000 -> 1BC00000 (this bit SET), then the
+// `trigger` fade-in ran and it settled at 18C00000. The icons are A=0 in the
+// widget file and the StateTrigger animation fades them in when this bit rises;
+// the tick sets the same bit on the whole tracker while the mission is active.
+// The first cut read it as "hidden" and cleared a bit that was already clear.
+constexpr uint32_t kWidgetShown = 0x00800000u;
+bool g_trackerForced[5] = {};
+uint32_t g_trackerLockAtForce[5] = {};  // the overlay word when this arm lit the icon
 }  // namespace
 
 PPC_FUNC(sub_825322C8)
@@ -5285,24 +5292,27 @@ PPC_FUNC(sub_825322C8)
                 if (RemoteInventoryHas(p, kTrackerParts[i]) == 1)
                     carrier = int(p);
             const uint32_t w = LoadU32(base, icon[i] + 0x10);
-            if (carrier >= 0 && (w & kWidgetHidden))
+            const uint32_t lock = locked[i] ? LoadU32(base, locked[i] + 0x10) : 0;
+            if (carrier >= 0 && !(w & kWidgetShown))
             {
-                const uint32_t shown = w & ~kWidgetHidden;
-                PPC_STORE_U32(icon[i] + 0x10, shown);
-                g_trackerForced[i] = shown;
-                n += std::snprintf(why + n, sizeof why - size_t(n), " shown %s(p%d)", kTrackerNames[i], carrier);
+                PPC_STORE_U32(icon[i] + 0x10, w | kWidgetShown);
+                g_trackerForced[i] = true;
+                g_trackerLockAtForce[i] = lock;
+                n += std::snprintf(why + n, sizeof why - size_t(n), " lit %s(p%d)", kTrackerNames[i], carrier);
             }
             else if (carrier < 0 && g_trackerForced[i])
             {
-                if (w == g_trackerForced[i])
+                // A placement shows the part's green x (the overlay changes);
+                // that icon belongs to the HUD now and is left lit.
+                if (lock == g_trackerLockAtForce[i] && (w & kWidgetShown))
                 {
-                    PPC_STORE_U32(icon[i] + 0x10, w | kWidgetHidden);
-                    n += std::snprintf(why + n, sizeof why - size_t(n), " hidden %s", kTrackerNames[i]);
+                    PPC_STORE_U32(icon[i] + 0x10, w & ~kWidgetShown);
+                    n += std::snprintf(why + n, sizeof why - size_t(n), " dark %s", kTrackerNames[i]);
                 }
                 else
                     n += std::snprintf(why + n, sizeof why - size_t(n), " released %s (the HUD changed it)",
                                        kTrackerNames[i]);
-                g_trackerForced[i] = 0;
+                g_trackerForced[i] = false;
             }
         }
 

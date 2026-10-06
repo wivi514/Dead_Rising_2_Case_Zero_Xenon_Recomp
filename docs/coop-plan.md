@@ -3380,3 +3380,16 @@ carried versus placed.
    snapshot from before the load, for ANY player including the local one, and prints
    `[found] RESCUED BY THE BAG BEFORE THE LOAD`. The host launcher runs the spawn arm at `=3`
    so its first checks print whether the wheel's definition is even "unique".
+
+### Round seven: the tracker hook engaged, and the bit was backwards
+
+The hook found the real tracker (`A3481510`, five icons) and logged every icon word as
+`1B400000` with the guest carrying the wheel: nothing lit. The GUEST's own log answered it:
+when he picked the wheel up his icon went `1B400000 -> 1BC00000 -> 18C00000`, i.e. the HUD
+SETS bit `0x00800000` and the icon's `trigger` animation (`StateTrigger`, alpha 0 -> 1, scale
+3 -> 1; every icon is `A=0` in hud_missions.txt) fades it in, after which the animation
+clears `0x03000000`. So `0x00800000` is SHOWN, the bit `sub_8250A570` sets on the whole
+tracker while the mission is active; the first cut cleared a bit that was already clear.
+Fixed: lit = set it; when the partner stops carrying the part the arm clears it only if
+the part's `w_locked` overlay is unchanged since it lit it (a placement shows the green x,
+and that icon is the HUD's).
