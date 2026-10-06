@@ -3360,3 +3360,23 @@ wheel icon lights and a `[tracker] ... shown for the partner: wheel(p1)` line pr
 goes dark within ~3 s of the guest dropping or placing it. If the icon lights but looks
 wrong (no colour, or the `x` overlay), the logged words say which bit the HUD uses for
 carried versus placed.
+
+### Round six (2026-10-06, evening): two misses, both understood
+
+1. **The tracker arm never engaged** — one banner, no state line. It hooked `sub_82523A80`,
+   the tick of the NEIGHBOURING HUD class (vtable `0x82074320`). A scan of the live host
+   process for both vtables found that object (`A34ABCD8`) holding zeros at `+0x300`, and the
+   real tracker at `A3481510` (vtable `0x8207436C`: slot 2 set-up `sub_82523CB0`, slot 5 tick
+   `sub_825322C8`, slot 20 message handler `sub_8250A8B8`) holding five widget pointers. The
+   hook is on `sub_825322C8` now, and it re-hides an icon it showed when the partner stops
+   carrying the part, unless the HUD changed that widget meanwhile (a placement).
+2. **The pawnshop wheel respawned again, and `CZ_COOP_SPAWN_CARRIED` printed nothing.** So
+   the spawn action's own carrier check is not what stops the respawn in single player. The
+   respawn is `GotBikeWheel`, gated on `PrologueWheelObjective` being in state 1; the
+   objective's prerequisite is the found test, and it is re-asked on a zone load while every
+   bag is in the load's gap — so the objective falls back and the wheel spawns, on both
+   machines because mission state is the host's. (Inference from the gate and the gap,
+   stated as one: the round below is what tests it.) The found hook now also accepts the bag
+   snapshot from before the load, for ANY player including the local one, and prints
+   `[found] RESCUED BY THE BAG BEFORE THE LOAD`. The host launcher runs the spawn arm at `=3`
+   so its first checks print whether the wheel's definition is even "unique".

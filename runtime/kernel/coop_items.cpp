@@ -112,7 +112,7 @@ extern "C" PPC_FUNC(__imp__sub_8215D400);
 extern "C" PPC_FUNC(__imp__sub_8215D470);
 extern "C" PPC_FUNC(__imp__sub_8215D330);
 extern "C" PPC_FUNC(__imp__sub_821A6C18);
-extern "C" PPC_FUNC(__imp__sub_82523A80);
+extern "C" PPC_FUNC(__imp__sub_825322C8);
 extern "C" PPC_FUNC(__imp__sub_82378FA0);
 extern "C" PPC_FUNC(__imp__sub_821898B0);
 extern "C" PPC_FUNC(__imp__sub_821898E8);
@@ -4661,6 +4661,8 @@ CZ_OBJ_HOOK(823AF228)
 // fix, because they are the same call: the fix can only act on the answer the trace
 // prints. Read `FoundAnyPlayerMode()` above for the six guards and for why there is
 // no observe-only mode.
+namespace { bool SnapshotPlayerCarries(uint32_t p, uint32_t hash); }
+
 PPC_FUNC(sub_823AF418)
 {
     const bool trace = ObjTrace();
@@ -4764,10 +4766,18 @@ PPC_FUNC(sub_823AF418)
                     want = (want * 33u) ^ uint32_t(int32_t(int8_t(*c)));
                 for (int32_t p = 0; p < int32_t(kMaxPlayers) && !answer; p++)
                 {
-                    if (p == localIdx)
-                        continue;
                     const uint32_t playerObj = LoadU32(base, players + 0xC + uint32_t(p) * 4);
-                    if (!playerObj || RemoteInventoryHas(uint32_t(p), want) != 1)
+                    if (!playerObj)
+                        continue;
+                    // The owner's word for a remote player; or, with
+                    // CZ_COOP_SPAWN_CARRIED, the bag as it was before a zone load,
+                    // for ANY player including this one: on a load every bag is
+                    // cleared and rebuilt, the test runs in that gap, and the
+                    // pawnshop wheel's objective fell back to "not found" and
+                    // respawned it while the guest carried it (2026-10-06).
+                    const bool owner = p != localIdx && RemoteInventoryHas(uint32_t(p), want) == 1;
+                    const bool beforeLoad = !owner && SnapshotPlayerCarries(uint32_t(p), want);
+                    if (!owner && !beforeLoad)
                         continue;
                     const uint32_t npc = LoadU32(base, self + 0xA4);
                     if (!npc)
@@ -4792,11 +4802,17 @@ PPC_FUNC(sub_823AF418)
                     if (!GuestCall(call, base, fn, "found-owner-success"))
                         break;
                     answer = 1;
-                    fprintf(stderr, "[found] RESCUED BY THE OWNER: \"%s\" (%08X) — this machine's "
-                                    "copy of player %d's bag does not have it, player %d's own "
-                                    "machine says it does. objective %08X. CZ_COOP_ITEM_SYNC=0 "
-                                    "is the control arm.\n",
-                            item, want, p, p, self);
+                    if (owner)
+                        fprintf(stderr, "[found] RESCUED BY THE OWNER: \"%s\" (%08X) — this machine's "
+                                        "copy of player %d's bag does not have it, player %d's own "
+                                        "machine says it does. objective %08X. CZ_COOP_ITEM_SYNC=0 "
+                                        "is the control arm.\n",
+                                item, want, p, p, self);
+                    else
+                        fprintf(stderr, "[found] RESCUED BY THE BAG BEFORE THE LOAD: \"%s\" (%08X) — "
+                                        "player %d carried it until this load emptied the bags. "
+                                        "objective %08X. CZ_COOP_SPAWN_CARRIED=0 is the control arm.\n",
+                                item, want, p, self);
                 }
             }
             t_foundRetrying = false;
@@ -4997,6 +5013,19 @@ std::mutex g_bagMu;
 BagSnap g_bags[kMaxPlayers];
 constexpr int kBagEmptyGraceMs = 15000;
 
+bool SnapshotPlayerCarries(uint32_t p, uint32_t hash)
+{
+    if (!SpawnCarriedMode() || p >= kMaxPlayers || !hash)
+        return false;
+    std::lock_guard<std::mutex> lock(g_bagMu);
+    if (!g_bags[p].valid)
+        return false;
+    for (uint32_t i = 0; i < kInvSlots; i++)
+        if (g_bags[p].slots[i] == hash)
+            return true;
+    return false;
+}
+
 bool SnapshotCarries(uint32_t hash, int* who)
 {
     std::lock_guard<std::mutex> lock(g_bagMu);
@@ -5178,18 +5207,27 @@ PPC_FUNC(sub_821A6C18)
 // The HUD's "Case 0-4 - Find Bike Parts" tracker (`w_Bike_parts` in
 // ingame.big/hud_missions.txt) lights a part's icon while the LOCAL Chuck carries
 // it, so in co-op a part in the other player's hands never shows (captures,
-// 2026-10-06 rounds 2-3). The HUD object is the one `sub_82509B28` sets up and
-// `sub_82523A80` ticks every frame: its five icons are at `+0x300 + i*12`
-// in the order gasoline, engine, handlebar, fork, wheel (each looked up by its
-// widget name, `w_gasoline` .. `w_wheel`), with the part's `w_locked` overlay at
-// `+8`; a widget is hidden by bit 0x00800000 of its `+0x10` word, the way every
-// show/hide in this HUD spells it (`oris 0x80` / `rlwinm 0,9,7`).
+// 2026-10-06 rounds 2-3).
 //
-// After the HUD's own tick, an icon whose part another player carries (his own
-// machine's word, CZ_COOP_ITEM_SYNC) has the hidden bit cleared. The HUD decides
-// the local player's parts exactly as before. Every change of the ten state words
-// is logged with who carries what, so a round shows how carried and placed look
-// even if this guess about the look is incomplete.
+// The tracker is the mission HUD whose vtable is 0x8207436C: slot 2 is its set-up
+// `sub_82523CB0` -> `sub_82509B28`, which looks the icons up by widget name and
+// stores them at `+0x300 + i*12` in the order gasoline, engine, handlebar, fork,
+// wheel, with each part's `w_locked` overlay at `+8`; slot 5, `sub_825322C8`, is
+// its per-frame tick; slot 20, `sub_8250A8B8`, its message handler, which is what
+// lights an icon (a solo census showed this HUD never queries the bag). A widget
+// is hidden by bit 0x00800000 of its `+0x10` word (`rlwimi ... 8, 8` in the tick).
+//
+// THE FIRST CUT HOOKED `sub_82523A80`, the tick of the NEIGHBOURING class whose
+// vtable is 0x82074320, and read zeros at +0x300 — measured in the live host
+// process (`A34ABCD8` all zero; the real tracker `A3481510`, vtable 0x8207436C,
+// holding five widget pointers). Both classes share helpers, which is why the
+// inventory-query census pointed at the wrong one.
+//
+// After the tracker's own tick, an icon whose part another player carries (his
+// own machine's word, CZ_COOP_ITEM_SYNC) is un-hidden and remembered; when he no
+// longer carries it, the icon is hidden again ONLY if the HUD has not touched that
+// widget since (a placement changes it, and is left alone). Every change of the
+// ten state words is logged with who carries what.
 namespace
 {
 int TrackerAllMode()
@@ -5209,12 +5247,13 @@ constexpr uint32_t kTrackerParts[5] = {0x5F8D0521u, 0xA55F8BABu, 0xC32E815Bu, 0x
                                        0x878FC97Bu};  // the order of +0x300 + i*12
 constexpr const char* kTrackerNames[5] = {"gas", "engine", "handlebar", "fork", "wheel"};
 constexpr uint32_t kWidgetHidden = 0x00800000u;
+uint32_t g_trackerForced[5] = {};  // the +0x10 word this arm wrote, 0 = not forced
 }  // namespace
 
-PPC_FUNC(sub_82523A80)
+PPC_FUNC(sub_825322C8)
 {
     const uint32_t hud = ctx.r3.u32;
-    __imp__sub_82523A80(ctx, base);
+    __imp__sub_825322C8(ctx, base);
     const int mode = TrackerAllMode();
     if (!mode || !hud || !SyncActive())
         return;
@@ -5225,26 +5264,47 @@ PPC_FUNC(sub_82523A80)
         icon[i] = LoadU32(base, hud + 0x300 + uint32_t(i) * 12);
         locked[i] = LoadU32(base, hud + 0x308 + uint32_t(i) * 12);
         if (!icon[i])
-            return;  // not this HUD, or not set up yet
+            return;  // not set up yet
+    }
+    static bool said = false;
+    if (!said)
+    {
+        said = true;
+        fprintf(stderr, "[tracker] the tracker HUD is %08X; icons %08X %08X %08X %08X %08X\n", hud,
+                icon[0], icon[1], icon[2], icon[3], icon[4]);
     }
 
-    char why[160];
+    char why[200];
     int n = 0;
     why[0] = 0;
     if (mode == 1)
         for (int i = 0; i < 5; i++)
-            for (uint32_t p = 0; p < kMaxPlayers; p++)
+        {
+            int carrier = -1;
+            for (uint32_t p = 0; p < kMaxPlayers && carrier < 0; p++)
+                if (RemoteInventoryHas(p, kTrackerParts[i]) == 1)
+                    carrier = int(p);
+            const uint32_t w = LoadU32(base, icon[i] + 0x10);
+            if (carrier >= 0 && (w & kWidgetHidden))
             {
-                if (RemoteInventoryHas(p, kTrackerParts[i]) != 1)
-                    continue;
-                const uint32_t w = LoadU32(base, icon[i] + 0x10);
-                if (w & kWidgetHidden)
-                {
-                    PPC_STORE_U32(icon[i] + 0x10, w & ~kWidgetHidden);
-                    n += std::snprintf(why + n, sizeof why - size_t(n), " %s(p%u)", kTrackerNames[i], p);
-                }
-                break;
+                const uint32_t shown = w & ~kWidgetHidden;
+                PPC_STORE_U32(icon[i] + 0x10, shown);
+                g_trackerForced[i] = shown;
+                n += std::snprintf(why + n, sizeof why - size_t(n), " shown %s(p%d)", kTrackerNames[i], carrier);
             }
+            else if (carrier < 0 && g_trackerForced[i])
+            {
+                if (w == g_trackerForced[i])
+                {
+                    PPC_STORE_U32(icon[i] + 0x10, w | kWidgetHidden);
+                    n += std::snprintf(why + n, sizeof why - size_t(n), " hidden %s", kTrackerNames[i]);
+                }
+                else
+                    n += std::snprintf(why + n, sizeof why - size_t(n), " released %s (the HUD changed it)",
+                                       kTrackerNames[i]);
+                g_trackerForced[i] = 0;
+            }
+        }
 
     // The state words, logged on change: what the HUD and this arm produced.
     static uint32_t last[10] = {};
@@ -5268,6 +5328,6 @@ PPC_FUNC(sub_82523A80)
             k += std::snprintf(line + k, sizeof line - size_t(k), " %s icon %08X lock %08X remote %X;",
                                kTrackerNames[i], now[i], now[5 + i], carriers);
         }
-        fprintf(stderr, "[tracker]%s%s%s\n", line, n ? " | shown for the partner:" : "", why);
+        fprintf(stderr, "[tracker]%s%s%s\n", line, n ? " |" : "", why);
     }
 }
