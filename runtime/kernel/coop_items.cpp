@@ -104,6 +104,7 @@ extern "C" PPC_FUNC(__imp__sub_8223CEF8);
 extern "C" PPC_FUNC(__imp__sub_82408908);
 extern "C" PPC_FUNC(__imp__sub_821A2200);
 extern "C" PPC_FUNC(__imp__sub_821A2250);
+extern "C" PPC_FUNC(__imp__sub_823A7530);
 extern "C" PPC_FUNC(__imp__sub_82378FA0);
 extern "C" PPC_FUNC(__imp__sub_821898B0);
 extern "C" PPC_FUNC(__imp__sub_821898E8);
@@ -1110,7 +1111,7 @@ uint32_t g_lastLoggedIn[kMaxPlayers] = {};
 // Does player `who`'s OWN machine say he carries an item with this name hash?
 // 1 yes, 0 no, -1 no fresh word from that machine (so the caller falls back to
 // what it did before item sync existed). Read by the found-flag rescue.
-int RemoteInventoryHas(uint32_t who, uint32_t itemHash)
+int RemoteInventoryHas(uint32_t who, uint32_t itemHash, int maxAgeMs = -1)
 {
     if (who >= kMaxPlayers || !itemHash)
         return -1;
@@ -1121,7 +1122,7 @@ int RemoteInventoryHas(uint32_t who, uint32_t itemHash)
     const auto age = std::chrono::duration_cast<std::chrono::milliseconds>(
                          std::chrono::steady_clock::now() - r.at)
                          .count();
-    if (age > SyncMaxAgeMs())
+    if (age > (maxAgeMs >= 0 ? maxAgeMs : SyncMaxAgeMs()))
         return -1;
     for (uint32_t i = 0; i < kInvSlots; i++)
         if (r.inv[i] == itemHash)
@@ -4822,4 +4823,112 @@ PPC_FUNC(sub_82482AD8)
             ctx.r4.u64 = uint32_t(t_foundForceIdx);
     }
     __imp__sub_82482AD8(ctx, base);
+}
+
+// ---------------------------------------------------------------------------
+// CZ_COOP_CONDITION_ANY_PLAYER — the item-handle drift, at its SOURCE (issue #11).
+// ---------------------------------------------------------------------------
+//
+// `cMissionCondition` evaluates in `sub_823A7530(this, world, playerIndex)`, a
+// switch on `this+0x40` (13 cases, table 0x820432B8). Condition 10 (0x823A76E4)
+// is "player does NOT carry <ConditionParamater>": it resolves ONE user player
+// (`sub_8247B020(world->0x7C, playerIndex)`), walks that player's bag and starts
+// from 1, clearing it when an item's type (+0x100) hashes equal to the name.
+// A pure predicate: no store, no action, so it is safe to ask more than once.
+//
+// It is what LEVEL_PROLOGUE's PrologueCase1-Start22 block asks before spawning
+// GasCan7, and the spawns that follow it in the same block are FuelTank3
+// (BikeEngine), BikeForksWorld4 and Key (Key_MasterKey). An item is named on the
+// wire by a SERIAL (`+0x9C`) that both machines hand out in spawn order. So when
+// the guest carries the gas can into the level, the guest's machine skips GasCan7
+// and the host's spawns it, and every serial after it is one apart: measured
+// 2026-10-06, the host's BikeEngine (handle 0x421) arrived on the guest as his
+// BikeForks, and in the first session the guest's gas can arrived on the host as
+// the shed key's grant. It is also why a part can be taken twice after a zone
+// change: the host's world grew a second gas can.
+//
+// So in co-op this asks for every user player and answers "nobody carries it"
+// only if that is true for all of them, on both machines, which keeps the two
+// spawn sequences equal. A player's bag is this machine's copy, or, with
+// CZ_COOP_ITEM_SYNC, the owner's own word (accepted up to 30 s old, because the
+// question is asked during a level load and the publisher pauses with it).
+// One-way: it can only turn "spawn" into "do not spawn".
+namespace
+{
+int ConditionAnyPlayerMode()
+{
+    static const int mode = [] {
+        const char* e = std::getenv("CZ_COOP_CONDITION_ANY_PLAYER");
+        const int m = e && *e ? std::atoi(e) : 0;
+        if (m)
+            fprintf(stderr, "[cond] CZ_COOP_CONDITION_ANY_PLAYER=%d — a \"player does not carry X\" "
+                            "mission condition (type 10) asks EVERY user player in co-op, so both "
+                            "machines spawn the same items and their item handles stay in step "
+                            "(issue #11).%s\n",
+                    m, m == 2 ? " OBSERVE ONLY: prints, changes nothing." : "");
+        return m;
+    }();
+    return mode;
+}
+
+thread_local bool t_condRetrying = false;
+}  // namespace
+
+PPC_FUNC(sub_823A7530)
+{
+    const int mode = ConditionAnyPlayerMode();
+    const uint32_t self = ctx.r3.u32, world = ctx.r4.u32;
+    const int32_t localIdx = int32_t(ctx.r5.u32);
+    const uint32_t cond = self ? LoadU32(base, self + 0x40) : 0;
+    if (!mode || t_condRetrying || cond != 10 || !world)
+    {
+        __imp__sub_823A7530(ctx, base);
+        return;
+    }
+    const PPCContext entry = ctx;
+    __imp__sub_823A7530(ctx, base);
+    const uint32_t answer = ctx.r3.u32;
+    if (answer != 1 || !XliveSession_Enabled())
+        return;  // the asked player carries it already, or not online at all
+    const Objects o = Resolve(ctx, base);
+    if (!o.session || LoadU8(base, o.session + kSessionIsCoopByte) == 0)
+        return;
+    const uint32_t players = LoadU32(base, world + 0x7C);
+    if (!players)
+        return;
+
+    // The item name, the same short-string layout the case itself reads: inline
+    // at +0x44 while the capacity byte at +0x64 is under 0x1F, else a pointer.
+    char item[64] = {};
+    {
+        const uint32_t str = LoadU8(base, self + 0x64) < 0x1F ? self + 0x44 : LoadU32(base, self + 0x44);
+        for (uint32_t i = 0; str && i + 1 < sizeof item; i++)
+            if (!(item[i] = char(LoadU8(base, str + i))))
+                break;
+    }
+    uint32_t want = 0;  // sub_8276E398: h*33 ^ (signed char)c
+    for (const char* c = item; *c; c++)
+        want = (want * 33u) ^ uint32_t(int32_t(int8_t(*c)));
+
+    for (int32_t p = 0; p < int32_t(kMaxPlayers); p++)
+    {
+        if (p == localIdx || !LoadU32(base, players + 0xC + uint32_t(p) * 4))
+            continue;
+        PPCContext retry = entry;
+        retry.r5.u64 = uint32_t(p);
+        t_condRetrying = true;
+        __imp__sub_823A7530(retry, base);
+        t_condRetrying = false;
+        const bool copySays = retry.r3.u32 == 0;
+        const bool ownerSays = !copySays && SyncActive() && RemoteInventoryHas(uint32_t(p), want, 30000) == 1;
+        if (!copySays && !ownerSays)
+            continue;
+        fprintf(stderr, "[cond] \"does not carry %s\" (condition %08X): player %d (asked) does not, "
+                        "but player %d does (%s) -> %s\n",
+                item, self, localIdx, p, copySays ? "this machine's copy" : "his own machine's word",
+                mode == 2 ? "OBSERVE ONLY, answer left at 1" : "answering 0, as the other machine will");
+        if (mode != 2)
+            ctx.r3.u64 = 0;
+        return;
+    }
 }

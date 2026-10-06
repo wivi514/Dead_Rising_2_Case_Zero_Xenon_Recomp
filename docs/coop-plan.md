@@ -3278,3 +3278,37 @@ F9 was pressed on both (`~/DR2CZ-troubleshooting/issue11/{host2,guest2}_*`, logs
 diverge (session 1 had diverged by the gas station). The fix direction is unchanged: the
 sender publishes the identity behind the handle it sends, and the receiver substitutes its
 own live entry of the same type nearest that position, in `sub_82583258` only.
+
+### The third and fourth pickups: the drift caught, and its source (2026-10-06, late afternoon)
+
+Same session. The guest's gas can at the gas station resolved correctly (handle `0x41E` on
+both machines). Then both changed zone and came back, and the host picked up the
+BikeEngine: **handle `0x421` is the BikeEngine on the host and the BikeForks on the
+guest**, so the guest inserted forks into the host's bag and showed them in his hands
+(the operator's report, and the guest's own reload of that bag after the next zone change
+kept the forks). The placement looked right on both machines because the host decides it.
+
+**The source is a mission condition evaluated per machine.** `PrologueCase1-Start22`
+(`missions.txt`, `cMissionLevelReady` on `LEVEL_PROLOGUE`) runs on every entry to the level
+and spawns, in order: `GasCan7` **only under `cMissionCondition hascan { Condition = "10"
+ConditionParamater = "GasolineCanister" }`**, then `FuelTank3` (BikeEngine),
+`BikeForksWorld4` (BikeForks) and `Key` (Key_MasterKey). Condition 10 is case
+`0x823A76E4` of `sub_823A7530`'s switch: it resolves ONE user player and returns 1 iff no
+item in that player's bag has the named type. The guest walked back in carrying the gas
+can, so his machine skipped `GasCan7` and the host's spawned it, and every serial after
+it in the block was one apart: host engine = guest forks, and in the first session the
+guest's gas can resolved on the host to an item whose pickup grants the shed key. The same
+spawn is why parts could be taken twice after a zone change: the host's world grew a
+second gas can.
+
+**Candidate: `CZ_COOP_CONDITION_ANY_PLAYER=1`** (OFF). In co-op a type-10 condition asks
+every user player and says "nobody carries it" only if that holds for all of them, from
+this machine's copy or the owner's word. The predicate has no side effects (read off the
+case), so re-asking is safe. One-way: it can only suppress a spawn. **Prediction:** the
+guest carries the gas can out and back in; the HOST prints `[cond] "does not carry
+GasolineCanister" ... player 1 does ... -> answering 0`; the host picks up the engine and
+the guest sees the ENGINE; no second gas can lies at the gas station.
+
+Not covered, said in advance: any OTHER per-machine difference in spawn order (a zombie's
+drop, a prop broken on one side) offsets the serials the same way. This arm removes the
+one source measured; the trace stays on to catch the next.

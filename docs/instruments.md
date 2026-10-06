@@ -4558,6 +4558,15 @@ CZ_COOP_ITEM_SYNC=1  **THE CANDIDATE FOR PLAYER ISSUE #11 (2026-10-04), still OF
                    answers. CZ_COOP_ITEM_SYNC_MS=N the publish period,
                    CZ_COOP_ITEM_SYNC_MAX_AGE_MS=N how stale a published value may be
                    (3000), CZ_COOP_LOCAL_PLAYER=N overrides the host-is-0 assumption
+CZ_COOP_CONDITION_ANY_PLAYER=1  **THE CANDIDATE FOR THE ITEM-HANDLE DRIFT (issue #11, 2026-10-06),
+                   OFF until a two-machine round.** Mission condition type 10 ("player does
+                   not carry X", `sub_823A7530` case `0x823A76E4`) reads ONE player's bag;
+                   LEVEL_PROLOGUE asks it before spawning GasCan7, ahead of the engine, the
+                   forks and the shed key. In co-op the two machines answered differently,
+                   spawned different items, and every item serial after it was one apart.
+                   With this arm the condition asks every user player (this machine's copy,
+                   or the owner's word under CZ_COOP_ITEM_SYNC), so both machines skip the
+                   spawn. `=2` observe only. Prints `[cond] ... -> answering 0`
 CZ_COOP_PICKUP_TRACE=1  every inventory insertion (`sub_821A7550`) with the item's POOL ID,
                    name hash and caller, every key-item grant (message type 0x13 in
                    `sub_82243060`), and since 2026-10-06 the guest CALL CHAIN and the last
