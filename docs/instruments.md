@@ -4562,9 +4562,9 @@ CZ_COOP_PICKUP_TRACE=1  every inventory insertion (`sub_821A7550`) with the item
                    name hash and caller, every key-item grant (message type 0x13 in
                    `sub_82243060`), and since 2026-10-06 the guest CALL CHAIN and the last
                    four pool handles the resolver `sub_821A2250` answered on that thread.
-                   An item's wire handle is its local pool id (`+0x9C`), so on two machines
-                   these lines name the handle a remote pickup arrived with and what this
-                   machine resolved it to (coop-plan.md, issue #11). `=2` also prints the
+                   An item's wire handle is `+0x9C` (a serial, NOT the pool id), so on two
+                   machines these lines name the handle a remote pickup arrived with and
+                   what this machine resolved it to (coop-plan.md, issue #11). `=2` also prints the
                    first five resolutions with their chain, the one-machine check on the
                    chain walker
 CZ_COOP_ITEM_SYNC_TEST=1  the held-item contract, offline and with no second machine:

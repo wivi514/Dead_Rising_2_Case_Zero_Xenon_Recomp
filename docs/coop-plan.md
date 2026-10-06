@@ -1259,11 +1259,10 @@ else to be wrong, and it is consistent with the one row that worked being the ea
 
 ##### What it does NOT settle
 
-> **RETRACTED IN PART, 2026-10-06 (issue #11 below): an id IS what arrives, as a LOOKUP
-> key rather than a spawn key.** An item's wire handle is `+0x9C`, which equals its pool
-> id (149 of 149 live entries), and `sub_821A2250` resolves a received handle against the
-> receiver's OWN pool. The sentence below was right that nothing spawns at an id and wrong
-> to conclude the id cannot be on the wire.
+> **QUALIFIED, 2026-10-06 (issue #11 below): a HANDLE is what arrives, and the receiver
+> looks it up in its own pool.** The handle is `+0x9C`, a serial that is NOT the pool id
+> (it equalled the pool id only in a fresh world), resolved by `sub_821A2250`. The sentence
+> below stands: nothing spawns at an id.
 
 It does not show what crosses the wire. It shows only that **an id cannot be what
 arrives** — nothing can spawn at a given id — so if items are replicated at all, they are
@@ -3234,10 +3233,12 @@ The operator's eye found what it cannot fix:
 a handle with bit `0x40000000` indexes a global table at `*(0x82A46294)+0x34`; any other is
 matched against `+0x9C` of every live pool entry. The base constructor `sub_822F6F68`
 stores -1 there; a single-player census at the bike (`process_vm_readv`, 149 live entries)
-read **`+0x9C == pool id` for every one of them**. So an item is named on the wire by its
-LOCAL pool id, the receiver looks it up in its own pool, and the free-list drift measured
-on 09-25 turns every remote pickup into a lookup of whatever the receiver allocated at that
-number. One mechanism covers all three symptoms. `CZ_COOP_ITEM_SYNC` repairs the host's
+read **`+0x9C == pool id` for every one of them**. ~~So an item is named on the wire by its
+LOCAL pool id~~ — **RETRACTED THE SAME AFTERNOON by the second round below: in a fresh world
+the serial and the pool id happen to coincide, and they do not in general.** What stands:
+the receiver looks the handle up in its own pool, so whenever the two machines' serials
+disagree a remote pickup resolves to whatever the receiver numbered that way. One
+mechanism covers all three symptoms. `CZ_COOP_ITEM_SYNC` repairs the host's
 idea of what the guest HOLDS and cannot repair which world object was taken, so it is not
 the fix for #11 on its own.
 
@@ -3253,3 +3254,27 @@ frame below it (`8238C4F0 bl 0x821a2250`, `8220DC54 bl 0x8248f4e8`).
 the object behind the handle it sends (type `+0x100`, instance `+0x98`, position), so it
 can publish that on the coop link. The receiver replaces the resolver's answer, only inside
 the remote-pickup handler, with its own live entry of the same type nearest that position.
+
+### The second round, 2026-10-06 afternoon: the handle is a serial, and the handler is named
+
+Both machines at `85e6242` with `CZ_COOP_PICKUP_TRACE=1`; the guest picked up the wheel and
+F9 was pressed on both (`~/DR2CZ-troubleshooting/issue11/{host2,guest2}_*`, logs
+`play/play_1006_1324.log` and `issue11/guest_play2.log`).
+
+- **It worked this time.** The guest resolved handle `0x426` to its WheelPawn at pool id
+  1060; the host resolved the SAME handle to ITS WheelPawn at pool id **1061**, inserted it
+  for player 1, `[found] RESCUED` (copy-based) fired, and `PrologueWheelObjective` started
+  on both. **So `+0x9C` is not the pool id** (the morning's reading is retracted above):
+  it is a serial the two machines agreed on here, while the pool ids already differed.
+- **The remote-pickup handler**: on the host the resolver was called at `0x82583484` in
+  `sub_82583258`, under `82583590 < 8256EC08 < 8256E4A8 < 8258B3B4 < 82573398 < 82573168`,
+  the network receive side; then `8249D2D0 < 8220CB58 < 821D2BD8 < 8224AF10 < 8223C8C4`
+  performs the pickup. That is where a translation would go.
+- **The host's bike-parts tracker stayed EMPTY** although the host credited the wheel and
+  started its objective: the tracker shows the LOCAL player's own pickups. A separate
+  question from the mis-resolution.
+
+**Owed:** what assigns `+0x9C`, and the first event where the two machines' serials
+diverge (session 1 had diverged by the gas station). The fix direction is unchanged: the
+sender publishes the identity behind the handle it sends, and the receiver substitutes its
+own live entry of the same type nearest that position, in `sub_82583258` only.

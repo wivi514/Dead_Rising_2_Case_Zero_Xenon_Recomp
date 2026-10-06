@@ -2460,10 +2460,13 @@ PPC_FUNC(sub_823E7890)
 //
 // A handle with bit 0x40000000 set indexes a global table at `*(0x82A46294)+0x34`;
 // any other handle is matched against `+0x9C` of every live entry of the item
-// pool. A single-player census at the bike read `+0x9C == pool id` on 149 of 149
-// live entries (the constructor `sub_822F6F68` stores -1 there, the spawner then
-// numbers it). So an item's wire handle is its LOCAL pool id, and the far machine
-// resolves it against its OWN pool — the free-list drift, applied at lookup.
+// pool (the constructor `sub_822F6F68` stores -1 there; something later numbers
+// it). A fresh single-player world read `+0x9C == pool id` on 149 of 149 entries,
+// but that was a coincidence of a fresh world: the second two-machine round
+// resolved handle 0x426 to pool id 1061 on the host and 1060 on the guest, both
+// WheelPawn. So the handle is its own serial, the two machines agree on it until
+// they do not, and the far machine looks it up in its OWN pool. The remote-pickup
+// lookup is `0x82583484` in `sub_82583258`.
 //
 // The resolver has ~150 callers, so rather than read them all this keeps the last
 // few resolutions per thread. A remote pickup and a key grant print them together
