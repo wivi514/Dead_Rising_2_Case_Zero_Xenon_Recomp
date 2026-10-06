@@ -4575,6 +4575,17 @@ CZ_COOP_SPAWN_CARRIED=1  **CANDIDATE (issue #11, 2026-10-06), OFF until a two-ma
                    carried it. Bags are snapshotted every 100 ms; an empty bag is believed
                    only after 15 s. `=2` observe, `=3` also prints the first 12 spawn checks
                    (`+0x5C` is the hash of `ItemName`, verified on BikeBody/BikeStand)
+CZ_COOP_TRACKER_ALL=1  **CANDIDATE (2026-10-06), OFF until a two-machine round; needs
+                   CZ_COOP_ITEM_SYNC.** The "Find Bike Parts" tracker lights a part while the
+                   LOCAL Chuck carries it; this also lights a part another player carries (his
+                   own machine's word). HUD object from `sub_82509B28`, ticked by
+                   `sub_82523A80`; icons at `+0x300 + i*12` (gas, engine, handlebar, fork,
+                   wheel), `w_locked` at `+8`, hidden = bit 0x00800000 of `+0x10`. Logs every
+                   change of the ten state words as `[tracker]`. `=2` logs only
+CZ_COOP_INVQUERY_TRACE=1  every distinct caller chain of the inventory queries (count, list,
+                   item-at, inventory block, held item), once each. How the tracker's HUD was
+                   found: a solo boot at the bike makes NO queries from it, so it is not a
+                   per-frame poll of the bag
 CZ_COOP_PICKUP_TRACE=1  every inventory insertion (`sub_821A7550`) with the item's POOL ID,
                    name hash and caller, every key-item grant (message type 0x13 in
                    `sub_82243060`), and since 2026-10-06 the guest CALL CHAIN and the last

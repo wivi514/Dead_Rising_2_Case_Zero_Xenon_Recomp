@@ -3338,3 +3338,25 @@ answering 0` once, and the operator found every handle in step for the rest of t
 2. **The right-hand tracker** shows only what the LOCAL Chuck carries (captures, rounds 2-3),
    so a partner's part never appears there. Single-player behaviour of a single-player HUD;
    not addressed.
+
+### The tracker for both players (2026-10-06, evening) — CZ_COOP_TRACKER_ALL
+
+The operator asked for the "Find Bike Parts" tracker to show both players' parts. Found by
+measurement and by name, not by reading the HUD: `w_Bike_parts` and its five icons
+(`w_gasoline`, `w_engine`, `w_handlebar`, `w_fork`, `w_wheel`, each with a `w_locked`
+child) are defined in `ingame.big/hud_missions.txt`; the names are looked up in
+`sub_82509B28`, the HUD set-up, which stores the icons at `+0x300 + i*12` and the overlays
+at `+8`. The HUD ticks in `sub_82523A80`. `CZ_COOP_INVQUERY_TRACE=1` showed the HUD makes no
+inventory query while nobody carries anything, so the per-part decision was not located;
+this arm does not need it. Dead ends, so they are not re-read: `sub_82243060` is the HUD's
+message dispatcher (not "ObtainItem"); message `0x7D` from `sub_8223C528` is a per-part
+online-stat notice gated by a flag at `online+0xAFC..0xB00`; `sub_8250BBA0` chooses the
+inventory-slot icon for a bike part; `8250A570` and `8250AF98` are other widgets.
+
+**The arm** un-hides an icon after the HUD's own tick when another player's own machine
+says he carries that part, and logs every change of the five icon words and five overlay
+words with who carries what. **Prediction:** the guest picks up the wheel; on the host the
+wheel icon lights and a `[tracker] ... shown for the partner: wheel(p1)` line prints; it
+goes dark within ~3 s of the guest dropping or placing it. If the icon lights but looks
+wrong (no colour, or the `x` overlay), the logged words say which bit the HUD uses for
+carried versus placed.

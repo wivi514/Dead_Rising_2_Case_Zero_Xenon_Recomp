@@ -73,6 +73,7 @@
 // items.txt. Everything is gated on the variable and every hook is a straight
 // pass-through when it is off; none of these are on the frame path.
 #include <atomic>
+#include <set>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
@@ -106,6 +107,12 @@ extern "C" PPC_FUNC(__imp__sub_821A2200);
 extern "C" PPC_FUNC(__imp__sub_821A2250);
 extern "C" PPC_FUNC(__imp__sub_823A7530);
 extern "C" PPC_FUNC(__imp__sub_823A5238);
+extern "C" PPC_FUNC(__imp__sub_821A6D48);
+extern "C" PPC_FUNC(__imp__sub_8215D400);
+extern "C" PPC_FUNC(__imp__sub_8215D470);
+extern "C" PPC_FUNC(__imp__sub_8215D330);
+extern "C" PPC_FUNC(__imp__sub_821A6C18);
+extern "C" PPC_FUNC(__imp__sub_82523A80);
 extern "C" PPC_FUNC(__imp__sub_82378FA0);
 extern "C" PPC_FUNC(__imp__sub_821898B0);
 extern "C" PPC_FUNC(__imp__sub_821898E8);
@@ -5107,4 +5114,160 @@ PPC_FUNC(sub_823A5238)
         }
     }
     __imp__sub_823A5238(ctx, base);
+}
+
+// CZ_COOP_INVQUERY_TRACE=1 — every DISTINCT caller chain of the three inventory
+// queries (count, list, item-at), printed once. Written to find which code the
+// bike-parts HUD tracker asks "does the player carry this part" through
+// (issue #11 follow-up, 2026-10-06): a census by caller beats reading the HUD.
+namespace
+{
+void InvQueryTrace(PPCContext& ctx, uint8_t* base, const char* what)
+{
+    static const bool on = [] {
+        const char* e = std::getenv("CZ_COOP_INVQUERY_TRACE");
+        return e && *e && *e != '0';
+    }();
+    if (!on)
+        return;
+    static std::mutex mu;
+    static std::set<uint64_t> seen;
+    char chain[160];
+    FormatGuestChain(ctx, base, chain, sizeof chain);
+    const uint64_t key = (uint64_t(uint32_t(ctx.lr)) << 32) ^ std::hash<std::string>{}(chain);
+    {
+        std::lock_guard<std::mutex> lock(mu);
+        if (!seen.insert(key).second || seen.size() > 400)
+            return;
+    }
+    fprintf(stderr, "[invq] %s r3 %08X r4 %08X r5 %08X chain %s\n", what, ctx.r3.u32, ctx.r4.u32,
+            ctx.r5.u32, chain);
+}
+}  // namespace
+
+PPC_FUNC(sub_821A6D48)
+{
+    InvQueryTrace(ctx, base, "count");
+    __imp__sub_821A6D48(ctx, base);
+}
+PPC_FUNC(sub_8215D400)
+{
+    InvQueryTrace(ctx, base, "list");
+    __imp__sub_8215D400(ctx, base);
+}
+PPC_FUNC(sub_8215D470)
+{
+    InvQueryTrace(ctx, base, "item-at");
+    __imp__sub_8215D470(ctx, base);
+}
+PPC_FUNC(sub_8215D330)
+{
+    InvQueryTrace(ctx, base, "inv-block");
+    __imp__sub_8215D330(ctx, base);
+}
+PPC_FUNC(sub_821A6C18)
+{
+    InvQueryTrace(ctx, base, "held-item");
+    __imp__sub_821A6C18(ctx, base);
+}
+
+// ---------------------------------------------------------------------------
+// CZ_COOP_TRACKER_ALL — the bike-parts tracker shows the PARTNER's parts too.
+// ---------------------------------------------------------------------------
+//
+// The HUD's "Case 0-4 - Find Bike Parts" tracker (`w_Bike_parts` in
+// ingame.big/hud_missions.txt) lights a part's icon while the LOCAL Chuck carries
+// it, so in co-op a part in the other player's hands never shows (captures,
+// 2026-10-06 rounds 2-3). The HUD object is the one `sub_82509B28` sets up and
+// `sub_82523A80` ticks every frame: its five icons are at `+0x300 + i*12`
+// in the order gasoline, engine, handlebar, fork, wheel (each looked up by its
+// widget name, `w_gasoline` .. `w_wheel`), with the part's `w_locked` overlay at
+// `+8`; a widget is hidden by bit 0x00800000 of its `+0x10` word, the way every
+// show/hide in this HUD spells it (`oris 0x80` / `rlwinm 0,9,7`).
+//
+// After the HUD's own tick, an icon whose part another player carries (his own
+// machine's word, CZ_COOP_ITEM_SYNC) has the hidden bit cleared. The HUD decides
+// the local player's parts exactly as before. Every change of the ten state words
+// is logged with who carries what, so a round shows how carried and placed look
+// even if this guess about the look is incomplete.
+namespace
+{
+int TrackerAllMode()
+{
+    static const int mode = [] {
+        const char* e = std::getenv("CZ_COOP_TRACKER_ALL");
+        const int m = e && *e ? std::atoi(e) : 0;
+        if (m)
+            fprintf(stderr, "[tracker] CZ_COOP_TRACKER_ALL=%d — the bike-parts tracker also shows "
+                            "parts another co-op player carries.%s\n",
+                    m, m == 2 ? " OBSERVE ONLY: logs the icon state, changes nothing." : "");
+        return m;
+    }();
+    return mode;
+}
+constexpr uint32_t kTrackerParts[5] = {0x5F8D0521u, 0xA55F8BABu, 0xC32E815Bu, 0x52EA0EA6u,
+                                       0x878FC97Bu};  // the order of +0x300 + i*12
+constexpr const char* kTrackerNames[5] = {"gas", "engine", "handlebar", "fork", "wheel"};
+constexpr uint32_t kWidgetHidden = 0x00800000u;
+}  // namespace
+
+PPC_FUNC(sub_82523A80)
+{
+    const uint32_t hud = ctx.r3.u32;
+    __imp__sub_82523A80(ctx, base);
+    const int mode = TrackerAllMode();
+    if (!mode || !hud || !SyncActive())
+        return;
+
+    uint32_t icon[5], locked[5];
+    for (int i = 0; i < 5; i++)
+    {
+        icon[i] = LoadU32(base, hud + 0x300 + uint32_t(i) * 12);
+        locked[i] = LoadU32(base, hud + 0x308 + uint32_t(i) * 12);
+        if (!icon[i])
+            return;  // not this HUD, or not set up yet
+    }
+
+    char why[160];
+    int n = 0;
+    why[0] = 0;
+    if (mode == 1)
+        for (int i = 0; i < 5; i++)
+            for (uint32_t p = 0; p < kMaxPlayers; p++)
+            {
+                if (RemoteInventoryHas(p, kTrackerParts[i]) != 1)
+                    continue;
+                const uint32_t w = LoadU32(base, icon[i] + 0x10);
+                if (w & kWidgetHidden)
+                {
+                    PPC_STORE_U32(icon[i] + 0x10, w & ~kWidgetHidden);
+                    n += std::snprintf(why + n, sizeof why - size_t(n), " %s(p%u)", kTrackerNames[i], p);
+                }
+                break;
+            }
+
+    // The state words, logged on change: what the HUD and this arm produced.
+    static uint32_t last[10] = {};
+    uint32_t now[10];
+    for (int i = 0; i < 5; i++)
+    {
+        now[i] = LoadU32(base, icon[i] + 0x10);
+        now[5 + i] = locked[i] ? LoadU32(base, locked[i] + 0x10) : 0;
+    }
+    if (std::memcmp(now, last, sizeof now) != 0)
+    {
+        std::memcpy(last, now, sizeof now);
+        char line[400];
+        int k = 0;
+        for (int i = 0; i < 5; i++)
+        {
+            int carriers = 0;
+            for (uint32_t p = 0; p < kMaxPlayers; p++)
+                if (RemoteInventoryHas(p, kTrackerParts[i]) == 1)
+                    carriers |= 1 << p;
+            k += std::snprintf(line + k, sizeof line - size_t(k), " %s icon %08X lock %08X remote %X;",
+                               kTrackerNames[i], now[i], now[5 + i], carriers);
+        }
+        fprintf(stderr, "[tracker]%s%s%s\n", line, n ? " | shown for the partner:" : "", why);
+    }
 }
