@@ -3405,3 +3405,23 @@ widget's `vt[0x4C](bits)` / `vt[0x50](bits)` (`0x827F4F10` / `0x827F4F80`) walk 
 into its state and plays when the mask matches, `vt[0x50]` (`0x827F0470`) clears and rewinds.
 So lighting an icon is `icon->vt[0x4C](0x80)` and the arm now calls it (and `vt[0x50](0x80)`
 to darken), next to the shown bit.
+
+### Round nine: the tracker's real check, and the fix the operator asked for
+
+The operator, after three looks at the icon: *"I am 100% sure it is not the lighting of it
+and that it just doesn't see both inventories."* Right. The trace on the widget methods named
+the per-frame decision on the first pickup: `sub_824E1A80` (from the tracker tick, `8250A7A8`)
+clears the wheel on the host and sets it on the guest. For each part it reads the part's
+objective mission (HUD `+0x308 + i*12` — NOT the `w_locked` overlay, which is `+0x304`;
+retracted) and lights the icon iff the mission is active AND `sub_821AD5E8` returns the bike,
+`(-269.777, 3.279, -60.447)`, as the current objective's waypoint. That waypoint is
+`cMissionObjectiveBringItem` vt[0x44], `sub_823E7420`: it resolves ONE player,
+`GetUserPlayer(world->0x7C, world->0x80)`, scans his bag for the Item and answers the bike if
+he carries it. The single-player assumption again, one layer from the found flag.
+
+**Fix (`CZ_COOP_TRACKER_ALL=1`, replacing the icon forcing, which is deleted):** when the
+local player does not carry the Item and another co-op player does (this machine's copy of
+his bag, or his own machine's word), the title's own function runs with that player
+answering its one lookup (only the call whose return address is `0x823E7450`). The tracker,
+and the waypoint arrow, then see the part as carried. Prints `[tracker] "<item>" is carried
+by player N, not the local player M`.

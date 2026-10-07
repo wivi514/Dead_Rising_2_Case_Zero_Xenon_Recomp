@@ -113,6 +113,7 @@ extern "C" PPC_FUNC(__imp__sub_8215D470);
 extern "C" PPC_FUNC(__imp__sub_8215D330);
 extern "C" PPC_FUNC(__imp__sub_821A6C18);
 extern "C" PPC_FUNC(__imp__sub_825322C8);
+extern "C" PPC_FUNC(__imp__sub_823E7420);
 extern "C" PPC_FUNC(__imp__sub_827F4F10);
 extern "C" PPC_FUNC(__imp__sub_827F4F80);
 extern "C" PPC_FUNC(__imp__sub_82378FA0);
@@ -1827,6 +1828,8 @@ void HarnessTick(PPCContext& ctx, uint8_t* base)
     inTick = false;
 }
 
+namespace { thread_local int32_t t_bringSubPlayer = -1; }
+
 PPC_FUNC(sub_8247B020)
 {
     const int32_t idx = int32_t(ctx.r4.u32);
@@ -1849,6 +1852,15 @@ PPC_FUNC(sub_8247B020)
     // co-op session, and it declines on its own inside the respfix window.
     PublishHeldItem(ctx, base);
     SampleBagsForSpawn(ctx, base);
+    // CZ_COOP_TRACKER_ALL: the bring-item objective's waypoint asks for the local
+    // player once; answer with the co-op player who carries the item (one shot).
+    // Only the lookup at 0x823E744C itself (its return address), so a lookup
+    // anywhere deeper can never take the substitution.
+    if (t_bringSubPlayer >= 0 && uint32_t(ctx.lr) == 0x823E7450u)
+    {
+        ctx.r4.u64 = uint32_t(t_bringSubPlayer);
+        t_bringSubPlayer = -1;
+    }
     // THE SUBSTITUTION. Only inside the window state 34 opened, only for the FIRST
     // lookup in it — the handler's own call at 0x8240A934 — and the rest are counted
     // rather than redirected, because the vtable calls it makes afterwards could ask
@@ -5291,55 +5303,8 @@ PPC_FUNC(sub_825322C8)
     char why[200];
     int n = 0;
     why[0] = 0;
-    if (mode == 1)
-        for (int i = 0; i < 5; i++)
-        {
-            int carrier = -1;
-            for (uint32_t p = 0; p < kMaxPlayers && carrier < 0; p++)
-                if (RemoteInventoryHas(p, kTrackerParts[i]) == 1)
-                    carrier = int(p);
-            const uint32_t w = LoadU32(base, icon[i] + 0x10);
-            const uint32_t lock = locked[i] ? LoadU32(base, locked[i] + 0x10) : 0;
-            if (carrier >= 0 && !(w & kWidgetShown))
-            {
-                PPC_STORE_U32(icon[i] + 0x10, w | kWidgetShown);
-                // ...and START the fade-in. The bit alone left the icon at alpha 0
-                // (round eight: 1BC00000 on the host, where the guest's own went on
-                // to 18C00000). Each icon's `trigger` child is a cFEAnim (vtable
-                // 0x820B7F30) with trigger mask +0xE0 = 0x80 and state +0xE4; the
-                // widget's vt[0x4C](bits) passes bits down to its children, and the
-                // anim's own vt[0x4C] (0x827F0368) ORs them into its state and plays
-                // when the mask matches. vt[0x50] (0x827F0470) clears and rewinds.
-                {
-                    PPCContext call = ctx;
-                    t_trackerSelf = true;
-                    VCall(call, base, icon[i], 0x4C, kTrackerTriggerMask, "tracker-light");
-                    t_trackerSelf = false;
-                }
-                g_trackerForced[i] = true;
-                g_trackerLockAtForce[i] = lock;
-                n += std::snprintf(why + n, sizeof why - size_t(n), " lit %s(p%d)", kTrackerNames[i], carrier);
-            }
-            else if (carrier < 0 && g_trackerForced[i])
-            {
-                // A placement shows the part's green x (the overlay changes);
-                // that icon belongs to the HUD now and is left lit.
-                if (lock == g_trackerLockAtForce[i] && (w & kWidgetShown))
-                {
-                    PPC_STORE_U32(icon[i] + 0x10, w & ~kWidgetShown);
-                    PPCContext call = ctx;
-                    t_trackerSelf = true;
-                    VCall(call, base, icon[i], 0x50, kTrackerTriggerMask, "tracker-dark");
-                    t_trackerSelf = false;
-                    n += std::snprintf(why + n, sizeof why - size_t(n), " dark %s", kTrackerNames[i]);
-                }
-                else
-                    n += std::snprintf(why + n, sizeof why - size_t(n), " released %s (the HUD changed it)",
-                                       kTrackerNames[i]);
-                g_trackerForced[i] = false;
-            }
-        }
-
+    // The icons are decided by the title (sub_824E1A80, from the bring-item
+    // objective's waypoint); this hook only logs them. See sub_823E7420 below.
     // The state words, logged on change: what the HUD and this arm produced.
     static uint32_t last[10] = {};
     uint32_t now[10];
@@ -5410,4 +5375,85 @@ PPC_FUNC(sub_827F4F80)
 {
     TrackerCallTrace(ctx, base, "clears");
     __imp__sub_827F4F80(ctx, base);
+}
+
+// THE TRACKER'S REAL CHECK — and the fix the operator asked for: "make the mission
+// check both inventories". Found by tracing who sets the icons' trigger bits
+// (round nine): `sub_824E1A80`, called every frame from the tracker tick, lights
+// part i iff its objective mission (HUD +0x308 + i*12) is active AND the current
+// objective's waypoint (`sub_821AD5E8` -> objective vt[0x44]) is exactly the
+// bike, (-269.777, 3.279, -60.447). That vt[0x44] is
+// cMissionObjectiveBringItem's `sub_823E7420`: it resolves ONE player,
+// `GetUserPlayer(world->0x7C, world->0x80)` — the LOCAL one — walks his bag for
+// the objective's Item, and answers the bike if he carries it, else the item's
+// place in the world. So a part in the partner's hands was never "carried" here.
+//
+// In co-op, when the local player does not carry the item and another player
+// does (this machine's copy of his bag, or his own machine's word), the title's
+// own function is run with that player answering its one user-player lookup.
+// The waypoint, the tracker and anything else that reads it then see the part as
+// carried, exactly as the carrier's own machine does.
+PPC_FUNC(sub_823E7420)
+{
+    const int mode = TrackerAllMode();
+    if (!mode || !XliveSession_Enabled())
+    {
+        __imp__sub_823E7420(ctx, base);
+        return;
+    }
+    const uint32_t objective = ctx.r4.u32;
+    PPCContext call = ctx;
+    call.r3.u64 = objective;
+    int carrier = -1;
+    if (objective && GuestCall(call, base, 0x823A4768, "bring-mission"))
+    {
+        const uint32_t world = LoadU32(base, call.r3.u32 + 0x1C);
+        const uint32_t userPlayers = world ? LoadU32(base, world + 0x7C) : 0;
+        const uint32_t game = world ? LoadU32(base, world + 0x78) : 0;
+        const uint32_t invMgr = game ? LoadU32(base, game + 0x30) : 0;
+        const int32_t local = world ? int32_t(LoadU32(base, world + 0x80)) : -1;
+        // The Item, read the way 0x823E7468.. reads it: inline at +0x5C while the
+        // capacity byte at +0x7C is under 0x1F, else a pointer.
+        char item[64] = {};
+        const uint32_t str = LoadU8(base, objective + 0x7C) < 0x1F ? objective + 0x5C
+                                                                   : LoadU32(base, objective + 0x5C);
+        for (uint32_t k = 0; str && k + 1 < sizeof item; k++)
+            if (!(item[k] = char(LoadU8(base, str + k))))
+                break;
+        uint32_t want = 0;
+        for (const char* c = item; *c; c++)
+            want = (want * 33u) ^ uint32_t(int32_t(int8_t(*c)));
+        if (userPlayers && invMgr && want && local >= 0 && uint32_t(local) < kMaxPlayers)
+        {
+            auto carries = [&](uint32_t p) {
+                uint32_t slots[kInvSlots];
+                InventoryHashes(ctx, base, userPlayers, invMgr, p, slots);
+                for (uint32_t k = 0; k < kInvSlots; k++)
+                    if (slots[k] == want)
+                        return true;
+                return false;
+            };
+            if (!carries(uint32_t(local)))
+                for (uint32_t p = 0; p < kMaxPlayers && carrier < 0; p++)
+                {
+                    if (int32_t(p) == local || !LoadU32(base, userPlayers + 0xC + p * 4))
+                        continue;
+                    if (carries(p) || RemoteInventoryHas(p, want) == 1)
+                        carrier = int(p);
+                }
+            static uint32_t lastSaid[kMaxPlayers] = {};
+            if (carrier >= 0 && lastSaid[carrier] != want)
+            {
+                lastSaid[carrier] = want;
+                fprintf(stderr, "[tracker] \"%s\" is carried by player %d, not the local player %d: "
+                                "the bring-item objective asks about player %d (CZ_COOP_TRACKER_ALL=0 is "
+                                "the control)\n",
+                        item, carrier, local, carrier);
+            }
+        }
+    }
+    if (carrier >= 0 && mode != 2)
+        t_bringSubPlayer = carrier;
+    __imp__sub_823E7420(ctx, base);
+    t_bringSubPlayer = -1;
 }
