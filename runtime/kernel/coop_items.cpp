@@ -113,6 +113,8 @@ extern "C" PPC_FUNC(__imp__sub_8215D470);
 extern "C" PPC_FUNC(__imp__sub_8215D330);
 extern "C" PPC_FUNC(__imp__sub_821A6C18);
 extern "C" PPC_FUNC(__imp__sub_825322C8);
+extern "C" PPC_FUNC(__imp__sub_827F4F10);
+extern "C" PPC_FUNC(__imp__sub_827F4F80);
 extern "C" PPC_FUNC(__imp__sub_82378FA0);
 extern "C" PPC_FUNC(__imp__sub_821898B0);
 extern "C" PPC_FUNC(__imp__sub_821898E8);
@@ -5255,6 +5257,8 @@ constexpr const char* kTrackerNames[5] = {"gas", "engine", "handlebar", "fork", 
 constexpr uint32_t kWidgetShown = 0x00800000u;
 constexpr uint32_t kTrackerTriggerMask = 0x80;  // every icon's trigger anim, +0xE0, read live
 bool g_trackerForced[5] = {};
+std::atomic<uint32_t> g_trackerIcon[5] = {};
+thread_local bool t_trackerSelf = false;  // our own VCall, not the HUD's
 uint32_t g_trackerLockAtForce[5] = {};  // the overlay word when this arm lit the icon
 }  // namespace
 
@@ -5274,6 +5278,8 @@ PPC_FUNC(sub_825322C8)
         if (!icon[i])
             return;  // not set up yet
     }
+    for (int i = 0; i < 5; i++)
+        g_trackerIcon[i].store(icon[i], std::memory_order_relaxed);
     static bool said = false;
     if (!said)
     {
@@ -5306,7 +5312,9 @@ PPC_FUNC(sub_825322C8)
                 // when the mask matches. vt[0x50] (0x827F0470) clears and rewinds.
                 {
                     PPCContext call = ctx;
+                    t_trackerSelf = true;
                     VCall(call, base, icon[i], 0x4C, kTrackerTriggerMask, "tracker-light");
+                    t_trackerSelf = false;
                 }
                 g_trackerForced[i] = true;
                 g_trackerLockAtForce[i] = lock;
@@ -5320,7 +5328,9 @@ PPC_FUNC(sub_825322C8)
                 {
                     PPC_STORE_U32(icon[i] + 0x10, w & ~kWidgetShown);
                     PPCContext call = ctx;
+                    t_trackerSelf = true;
                     VCall(call, base, icon[i], 0x50, kTrackerTriggerMask, "tracker-dark");
+                    t_trackerSelf = false;
                     n += std::snprintf(why + n, sizeof why - size_t(n), " dark %s", kTrackerNames[i]);
                 }
                 else
@@ -5354,4 +5364,50 @@ PPC_FUNC(sub_825322C8)
         }
         fprintf(stderr, "[tracker]%s%s%s\n", line, n ? " |" : "", why);
     }
+}
+
+// WHO LIGHTS THE TRACKER. The widget's set-bits / clear-bits methods
+// (vt[0x4C] = 0x827F4F10, vt[0x50] = 0x827F4F80, shared by every frontend widget)
+// print the guest call chain when called on one of the five tracker icons by the
+// title (not by this arm), once per distinct (method, bits, caller). One local
+// pickup names the code that decides "this player carries part i", which is what
+// the operator asked to be made to look at both players' bags.
+namespace
+{
+void TrackerCallTrace(PPCContext& ctx, uint8_t* base, const char* what)
+{
+    if (t_trackerSelf || !TrackerAllMode())
+        return;
+    const uint32_t w = ctx.r3.u32;
+    int which = -1;
+    for (int i = 0; i < 5; i++)
+        if (g_trackerIcon[i].load(std::memory_order_relaxed) == w)
+            which = i;
+    if (which < 0)
+        return;
+    static std::mutex mu;
+    static std::set<uint64_t> seen;
+    const uint64_t key = (uint64_t(uint32_t(ctx.lr)) << 32) ^ (uint64_t(ctx.r4.u32) << 8) ^
+                         uint64_t(what[0] == 's');
+    {
+        std::lock_guard<std::mutex> lock(mu);
+        if (!seen.insert(key).second || seen.size() > 64)
+            return;
+    }
+    char chain[160];
+    FormatGuestChain(ctx, base, chain, sizeof chain);
+    fprintf(stderr, "[tracker] the HUD %s bits %08X on the %s icon, chain %s\n", what, ctx.r4.u32,
+            kTrackerNames[which], chain);
+}
+}  // namespace
+
+PPC_FUNC(sub_827F4F10)
+{
+    TrackerCallTrace(ctx, base, "sets");
+    __imp__sub_827F4F10(ctx, base);
+}
+PPC_FUNC(sub_827F4F80)
+{
+    TrackerCallTrace(ctx, base, "clears");
+    __imp__sub_827F4F80(ctx, base);
 }
