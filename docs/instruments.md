@@ -5198,3 +5198,21 @@ With the remote guard in, all three read 0 in the verifying run.
 It is cheap, but the mounted-update skip line it sits beside is not deduplicated across two
 actors. `CZ_PROP_HOLDER_SCAN=1` is the older heap census: every holder of a prop's address
 before and after DestroyProp. It is slow, at 512 MB a call.
+
+### Close-range zombie part instruments (2026-10-07, open item 0zf)
+
+```
+CZ_ZOMBIE_PARTS_TRACE=1      every model through sub_827A3CF0 (the 8-group geo_hat*/geo_head*
+                             classifier, table 0x829D9290): each sub-mesh's name and its
+                             48-byte group record. Measured: survivor-class models only, so
+                             crowd zombies do NOT come through it. Read-only.
+CZ_PM4_PRED_WATCH_FILE=path  hex texture bases in the file (re-read every frame); counts draw
+                             packets binding one as RAN vs SKIPPED by bin predication, a line
+                             every 60 frames. Read-only. Measured 0 skipped of ~10,000 helmet
+                             draws.
+CZ_PM4_NO_PREDICATION_FILE=path   CZ_PM4_NO_PREDICATION while the file exists (polled at
+                             XE_SWAP). DESTRUCTIVE: engaged mid-game it freezes the stream, and
+                             the env form hangs the boot at the Capcom logo.
+```
+`tools/zombie_tex_census.py` maps a census's bound textures to the zombie `_2.tex` part
+they came from, by content, out of the live process.

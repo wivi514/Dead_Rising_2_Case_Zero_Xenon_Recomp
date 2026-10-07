@@ -7,6 +7,51 @@ NOT the cause is what stops the next session re-buying it.
 
 Next, in order:
 
+0zg. **A SAVE MADE BEFORE OVERLAY v7 READS AS DAMAGED (operator, 2026-10-07) — UNNARROWED,
+    BLOCKS THE NEXT RELEASE.** The `default` profile's `DR2P000.DSF` (last written
+    2026-09-23) is opened read-only, full size (303,104 bytes), and the title reports it
+    damaged **with the patched layer on**; the same file loads with `CZ_NO_PATCHED_ASSETS=1`
+    in the next run of the same binary (`visuals_1007_1256.log` vs
+    `visuals_nopatch_1007_1300.log`). Prime suspect is v7's `CoopBike` spawn in
+    missions.txt (`ed26c2c`, 02:49 the same day) changing a mission table a save is checked
+    against; NOT yet bisected against v6. A backup of every profile's save is in
+    `~/DR2CZ-troubleshooting/save-backups/1007_1300/`. If v7 is the cause, every player's
+    existing save breaks on update — bisect (v6 layer vs v7 layer, same save) before v7
+    ships.
+
+0zf. **CLOSE-RANGE ZOMBIES CHANGE HEAD/HEADWEAR AT THE LOD SWAP (operator, 2026-10-07) —
+    OURS (Xenia keeps the same face and helmet up close), MECHANISM NOT YET LOCATED.**
+    The soldier is the loud case (helmet + goggles far, bare head up close); every zombie
+    type shows it as a "slightly different model". What is MEASURED:
+    * The far model (`zombie_soldier_4.big`) is one baked texture `soldier_lod4_cm` with
+      `headwear1Shape`/`headwear2Shape`; the close model (`zombie_soldier_2.big`) is a KIT —
+      `head1_head`, `head2_head` + `head2_head_balaclava`, `head3_head`, `headwear2`, plus
+      vest/accessories/gloves/kneepads/holster. So a close zombie's head part is a per-zombie
+      VARIANT choice, and ours does not agree with the far one.
+    * F9 census, mapped back to source files by content (`census_all.py`, below): one close
+      soldier in a frame DOES draw the helmet (draw 1327, 1,122 verts, `vs=70bb3e`
+      `ps=4447da`, `zs_Helmet_{cm,nm,mask}`), others do not — and the operator saw one keep
+      his helmet up close. Optional per zombie, mismatched with the far model.
+    * **NOT the renderer's predication**: `CZ_PM4_PRED_WATCH_FILE` counted ~10,000 draws
+      binding the helmet texture, 0 skipped by the bin mask. `CZ_PM4_NO_PREDICATION=1` hangs
+      the boot at the Capcom logo and freezes the stream when engaged live — unusable as a
+      gameplay arm.
+    * **NOT the fov/wide hook** (`CZ_NO_GAME_FOV=1`: "maybe a tiny bit further away", helmet
+      still lost), **not the resolution** (2560x1440, normal fov: same).
+    * **NOT `sub_827A3CF0`** (the 8-group `geo_hat*`/`geo_head*`/... classifier, table at
+      `0x829D9290`): `CZ_ZOMBIE_PARTS_TRACE=1` shows it runs only for four survivor-class
+      models, never for crowd zombies. The "Remove headwear" strings at `0x8206B4CC` are a
+      dead debug enum (no code reference). `DisableVariantSwap`/`BodyPartHash`
+      (`0x8206087C`) are the zombie VOCAL manager, not body parts.
+    * Next: find the crowd -> close-model promotion and the code that picks the head
+      variant (the LCG at `0x19660D`/`0x3C6EF35F` has six sites, `0x343FD` one — unread),
+      then log far-variant vs close-variant per zombie. The hypothesis to test is that the
+      close build re-rolls instead of reading the variant the crowd entity stored.
+    Instruments: `CZ_ZOMBIE_PARTS_TRACE=1` (runtime/cpu/zombie_parts_trace.cpp),
+    `CZ_PM4_PRED_WATCH_FILE` and `CZ_PM4_NO_PREDICATION_FILE` (runtime/gpu/pm4.cpp, both
+    re-read once a frame). Captures: `~/DR2CZ-troubleshooting/play/{visuals_nopatch,
+    lod_nogamefov,predwatch}_1007_*`.
+
 0ze. **THE GUEST WHO ARRIVES DRESSED AND RENDERS INVISIBLE OR WITHOUT A TORSO —
     REPAIRED AND OPERATOR-VERIFIED ON TWO MACHINES (2026-09-29), BOTH HALVES ON BY DEFAULT
     AND PERMANENT.** `coop-plan.md` §13 is the record. **What remains is not the symptom:**
