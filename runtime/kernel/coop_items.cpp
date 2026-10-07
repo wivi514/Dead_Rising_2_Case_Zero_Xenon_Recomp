@@ -107,6 +107,17 @@ extern "C" PPC_FUNC(__imp__sub_821A2200);
 extern "C" PPC_FUNC(__imp__sub_821A2250);
 extern "C" PPC_FUNC(__imp__sub_823A7530);
 extern "C" PPC_FUNC(__imp__sub_823A5238);
+namespace
+{
+bool SpawnCarriedTrace()
+{
+    static const bool v = [] {
+        const char* e = std::getenv("CZ_COOP_SPAWN_CARRIED");
+        return e && std::atoi(e) >= 3;
+    }();
+    return v;
+}
+}  // namespace
 extern "C" PPC_FUNC(__imp__sub_821A6D48);
 extern "C" PPC_FUNC(__imp__sub_8215D400);
 extern "C" PPC_FUNC(__imp__sub_8215D470);
@@ -4928,6 +4939,24 @@ PPC_FUNC(sub_823A7530)
     const uint32_t self = ctx.r3.u32, world = ctx.r4.u32;
     const int32_t localIdx = int32_t(ctx.r5.u32);
     const uint32_t cond = self ? LoadU32(base, self + 0x40) : 0;
+    // CZ_COOP_SPAWN_CARRIED=3: every mission condition that names the wheel, with its
+    // answer — the pawnshop respawn is `GotBikeWheel { Condition 9 PrologueWheelObjective }`
+    // or it is not, and the log says which (2026-10-07).
+    if (self && (cond == 9 || cond == 10) && !t_condRetrying && SpawnCarriedTrace())
+    {
+        char param[64] = {};
+        const uint32_t str = LoadU8(base, self + 0x64) < 0x1F ? self + 0x44 : LoadU32(base, self + 0x44);
+        for (uint32_t k = 0; str && k + 1 < sizeof param; k++)
+            if (!(param[k] = char(LoadU8(base, str + k))))
+                break;
+        if (std::strstr(param, "Wheel"))
+        {
+            PPCContext probe = ctx;
+            __imp__sub_823A7530(probe, base);
+            fprintf(stderr, "[spawn] condition %u \"%s\" (object %08X) answers %u\n", cond, param,
+                    self, probe.r3.u32);
+        }
+    }
     if (!mode || t_condRetrying || cond != 10 || !world)
     {
         __imp__sub_823A7530(ctx, base);
@@ -5147,9 +5176,15 @@ PPC_FUNC(sub_823A5238)
     }
     const bool unique = def && LoadU8(base, def + 0xB9) != 0;
     static std::atomic<int> shown{0};
-    if (mode == 3 && shown.fetch_add(1) < 12)
-        fprintf(stderr, "[spawn] check: action %08X key(+5C) %08X (%s) def %08X unique %d\n", self,
-                key, NameOf(key), def, int(unique));
+    const bool bikePart = key == 0x878FC97Bu || key == 0x5F8D0521u || key == 0xA55F8BABu ||
+                          key == 0x52EA0EA6u || key == 0xC32E815Bu;
+    if (mode == 3 && (bikePart || shown.fetch_add(1) < 12))
+    {
+        char chain[160];
+        FormatGuestChain(ctx, base, chain, sizeof chain);
+        fprintf(stderr, "[spawn] check: action %08X key(+5C) %08X (%s) def %08X unique %d chain %s\n",
+                self, key, NameOf(key), def, int(unique), chain);
+    }
     int who = -1;
     if (unique && XliveSession_Enabled() && SnapshotCarries(key, &who))
     {

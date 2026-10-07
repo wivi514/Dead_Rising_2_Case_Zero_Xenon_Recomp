@@ -3464,3 +3464,16 @@ wears some pieces that never loaded, re-post those. `CZ_COOP_OUTFIT_WINDOW_S=0` 
 `CZ_COOP_OUTFIT_REPAIR=0` the control. **Prediction:** the host prints `+ N s: player 1 (the
 other machine) wears NOTHING here — posted 5 piece(s) of the default outfit (row 17)` and the
 guest appears; the window's closing line says `is fully dressed here`.
+
+### Round twelve, the pawnshop wheel: the pre-load-bag explanation is REFUTED
+
+The guest carried the wheel out and back in and it respawned anyway. The found test never
+fell back during the load: ONE `[found] RESCUED` all session (at the pickup) and no
+`RESCUED BY THE BAG BEFORE THE LOAD`, so the objective did not drop to "not found" and the
+gap-in-the-load story is wrong for this respawn. And read live from the host process, the
+WheelPawn definition (`A54F5440`) has `+0xB9` = 0 like the other four parts, so the spawn
+action's own "nobody carries it" loop never applies to it either. Two explanations dead
+in two rounds; the next build MEASURES instead: with `CZ_COOP_SPAWN_CARRIED=3`, every mission
+condition naming the wheel prints its answer, and every bike-part spawn prints with its
+guest call chain, uncapped. **Owed:** the single-player control with the same trace, to see
+what single player does differently (the operator: a carried wheel never respawns there).
