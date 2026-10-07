@@ -3489,3 +3489,7 @@ real Xbox 360. `CZ_COOP_SPAWN_CARRIED` stays OFF and is now known to be aimed at
 **The join window engaged and dressed the save-less guest**, `014bb80`: the empty report was
 recognised ~40 s in, it posted 6 pieces of row 17 at +40 s and +50 s, and the window closed
 with `he is fully dressed here`. Owed: the operator's eye on the host's screen.
+
+**OPERATOR-VERIFIED (2026-10-07): "yes he was visible, make it default."** The join window was
+already ON by default and the verified session ran it unset, so the shipped default is what
+was checked. `CZ_COOP_OUTFIT_WINDOW_S=0` is the off switch.

@@ -93,4 +93,4 @@ grant; `=2` checks the chain walker on one machine), `CZ_COOP_INVQUERY_TRACE=1`,
   co-op, so it never posted a piece. The JOIN WINDOW in `coop_outfit_verify.cpp` (ON by
   default; `CZ_COOP_OUTFIT_WINDOW_S`, `_EVERY_S`) posts row 17's pieces straight to his Chuck
   every 10 s for 180 s once his report has said "no save", and re-posts missing pieces for a
-  dressed one. Engaged in round 14 ("he is fully dressed here"); owes the operator's eye.
+  dressed one. Engaged in round 14 ("he is fully dressed here") and **OPERATOR-VERIFIED: "yes he was visible, make it default"** — it already was, and the verified run used the default.

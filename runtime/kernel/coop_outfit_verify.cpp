@@ -195,6 +195,9 @@ bool SoloControl() { static const bool v = EnvOn("CZ_COOP_OUTFIT_CHECK_SOLO", fa
 
 // THE JOIN WINDOW (2026-10-07, the operator's instruction): "every 10 seconds for the
 // next 3 minutes after a guest joins, check his outfit and apply it if it isn't".
+// ON BY DEFAULT and OPERATOR-VERIFIED the same night (round 14, 014bb80): a save-less
+// guest who was invisible on the host was dressed ~40 s after joining — "yes he was
+// visible, make it default". CZ_COOP_OUTFIT_WINDOW_S=0 is the off switch.
 int WindowS()
 {
     static const int v = [] {
