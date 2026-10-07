@@ -259,7 +259,7 @@ def canonical_codes(lengths):
     return codes
 
 
-def lzx_encode_stream(data):
+def lzx_encode_stream(data, multi_chunk=False):
     """A real, small LZX compressor: greedy LZ77 over the full 32 KB window with
     per-chunk canonical Huffman trees, emitting VERBATIM blocks — the same shape
     the shipped encoder uses for the frontend text entries.
@@ -278,7 +278,10 @@ def lzx_encode_stream(data):
     tools/big_decompress (libmspack — the decoder lineage the recompiler links),
     and the structural conventions (canonical code assignment, delta/run tree
     encoding, R0-R2 offset history) are transcribed from lzxd.c, not guessed."""
-    assert len(data) <= 0x8000, \
+    # multi_chunk (2026-10-07): the refusal below was measured on preload4.big's
+    # boot preload, which rejects every re-encode. The LOOSE datafile.big path
+    # decodes a 7-chunk stream from this encoder cleanly (patch_coop_ending_bike.py).
+    assert multi_chunk or len(data) <= 0x8000, \
         f'lzx_encode_stream: {len(data)} bytes needs multiple chunks, and multi-' \
         'chunk streams from this encoder are REFUSED by the guest decoder'
     out = bytearray()

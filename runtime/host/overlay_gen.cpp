@@ -310,17 +310,11 @@ struct BitSink
 // part-60 ladder in the Python's docstring: the guest decoder crashes with heap
 // corruption on every degenerate stream (stored entries, literal-only fixed
 // trees), and the cure is streams statistically like the shipped ones.
-Bytes LzxEncodeStream(const Bytes& data)
+// One chunk: an independent LZX stream of at most 32 KB, framed as the shipped
+// encoder frames it ({BE u32 frameLen; 0xFF; BE u16 rawLen; BE u16 cmpLen; bits; 5
+// zero bytes}), appended to `out`.
+static void AppendLzxChunk(Bytes& out, const Bytes& chunk)
 {
-    if (data.size() > 0x8000)
-        Refuse("lzx_encode_stream: " + std::to_string(data.size()) +
-               " bytes needs multiple chunks, and multi-chunk streams from this "
-               "encoder are REFUSED by the guest decoder");
-    Bytes out;
-    AppendBE32(out, uint32_t(data.size()));
-    AppendBE32(out, 0x8000);
-
-    const Bytes& chunk = data; // single chunk by the assert above
     const int n = int(chunk.size());
 
     // ---- pass 1: greedy LZ77 with an R0/R1/R2-aware cost preference
@@ -590,6 +584,27 @@ Bytes LzxEncodeStream(const Bytes& data)
     frame.insert(frame.end(), 5, 0);
     AppendBE32(out, uint32_t(frame.size()));
     out.insert(out.end(), frame.begin(), frame.end());
+}
+
+// MULTI-CHUNK (2026-10-07, the co-op ending's missions.txt, 222 KB = 7 chunks): the
+// single-chunk refusal below was measured on ONE path — preload4.big's boot preload,
+// which rejects every re-encode this file can produce, single-chunk included (see
+// GeneratePatchedLayer). The LOOSE datafile.big path decodes a 7-chunk stream from
+// this encoder cleanly (no fault, no compression.cpp assert, and the patched mission
+// names present in guest memory). So a caller that knows its archive is read on the
+// loose path asks for chunks; everyone else keeps the refusal.
+Bytes LzxEncodeStream(const Bytes& data, bool multiChunk = false)
+{
+    if (data.size() > 0x8000 && !multiChunk)
+        Refuse("lzx_encode_stream: " + std::to_string(data.size()) +
+               " bytes needs multiple chunks, and multi-chunk streams from this "
+               "encoder are REFUSED by the guest decoder");
+    Bytes out;
+    AppendBE32(out, uint32_t(data.size()));
+    AppendBE32(out, 0x8000);
+    for (size_t at = 0; at < data.size(); at += 0x8000)
+        AppendLzxChunk(out, Bytes(data.begin() + at,
+                                  data.begin() + std::min(data.size(), at + size_t(0x8000))));
     return out;
 }
 
@@ -1311,7 +1326,7 @@ std::vector<std::string> StrBankNames(const fs::path& frontend)
 // One entry of an archive: decode, transform, re-encode. Returns false when
 // the transform had nothing to do (the Python returns None).
 bool RewriteEntry(BigArchive& a, const char* name,
-                  const std::function<bool(std::string&)>& transform)
+                  const std::function<bool(std::string&)>& transform, bool multiChunk = false)
 {
     BigEntry* entry = nullptr;
     for (BigEntry& e : a.entries)
@@ -1324,7 +1339,7 @@ bool RewriteEntry(BigArchive& a, const char* name,
     if (!transform(text))
         return false;
     const Bytes data(text.begin(), text.end());
-    entry->stored = LzxEncodeStream(data);
+    entry->stored = LzxEncodeStream(data, multiChunk);
     VerifyEncodedStream(entry->stored, data, name);
     entry->size2 = uint32_t(data.size());
     return true;
@@ -1510,13 +1525,68 @@ bool RewritePathFe(std::string& text)
     return true;
 }
 
+// missions.txt (datafile.big only) — the co-op partner's own motorcycle at the
+// military arrival (tools/patch_coop_ending_bike.py is the reference and states the
+// derivation): a CoopBike spawn after Bike1, CoopOnly so single player is untouched,
+// whose ChuckState 17 mount carries Value = 1 so only the joiner (local index 1)
+// queues it. The shipped text is CRLF. preload4.big's copy is left as shipped: the
+// boot preload rejects every re-encode this file can make, and the game reads the
+// datafile.big copy (measured: the patched names are in guest memory).
+bool RewriteMissions(std::string& text)
+{
+    static const char* kBike1 =
+        "\tcMissionSpawnItem Bike1\r\n"
+        "\t\t{\r\n"
+        "\t\t\tIgnoreAction = \"false\"\r\n"
+        "\t\t\tItemName = \"BrokenBike\"\r\n"
+        "\t\t\tLocation = \"-262.137,3.896,-47.381\"\r\n"
+        "\t\t\tRotation = \"0.015,0.323,-0.005,0.946\"\r\n"
+        "\t\t\tcMissionSetChuckState OnBike1\r\n"
+        "\t\t\t{\r\n"
+        "\t\t\t\tChuckState = \"17\"\r\n"
+        "\t\t\t\tIgnoreAction = \"false\"\r\n"
+        "\t\t\t\tItem = \"Bike1\"\r\n"
+        "\t\t\t}\r\n"
+        "\r\n"
+        "\t\t}\r\n";
+    static const char* kCoopBike =
+        "\r\n"
+        "\t\tcMissionSpawnItem CoopBike\r\n"
+        "\t\t{\r\n"
+        "\t\t\tCoopOnly = \"true\"\r\n"
+        "\t\t\tIgnoreAction = \"false\"\r\n"
+        "\t\t\tItemName = \"BrokenBike\"\r\n"
+        "\t\t\tLocation = \"-260.159,3.896,-48.910\"\r\n"
+        "\t\t\tRotation = \"0.015,0.323,-0.005,0.946\"\r\n"
+        "\t\t\tcMissionSetChuckState OnCoopBike\r\n"
+        "\t\t\t{\r\n"
+        "\t\t\t\tChuckState = \"17\"\r\n"
+        "\t\t\t\tIgnoreAction = \"false\"\r\n"
+        "\t\t\t\tItem = \"CoopBike\"\r\n"
+        "\t\t\t\tValue = \"1\"\r\n"
+        "\t\t\t}\r\n"
+        "\r\n"
+        "\t\t}\r\n";
+    if (text.find("cMissionSpawnItem CoopBike\r\n") != std::string::npos)
+        return false;
+    const size_t at = text.find(kBike1);
+    if (at == std::string::npos || text.find(kBike1, at + 1) != std::string::npos)
+        Refuse("missions.txt: the Bike1 block is not the shape this generator expects");
+    text.insert(at + std::strlen(kBike1), kCoopBike);
+    return true;
+}
+
 // outfits.csv in one archive: the overlay's copy when it exists (preload4.big
 // has the part-60 eviction applied first), else the package's; written back
-// 0x800-aligned, the shipped placement granularity.
-void PatchOutfitsArchive(const fs::path& src, const fs::path& dst)
+// 0x800-aligned, the shipped placement granularity. With `missions`, the same
+// pass also rewrites missions.txt (datafile.big only — see RewriteMissions).
+void PatchOutfitsArchive(const fs::path& src, const fs::path& dst, bool missions = false)
 {
     BigArchive a = ReadBig(src);
-    if (!RewriteEntry(a, "outfits.csv", RewriteOutfits))
+    bool changed = RewriteEntry(a, "outfits.csv", RewriteOutfits);
+    if (missions)
+        changed |= RewriteEntry(a, "missions.txt", RewriteMissions, /*multiChunk=*/true);
+    if (!changed)
     {
         if (src != dst)
             WriteFileBytes(dst, ReadFileBytes(src));
@@ -1627,7 +1697,8 @@ void GeneratePatchedLayer(const Paths& p,
     // outfits.csv, in both archives that carry it (co-op part 4): preload4's
     // copy is the evicted one just written, datafile's the package's.
     PatchOutfitsArchive(p.patched / "data" / "preload4.big", p.patched / "data" / "preload4.big");
-    PatchOutfitsArchive(p.game / "data" / "datafile.big", p.patched / "data" / "datafile.big");
+    PatchOutfitsArchive(p.game / "data" / "datafile.big", p.patched / "data" / "datafile.big",
+                        /*missions=*/true);
 
     // Every language bank, with the added value strings.
     const std::vector<std::string> banks = StrBankNames(frontend);
@@ -1967,7 +2038,9 @@ void GenerateKbmLayer(const Paths& p,
 // art change (re-export tools/release/kbm_chips with gen_kbm_icons.py
 // --export-chips in the same commit): a shipped update must not keep serving a
 // player's stale banks (the gotcha-13 shape, on disk).
-constexpr int kGeneratorVersion = 6;   // 6: x_button_ig/RTbutton_ig keep the
+constexpr int kGeneratorVersion = 7;   // 7: missions.txt — the co-op partner's own
+                                       //    motorcycle at the ending (CoopBike);
+                                       // 6: x_button_ig/RTbutton_ig keep the
                                        //    bank's stock art (identical chips
                                        //    made them indistinguishable to the
                                        //    device-follow scanner);
