@@ -236,3 +236,32 @@ engine's math, `tools/guest_poke.py ... read:N` for the live table
 (`0x82A5B1F0` + 0x20C/0x210/0x214 here — re-derive for CW), and the Xenia config check
 (`readback_resolve`) before believing an emulator agreement (gotcha 590).
 
+
+## 2026-10-07 addendum — the co-op ending: two rules Case West inherits
+
+Case West shares the engine's event layer and its mission/data containers, so both halves of
+the Case Zero co-op ending fix (`coop-plan.md` "The military arrival, 2026-10-07" and "the
+second motorcycle") should be checked there before its co-op ships.
+
+1. **Remote events name objects by RAW POINTER.** Event 0x17 (handler `sub_82233D18` here)
+   carries guest addresses, and the deterministic heap makes them the SAME objects on both
+   machines. One machine tearing down its own copy therefore tears down the other's live
+   one. Case Zero's symptom was a host crash with the helicopter pilots still mounted.
+   - The guard refuses a REMOTE event's destroy of the affected class: a depth counter on
+     the receive dispatcher `sub_82572FB8`, checked in `sub_8221FA38`.
+   - The method that found it in one run was a guest backtrace on the destroy QUEUE
+     (`sub_8221ED48`), not on the per-frame flush that executes it. Guards on the readers
+     only moved the crash (gotcha 624).
+   - Re-derive every address for CW.
+2. **Mission data can be patched, within the container's rules.** A co-op-only prop is one
+   `cMissionSpawnItem` with `CoopOnly = "true"`, a generic field the spawn's Execute honours.
+   A per-player action uses the `Value == world->0x80` local-index gate that
+   `cMissionSetChuckState` already has. Four container facts decide whether the patch loads:
+   - `datafile.big` text entries must be LZX-compressed (a stored entry is refused).
+   - The loose path accepts multi-chunk streams; `preload4.big` rejects every re-encode.
+   - An entry's `resv` word is the compression marker (2 = compressed, 0 = stored).
+   - `layout.bin` pins every archive's size, and the patch must re-pin it.
+
+   Props are found BY NAME, so check that a new name is unused (`Bike2` was taken here).
+   `tools/patch_coop_ending_bike.py` is the template, and `RewriteMissions` in
+   `overlay_gen.cpp` is its C++ port.
