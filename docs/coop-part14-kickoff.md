@@ -21,7 +21,7 @@ before: `CZ_COOP_RESPONSE_PLAYER`, `CZ_COOP_FOUND_ANY_PLAYER`, the outfit check 
 1. **~~czwin has not pulled `6205cbf`.~~ DONE 2026-10-07: czwin at `c87690c`, built, the new defaults present in the exe.** It dropped off the network at the flip. `git pull` +
    build before the next co-op round (its `play.bat` sets the three arms explicitly, so the
    build it has behaves the same; the pull is for the default and the docs).
-2. **The pawnshop wheel can still be taken twice** while the guest carries one through a
+2. **~~The pawnshop wheel can still be taken twice~~ — NOT A CO-OP DEFECT (2026-10-07): it respawns in single player too, every time (the operator, re-running the control). Pending a real-Xbox check only.** The original note: while the guest carries one through a
    zone change. Single player does not do this (operator's control: a carried wheel never
    respawns, a misplaced one does). The respawn is `GotBikeWheel` (condition 9, true while
    `PrologueWheelObjective` is in state 1), and the found test that drives that state is
@@ -85,3 +85,12 @@ grant; `=2` checks the chain walker on one machine), `CZ_COOP_INVQUERY_TRACE=1`,
   `signed in as` in both logs after every launch.
 - Never run a headless check while the operator's game is open (done once this session by
   mistake; a `pgrep ... && echo skip` does not skip).
+
+## 5. Added after the hand-off (2026-10-07, rounds 12-14)
+
+- **The save-less guest invisible on the host:** the host's default dress goes through the row
+  applier `sub_821B5650`, whose first test is `player < mgr+0x4374`, and that count is 1 in
+  co-op, so it never posted a piece. The JOIN WINDOW in `coop_outfit_verify.cpp` (ON by
+  default; `CZ_COOP_OUTFIT_WINDOW_S`, `_EVERY_S`) posts row 17's pieces straight to his Chuck
+  every 10 s for 180 s once his report has said "no save", and re-posts missing pieces for a
+  dressed one. Engaged in round 14 ("he is fully dressed here"); owes the operator's eye.

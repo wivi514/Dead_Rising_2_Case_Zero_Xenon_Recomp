@@ -3477,3 +3477,15 @@ in two rounds; the next build MEASURES instead: with `CZ_COOP_SPAWN_CARRIED=3`, 
 condition naming the wheel prints its answer, and every bike-part spawn prints with its
 guest call chain, uncapped. **Owed:** the single-player control with the same trace, to see
 what single player does differently (the operator: a carried wheel never respawns there).
+
+### Round fourteen (2026-10-07): the wheel is NOT a co-op defect; the join window dresses the guest
+
+**The pawnshop wheel respawns in SINGLE PLAYER too, every time** — the operator re-ran the
+control and retracted the earlier "a carried wheel never respawns". So it is the title's own
+behaviour (`GotBikeWheel`), not ours, and it is closed as not-an-issue pending a check on a
+real Xbox 360. `CZ_COOP_SPAWN_CARRIED` stays OFF and is now known to be aimed at nothing; its
+`=3` trace remains for that hardware comparison.
+
+**The join window engaged and dressed the save-less guest**, `014bb80`: the empty report was
+recognised ~40 s in, it posted 6 pieces of row 17 at +40 s and +50 s, and the window closed
+with `he is fully dressed here`. Owed: the operator's eye on the host's screen.
