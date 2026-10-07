@@ -348,6 +348,7 @@ add_executable(cz_runtime
     cpu/native_kbm.cpp               # part 92: native KB/M via the title's own input layer
     cpu/camera_fov.cpp               # part 62: the fov-property watch (culling fix)
     cpu/shadow_distance.cpp          # part 93: the shadow-distance slider (cascade scale)
+    cpu/zombie_parts_trace.cpp       # 2026-10-07: close-range zombie part groups (CZ_ZOMBIE_PARTS_TRACE)
     cpu/boot_skip.cpp                # part 99: the skip-intro-logos launcher toggle
     cpu/speedrun_block.cpp           # the fixed-address load/cutscene block for load removers
     cpu/thread_budget.cpp

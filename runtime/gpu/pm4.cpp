@@ -253,6 +253,13 @@ inline void GammaRegisterWrite(uint32_t index, uint32_t value)
 // of all type-3 traffic). Getting the predication wrong here would silently drop or
 // silently execute a large fraction of the stream.
 uint64_t g_binMask = ~0ull;
+// CZ_PM4_NO_PREDICATION_FILE: true while the named file exists (see the predication
+// site in Pm4 type-3 dispatch). Written only at XE_SWAP.
+std::atomic<bool> g_noPredicationLive{false};
+// CZ_PM4_PRED_WATCH_FILE: up to 8 watched texture bases and the two counters.
+uint32_t g_predWatch[8];
+std::atomic<uint32_t> g_predWatchN{0};
+std::atomic<uint64_t> g_predWatchRan{0}, g_predWatchSkipped{0};
 uint64_t g_binSelect = ~0ull;
 
 // The (mask, select) pair census, for exactly one comparison: `tools/xtr_bin_predication.py`
@@ -1913,7 +1920,14 @@ uint32_t ExecutePacket(uint8_t* base, const Source& fetch, uint32_t pos, uint32_
     // exists because "this pass has 96 draws" and "this pass had 900 draws and 804 of
     // them were predicated away" are the same picture and different faults, and the
     // counters below are what tell them apart.
-    static const bool noPredication = getenv("CZ_PM4_NO_PREDICATION") != nullptr;
+    static const bool noPredicationEnv = getenv("CZ_PM4_NO_PREDICATION") != nullptr;
+    // CZ_PM4_NO_PREDICATION_FILE=path — the same arm, switched LIVE by the file's
+    // existence (polled once a frame at XE_SWAP). The env form hangs the boot at the
+    // Capcom logo (2026-10-07), so a gameplay question about predication — does a
+    // close zombie's helmet come back? — needs it engaged only once the player is
+    // standing in front of the thing.
+    const bool noPredication = noPredicationEnv ||
+                               g_noPredicationLive.load(std::memory_order_relaxed);
     const bool predicated = (header & 1) && (g_binMask & g_binSelect) == 0;
 
     // CZ_PM4_BIN_TRACE=N — N lines of the predication story in stream ORDER: every
@@ -2092,6 +2106,31 @@ uint32_t ExecutePacket(uint8_t* base, const Source& fetch, uint32_t pos, uint32_
                     fprintf(stderr, " %02X%s", t >> 8, (t & 1) ? "s" : ((t & 2) ? "p" : ""));
                 }
                 fprintf(stderr, "\n");
+            }
+        }
+    }
+    // CZ_PM4_PRED_WATCH_FILE=path — which draws binding a WATCHED texture the bin
+    // predication discards (2026-10-07, the close-zombie helmet). The file holds hex
+    // guest-physical texture base addresses, re-read once a frame at XE_SWAP so the
+    // address can be found live (an F9 census) and handed in without a relaunch. For
+    // every draw packet, each of the 32 fetch constants' base ((dword1 >> 12) << 12)
+    // is compared; a hit is counted as RAN or SKIPPED and the totals print once a
+    // second. Read-only: it changes nothing about what executes, unlike
+    // CZ_PM4_NO_PREDICATION, which hangs the stream when engaged mid-game.
+    if ((opcode == 0x22 || opcode == 0x36) && g_predWatchN.load(std::memory_order_relaxed))
+    {
+        const uint32_t n = g_predWatchN.load(std::memory_order_relaxed);
+        for (uint32_t s = 0; s < 32; s++)
+        {
+            const uint32_t a = (g_regs[0x4800 + s * 6 + 1] >> 12) << 12;
+            bool hit = false;
+            for (uint32_t w = 0; w < n; w++)
+                hit |= a == g_predWatch[w];
+            if (hit)
+            {
+                (predicated && !noPredication ? g_predWatchSkipped : g_predWatchRan)
+                    .fetch_add(1, std::memory_order_relaxed);
+                break;
             }
         }
     }
@@ -2449,6 +2488,40 @@ uint32_t ExecutePacket(uint8_t* base, const Source& fetch, uint32_t pos, uint32_
                    // clock — VdSwap is kHighFrequency and appears in no kernel log.
         {
             g_frames.fetch_add(1, std::memory_order_relaxed);
+            static const char* noPredFile = getenv("CZ_PM4_NO_PREDICATION_FILE");
+            if (noPredFile)
+            {
+                FILE* probe = fopen(noPredFile, "rb");
+                const bool now = probe != nullptr;
+                if (probe)
+                    fclose(probe);
+                if (g_noPredicationLive.exchange(now) != now)
+                    fprintf(stderr, "[pm4] predication %s by %s at frame %llu\n",
+                            now ? "IGNORED (every predicated packet runs)" : "honoured again",
+                            noPredFile,
+                            (unsigned long long)g_frames.load(std::memory_order_relaxed));
+            }
+
+            static const char* predWatchFile = getenv("CZ_PM4_PRED_WATCH_FILE");
+            if (predWatchFile)
+            {
+                uint32_t n = 0;
+                if (FILE* f = fopen(predWatchFile, "r"))
+                {
+                    unsigned v;
+                    while (n < 8 && fscanf(f, "%x", &v) == 1)
+                        g_predWatch[n++] = (v >> 12) << 12;
+                    fclose(f);
+                }
+                g_predWatchN.store(n, std::memory_order_relaxed);
+                const uint64_t fr = g_frames.load(std::memory_order_relaxed);
+                if (n && fr % 60 == 0)
+                    fprintf(stderr, "[predwatch] frame %llu: draws binding %08X%s — ran %llu, "
+                                    "SKIPPED by predication %llu (cumulative)\n",
+                            (unsigned long long)fr, g_predWatch[0], n > 1 ? " (+more)" : "",
+                            (unsigned long long)g_predWatchRan.load(),
+                            (unsigned long long)g_predWatchSkipped.load());
+            }
 
             // The present seam (phase 3). The body is what gpu/vd.cpp's VdSwap wrote:
             // 'SWAP', front buffer, width, height — so the descriptor the host window
