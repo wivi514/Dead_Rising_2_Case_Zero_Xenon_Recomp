@@ -116,6 +116,7 @@
 #include "memory.h"
 
 extern "C" PPC_FUNC(__imp__sub_82371978);
+bool CoopOutfit_ReportedEmpty(uint32_t slot);
 
 namespace
 {
@@ -625,7 +626,10 @@ void CoopOutfitVerify_Tick(PPCContext& ctx, uint8_t* base)
         // HIS Chuck directly, with the co-op flow's own change-part event: the default
         // outfit's pieces when he wears nothing (what his own machine dresses him in),
         // the missing pieces when he wears some.
-        if (!local && RepairOn() && !SoloControl() && WindowS() > 0)
+        // DR2 co-op is two players: the window watches the OTHER one, not the two
+        // pre-allocated empty slots the first run also watched (and waited on for ever).
+        const uint32_t otherIdx = localIdx == 0 ? 1u : 0u;
+        if (!local && uint32_t(i) == otherIdx && RepairOn() && !SoloControl() && WindowS() > 0)
         {
             if (!w.windowOpen && !w.windowClosedSaid)
             {
@@ -657,11 +661,11 @@ void CoopOutfitVerify_Tick(PPCContext& ctx, uint8_t* base)
                 // nothing (all seven names empty: no save on his side). A dressed
                 // player's report can land after this sweep, and the default must never
                 // overwrite a real outfit.
-                bool reportedEmpty = false;
+                bool reportedEmpty = CoopOutfit_ReportedEmpty(uint32_t(i));
                 {
                     std::lock_guard<std::mutex> lk(g_reportMu);
                     const Report* rep = ReportFor(rows[i].clothing, false);
-                    if (rep)
+                    if (rep && !reportedEmpty)
                     {
                         reportedEmpty = true;
                         for (int p = 0; p < kParts; ++p)

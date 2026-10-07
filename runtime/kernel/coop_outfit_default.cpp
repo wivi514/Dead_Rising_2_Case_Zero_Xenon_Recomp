@@ -73,6 +73,7 @@ bool g_pendingDefault = false;
 bool g_hostDressPending = false;
 bool g_hostDressArmedByReady = false;   // the 1 s timer is running (READY_FOR_PLAY seen)
 uint32_t g_hostDressSlot = 1;
+int g_reportedEmptySlot = -1;   // the slot whose outfit report arrived all-empty (no save)
 std::chrono::steady_clock::time_point g_hostDressAt{};
 // THE HOST'S HALF. The row applier dresses the joiner's own Chuck but broadcasts
 // nothing (the wardrobe's put-on action is what sends PlayerPutOnClothing, and this is
@@ -159,6 +160,7 @@ void CoopOutfit_OnReportPiece(PPCContext& ctx, uint8_t* base, uint32_t clothing,
     // always has), a 45 s fallback still dresses him.
     (void)mgr;
     g_hostDressSlot = slot;
+    g_reportedEmptySlot = int(slot);
     g_hostDressAt = std::chrono::steady_clock::now() + std::chrono::seconds(45);
     g_hostDressPending = true;
     g_hostDressArmedByReady = false;
@@ -249,4 +251,13 @@ PPC_FUNC(sub_82553130)
                     "names empty): the default outfit will be applied when the game flow enters "
                     "gameplay\n", save, empty);
     g_pendingDefault = true;
+}
+
+// For the join window (coop_outfit_verify.cpp): did this slot's own outfit report say he
+// wears nothing (no save on his side)? The window's own report table keys on a clothing
+// pointer that did not match the sweep's in the first two-machine run (2026-10-07), so it
+// asks the code that already recognised the empty report.
+bool CoopOutfit_ReportedEmpty(uint32_t slot)
+{
+    return g_reportedEmptySlot >= 0 && uint32_t(g_reportedEmptySlot) == slot;
 }
