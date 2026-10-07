@@ -274,3 +274,27 @@ PPC_FUNC(sub_822CF958)
         return;
     __imp__sub_822CF958(ctx, base);
 }
+
+// Run 9 (2026-10-07): the helicopters are not destroyed where the decision is made —
+// sub_8225AF18, the first thing the per-frame world update (sub_822656B0) does,
+// flushes a PENDING-DESTROY list (ids at this+0x4144, count +0x4140). Its only
+// writer is sub_8221ED48(this, id), the queue; so the backtrace that names who
+// decided is taken here. CZ_ATTACH_TRACE=1, helicopters only.
+extern "C" PPC_FUNC(__imp__sub_8221ED48);
+
+PPC_FUNC(sub_8221ED48)
+{
+    static const bool trace = getenv("CZ_ATTACH_TRACE") != nullptr;
+    const uint32_t self = ctx.r3.u32, id = ctx.r4.u32;
+    if (trace && id < 0x800)
+    {
+        const uint32_t prop = PPC_LOAD_U32(self + (id + 0xC) * 4);
+        if (prop && PPC_LOAD_U32(prop) == 0x82031C40)
+        {
+            fprintf(stderr, "[attach] QUEUE destroy of helicopter id %u prop %08X lr %08X\n", id,
+                    prop, uint32_t(ctx.lr));
+            CzDumpGuestBacktrace("queue destroy helicopter");
+        }
+    }
+    __imp__sub_8221ED48(ctx, base);
+}
