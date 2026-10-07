@@ -483,7 +483,7 @@ down → not live) is unchanged. Operator-verified: *"It worked!"* — host17 re
 Two readings retracted on the way: `GamestateMan (SP)` is a fixed format string
 (0x8206AC28), not a single-player mode; and the empty save folder was incidental.
 
-### The military arrival (the motorcycle escape at the end): SHIPPED AS SINGLE-PLAYER
+### The military arrival (the motorcycle escape at the end): SHIPPED AS SINGLE-PLAYER — ~~crash~~ FIXED 2026-10-07, see below
 
 The first co-op run through the ending crashed the HOST on the frame the mission action
 `ArmyPA` ran. Six operator runs on the two machines (each read from both logs — no
@@ -522,6 +522,42 @@ What the fix needs: (a) keep the link alive through the host's load (find why th
 thread does not run during it, or lengthen the endpoint's expiry), then (b) with both
 players in, see whether the guards in point 4 are enough for the ending or whether the
 partner needs the title's own dismount when the helicopter goes.
+
+### The military arrival, 2026-10-07: THE HOST CRASH IS FIXED (runs 7-11)
+
+Operator-verified the same night: *"all good no crash this time and completed the game"*.
+Both machines reached `710_ending_a`. Host log: `~/DR2CZ-troubleshooting/play/play_1007_0231.log`.
+
+- **What crashed.** The ending has three helicopters (`battle_army.txt`: `boss_army_helicopter_1..3`
+  and `ArmyHelicopter1..3`, a `cHelicopterItem`, vtable 0x82031C40). Each has a pilot actor
+  mounted in it (actors AADA9FF0 / AADAA070 / AADAA0F0, vtable 0x82023068, seat indexes 0/1/2).
+  On the host, two or three helicopters were destroyed while their pilots stayed mounted.
+- **Two consumer guards only moved the crash.** Skipping the pilot's mounted update
+  (`sub_82290720`) moved it from 0x82296038 to 0x822C24C4, one second later on the same seat.
+- **Who destroys them.** The per-frame flush `sub_8225AF18` executes a pending-destroy list
+  (ids at `+0x4144`, count at `+0x4140`), and its only writer is `sub_8221ED48`. A backtrace
+  there named the network receive dispatcher every time:
+  `sub_82572FB8` -> `sub_8249BA60` (r8 = 1) -> event 0x17 handler `sub_82233D18`, subtype 0
+  -> `sub_8221FA38` -> `sub_8221EED8` (destroy by pointer).
+  The event names objects by RAW POINTER, and those pointers are the same objects on both
+  machines. So the joiner's teardown of its own helicopters destroyed the host's.
+- **Retraction.** Part 6 attributed the destroy to `ArmyPA`. In `missions.txt`, `ArmyPA` is
+  only an audio event (`ExternalArmyPA`); the two coincided in time.
+- **The fix** (`runtime/cpu/prop_attach_guard.cpp`). While a remote event is dispatching,
+  `sub_8221FA38` may not destroy a helicopter. `CZ_NO_REMOTE_HELI_GUARD=1` is the control.
+  The guard engaged on BOTH sides (host 8 refusals, joiner 15). The pilot guard read 0 and
+  stays in as a backstop. Gotcha 624.
+
+### The military arrival: the second motorcycle (OPEN)
+
+`missions.txt` (in `data/datafile.big`) spawns ONE ridable bike: `cMissionSpawnItem Bike1`
+(`BrokenBike`, `NumberOfSeats = "1"`). Its child `cMissionSetChuckState OnBike1
+{ ChuckState = "17" Item = "Bike1" }` has no `Value`, and Execute (`0x82409900`, state 17 at
+`0x8240A3E4`) queues the mount only where `Value == world->0x80`, the local player index.
+So only the host mounts. The mount (`0x823AB488`) seats the LOCAL player, found through
+GetUserPlayer(`world->0x80`). The candidate lever is data-only: a `Bike2` spawn with
+`ChuckState 17, Value 1, Item Bike2`. Untested: whether `Value` parses as an integer here,
+and how a joiner's mount replicates to the host.
 
 ### Still owed after part 6
 

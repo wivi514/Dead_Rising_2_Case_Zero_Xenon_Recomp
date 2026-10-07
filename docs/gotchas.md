@@ -7054,3 +7054,14 @@ From phase C part 18 (the frame rate — and none of it was work):
     respawns every time in single player too. The co-op "defect" was the title's own
     behaviour. Before building against a control, repeat it, as gotcha 133 asks of frames.
     (Case Zero co-op, 2026-10-07)
+
+624. **A RAW POINTER ON THE WIRE CARRIES ONE MACHINE'S TEARDOWN INTO THE OTHER.** The co-op
+    ending crashed the host for three runs. Two guards on the consumers (the prop's
+    SetPosition, then the pilot's mounted update) each moved the crash about one second
+    later, to the next reader of the same freed helicopter. The cause was upstream: the
+    joiner's event 0x17 subtype 0 names objects by raw address. On the deterministic heap
+    those addresses are the HOST's live helicopters too, so the joiner tearing down its own
+    copies destroyed the host's while their pilots sat in them. A backtrace on the destroy
+    QUEUE (not the per-frame flush that executes it) named the network dispatcher in one
+    run. When a guard only delays a crash, stop guarding readers and trace who freed it.
+    (Case Zero co-op, 2026-10-07; Case West has the same event layer)
