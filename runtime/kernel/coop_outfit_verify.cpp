@@ -192,6 +192,39 @@ bool DumpOn()    { static const bool v = EnvOn("CZ_COOP_OUTFIT_DUMP", false);   
 // misreading, which is the entire point of running it.
 bool SoloControl() { static const bool v = EnvOn("CZ_COOP_OUTFIT_CHECK_SOLO", false); return v; }
 
+// THE JOIN WINDOW (2026-10-07, the operator's instruction): "every 10 seconds for the
+// next 3 minutes after a guest joins, check his outfit and apply it if it isn't".
+int WindowS()
+{
+    static const int v = [] {
+        const char* e = std::getenv("CZ_COOP_OUTFIT_WINDOW_S");
+        return e ? std::atoi(e) : 180;
+    }();
+    return v;
+}
+int WindowEveryS()
+{
+    static const int v = [] {
+        const char* e = std::getenv("CZ_COOP_OUTFIT_WINDOW_EVERY_S");
+        const int x = e ? std::atoi(e) : 0;
+        return x > 0 ? x : 10;
+    }();
+    return v;
+}
+
+// The default outfit's piece name for one part: row 17 (OUTFIT_DEFAULT_UNDER) of the
+// outfit table, read where sub_821B5650 reads it — rowDef = *(mgr+0x429C) + row*0x11C
+// + 0x88, piece name at rowDef + part*0x24 + 0x1C (the 0x24-byte string).
+constexpr uint32_t kDefaultRow = 17;
+uint32_t DefaultPieceName(uint8_t* base, uint32_t mgr, int part)
+{
+    const uint32_t table = PPC_LOAD_U32(mgr + 0x429C);
+    if (!table)
+        return 0;
+    const uint32_t rowDef = table + kDefaultRow * 0x11C + 0x88;
+    return SsoPtr(base, rowDef + uint32_t(part) * 0x24 + 0x1C);
+}
+
 int PeriodMs()
 {
     static const int ms = [] {
@@ -245,6 +278,9 @@ struct Watch
     bool announced = false;
     bool refused = false;
     uint8_t nothingStreak = 0;   // sweeps in a row with not one named piece
+    std::chrono::steady_clock::time_point windowStart{}, windowNext{};
+    bool windowOpen = false, windowClosedSaid = false;
+    unsigned windowPosts = 0;
 };
 Watch g_watch[kMaxPlayers];
 
@@ -578,6 +614,103 @@ void CoopOutfitVerify_Tick(PPCContext& ctx, uint8_t* base)
                                 "pieces arrived\n", i, who, mgr, rows[i].player);
             }
             continue;
+        }
+
+        // THE JOIN WINDOW. The two-sweep, three-attempt repair below was built for a
+        // piece that is NAMED and missing; a save-less guest is named NOTHING on the
+        // host, because the host's own default dress goes through the row applier
+        // sub_821B5650, whose first test is `player < mgr+0x4374` — and that count
+        // reads 1 in co-op (2026-10-07 log: "1 in the clothing manager"), so dressing
+        // slot 1 returned before posting a single piece. The window posts each piece to
+        // HIS Chuck directly, with the co-op flow's own change-part event: the default
+        // outfit's pieces when he wears nothing (what his own machine dresses him in),
+        // the missing pieces when he wears some.
+        if (!local && RepairOn() && !SoloControl() && WindowS() > 0)
+        {
+            if (!w.windowOpen && !w.windowClosedSaid)
+            {
+                w.windowOpen = true;
+                w.windowStart = now;
+                w.windowNext = now;
+                fprintf(stderr, "[outfit] player %d%s joined: checking his outfit every %d s "
+                                "for %d s and applying what is missing "
+                                "(CZ_COOP_OUTFIT_WINDOW_S=0 is off)\n",
+                        i, who, WindowEveryS(), WindowS());
+            }
+            if (w.windowOpen && now - w.windowStart > std::chrono::seconds(WindowS()))
+            {
+                w.windowOpen = false;
+                w.windowClosedSaid = true;
+                fprintf(stderr, "[outfit] player %d%s: the %d s join window closed after %u "
+                                "post(s); he %s\n",
+                        i, who, WindowS(), w.windowPosts,
+                        !rows[i].namedMask ? "STILL WEARS NOTHING here"
+                        : mask             ? "is still missing pieces here"
+                                           : "is fully dressed here");
+            }
+            if (w.windowOpen && now >= w.windowNext && !controlBad)
+            {
+                w.windowNext = now + std::chrono::seconds(WindowEveryS());
+                const int secs = int(std::chrono::duration_cast<std::chrono::seconds>(
+                                         now - w.windowStart).count());
+                // The default outfit ONLY for a player whose own report said he wears
+                // nothing (all seven names empty: no save on his side). A dressed
+                // player's report can land after this sweep, and the default must never
+                // overwrite a real outfit.
+                bool reportedEmpty = false;
+                {
+                    std::lock_guard<std::mutex> lk(g_reportMu);
+                    const Report* rep = ReportFor(rows[i].clothing, false);
+                    if (rep)
+                    {
+                        reportedEmpty = true;
+                        for (int p = 0; p < kParts; ++p)
+                            if (!rep->have[p] || !MeansNothing(rep->name[p]))
+                                reportedEmpty = false;
+                    }
+                }
+                if (!rows[i].namedMask && !reportedEmpty)
+                {
+                    fprintf(stderr, "[outfit] +%3d s: player %d%s wears nothing here yet, and "
+                                    "his outfit report has not said he has none — waiting\n",
+                            secs, i, who);
+                }
+                else if (!rows[i].namedMask)
+                {
+                    int posted = 0;
+                    for (int p = 0; p < kParts; ++p)
+                    {
+                        const uint32_t namePtr = DefaultPieceName(base, mgr, p);
+                        if (!namePtr ||
+                            MeansNothing(reinterpret_cast<const char*>(base + namePtr)))
+                            continue;
+                        if (PostChangePart(ctx, base, world, rows[i].player, p, namePtr))
+                            posted++;
+                    }
+                    w.windowPosts += unsigned(posted);
+                    fprintf(stderr, "[outfit] +%3d s: player %d%s wears NOTHING here — posted "
+                                    "%d piece(s) of the default outfit (row %u) to his Chuck\n",
+                            secs, i, who, posted, kDefaultRow);
+                }
+                else if (mask)
+                {
+                    int posted = 0;
+                    for (int p = 0; p < kParts; ++p)
+                    {
+                        if (!(mask & (1u << p)))
+                            continue;
+                        const uint32_t namePtr = SsoPtr(base, RecordName(rows[i].clothing, p));
+                        if (namePtr && PostChangePart(ctx, base, world, rows[i].player, p, namePtr))
+                            posted++;
+                    }
+                    w.windowPosts += unsigned(posted);
+                    fprintf(stderr, "[outfit] +%3d s: player %d%s is missing %d piece(s) here — "
+                                    "re-posted %d\n",
+                            secs, i, who, __builtin_popcount(mask), posted);
+                    PrintRow(i, local, rows[i]);
+                }
+                continue;   // the window acted (or found him dressed) this sweep
+            }
         }
 
         const uint16_t both = uint16_t(mask | (rows[i].wrongRecordMask << 8));

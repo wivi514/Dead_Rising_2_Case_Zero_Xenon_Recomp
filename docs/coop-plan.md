@@ -3439,3 +3439,28 @@ default; `=0` is the control on each, and each acts only in a co-op session. A h
 offline boot with no environment is clean (3,142 frames; the banners print, nothing
 engages). `CZ_COOP_SPAWN_CARRIED` (the pre-load bag, aimed at the pawnshop-wheel respawn)
 stays OFF: it has not engaged in any round yet.
+
+### The save-less guest is invisible on the host: the row applier's player-count gate (2026-10-07)
+
+Round twelve, operator's captures: the guest (no save: level 1, $2,000) fully dressed on his
+own screen and INVISIBLE on the host's, only his wheel floating. The host's log: the empty
+outfit report was recognised, `dressing slot 1 in row 17 ... now` printed, and then nothing.
+**Why, read off the image:** that dress calls `sub_821B5880(outfitMgr, 1, 17, ...)`, which
+tail-calls the row applier `sub_821B5650`, and its FIRST test is
+`if (player >= *(mgr + 0x4374)) return` — the clothing manager's player count, which reads
+**1** in co-op (this very log: "1 in the clothing manager"; part 13 measured the same). So
+dressing slot 1 has returned before posting a single piece since co-op part 6; the guest
+stayed at seven empty names, and the part-13 repair cannot help a player with no names.
+(This also reframes `CLAUDE.md`'s "a guest with NO SAVE is dressed onto the HOST's Chuck":
+the row applier never reached a piece for slot 1 at all; that observation needs a re-read.)
+
+**The join window (`coop_outfit_verify.cpp`, ON by default, the operator's spec):** for each
+player on the other machine, from the first sweep that sees him, every
+`CZ_COOP_OUTFIT_WINDOW_EVERY_S` (10) seconds for `CZ_COOP_OUTFIT_WINDOW_S` (180): if he wears
+nothing AND his own outfit report said all seven pieces are empty (no save — never overwrite
+a real outfit that is late), post each piece of row 17 straight to HIS Chuck with the co-op
+flow's own change-part event (`PostChangePart`, the event the part-13 repair proved); if he
+wears some pieces that never loaded, re-post those. `CZ_COOP_OUTFIT_WINDOW_S=0` is off,
+`CZ_COOP_OUTFIT_REPAIR=0` the control. **Prediction:** the host prints `+ N s: player 1 (the
+other machine) wears NOTHING here — posted 5 piece(s) of the default outfit (row 17)` and the
+guest appears; the window's closing line says `is fully dressed here`.

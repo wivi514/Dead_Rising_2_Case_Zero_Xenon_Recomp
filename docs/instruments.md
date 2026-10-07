@@ -4588,6 +4588,11 @@ CZ_COOP_INVQUERY_TRACE=1  every distinct caller chain of the inventory queries (
                    item-at, inventory block, held item), once each. How the tracker's HUD was
                    found: a solo boot at the bike makes NO queries from it, so it is not a
                    per-frame poll of the bag
+CZ_COOP_OUTFIT_WINDOW_S=N  the join window (ON by default, 180): for N seconds after the
+                   other machine's player appears, every CZ_COOP_OUTFIT_WINDOW_EVERY_S (10) s,
+                   dress him in row 17 if he wears nothing and his report said he has no save,
+                   or re-post the pieces he is missing. =0 is off. The host's own default
+                   dress cannot do it: sub_821B5650 returns for player >= mgr+0x4374, which is 1
 CZ_COOP_PICKUP_TRACE=1  every inventory insertion (`sub_821A7550`) with the item's POOL ID,
                    name hash and caller, every key-item grant (message type 0x13 in
                    `sub_82243060`), and since 2026-10-06 the guest CALL CHAIN and the last
