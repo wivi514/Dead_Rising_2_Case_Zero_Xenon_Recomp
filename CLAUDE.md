@@ -42,7 +42,7 @@ the part a future Case West port will reuse verbatim:
 
 ## Transferable gotchas
 
-**THE FULL NUMBERED LEDGER IS `docs/gotchas.md` — 610 entries, and every "gotcha N"
+**THE FULL NUMBERED LEDGER IS `docs/gotchas.md` — 621 entries, and every "gotcha N"
 reference in this repo and in the docs resolves there.** It was split out of this file
 on 2026-08-08, when this file reached 308 KB and was being loaded into every session
 whole. Read it **before making a measurement claim, adding an instrument, believing a
@@ -191,7 +191,21 @@ mask; trust the microcode's own swizzles.
     was built, but **two of its eight steps are retired and its item 0 is answered** —
     read `phase5-notes.md` §6ba before following anything in it.
   - **THE LIVE HAND-OFF IS ALWAYS THE HIGHEST-NUMBERED `partNN-kickoff.md`**, and it
-    supersedes every earlier kickoff on "where the port is". **ALSO 2026-09-29, CO-OP PART 13
+    supersedes every earlier kickoff on "where the port is". **ALSO 2026-10-07, CO-OP PART 14
+    (`docs/coop-part14-kickoff.md`, the hand-off; `coop-plan.md` "Player issue #11" onward
+    is the derivation): ITEM IDENTITY ACROSS MACHINES AND THE TWO-PLAYER BIKE-PARTS TRACKER,
+    BOTH OPERATOR-VERIFIED, AND THREE ARMS NOW ON BY DEFAULT (`6205cbf`):
+    `CZ_COOP_ITEM_SYNC`, `CZ_COOP_CONDITION_ANY_PLAYER` and `CZ_COOP_TRACKER_ALL` (`=0` the
+    control on each).** Items are named on the wire by a spawn SERIAL (`+0x9C`, NOT the pool
+    id; that equality held only in a fresh world and is retracted in place). A per-machine
+    spawn condition in LEVEL_PROLOGUE (gas can only if "the player" does not carry one,
+    condition 10 reading ONE bag) put every later serial one apart: the host's engine became
+    the guest's forks, the guest's gas can the host's shed-key grant. The tracker's per-frame
+    check is `cMissionObjectiveBringItem`'s waypoint (`sub_823E7420`), which looks in the
+    LOCAL bag only; the fix answers its one player lookup with the carrier. **OWED: czwin has
+    not pulled `6205cbf`; the pawnshop wheel can still be taken twice after a zone change
+    (`CZ_COOP_SPAWN_CARRIED`, OFF, never engaged yet), because every co-op bag is cleared and
+    rebuilt during a load.** Gotchas 616-621. **ALSO 2026-09-29, CO-OP PART 13
     (`coop-plan.md` §13): THE GUEST WHO ARRIVES DRESSED AND RENDERS INVISIBLE OR WITHOUT A
     TORSO IS FIXED BY A POST-LOAD CHECK AND A REPAIR, BOTH ON BY DEFAULT AND PERMANENT
     (the operator's instruction), AND BOTH OPERATOR-VERIFIED ON TWO MACHINES THE SAME DAY:

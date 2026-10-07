@@ -6991,3 +6991,48 @@ From phase C part 18 (the frame rate — and none of it was work):
     watching. Same shape as 109 and 25, one layer earlier: the line was emitted, so every
     console check passed, and only the FILE could report the absence. (Case Zero, player
     support; transfers to Case West, which inherits the same tee)
+
+616. **TWO COUNTERS THAT AGREE IN A FRESH WORLD ARE NOT ONE COUNTER.** An item's wire
+    handle (`+0x9C`) read equal to its pool id on 149 of 149 live entries in a single-player
+    census, and a commit message said "the handle is the local pool id". The next
+    two-machine round resolved handle `0x426` to pool 1061 on one machine and 1060 on the
+    other. Both numberings start at 0 and advance together until the first spawn one of them
+    does not share. Test an equality on a state that has already diverged, or call it a
+    coincidence of the starting state. Retracted in place the same afternoon. (Case Zero
+    co-op issue #11; transfers to Case West)
+
+617. **IN A LOCKSTEP WORLD, A PER-MACHINE PREDICATE IN A SPAWN SEQUENCE RENAMES EVERYTHING
+    AFTER IT.** LEVEL_PROLOGUE's spawn block creates a gas can only if "the player does not
+    carry one", then the engine, the forks and the shed key, and items are named on the wire
+    by spawn serial. The predicate read ONE player's bag, so the machine whose local player
+    carried the can skipped it and every later serial was one apart: the host's engine
+    arrived as the guest's forks, the guest's gas can as the host's shed-key grant. The
+    symptoms looked like three bugs and were one. Census every spawn block for conditions on
+    local state. (Case Zero co-op; Case West shares the engine)
+
+618. **A LEVEL LOAD EMPTIES EVERY CO-OP BAG BEFORE IT REFILLS THEM.** Both machines
+    re-insert each player's items after a load, so any check evaluated during the load sees
+    nobody carrying anything: a found flag resets, a respawn guarded by "nobody has it"
+    fires. Single player never shows it, because there the local bag survives the load.
+    (Case Zero co-op, the pawnshop wheel)
+
+619. **WHEN THE TITLE RECOMPUTES A DISPLAY EVERY FRAME, DRIVING THE DISPLAY CANNOT WORK. FIND
+    THE DECISION.** Three rounds were spent lighting a HUD icon: clearing a bit (it meant
+    SHOWN), setting it, then triggering its fade-in animation. A per-frame function
+    reasserted the icon from one player's inventory each time. The operator said *"it is not
+    the lighting of it, it just doesn't see both inventories"* before any measurement did. A
+    one-line trace on the widget's set/clear methods, printing the caller, named the decision
+    on the first pickup, and the fix was one substituted lookup. Trace who WRITES the output
+    before writing it yourself. (Case Zero co-op tracker; see also 612)
+
+620. **TWO CLASSES THAT SHARE HELPERS SHARE CALLER CENSUSES. CHECK THE LIVE OBJECT.** An
+    inventory-query census pointed at a HUD tick, and the hook went there. It was the
+    neighbouring class (vtable `0x82074320`), whose object held zeros where the tracker's
+    held five widgets. A scan of the live process for each vtable pointer told the two apart
+    in seconds (`process_vm_readv`, no stop). Before hooking a method on "the" object,
+    confirm the object in memory. (Case Zero co-op tracker)
+
+621. **A SIGNED-OUT LAUNCHER STILL WRITES A SESSION FILE.** XenonLive's `session.json`
+    kept its gamertag field with empty tokens. The game booted signed out on the `default`
+    save and said so in one log line nobody was reading, and the operator found it by
+    playing. Grep `signed in as` in every log right after every launch. (Session mechanics)
