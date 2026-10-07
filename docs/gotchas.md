@@ -7036,3 +7036,21 @@ From phase C part 18 (the frame rate — and none of it was work):
     kept its gamertag field with empty tokens. The game booted signed out on the `default`
     save and said so in one log line nobody was reading, and the operator found it by
     playing. Grep `signed in as` in every log right after every launch. (Session mechanics)
+
+622. **A FUNCTION THAT TAKES A PLAYER INDEX MAY STILL CHECK IT AGAINST A COUNT THAT IS WRONG
+    IN CO-OP.** The host dressed a save-less guest with `sub_821B5880(mgr, slot 1, row 17)`
+    from co-op part 6 on. The log said "dressing slot 1 ... now" every time, and the guest
+    stayed invisible every time. Its row applier opens with `if (player >= mgr+0x4374) return`.
+    That field is the clothing manager's player count, and it reads 1 in co-op, so the call
+    returned before posting one piece. A "dressing ... now" line logs the attempt, not the
+    result. Read the callee's first instructions before trusting a call that takes an index,
+    and log what the call DID (the posts), not that it was made. Posting each piece straight
+    to the player's actor fixed it. (Case Zero co-op; Case West shares the clothing manager)
+
+623. **A CONTROL OBSERVED ONCE IS A SAMPLE TOO, AND ONE DEFECT CAN HANG ON IT.** "A carried
+    wheel never respawns in single player" came from one operator run. It aimed two rounds
+    of fixes at the pawnshop wheel (a pre-load bag snapshot, then a spawn-side carrier
+    check). Both were refuted by measurement, and then the operator re-ran the control: it
+    respawns every time in single player too. The co-op "defect" was the title's own
+    behaviour. Before building against a control, repeat it, as gotcha 133 asks of frames.
+    (Case Zero co-op, 2026-10-07)

@@ -42,7 +42,7 @@ the part a future Case West port will reuse verbatim:
 
 ## Transferable gotchas
 
-**THE FULL NUMBERED LEDGER IS `docs/gotchas.md` — 621 entries, and every "gotcha N"
+**THE FULL NUMBERED LEDGER IS `docs/gotchas.md` — 623 entries, and every "gotcha N"
 reference in this repo and in the docs resolves there.** It was split out of this file
 on 2026-08-08, when this file reached 308 KB and was being loaded into every session
 whole. Read it **before making a measurement claim, adding an instrument, believing a
@@ -202,10 +202,17 @@ mask; trust the microcode's own swizzles.
     condition 10 reading ONE bag) put every later serial one apart: the host's engine became
     the guest's forks, the guest's gas can the host's shed-key grant. The tracker's per-frame
     check is `cMissionObjectiveBringItem`'s waypoint (`sub_823E7420`), which looks in the
-    LOCAL bag only; the fix answers its one player lookup with the carrier. **OWED: czwin has
-    not pulled `6205cbf`; the pawnshop wheel can still be taken twice after a zone change
-    (`CZ_COOP_SPAWN_CARRIED`, OFF, never engaged yet), because every co-op bag is cleared and
-    rebuilt during a load.** Gotchas 616-621. **ALSO 2026-09-29, CO-OP PART 13
+    LOCAL bag only; the fix answers its one player lookup with the carrier. ~~OWED: czwin has
+    not pulled `6205cbf`; the pawnshop wheel can still be taken twice~~ — **czwin synced; the
+    pawnshop wheel respawns in SINGLE PLAYER too (the operator re-ran the control), so it is
+    the title's own behaviour, set aside pending a real-Xbox check; `CZ_COOP_SPAWN_CARRIED`
+    stays OFF, aimed at nothing.** **AND THE SAVE-LESS GUEST WHO WAS INVISIBLE ON THE HOST IS
+    FIXED, ON BY DEFAULT, OPERATOR-VERIFIED ("yes he was visible"):** the host's default dress
+    goes through the row applier `sub_821B5650`, which returns at once for
+    `player >= mgr+0x4374`, and that count is 1 in co-op; the JOIN WINDOW in
+    `coop_outfit_verify.cpp` posts the default outfit's pieces straight to his Chuck every
+    10 s for 180 s once his report has said "no save" (`CZ_COOP_OUTFIT_WINDOW_S=0` off).
+    Gotchas 616-623. **ALSO 2026-09-29, CO-OP PART 13
     (`coop-plan.md` §13): THE GUEST WHO ARRIVES DRESSED AND RENDERS INVISIBLE OR WITHOUT A
     TORSO IS FIXED BY A POST-LOAD CHECK AND A REPAIR, BOTH ON BY DEFAULT AND PERMANENT
     (the operator's instruction), AND BOTH OPERATOR-VERIFIED ON TWO MACHINES THE SAME DAY:
@@ -215,8 +222,11 @@ mask; trust the microcode's own swizzles.
     never fired, 0 desyncs). **THE DEFECT IS UPSTREAM AND STILL OPEN: his names ARRIVE and
     are RECORDED correctly and NOTHING ASKS FOR THE FILES** — the join's own per-part
     change-part posts do not take effect while re-posting the identical events does, the
-    same timing shape part 6 met. This is the BACKSTOP, not the cure. **SEPARATE AND STILL
-    OPEN: a guest with NO SAVE is dressed onto the HOST's Chuck** — run 1 printed `dressing
+    same timing shape part 6 met. This is the BACKSTOP, not the cure. ~~**SEPARATE AND STILL
+    OPEN: a guest with NO SAVE is dressed onto the HOST's Chuck**~~ — **FIXED 2026-10-07 by the
+    join window (co-op part 14, above); and the mechanism below is RETRACTED IN PART: the row
+    applier never posts a piece for slot 1 at all, because `mgr+0x4374` is 1. The host-Chuck
+    `SetPart` lines need re-reading against that.** Run 1 printed `dressing
     slot 1 in row 17` and `SetOutfit player 1`, then every `SetPart` landed on `B926EA40`
     (the host) while the guest's clothing is `B9288350`; the `CZ_COOP_RESPONSE_PLAYER` shape
     again, and the repair cannot touch it because a guest with no outfit has no name to
