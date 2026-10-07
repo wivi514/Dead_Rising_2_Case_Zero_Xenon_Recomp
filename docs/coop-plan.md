@@ -594,8 +594,12 @@ itself; nothing of ours carries it.
 4. **`layout.bin` pins `datafile.big`'s size.** The C++ already re-pinned it; the Python
    tools never had, so the dev overlay carried a stale size. The new tool re-pins it.
 
-**Not checked:** single player through the ending on the patched data (`CoopOnly` should
-make it identical to stock), and where Katey sits on the joiner's screen.
+**Single player on the patched data: CHECKED, operator-verified the same night**
+(`play_1007_0255.log`, two passes through the ending). The operator saw one bike, and each
+pass executed exactly ONE `SetChuckState 17` (the stock OnBike1). The second action address
+in that log is the same action re-created for the second pass. `CoopBike`'s mount never
+ran, 0 faults, `710_ending_a` reached. **Not checked:** where Katey sits on the joiner's
+screen.
 
 ### Still owed after part 6
 
