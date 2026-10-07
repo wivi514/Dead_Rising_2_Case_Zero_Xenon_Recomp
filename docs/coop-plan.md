@@ -3425,3 +3425,10 @@ his bag, or his own machine's word), the title's own function runs with that pla
 answering its one lookup (only the call whose return address is `0x823E7450`). The tracker,
 and the waypoint arrow, then see the part as carried. Prints `[tracker] "<item>" is carried
 by player N, not the local player M`.
+
+**OPERATOR-VERIFIED 2026-10-07 (round ten, `0f41661`): "it works great."** Both directions in
+the logs: the host printed `"WheelPawn"` and `"GasolineCanister"` `is carried by player 1, not
+the local player 0`, the guest printed `"BikeEngine" is carried by player 0, not the local
+player 1`, and each tracker showed the partner's parts. Still OFF by default; the default flip
+is the operator's call. **Not yet exercised:** the found test's pre-load bag
+(`RESCUED BY THE BAG BEFORE THE LOAD`, the pawnshop-wheel respawn) printed nothing this round.
