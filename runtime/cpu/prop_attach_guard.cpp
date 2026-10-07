@@ -298,3 +298,47 @@ PPC_FUNC(sub_8221ED48)
     }
     __imp__sub_8221ED48(ctx, base);
 }
+
+// THE CAUSE (run 10, 2026-10-07): the host's boss_army helicopters are destroyed BY
+// THE JOINER. Every helicopter destroy queued on the host while the pilots still sat
+// in them came up the same stack: sub_82572FB8 (the network receive dispatcher, which
+// hands a remote event to sub_8249BA60 with r8 = 1; the local post sub_82188488 is
+// the other caller) -> the event-0x17 handler sub_82233D18, subtype 0 -> sub_8221FA38
+// -> sub_8221EED8 (destroy by pointer) -> the queue. The event carries RAW object
+// pointers, which name the same objects on both machines (the deterministic heap, as
+// with the seat pointer above), so the joiner's own teardown of ITS copies of the
+// helicopters tears down the host's live ones, whose pilots are still mounted.
+//
+// The guard: while a REMOTE event is being dispatched, sub_8221FA38 may not destroy a
+// helicopter (cHelicopterItem, vtable 0x82031C40). The local flow still destroys its
+// own helicopters when its own battle says so. CZ_NO_REMOTE_HELI_GUARD=1 is the
+// control (the crash). Helicopters only — the class is measured, the rest is not.
+extern "C" PPC_FUNC(__imp__sub_82572FB8);
+extern "C" PPC_FUNC(__imp__sub_8221FA38);
+
+namespace
+{
+thread_local int g_remoteEventDepth = 0;
+}
+
+PPC_FUNC(sub_82572FB8)
+{
+    g_remoteEventDepth++;
+    __imp__sub_82572FB8(ctx, base);
+    g_remoteEventDepth--;
+}
+
+PPC_FUNC(sub_8221FA38)
+{
+    static const bool off = getenv("CZ_NO_REMOTE_HELI_GUARD") != nullptr;
+    const uint32_t target = ctx.r5.u32;
+    if (!off && g_remoteEventDepth > 0 && target && PPC_LOAD_U32(target) == 0x82031C40)
+    {
+        fprintf(stderr, "[attach] REMOTE event asked to destroy helicopter %08X (via %08X, "
+                        "vtable %08X) — refused; only this machine's own flow destroys it "
+                        "(CZ_NO_REMOTE_HELI_GUARD=1 is the control)\n",
+                target, ctx.r4.u32, ctx.r4.u32 ? PPC_LOAD_U32(ctx.r4.u32) : 0);
+        return;
+    }
+    __imp__sub_8221FA38(ctx, base);
+}
