@@ -559,6 +559,12 @@ GetUserPlayer(`world->0x80`). The candidate lever is data-only: a `Bike2` spawn 
 `ChuckState 17, Value 1, Item Bike2`. Untested: whether `Value` parses as an integer here,
 and how a joiner's mount replicates to the host.
 
+**The operator's observation (2026-10-07, the verifying run):** the guest *stays on foot*.
+He spawns next to the host at the gas station; both come from the one
+`LevelSpawnPoint = "PrologueEscape"`. The host rides `Bike1`. This is what the data
+predicts: no mount is queued on the joiner, because its local index is 1 and the mount's
+`Value` defaults to 0.
+
 ### Still owed after part 6
 
 - The military arrival in co-op (above): the link through the host's load, then the
