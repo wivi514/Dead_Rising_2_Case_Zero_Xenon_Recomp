@@ -18,7 +18,7 @@ before: `CZ_COOP_RESPONSE_PLAYER`, `CZ_COOP_FOUND_ANY_PLAYER`, the outfit check 
 
 ## 1. Owed, in order
 
-1. **czwin has not pulled `6205cbf`.** It dropped off the network at the flip. `git pull` +
+1. **~~czwin has not pulled `6205cbf`.~~ DONE 2026-10-07: czwin at `c87690c`, built, the new defaults present in the exe.** It dropped off the network at the flip. `git pull` +
    build before the next co-op round (its `play.bat` sets the three arms explicitly, so the
    build it has behaves the same; the pull is for the default and the docs).
 2. **The pawnshop wheel can still be taken twice** while the guest carries one through a
