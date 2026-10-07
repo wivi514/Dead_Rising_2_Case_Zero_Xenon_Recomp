@@ -979,15 +979,20 @@ bool IsPlacementEvent(uint32_t eventHash)
 int SyncMode()
 {
     static const int mode = [] {
+        // ON BY DEFAULT since 2026-10-07 (the operator's instruction, after the
+        // two-player tracker that reads it was verified on two machines). It only
+        // acts in a co-op session (SyncActive). =0 is the control arm.
         const char* e = std::getenv("CZ_COOP_ITEM_SYNC");
-        const int on = (e && *e && *e != '0') ? 1 : 0;
+        const int on = (e && *e) ? (*e != '0' ? 1 : 0) : 1;
         if (on)
-            fprintf(stderr, "[itemsync] CZ_COOP_ITEM_SYNC=1 — the held item is published (on "
-                            "change, plus a heartbeat) and a remote placement's mission event is "
-                            "substituted with the owning machine's answer, and a quest item the "
-                            "owner says he carries counts as FOUND. The CANDIDATE for "
-                            "player issue #11 (a guest's gas can placed as forks); its "
-                            "\"placement by player N\" line is the diagnosis.\n");
+            fprintf(stderr, "[itemsync] CZ_COOP_ITEM_SYNC on (the default; =0 is the control) — the "
+                            "held item and the bag are published in co-op (on change, plus a "
+                            "heartbeat), a remote placement's mission event is substituted with the "
+                            "owning machine's answer, and a quest item the owner says he carries "
+                            "counts as FOUND.\n");
+        else
+            fprintf(stderr, "[itemsync] CZ_COOP_ITEM_SYNC=0 — THE CONTROL ARM: nothing is published "
+                            "and the partner's parts never light the bike-parts tracker.\n");
         return on;
     }();
     return mode;
@@ -4899,8 +4904,10 @@ namespace
 int ConditionAnyPlayerMode()
 {
     static const int mode = [] {
+        // ON BY DEFAULT since 2026-10-07 (operator-verified on two machines, round
+        // five: every item handle in step after it fired). =0 is the control arm.
         const char* e = std::getenv("CZ_COOP_CONDITION_ANY_PLAYER");
-        const int m = e && *e ? std::atoi(e) : 0;
+        const int m = e && *e ? std::atoi(e) : 1;
         if (m)
             fprintf(stderr, "[cond] CZ_COOP_CONDITION_ANY_PLAYER=%d — a \"player does not carry X\" "
                             "mission condition (type 10) asks EVERY user player in co-op, so both "
@@ -5247,8 +5254,11 @@ namespace
 int TrackerAllMode()
 {
     static const int mode = [] {
+        // ON BY DEFAULT since 2026-10-07 (operator-verified on two machines, round
+        // ten: "it works great"). Needs CZ_COOP_ITEM_SYNC for the owner's word.
+        // =0 is the control arm.
         const char* e = std::getenv("CZ_COOP_TRACKER_ALL");
-        const int m = e && *e ? std::atoi(e) : 0;
+        const int m = e && *e ? std::atoi(e) : 1;
         if (m)
             fprintf(stderr, "[tracker] CZ_COOP_TRACKER_ALL=%d — the bike-parts tracker also shows "
                             "parts another co-op player carries.%s\n",

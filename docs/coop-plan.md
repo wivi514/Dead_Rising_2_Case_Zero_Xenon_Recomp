@@ -3432,3 +3432,10 @@ the local player 0`, the guest printed `"BikeEngine" is carried by player 0, not
 player 1`, and each tracker showed the partner's parts. Still OFF by default; the default flip
 is the operator's call. **Not yet exercised:** the found test's pre-load bag
 (`RESCUED BY THE BAG BEFORE THE LOAD`, the pawnshop-wheel respawn) printed nothing this round.
+
+**DEFAULTS FLIPPED 2026-10-07, the operator's instruction ("Make it default"):**
+`CZ_COOP_ITEM_SYNC`, `CZ_COOP_CONDITION_ANY_PLAYER` and `CZ_COOP_TRACKER_ALL` are ON by
+default; `=0` is the control on each, and each acts only in a co-op session. A headless
+offline boot with no environment is clean (3,142 frames; the banners print, nothing
+engages). `CZ_COOP_SPAWN_CARRIED` (the pre-load bag, aimed at the pawnshop-wheel respawn)
+stays OFF: it has not engaged in any round yet.

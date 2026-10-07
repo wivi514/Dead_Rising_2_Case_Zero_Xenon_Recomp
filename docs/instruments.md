@@ -4522,8 +4522,8 @@ CZ_COOP_ACTING_PLAYER=2  **OBSERVE ONLY** — print every out-of-range user-play
                    substitute NOTHING. The measurement arm: it answers "does this happen at
                    all, and with which index", and it is the first thing to run if the fix
                    is ever suspected of changing something it should not
-CZ_COOP_ITEM_SYNC=1  **THE CANDIDATE FOR PLAYER ISSUE #11 (2026-10-04), still OFF until a
-                   two-machine round.** The guest swapped to the gas can and placed it; the
+CZ_COOP_ITEM_SYNC=0  **ON BY DEFAULT since 2026-10-07 (the operator's instruction); =0 is the
+                   control.** Was the candidate for player issue #11 (2026-10-04). The guest swapped to the gas can and placed it; the
                    host, now authoritative, raised `BikeForksPlaced` from its own copy of the
                    guest's hands. As of 2026-10-04 the publisher hangs off the GetUserPlayer
                    hook and SAMPLES every `CZ_COOP_ITEM_SYNC_SAMPLE_MS` (33), sending at once
@@ -4558,8 +4558,8 @@ CZ_COOP_ITEM_SYNC=1  **THE CANDIDATE FOR PLAYER ISSUE #11 (2026-10-04), still OF
                    answers. CZ_COOP_ITEM_SYNC_MS=N the publish period,
                    CZ_COOP_ITEM_SYNC_MAX_AGE_MS=N how stale a published value may be
                    (3000), CZ_COOP_LOCAL_PLAYER=N overrides the host-is-0 assumption
-CZ_COOP_CONDITION_ANY_PLAYER=1  **THE CANDIDATE FOR THE ITEM-HANDLE DRIFT (issue #11, 2026-10-06),
-                   OFF until a two-machine round.** Mission condition type 10 ("player does
+CZ_COOP_CONDITION_ANY_PLAYER=0  **ON BY DEFAULT since 2026-10-07 (operator-verified, round five);
+                   =0 is the control.** The fix for the item-handle drift (issue #11). Mission condition type 10 ("player does
                    not carry X", `sub_823A7530` case `0x823A76E4`) reads ONE player's bag;
                    LEVEL_PROLOGUE asks it before spawning GasCan7, ahead of the engine, the
                    forks and the shed key. In co-op the two machines answered differently,
@@ -4575,7 +4575,8 @@ CZ_COOP_SPAWN_CARRIED=1  **CANDIDATE (issue #11, 2026-10-06), OFF until a two-ma
                    carried it. Bags are snapshotted every 100 ms; an empty bag is believed
                    only after 15 s. `=2` observe, `=3` also prints the first 12 spawn checks
                    (`+0x5C` is the hash of `ItemName`, verified on BikeBody/BikeStand)
-CZ_COOP_TRACKER_ALL=1  **CANDIDATE (2026-10-07), OFF until a two-machine round.** The bike-
+CZ_COOP_TRACKER_ALL=0  **ON BY DEFAULT since 2026-10-07 (operator-verified, round ten: "it
+                   works great"); =0 is the control.** The bike-
                    parts tracker lights a part when cMissionObjectiveBringItem's waypoint
                    (`sub_823E7420`) finds the Item in the LOCAL player's bag. In co-op, when
                    the local player does not carry it and another player does (this
