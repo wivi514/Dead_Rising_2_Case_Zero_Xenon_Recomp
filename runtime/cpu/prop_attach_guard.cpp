@@ -73,6 +73,7 @@ PPC_FUNC(sub_82295D20)
 // prints every holder's address — a census, so the next stale reference is read
 // off a log line instead of a crash report.
 #include "../kernel/coop_objects.h"
+#include "crash_report.h"
 
 extern "C" PPC_FUNC(__imp__sub_8221E9C8);
 
@@ -110,6 +111,20 @@ PPC_FUNC(sub_8221E9C8)
     static const bool scan = getenv("CZ_PROP_HOLDER_SCAN") != nullptr;
     if (prop && scan)
         HolderScan(base, prop, id);
+    // Run 8 (2026-10-07): the three boss_army helicopters (cHelicopterItem, vtable
+    // 0x82031C40, each carrying a mounted pilot actor) were released on the HOST one
+    // frame after three network events arrived from the joiner, and the pilots kept
+    // their seats. WHO calls DestroyProp is the question, so print every one and a
+    // guest backtrace for a helicopter. Rare (a handful a level), so uncapped.
+    static const bool trace = getenv("CZ_ATTACH_TRACE") != nullptr;
+    if (prop && trace)
+    {
+        const uint32_t vt = PPC_LOAD_U32(prop);
+        fprintf(stderr, "[attach] DestroyProp id %u prop %08X (vtable %08X) lr %08X\n", id,
+                prop, vt, uint32_t(ctx.lr));
+        if (vt == 0x82031C40)
+            CzDumpGuestBacktrace("DestroyProp helicopter");
+    }
     __imp__sub_8221E9C8(ctx, base);
     if (prop && scan)
     {
