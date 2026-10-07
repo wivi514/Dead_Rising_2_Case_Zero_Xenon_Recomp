@@ -145,6 +145,28 @@ PPC_FUNC(sub_8221E9C8)
 extern "C" PPC_FUNC(__imp__sub_82290720);
 namespace { unsigned g_readerCalls = 0; }
 
+// THE SIXTH HOLDER (2026-10-07, co-op ending run 7, host crash right after the
+// leave-the-garage cinematic). With both players at the bike, three actors at
+// 0x80 stride (AADA9FF0/AADAA070/AADAA0F0, vtable 0x82023068) were in the mounted
+// mode, indexes 0/1/2, each on its own prop (vtable 0x82031C40). One of those props
+// was released; the SetPosition guard refused the FIRST use (0x82290760, via the
+// seat forwarder 0x822D5350) and the body went on to sub_8230A208(seat) ->
+// sub_822DD6A0 -> 0x82296038, which reads the same zeroed prop: NULL+0xF8. The
+// second use is not a prop method, so it cannot be guarded where the first was.
+// The body's own early-out (seat == 0 or seat+0x171 != 0) returns 0 and skips
+// all of it; this guard takes that same exit when the seat's prop is dead. The
+// seat reference is left alone (the caller at 0x822A4874 reads seat+0x18C
+// unconditionally, and that object is alive — the crash was not there).
+//
+// The trace is now per-actor TRANSITIONS, uncapped: one line whenever an actor's
+// (seat, prop, prop vtable, index) changes, which is what says who was put on what
+// when the ending runs. CZ_ATTACH_TRACE=1.
+namespace
+{
+struct MountSeen { uint32_t actor, seat, prop, propVt, index; };
+MountSeen g_mounts[16];
+}
+
 PPC_FUNC(sub_82290720)
 {
     const uint32_t actor = ctx.r3.u32;
@@ -152,16 +174,49 @@ PPC_FUNC(sub_82290720)
     const uint32_t seat = data ? PPC_LOAD_U32(data + kMountRef + 4) : 0;
     g_readerCalls++;
     static const bool trace = getenv("CZ_ATTACH_TRACE") != nullptr;
-    static unsigned traced = 0;
-    if (trace && seat && traced < 16)
+    const uint32_t prop = seat ? PPC_LOAD_U32(seat + 4) : 0;
+    const uint32_t propVt = prop ? PPC_LOAD_U32(prop) : 0;
+    if (trace && seat)
     {
-        traced++;
-        const uint32_t prop = PPC_LOAD_U32(seat + 4);
-        fprintf(stderr, "[attach] trace: mounted update actor %08X (vtable %08X) seat %08X "
-                        "(vtable %08X) prop %08X (vtable %08X) index %d lr %08X\n",
-                actor, PPC_LOAD_U32(actor), seat, PPC_LOAD_U32(seat), prop,
-                prop ? PPC_LOAD_U32(prop) : 0, int(PPC_LOAD_U32(data + kMountRef + 0xC)),
-                uint32_t(ctx.lr));
+        const uint32_t index = PPC_LOAD_U32(data + kMountRef + 0xC);
+        MountSeen* slot = nullptr;
+        for (auto& m : g_mounts)
+            if (m.actor == actor)
+            {
+                slot = &m;
+                break;
+            }
+        if (!slot)
+            for (auto& m : g_mounts)
+                if (!m.actor)
+                {
+                    slot = &m;
+                    break;
+                }
+        if (slot && (slot->actor != actor || slot->seat != seat || slot->prop != prop ||
+                     slot->propVt != propVt || slot->index != index))
+        {
+            *slot = {actor, seat, prop, propVt, index};
+            fprintf(stderr, "[attach] mount: actor %08X (vtable %08X) seat %08X (vtable %08X) "
+                            "prop %08X (vtable %08X) index %d lr %08X\n",
+                    actor, PPC_LOAD_U32(actor), seat, PPC_LOAD_U32(seat), prop, propVt,
+                    int(index), uint32_t(ctx.lr));
+        }
+    }
+    static const bool off = getenv("CZ_NO_ATTACH_GUARD") != nullptr;
+    if (!off && seat && prop && propVt == 0 && PPC_LOAD_U8(seat + 0x171) == 0)
+    {
+        static uint32_t last = 0;
+        if (last != prop)
+        {
+            last = prop;
+            fprintf(stderr, "[attach] mounted update of actor %08X skipped: its seat %08X "
+                            "holds DESTROYED prop %08X (zero vtable) — the body's own "
+                            "early-out taken (CZ_NO_ATTACH_GUARD=1 is the control)\n",
+                    actor, seat, prop);
+        }
+        ctx.r3.u64 = 0;
+        return;
     }
     __imp__sub_82290720(ctx, base);
 }
