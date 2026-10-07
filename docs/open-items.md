@@ -7,8 +7,22 @@ NOT the cause is what stops the next session re-buying it.
 
 Next, in order:
 
-0zg. **A SAVE MADE BEFORE OVERLAY v7 READS AS DAMAGED (operator, 2026-10-07) — UNNARROWED,
-    BLOCKS THE NEXT RELEASE.** The `default` profile's `DR2P000.DSF` (last written
+0zg. ~~**A SAVE MADE BEFORE OVERLAY v7 READS AS DAMAGED**~~ — **FIXED THE SAME DAY (`a3ade42`),
+    OPERATOR-VERIFIED ("loading the save did work").** Bisected on one binary: a v6-equivalent
+    datafile.big (missions.txt the ONLY differing entry) loads the save, v7 does not; the
+    headless pair reproduces it (v6 reaches `cMissionZombieFactory`, v7 never does). Cause:
+    the mission manager (0x8223EBE0, sentinels 0x3579/0x9753) serializes 0x159 missions,
+    each by walking its action tree in DEFINITION ORDER and calling every action's
+    vt[0x1C] (`sub_821623B0`), so CoopBike's spawn + mount inserted bytes mid-block and an
+    old save read misaligned — silently, no assert under CZ_GUEST_DIAG. Fix
+    (`runtime/cpu/coop_bike_save.cpp`): `sub_823A4878` returns success with zero bytes for
+    a cMissionSpawnItem (vtable 0x8204BE3C) with CoopOnly (+0x63) set; stock data has 146
+    spawn items and none is CoopOnly. `CZ_COOP_BIKE_SERIALIZE=1` is the control (fails
+    again). **Transferable rule: a missions.txt data patch that ADDS an action changes the
+    save layout; give any added action a zero-byte serialize.** Saves written by a v7
+    build before `a3ade42` now read damaged (v7 was never released). The next release's
+    notes owe nothing for this beyond v7 itself. Original record below.
+    **Original:** The `default` profile's `DR2P000.DSF` (last written
     2026-09-23) is opened read-only, full size (303,104 bytes), and the title reports it
     damaged **with the patched layer on**; the same file loads with `CZ_NO_PATCHED_ASSETS=1`
     in the next run of the same binary (`visuals_1007_1256.log` vs
