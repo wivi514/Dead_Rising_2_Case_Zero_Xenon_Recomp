@@ -3393,3 +3393,15 @@ tracker while the mission is active; the first cut cleared a bit that was alread
 Fixed: lit = set it; when the partner stops carrying the part the arm clears it only if
 the part's `w_locked` overlay is unchanged since it lit it (a placement shows the green x,
 and that icon is the HUD's).
+
+### Round eight: the bit was set and the icon stayed invisible — the fade-in is an animation
+
+The host logged `lit gas(p1)` and the gas icon word went `1B400000 -> 1BC00000`, the guest's
+own first step, but never on to `18C00000`: nothing on screen. Read live from the host
+process: each icon's children are its `w_locked` bitmap and a `cFEAnim` (vtable
+`0x820B7F30`) whose trigger mask `+0xE0` is `0x80` on all five, with state `+0xE4`. The
+widget's `vt[0x4C](bits)` / `vt[0x50](bits)` (`0x827F4F10` / `0x827F4F80`) walk the children
+(`+8` first child, `+0xC` next sibling); the anim's own `vt[0x4C]` (`0x827F0368`) ORs the bits
+into its state and plays when the mask matches, `vt[0x50]` (`0x827F0470`) clears and rewinds.
+So lighting an icon is `icon->vt[0x4C](0x80)` and the arm now calls it (and `vt[0x50](0x80)`
+to darken), next to the shown bit.

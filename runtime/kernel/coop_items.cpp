@@ -5253,6 +5253,7 @@ constexpr const char* kTrackerNames[5] = {"gas", "engine", "handlebar", "fork", 
 // the tick sets the same bit on the whole tracker while the mission is active.
 // The first cut read it as "hidden" and cleared a bit that was already clear.
 constexpr uint32_t kWidgetShown = 0x00800000u;
+constexpr uint32_t kTrackerTriggerMask = 0x80;  // every icon's trigger anim, +0xE0, read live
 bool g_trackerForced[5] = {};
 uint32_t g_trackerLockAtForce[5] = {};  // the overlay word when this arm lit the icon
 }  // namespace
@@ -5296,6 +5297,17 @@ PPC_FUNC(sub_825322C8)
             if (carrier >= 0 && !(w & kWidgetShown))
             {
                 PPC_STORE_U32(icon[i] + 0x10, w | kWidgetShown);
+                // ...and START the fade-in. The bit alone left the icon at alpha 0
+                // (round eight: 1BC00000 on the host, where the guest's own went on
+                // to 18C00000). Each icon's `trigger` child is a cFEAnim (vtable
+                // 0x820B7F30) with trigger mask +0xE0 = 0x80 and state +0xE4; the
+                // widget's vt[0x4C](bits) passes bits down to its children, and the
+                // anim's own vt[0x4C] (0x827F0368) ORs them into its state and plays
+                // when the mask matches. vt[0x50] (0x827F0470) clears and rewinds.
+                {
+                    PPCContext call = ctx;
+                    VCall(call, base, icon[i], 0x4C, kTrackerTriggerMask, "tracker-light");
+                }
                 g_trackerForced[i] = true;
                 g_trackerLockAtForce[i] = lock;
                 n += std::snprintf(why + n, sizeof why - size_t(n), " lit %s(p%d)", kTrackerNames[i], carrier);
@@ -5307,6 +5319,8 @@ PPC_FUNC(sub_825322C8)
                 if (lock == g_trackerLockAtForce[i] && (w & kWidgetShown))
                 {
                     PPC_STORE_U32(icon[i] + 0x10, w & ~kWidgetShown);
+                    PPCContext call = ctx;
+                    VCall(call, base, icon[i], 0x50, kTrackerTriggerMask, "tracker-dark");
                     n += std::snprintf(why + n, sizeof why - size_t(n), " dark %s", kTrackerNames[i]);
                 }
                 else
