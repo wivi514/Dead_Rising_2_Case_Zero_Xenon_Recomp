@@ -5170,3 +5170,31 @@ four pre-allocated player slots rather than one per player, retracting a guard t
 banner had already claimed. `[found] consulted N time(s)` prints at 1 and every power of ten
 with the retry and rescue counts, so an armed run that did nothing still says how often it
 was asked.
+
+### The co-op ending (military arrival) — `runtime/cpu/prop_attach_guard.cpp`
+
+`CZ_NO_REMOTE_HELI_GUARD=1` — **the control arm for the ending-crash fix** (2026-10-07,
+operator-verified). By default, while the network receive dispatcher (`sub_82572FB8`) is
+handing out a remote event, `sub_8221FA38` may not destroy a helicopter (`cHelicopterItem`,
+vtable 0x82031C40). Each refusal prints `[attach] REMOTE event asked to destroy helicopter ...
+refused`. Expect several on BOTH machines in a co-op ending (host 8, joiner 15 in the verifying
+run). With the arm set, the host crashes after the leave-the-garage cinematic. `coop-plan.md`
+"The military arrival, 2026-10-07"; gotcha 624.
+
+`CZ_NO_ATTACH_GUARD=1` — the control for the three CONSUMER guards, which are backstops now:
+- the attachment rig's slot drop (`sub_82295D20`);
+- the prop's SetPosition/SetRotation refusal (`sub_822CF898` / `sub_822CF958`);
+- the mounted-update skip (`sub_82290720`): an actor whose seat holds a zeroed prop takes the
+  body's own early-out.
+
+With the remote guard in, all three read 0 in the verifying run.
+
+`CZ_ATTACH_TRACE=1` — who rides what, and who destroys a helicopter. It prints:
+- one `[attach] mount:` line per actor TRANSITION (seat, prop, prop vtable, seat index);
+- every `DestroyProp` (id, prop, vtable, lr);
+- for a helicopter only, a guest backtrace at the destroy QUEUE `sub_8221ED48` and at the
+  per-frame flush `sub_8225AF18`.
+
+It is cheap, but the mounted-update skip line it sits beside is not deduplicated across two
+actors. `CZ_PROP_HOLDER_SCAN=1` is the older heap census: every holder of a prop's address
+before and after DestroyProp. It is slow, at 512 MB a call.
