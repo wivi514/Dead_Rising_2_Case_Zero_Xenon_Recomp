@@ -14,8 +14,7 @@ Lines owed to the next release since v1.1.2, collected as they land. Fold them i
   - **Single player is unchanged.**
   - Verified on two machines on 2026-10-07 (`ed26c2c` and the guard commits before it).
 - **A guest with no save is no longer invisible on the host** (co-op part 14's join window,
-  operator-verified on 2026-10-07). Check whether this already shipped before the release
-  is cut.
+  operator-verified on 2026-10-07; after v1.1.2, so not yet shipped).
 
 ## Install note
 
