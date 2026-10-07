@@ -548,7 +548,7 @@ Both machines reached `710_ending_a`. Host log: `~/DR2CZ-troubleshooting/play/pl
   The guard engaged on BOTH sides (host 8 refusals, joiner 15). The pilot guard read 0 and
   stays in as a backstop. Gotcha 624.
 
-### The military arrival: the second motorcycle (OPEN)
+### The military arrival: the second motorcycle (FIXED, OPERATOR-VERIFIED 2026-10-07)
 
 `missions.txt` (in `data/datafile.big`) spawns ONE ridable bike: `cMissionSpawnItem Bike1`
 (`BrokenBike`, `NumberOfSeats = "1"`). Its child `cMissionSetChuckState OnBike1
@@ -564,6 +564,38 @@ He spawns next to the host at the gas station; both come from the one
 `LevelSpawnPoint = "PrologueEscape"`. The host rides `Bike1`. This is what the data
 predicts: no mount is queued on the joiner, because its local index is 1 and the mount's
 `Value` defaults to 0.
+
+**The fix, `ed26c2c` (overlay v7).** `CoopBike` is a second `BrokenBike` spawned after
+`Bike1` and 2.5 units along its +X. It has `CoopOnly = "true"`: the spawn's Execute
+(`sub_823A5238`) reads that byte at +0x63 and skips when not co-op, so single player is
+unchanged. Its mount is `ChuckState 17, Item "CoopBike", Value "1"`. The name `Bike2` is
+TAKEN (a static `BikeBody` prop in the safehouse), and the mount finds its bike by name.
+The reference is `tools/patch_coop_ending_bike.py`; `RewriteMissions` in
+`runtime/host/overlay_gen.cpp` is byte-identical to it, on Linux and on czwin.
+
+**Operator-verified:** *"both were on bike, reached the end as guest and properly started
+the cinematic"*. Both logs show both mounts executing (`SetChuckState 17` for action
+A5170A40 = Bike1 and A5170B60 = CoopBike). The host reached `710_ending_a` with 0 faults
+and 10 remote helicopter destroys refused. The joiner's ride replicates to the host by
+itself; nothing of ours carries it.
+
+**Four things measured on the way, all reusable:**
+1. **A STORED `datafile.big` entry is refused.** Its text loader decompresses in place and
+   asserts `compressed block too large for in-place decompression or data is corrupt`
+   (`compression.cpp:676`), then null-calls on an online thread.
+2. **The encoder's single-chunk refusal belongs to `preload4.big` only.** The loose
+   `datafile.big` decodes this repo's 7-chunk stream cleanly, so `LzxEncodeStream` /
+   `lzx_encode_stream` take an explicit multi-chunk flag. `preload4.big`'s copy of
+   missions.txt stays as shipped, and the game reads the `datafile.big` copy (the patched
+   names are in guest memory).
+3. **An index entry's `resv` word is the compression marker**, by census over all 146
+   archives: 2 on 1,671 of 1,671 compressed entries, 0 on 10,810 of 10,810 stored ones
+   (`docs/big-archive-format.md`).
+4. **`layout.bin` pins `datafile.big`'s size.** The C++ already re-pinned it; the Python
+   tools never had, so the dev overlay carried a stale size. The new tool re-pins it.
+
+**Not checked:** single player through the ending on the patched data (`CoopOnly` should
+make it identical to stock), and where Katey sits on the joiner's screen.
 
 ### Still owed after part 6
 

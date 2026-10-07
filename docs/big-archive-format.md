@@ -235,3 +235,17 @@ test that proved the untiling cannot settle the layout. The PRIMARIES do: only
 Endpoints preserved, midtones pulled down hard (R -48, G -33, B -5 at the middle) with the
 blue lifted above identity in the highlights, and the primaries desaturated — a cool,
 crushed-midtone night grade.
+
+## Addendum (2026-10-07): the `resv` word is the compression marker, and the loader depends on it
+
+Census over all 146 archives: an index entry's word after `size2` (`resv` in
+`tools/gen_pc_options.py`'s reader) is **2 on every compressed entry (1,671 of 1,671) and 0
+on every stored one (10,810 of 10,810)**. Two consequences:
+- **`datafile.big`'s text entries are always read compressed.** All 37 are compressed, and a
+  stored replacement for `missions.txt` (`size == size2`, `resv` 0) made the guest assert
+  `compressed block too large for in-place decompression or data is corrupt`
+  (`compression.cpp:676`) and then crash.
+- **Re-encode, do not store.** A multi-chunk LZX stream from this repo's encoder decodes
+  cleanly on that path, where `preload4.big`'s boot preload rejects every re-encode.
+
+`tools/patch_coop_ending_bike.py`.

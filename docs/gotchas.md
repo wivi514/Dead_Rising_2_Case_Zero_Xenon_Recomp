@@ -7065,3 +7065,12 @@ From phase C part 18 (the frame rate — and none of it was work):
     QUEUE (not the per-frame flush that executes it) named the network dispatcher in one
     run. When a guard only delays a crash, stop guarding readers and trace who freed it.
     (Case Zero co-op, 2026-10-07; Case West has the same event layer)
+
+625. **A REFUSAL MEASURED ON ONE PATH IS A FACT ABOUT THAT PATH.** This repo's LZX encoder
+    refused anything over 32 KB because "multi-chunk streams are REFUSED by the guest
+    decoder". That was measured on `preload4.big`'s boot preload, which rejects every
+    re-encode, single-chunk included. The co-op ending patch needed a 222 KB missions.txt;
+    the loose `datafile.big` path decoded a 7-chunk stream on the first try. Before honouring
+    an inherited refusal, find which path it was measured on. The cheap alternative, storing
+    the entry uncompressed, was refused by THAT loader (in-place decompress, gotcha-5-shaped
+    assert). (Case Zero data patches, 2026-10-07; Case West ships the same containers)
