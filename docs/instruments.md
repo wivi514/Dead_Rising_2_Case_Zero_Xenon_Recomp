@@ -2966,6 +2966,17 @@ CZ_VK_ANISO=N      cap the per-fetch aniso degree. =0 keeps per-fetch FILTERS wh
 ## The draw-ID pass (part 39) — which draw painted that pixel?
 
 ```
+CZ_CAPTURE_DUMP_VS=<16-hex vs hash>  with CZ_CAPTURE_KEY and F9: for EVERY draw of the
+                   capture frame bound to that vertex shader, write vsdump_f<frame>_d<draw>.bin:
+                   a 16-u32 header (draw, prim, index count/flags, stream VA/size/endian,
+                   stride, index bytes, index VA), the 256 VS constants as raw register words
+                   (BEFORE the wide/fov patch), the raw guest bytes of the first declared
+                   stream, and the index buffer. Built 2026-10-08 for the Las Vegas sign:
+                   the census says WHICH draw and with what state, this says what its inputs
+                   WERE, so two captures can be diffed byte for byte (74 dumps of the 9,039-
+                   index batch, good and bad frames: vertex and index bytes identical in all).
+                   tools/vsdump_skin.py replays the crowd-zombie skinning from one.
+CZ_CAPTURE_DUMP_VERTS=N  narrow the dump above to draws of exactly N indices.
 CZ_VK_DRAW_ID=1    with CZ_CAPTURE_KEY and F9: the next recorded frame is rendered with
                    every draw painting its OWN INDEX instead of its colour, and that
                    frame's resolve snapshots are dumped as `drawid_f<frame>_snap_*.ppm`.

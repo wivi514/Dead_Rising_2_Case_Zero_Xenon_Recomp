@@ -24888,6 +24888,63 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
         }
     }
 
+    // ---- THE PER-SHADER DRAW DUMP (the Las Vegas sign, 2026-10-08) --------------
+    //
+    // WHY. The census says WHICH draw painted a pixel and with what state, but not
+    // where its vertices land: a crowd zombie (vs_b677dc3457f5b41a) was found covering
+    // an 830-pixel horizon band behind the green highway sign, and the only way to say
+    // which vertex flew and why is to redo its skinning offline with the inputs the
+    // draw actually had. CZ_CAPTURE_DUMP_VS=<16-hex VS hash> writes, for EVERY draw
+    // of the F9 capture frame bound to that vertex shader, the 256 VS constants (raw
+    // register words, before any projection patch), the fetch constant and the raw
+    // guest bytes of the first declared stream, and the index buffer.
+    // tools/vsdump_skin.py reads the skinned-zombie case; the header also carries the
+    // index buffer's address and endian code so two captures' index lists can be diffed. Capture frame only; free on every other frame.
+    static const char* const vsDumpHash = Env("CZ_CAPTURE_DUMP_VS");
+    static const char* const vsDumpDir = Env("CZ_CAPTURE_KEY");
+    // CZ_CAPTURE_DUMP_VERTS=N narrows it to draws of exactly N indices — a common world
+    // shader binds hundreds of draws a frame, and the sign's batch is the 9,039 one.
+    static const uint32_t vsDumpVerts = Env("CZ_CAPTURE_DUMP_VERTS")
+        ? uint32_t(strtoul(Env("CZ_CAPTURE_DUMP_VERTS"), nullptr, 10)) : 0u;
+    if (drawCensus && vsDumpHash && vsDumpDir && vsMeta &&
+        vsBind.hash == strtoull(vsDumpHash, nullptr, 16) &&
+        (!vsDumpVerts || draw.indexCount == vsDumpVerts))
+    {
+        for (const VertexAttribute& a : vsMeta->attributes)
+        {
+            if (a.indirect || a.location < 0 || a.fetchSlot >= 96)
+                continue;
+            const xenos::VertexFetch vf = xenos::DecodeVertexFetch(regs, FetchSlot(a.fetchSlot));
+            const uint32_t sva = PhysToVa(vf.address);
+            const uint64_t vbytes = uint64_t(vf.sizeDwords) * 4;
+            const uint32_t ib = draw.indexed ? draw.indexCount * (draw.index32 ? 4u : 2u) : 0u;
+            if (!vf.address || !GuestRangeOk(sva, vbytes) ||
+                (ib && !GuestRangeOk(draw.indexVa, ib)))
+                break;
+            char path[512];
+            snprintf(path, sizeof path, "%s/vsdump_f%06llu_d%05llu.bin", vsDumpDir,
+                     (unsigned long long)R->frame, (unsigned long long)R->drawsThisFrame);
+            if (FILE* f = fopen(path, "wb"))
+            {
+                // Header: 16 little-endian u32s, then the three blobs in order.
+                const uint32_t hdr[16] = {0x504D5544u /* 'DUMP' */, 1u,
+                                          uint32_t(R->drawsThisFrame), draw.primType,
+                                          draw.indexCount, draw.indexed ? 1u : 0u,
+                                          draw.index32 ? 1u : 0u, draw.indexEndian,
+                                          sva, vf.sizeDwords, vf.endian,
+                                          a.strideDwords, ib, draw.indexVa,
+                                          draw.indexEndianTop, draw.indexSizeDword};
+                fwrite(hdr, sizeof hdr, 1, f);
+                fwrite(&regs[xenos::kAluConstantBase], 4, 256 * 4, f);
+                fwrite(base + sva, 1, size_t(vbytes), f);
+                if (ib)
+                    fwrite(base + draw.indexVa, 1, ib, f);
+                fclose(f);
+            }
+            break;
+        }
+    }
+
     // ---- THE CLIP-DRAW REGISTER DUMP (part 56) ----------------------------------
     //
     // WHY A DUMP RATHER THAN ANOTHER CENSUS FIELD. The user clip planes have now been
