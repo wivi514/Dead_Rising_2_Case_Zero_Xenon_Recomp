@@ -33,6 +33,16 @@ All under `~/DR2CZ-troubleshooting/play/` (dev-build `tools/play_session.sh` ses
 | `sign_fulldepth` | F9s with the FULL-PRECISION depth (`*_depth.ppm.f32`); **11215 bad** |
 | `sign_zombiedump` | 9 F9s with every crowd-zombie draw dumped (41,148 dumps) |
 
+**Trimmed 2026-10-08** (`~/DR2CZ-troubleshooting/CLEANUP-2026-10-08.md`). Only the
+frames cited here are kept:
+- `sign_fulldepth` 11215 (bad, with `.f32`) and 10974 (good);
+- `sign_idxdump` 12662, 12666, 12690 and 12694, with their dumps;
+- `sign_arm7_depthfloat` 12369; `sign_arm9_fps30` 4791/4847;
+- `sign_arm4_worldlod0` burst 08; `sign_drawid2` whole; `hairfix_1008_0152` bursts 08/09.
+
+The 41,148 zombie dumps are gone (that theory is refuted). Logs and the PNG/INDEX files
+are kept.
+
 ## What is ESTABLISHED (measured)
 
 1. **The draw list is the same in good and bad frames.** Same draw keys, render state,
