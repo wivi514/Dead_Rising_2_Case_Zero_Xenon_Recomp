@@ -36,6 +36,14 @@ Lines owed to the next release since v1.1.2, collected as they land. Fold them i
   and it goes up to 5.0. A higher value costs more GPU time in big crowds. The Steam Deck
   build keeps the original 1.0 for performance. It applies immediately.
 
+- **New setting: WORLD DETAIL** (Settings panel, last row). Buildings, rooftop props and
+  sign lettering now switch to their detailed version from twice as far away. Before, the
+  pawnshop's sign lettering, the cactus and the fire hydrant only appeared once you were
+  across the street. The original game's value is 1.0; the default is now 2.0, and it goes
+  up to 4.0. The Steam Deck build keeps the original 1.0 for performance. It applies
+  immediately. Some rooftop props and sign lettering can still pop in and out as you
+  cross a streaming boundary; that also happens at 1.0, just closer to you.
+
 - **Chuck's hair no longer flickers at the back of the neck** (player issue #2). The
   hair is drawn in several passes, and two of them computed the head's position in
   slightly different ways, so the layers traded places from frame to frame. Other

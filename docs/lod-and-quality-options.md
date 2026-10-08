@@ -103,6 +103,61 @@ that the interpolator pairs `+0xB4` with `+0x11C`. The static map would explain 
 but the trace is a measurement and this is a reading. Re-run the trace before acting on
 either.
 
+## 5. WORLD DETAIL: the static-geometry LOD switch distance (2026-10-08)
+
+**Operator report** (F9 frames 42581/42976/43924, `~/DR2CZ-troubleshooting/play/hairfix_1008_0152/`):
+the pawnshop at three distances. Its sign lettering (`z04_pawn_logo`), the cactus and the
+fire hydrant are absent until Chuck is across the street.
+
+**The vote.** Each zone (cZone) holds a list of static-geometry volumes: count at
+`+0x120`, 0xD0-byte records at `[+0x124]`. Each record has a sphere at `+0x80`, a skip
+bit at `+0x90` and a switch distance at `+0xA8`. `sub_82175040(zone, i)` returns NEAR iff
+`|camera - centre| - 0.01 - radius < threshold`, after
+
+    if (threshold < sub_82373DC0()) threshold *= sub_82373E00()
+
+The two accessors read per-level tables (cutoff `0x82042C18`, multiplier `0x82042D68`,
+indexed by `[g+0x34F5C]`). When the shipped-off byte `0x82A58623` is set, they read two
+debug floats at `0x829DD3D0`/`D4` instead. The tables in the image:
+
+| levels | cutoff | multiplier |
+|---|---|---|
+| 0, 12, **14 (Case Zero)** | 9999 | 1.0 |
+| 1 | 30 | 2.5 |
+| 2, 3, 5 | 25 | 2.5 |
+| 4, 6-11, 13, 19-23 | 25 | 2.0 |
+| 15-18 | 20 | 1.0 |
+
+So Dead Rising 2's own levels already boost short switch distances 2-2.5x, and Case Zero's
+does not. The vote's callers are the zone async loader (`sub_821C6608`, `sub_8226A398`,
+`sub_8226F778`, `cZone::Update` `sub_82272890`) and the zone texture-set choice at load
+(§6bw of `phase5-notes.md`). The two accessors have no other callers.
+
+**Verified live** by setting the debug pair in a running game (cutoff 9999, x2.0, then the
+byte): the operator said "way better". DR2's narrower rule (cutoff 25, x2) was then tried
+live; it did NOT remove the pop/flicker they also reported (below), so the full scale
+shipped.
+
+**The setting.** `runtime/cpu/world_lod.cpp` wraps both accessors. At a scale S != 1, the
+cutoff is raised to at least 9999 and the multiplier is the level's own times S. Range
+1.0..4.0, step 0.5. The default is 2.0, or 1.0 under `CZ_DECK_DEFAULTS`. It is stored as
+`world_lod_x10` and is the eleventh panel row. `CZ_WORLD_LOD=0` is the control.
+
+**Open: pop/flicker at streaming boundaries.** In F8 bursts `060820`/`060920` the pawn
+lettering is absent from every frame; in `060938`, from about the same distance, it is
+present in every frame. The operator: rooftop props and billboard lettering "disappearing
+and re-appearing when passing a chunk". It happens at 2.0 and under DR2's rule. It has not
+been compared at 1.0 on a matched walk, so it may be the title's own streaming at a
+shorter distance.
+
+**A dead end recorded so it is not re-bought:** `"Load Distance Factor - %2.2f"`
+(`0x8205F298`, manager field `+0x4108`) looked like the knob, and it read 0.68 live. It is
+the PROP AUDIO loader's: `AudioLoadDistanceType` (prop def `+0xFC`), five squared distances
+at `0x8205DF6C` (25/5/60/100/10000 m) scaled by factor², published at `0x829DC0EC`. The
+factor is a feedback controller on the "Prop audio heap" (`sub_82455038`: shrink when
+largest free < 200/400 KB or total free < 400/600 KB, grow above 800 KB). It decides when
+props load their SOUNDS, not their meshes.
+
 ## 4. For Case West
 
 The same engine ships the same option table and almost certainly the same crowd LOD code.
@@ -113,6 +168,11 @@ To re-derive it there:
 2. Read the counts and thresholds tables next to it. Case West has bigger crowds, so its
    counts may differ.
 3. Hook the accessor the same way.
+
+The WORLD DETAIL accessors (`sub_82373DC0`/`E00`) and their level tables should be at
+shifted addresses in Case West. Find them as the two calls inside the vote that reads
+`+0xA8` of a 0xD0-stride record and then calls the sphere-distance helper. Case West's own
+level may already have a boost; read its row before scaling.
 
 Also check whether the rest of DR2 PC's graphics menu (shadow quality, blur) does anything
 on the 360 build before offering any of it as a setting.

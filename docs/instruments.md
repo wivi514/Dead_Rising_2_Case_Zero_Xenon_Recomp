@@ -5222,5 +5222,9 @@ CZ_ZOMBIE_NAME_FIX=0         the control for the far-soldier variant fix (78632f
 CZ_CROWD_LOD=<x>             overrides the ZOMBIE DETAIL setting (the crowd LOD scale; 2.0
                              default, 1.0 the title's own). CZ_CROWD_LOD=0 is the control:
                              the title's own lookup. Prints `[crowdlod]` once.
+CZ_WORLD_LOD=<x>             overrides the WORLD DETAIL setting (the static-geometry LOD
+                             switch-distance scale; 2.0 default, 1.0 the title's own).
+                             CZ_WORLD_LOD=0 is the control: the title's own accessors.
+                             Prints `[worldlod]` once per distinct value.
 CZ_COOP_BIKE_SERIALIZE=1     the control for a3ade42: the CoopOnly bike spawn serializes as
                              shipped, so pre-v7 saves read as damaged again on v7 data.

@@ -7,6 +7,27 @@ NOT the cause is what stops the next session re-buying it.
 
 Next, in order:
 
+0zi. **BUILDINGS AND PROPS SWITCH TO THEIR DETAILED VERSION TOO CLOSE — WORLD DETAIL
+    SHIPPED 2026-10-08, OPERATOR-VERIFIED BY A LIVE POKE ("way better").** The title's own
+    behaviour. Every zone's static-geometry volume switches by distance, and the vote
+    (`sub_82175040`) boosts each switch distance by a per-level table. Dead Rising 2's
+    levels boost short distances 2-2.5x; Case Zero's level boosts none. WORLD DETAIL
+    (`runtime/cpu/world_lod.cpp`) scales every switch distance:
+    - range 1.0..4.0, step 0.5; default 2.0, or 1.0 on the Steam Deck build;
+    - a settings-panel row (the eleventh) that applies live;
+    - `CZ_WORLD_LOD=0` is the control.
+
+    `docs/lod-and-quality-options.md` §5 is the derivation.
+    **Owed:**
+    - the operator's look at the BUILT setting (the verification was a live poke of the
+      title's own debug pair, the same arithmetic);
+    - **the pop/flicker at streaming boundaries** (rooftop props and sign lettering
+      vanishing and coming back as Chuck walks). Seen at 2.0 and still there under DR2's
+      narrower rule (only distances under 25 m, x2). Not yet shown at 1.0 on a matched walk,
+      so whether 2.0 makes it more frequent is unmeasured;
+    - a frame-time number at 2.0 and 4.0;
+    - a ceiling: whether a large scale overruns the zone streamer's memory.
+
 0zh. **ZOMBIES STAY ON THE FAR MODEL UNTIL CHUCK IS NEARLY TOUCHING THEM — ZOMBIE DETAIL
     SHIPPED 2026-10-08, OPERATOR-VERIFIED BY EYE ("looks way better").** The title's own
     behaviour: the crowd renderer gives the close model to at most 30 zombies whose

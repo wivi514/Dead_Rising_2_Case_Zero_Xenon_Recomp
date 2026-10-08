@@ -7120,6 +7120,17 @@ From phase C part 18 (the frame rate — and none of it was work):
     (Case Zero, 2026-10-08; Case West ships the same table)
 
 
+631. **A DEBUG PANEL'S LABEL NAMES A SYSTEM, NOT THE SYSTEM YOU ARE LOOKING AT.**
+    `"Load Distance Factor - %2.2f"` sat in the image next to "Prop Loading", and its
+    field read 0.68 live, which looked exactly like "props load too close". It is the prop
+    AUDIO loader: the factor scales `AudioLoadDistanceType` and throttles on the "Prop
+    audio heap". What caught it was binding the field to the SCHEMA it scales. Of the
+    prop schema's two distance types, the one at the offset the code reads (`+0xFC`) is
+    the audio one. The real visual knob was a different function's level table.
+    Before poking a value that a debug string names, trace the field it scales back to the
+    data schema's own name for it.
+    (Case Zero, 2026-10-08)
+
 630. **TWO SHADERS DRAWING ONE MESH MUST DECODE ITS VERTICES THE SAME WAY, OR
     MULTI-PASS DEPTH TESTS Z-FIGHT.** Chuck's hair is three passes over one skinned mesh:
     a solid core writing depth (alpha EQUAL 1.0), then two fringe passes depth-tested
