@@ -79,18 +79,18 @@ answered. The setting is an enhancement on top of the 360's medium choice.
 **Owed:** a frame-time number at a big crowd for 2.0 and 5.0. At 5.0 the count clamps
 (LOD3's 2,000 becomes 500, and the 500 total binds) and LOD1 takes 150.
 
-## 3. Other LOD and distance controls — census, not yet acted on
+## 3. Other LOD and distance controls — census (world/buildings acted on in §5)
 
 | Name in the image | Where bound | What it is | State |
 |---|---|---|---|
 | `SHADOW_QUALITY_*` (group 5) | `sub_825A11F0` | 0/1/2 into a lighting constant, MEDIUM selected | the operator already knows HIGH works, and it makes shadows SHARPER, not reach FARTHER (2026-10-08). A filter quality, not a distance, so it does not answer the shadow-distance request. Not wired to a setting |
 | `Start_/End_CascadeDist`, `CascSliceOverlap`, `CascZeroNearPlane`, `NearPlaneCull`, `FadePercent` | sun light object, `sub_823C1A00..` (field map below) | the shadow cascades | parked since part 93, `shadow-distance-investigation.md` |
 | `mVisibleDistance` | `sub_82495BB0`, with `mPropState`/`mOpCode` | a per-prop visible distance | unread; a candidate for props appearing late |
-| `LoadDistance`, `LoadDistanceType` | `sub_8239C1F8`, with `SecondsBeforeDeadPropVanishes` | a per-prop spawn/stream distance | unread |
+| `LoadDistance`, `LoadDistanceType` | `sub_8239C1F8` (prop def `+0x3C`/`+0x40`), with `SecondsBeforeDeadPropVanishes` | a per-prop spawn/stream distance | unread. Do NOT confuse it with `AudioLoadDistanceType` (`+0xFC`) and its "Load Distance Factor", which is the prop AUDIO loader (§5) |
 | `LOD4Optimization`, `ZombieSprite`, `BulkInstanced` | `sub_829A5DE4` | probably sprite stand-ins for the farthest crowd | unread |
 | `MaxZombieDist` | `sub_82343BB0` | an AI targeting query (with `MaxSteering`, `IncludeCrawling`), NOT rendering | no action |
 | `ZombieStartFadeOut` | `sub_8299CB34` | a network event name | no action |
-| world / buildings | `cZone::UpdatePriorities`, `COMMON_TEXTURE_LOD.tex` | per-zone streaming, no distance scalar | part 43 exonerated our side (open-items 00i) |
+| world / buildings | `cZone::UpdatePriorities`, `COMMON_TEXTURE_LOD.tex` | ~~per-zone streaming, no distance scalar~~ **RETRACTED 2026-10-08: there IS one.** The volume vote `sub_82175040` boosts every switch distance through a per-level table, and Case Zero's level leaves it at x1 | **acted on: WORLD DETAIL, §5** |
 
 The sun light's property map, read statically from the binder calls at `0x823C1A00..`
 (field offset -> name, assuming one `lis r11` base for the whole block): `+0x94

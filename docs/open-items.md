@@ -45,7 +45,9 @@ Next, in order:
     - ~~a live poke of `SHADOW_QUALITY` MEDIUM -> HIGH~~ — not needed: the operator already
       knows HIGH works and that it makes shadows SHARPER, not farther. It is a filter
       quality, so it does not answer the shadow-distance request;
-    - the unread prop distances `mVisibleDistance` / `LoadDistance`.
+    - the unread prop distances `mVisibleDistance` / `LoadDistance` (the BUILDING half of
+      this request became WORLD DETAIL, item 0zi; the prop "Load Distance Factor" is
+      AUDIO, not this).
 
 0zg. ~~**A SAVE MADE BEFORE OVERLAY v7 READS AS DAMAGED**~~ — **FIXED THE SAME DAY (`a3ade42`),
     OPERATOR-VERIFIED ("loading the save did work").** Bisected on one binary: a v6-equivalent
