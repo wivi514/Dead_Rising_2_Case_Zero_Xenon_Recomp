@@ -262,8 +262,14 @@ Next, in order:
     `CZ_AUDIO_TRACE`; the XMA loop mechanism itself measured sane, 7a922f5); **#2**
     Chuck's hair flickers at the nape (the three burst frames have the camera moving;
     an F8 burst with the camera STILL is what can be diffed); ~~**#1** the gas station
-    rooftop~~ (fixed, above). #2's alpha-to-mask is now Vulkan alpha-to-coverage on the
-    MSAA EDRAM (`CZ_VK_NO_A2C=1` the control, ON by default in 60c887f) — hardware-faithful
+    rooftop~~ (fixed, above). **#2 FIXED 2026-10-08, OPERATOR-VERIFIED BY F8 BURST** (gotcha 630): the hair's
+    passes use two vertex shaders, and our container synthesizer made the first one's
+    bone-weight fetch DEPENDENT (per-register vertex-id tracking), so it decoded the
+    weights in-shader while the later passes used Vulkan's UNORM — a one-ulp depth
+    disagreement the LEQUAL/EQUAL passes z-fought over. Per-component tracking in
+    `synth_shader_container.py` + `shader_translator.cpp`, recipe stamp `vid=c` rebuilds
+    player caches. The rest of this entry is the record of what it was NOT. #2's
+    alpha-to-mask is now Vulkan alpha-to-coverage on the MSAA EDRAM (`CZ_VK_NO_A2C=1` the control, ON by default in 60c887f) — hardware-faithful
     and NOT the flicker: it persists at a 30 fps cap and with A2C; Xenia is clean. §6fa's
     "second mechanism" (frame 28672) is answered by §6fa.1 — it was not in the registers.
 

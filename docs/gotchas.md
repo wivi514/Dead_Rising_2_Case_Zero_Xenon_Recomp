@@ -7119,3 +7119,25 @@ From phase C part 18 (the frame rate — and none of it was work):
     poke its index live first, which is reversible and costs one memory write.
     (Case Zero, 2026-10-08; Case West ships the same table)
 
+
+630. **TWO SHADERS DRAWING ONE MESH MUST DECODE ITS VERTICES THE SAME WAY, OR
+    MULTI-PASS DEPTH TESTS Z-FIGHT.** Chuck's hair is three passes over one skinned mesh:
+    a solid core writing depth (alpha EQUAL 1.0), then two fringe passes depth-tested
+    LEQUAL and EQUAL against it, using a DIFFERENT vertex shader with the same skinning
+    math. On hardware every pass gets bit-identical depth. Here the first shader read its
+    8-bit bone weights through `XeVfetchDep` (`b / 255.0` in-shader, not correctly
+    rounded), while the second read the same bytes as a declared attribute (Vulkan's
+    fixed-function UNORM). The one-ulp disagreement moved the skinned depth, and the nape
+    flickered as the head idled. Player issue #2, parked for weeks as "Xenia clean, not
+    alpha-to-mask".
+    Why the first shader went dependent: `synth_shader_container.py` tracked "holds the
+    vertex id" PER REGISTER, so `r0.yz = tfetch` (Keep on .x) evicted r0 and every later
+    fetch through r0.x was classified dependent. That is the same per-register error part
+    45 fixed for liveness in the same file (gotcha: the white-surface class). It is now
+    per-component; 12 of 106 vertex shaders changed, all dependent -> direct, none the other
+    way.
+    The census that found it took minutes: in an F8 burst with the draw order identical
+    across frames, read the multi-pass draws' depth functions (`dc=`) and compare the
+    VERTEX shaders of passes that depth-test against each other.
+    (Case Zero, 2026-10-08, operator-verified by burst. Case West: same engine, same hair,
+    same translator, so it inherits the fix.)

@@ -36,7 +36,16 @@ Lines owed to the next release since v1.1.2, collected as they land. Fold them i
   and it goes up to 5.0. A higher value costs more GPU time in big crowds. The Steam Deck
   build keeps the original 1.0 for performance. It applies immediately.
 
+- **Chuck's hair no longer flickers at the back of the neck** (player issue #2). The
+  hair is drawn in several passes, and two of them computed the head's position in
+  slightly different ways, so the layers traded places from frame to frame. Other
+  skinned characters drawn the same way are fixed too (operator-verified 2026-10-08).
+
 ## Install note
+
+- **Some shaders are rebuilt once on first launch** (the shader cache's recipe goes
+  `clip=1` -> `clip=1 vid=c`). This is the hair fix reaching existing installs; it shows
+  the same "preparing shaders" progress as a first install.
 
 - **The patched game data regenerates once on first launch** (overlay version 6 -> 7, for
   the co-op ending's mission data). This is expected and takes a few seconds.
