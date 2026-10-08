@@ -34,7 +34,16 @@ Next, in order:
     ships.
 
 0zf. **CLOSE-RANGE ZOMBIES CHANGE HEAD/HEADWEAR AT THE LOD SWAP (operator, 2026-10-07) —
-    OURS (Xenia keeps the same face and helmet up close), MECHANISM NOT YET LOCATED.**
+    ~~OURS (Xenia keeps the same face and helmet up close)~~ — RETRACTED 2026-10-08: THE
+    TITLE'S OWN BEHAVIOUR. The operator re-ran Xenia (local Wine build, safe flags held by
+    `tools/xenia_poke_linux.py`) and reported "They have the same issue on xenia". The first
+    Xenia look was ONE soldier, most likely a head-3 one (the only variant the helmet is
+    allowed with), so it kept his helmet; gotcha 133/623 again, a single observation taken as
+    the control. The mechanism below is the title's: the close model honours the per-zombie
+    hide mask, the far LODs draw every variant part. The operator's standing instruction is
+    that it should be fixed anyway ("even if it didn't happen ... it would have been a bug
+    and we should fix it"), so this is now an ENHANCEMENT with a design choice, not a
+    defect hunt.**
     The soldier is the loud case (helmet + goggles far, bare head up close); every zombie
     type shows it as a "slightly different model". What is MEASURED:
     * The far model (`zombie_soldier_4.big`) is one baked texture `soldier_lod4_cm` with
