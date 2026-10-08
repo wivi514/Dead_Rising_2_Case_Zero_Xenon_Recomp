@@ -83,7 +83,7 @@ answered. The setting is an enhancement on top of the 360's medium choice.
 
 | Name in the image | Where bound | What it is | State |
 |---|---|---|---|
-| `SHADOW_QUALITY_*` (group 5) | `sub_825A11F0` | 0/1/2 into a lighting constant, MEDIUM selected | **next test**: poke `0x82A52D88 + 0x30` to 22 (HIGH) live and compare by eye |
+| `SHADOW_QUALITY_*` (group 5) | `sub_825A11F0` | 0/1/2 into a lighting constant, MEDIUM selected | the operator already knows HIGH works, and it makes shadows SHARPER, not reach FARTHER (2026-10-08). A filter quality, not a distance, so it does not answer the shadow-distance request. Not wired to a setting |
 | `Start_/End_CascadeDist`, `CascSliceOverlap`, `CascZeroNearPlane`, `NearPlaneCull`, `FadePercent` | sun light object, `sub_823C1A00..` (field map below) | the shadow cascades | parked since part 93, `shadow-distance-investigation.md` |
 | `mVisibleDistance` | `sub_82495BB0`, with `mPropState`/`mOpCode` | a per-prop visible distance | unread; a candidate for props appearing late |
 | `LoadDistance`, `LoadDistanceType` | `sub_8239C1F8`, with `SecondsBeforeDeadPropVanishes` | a per-prop spawn/stream distance | unread |

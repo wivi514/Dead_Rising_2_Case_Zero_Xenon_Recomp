@@ -21,8 +21,9 @@ Next, in order:
     and quality controls in the image.
     **Owed:**
     - a frame-time number at a big crowd at 2.0 and 5.0;
-    - the next live poke the census suggests: `SHADOW_QUALITY` MEDIUM -> HIGH (index 22 at
-      `0x82A52D88 + 0x30`);
+    - ~~a live poke of `SHADOW_QUALITY` MEDIUM -> HIGH~~ — not needed: the operator already
+      knows HIGH works and that it makes shadows SHARPER, not farther. It is a filter
+      quality, so it does not answer the shadow-distance request;
     - the unread prop distances `mVisibleDistance` / `LoadDistance`.
 
 0zg. ~~**A SAVE MADE BEFORE OVERLAY v7 READS AS DAMAGED**~~ — **FIXED THE SAME DAY (`a3ade42`),
