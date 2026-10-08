@@ -2977,6 +2977,11 @@ CZ_CAPTURE_DUMP_VS=<16-hex vs hash>  with CZ_CAPTURE_KEY and F9: for EVERY draw 
                    index batch, good and bad frames: vertex and index bytes identical in all).
                    tools/vsdump_skin.py replays the crowd-zombie skinning from one.
 CZ_CAPTURE_DUMP_VERTS=N  narrow the dump above to draws of exactly N indices.
+(depth .f32)       every SCREEN-SIZED depth snapshot an F9 capture dumps now also writes
+                   `<name>_depth.ppm.f32`: width*height little-endian floats, the real
+                   normalised 0..1 depth. The PPM beside it is 8 bits stretched over the
+                   frame's own range and cannot resolve millimetres at distance (gotcha 632).
+                   ~20 MB a snapshot; the 11008x2048 shadow atlas is skipped.
 CZ_VK_DRAW_ID=1    with CZ_CAPTURE_KEY and F9: the next recorded frame is rendered with
                    every draw painting its OWN INDEX instead of its colour, and that
                    frame's resolve snapshots are dumped as `drawid_f<frame>_snap_*.ppm`.

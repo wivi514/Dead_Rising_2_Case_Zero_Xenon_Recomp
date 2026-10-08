@@ -7152,3 +7152,20 @@ From phase C part 18 (the frame rate — and none of it was work):
     VERTEX shaders of passes that depth-test against each other.
     (Case Zero, 2026-10-08, operator-verified by burst, with the other characters' hair checked fine; `phase5-notes.md` §6fg. Case West: same engine, same hair,
     same translator, so it inherits the fix.)
+
+632. **A DEPTH DUMP STRETCHED TO 8 BITS OVER THE FRAME'S RANGE CANNOT ANSWER A
+    MILLIMETRE QUESTION.** The `_depth.ppm` snapshot maps the surface's own min..max to
+    0..255. Here that is ~0.00009 of depth a level, which is METRES at 70 m under this
+    title's near-degenerate projection (the z and w rows differ by ~0.1 in 180). Read as
+    "the hole has the panel's depth", it said nothing at all. The full-precision `.f32`
+    then gave a hard answer: on the panel's plane to 1.6e-7. Before reading any value off
+    a depth dump, work out what one level means in metres at the distance you care about.
+    (Case Zero, the Las Vegas sign, 2026-10-08; `docs/las-vegas-sign-holes.md`.)
+
+633. **REPLAYING A MESH'S VERTICES CANNOT SEE A FAULT IN HOW THEY ARE CONNECTED.** A
+    replay that reports each draw's vertex extents found no stretched zombie, but a
+    restart marker read as a vertex index, or an index past the stream, draws a giant
+    sliver between perfectly placed vertices. The first version of the replay SKIPPED
+    out-of-range indices silently, which is exactly how such a case would hide. Check the
+    index stream separately: restart values, indices >= the vertex count, endian. (Case
+    Zero, 2026-10-08: clean on 4,574 draws, so the zombie theory died properly.)

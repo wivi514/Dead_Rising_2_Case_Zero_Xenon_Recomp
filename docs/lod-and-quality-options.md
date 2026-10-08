@@ -150,57 +150,16 @@ and re-appearing when passing a chunk". It happens at 2.0 and under DR2's rule. 
 been compared at 1.0 on a matched walk, so it may be the title's own streaming at a
 shorter distance.
 
-A second sighting of the same class, and this one happens while standing still: burst
-`061428`. The green highway distance sign outside the safehouse exit, seen from far down
-the street (the sign on the left at about x 495-545, y 240-280 at 1720x720), has 120 green
-pixels in the F8 frame and 0 in each of the next three presented frames. The back panel
-and pole are drawn in all four. ~~So the FACE drops out or loses a depth fight from one frame
-to the next~~. **Retracted the same night against full-resolution dev bursts**
-(`~/DR2CZ-troubleshooting/play/hairfix_1008_0152`, burst 09 frame 170147 against 170146;
-burst 08 frames 169864/169866). The face is not dropped. In one frame of seven,
-RECTANGULAR patches of flat, blurred, foliage-coloured peach cover CORNERS of the sign.
-Each patch has one leaf-shaped edge, and the patches move from corner to corner between
-bad frames. The XenonLive frames were too small to show that shape. The per-draw census of
-170147 against the six good frames of its burst has the SAME draw keys, the same render
-state, and the same texture addresses, sizes, mips and slots. The only unique keys are
-CPU-skinned crowd draws whose first vertex moves every frame. So the bad frame differs in
-the CONTENT of something (a buffer, a snapshot or a cached upload), not in what is drawn.
-Walking closer does not show it, according to the operator. The pole sign at the gas
-station follows the same pattern across bursts (present in `060938`, absent in `060920`).
-The XenonLive capture shrinks burst frames to 860x360/430x180 and carries no per-draw
-census, so it cannot tell a dropped draw from a lost depth fight. The next tests are the
-same spot at WORLD DETAIL 1.0 (`CZ_WORLD_LOD=0`), and a dev-build burst for the census.
-
-**The operator session of 2026-10-08 (morning) narrowed it.** The object is the green
-"Las Vegas 46" highway sign outside the safehouse exit. It breaks ONLY WHILE THE CAMERA
-MOVES; standing still it is always clean. At full resolution the "patches" are
-straight-edged: in burst 08 of `sign_arm4_worldlod0`, frame 33599, a whole triangle of the
-sign is gone (`~/DR2CZ-troubleshooting/play/sign_*`). Every arm below still showed it, each
-confirmed engaged in its own log:
-
-| arm | result |
-|---|---|
-| `CZ_VK_NO_DEFERRED_CLEAR=1` | still breaks |
-| `CZ_VK_NO_PARALLEL_GUARD=1` (also serial record) | still breaks |
-| `CZ_WORLD_LOD=0` | still breaks (by eye; 0 of 22 burst frames caught it) |
-| `CZ_VK_STREAM_GUARD_EXACT=1` | still breaks |
-| `CZ_VK_NO_STORE_MIRROR=1` | still breaks |
-| `CZ_VK_DEPTH_FLOAT=1` (D32F instead of NVIDIA's D24 UNORM) | still breaks |
-
-The draw-ID pass (`sign_drawid2`, F9 frame 11651) named the sign: it is one piece of a
-9,039-vertex batched world draw, `vs=fa161b0fde7aa4d5 ps=2d2aadd8122f1160`, two DXT
-textures (64x64, 128x128). That draw's census line (va, verts, v0, state) is identical in
-every frame of every burst, the bad ones included, and no draw has a user clip plane on.
-
-The F9 capture `sign_arm7_depthfloat/f012369` caught a bad frame. The cut is already
-present in the FIRST scene snapshot (`0684B000`), so the post chain is not involved. Its
-edge is the stair-stepped SILHOUETTE of a large peach dirt mound standing BEHIND the sign:
-the mound wins the depth test over the sign's lower-right end. The 8-bit depth dump reads
-the sign at ~0.988 and the mound at ~0.992. So in that frame the mound's depth came out
-nearer than the sign's at those pixels, though it is farther. **Working hypothesis: one of
-the two draws used a different (stale) camera transform from the other for one frame while
-the camera moves.** The wide patch is not it: it rewrites only the x or y row, never z. The
-oracle question is owed: does Xenia show it while moving?
+~~A second sighting of the same class~~ — **MOVED AND RETRACTED, 2026-10-08.** The green
+"Las Vegas 46" highway sign losing pieces while the camera moves was first filed here as
+a LOD pop. It is NOT one: it still happens with `CZ_WORLD_LOD=0`, it is long-standing, and
+the full investigation (eleven refuted arms, the identified draw, the full-precision depth
+showing the hole on the panel's own plane, and the next measurement) is now
+**`docs/las-vegas-sign-holes.md`, open item 0zj**. Two statements made here in the
+meantime are retracted there with their reasons: "the face drops out" (it is not dropped;
+its draw and inputs are identical in bad frames) and "a farther mound wins depth because
+of a stale camera" (the 8-bit depth dump could not resolve it, and the 30 fps and pump
+arms refute the lag).
 
 **A dead end recorded so it is not re-bought:** `"Load Distance Factor - %2.2f"`
 (`0x8205F298`, manager field `+0x4108`) looked like the knob, and it read 0.68 live. It is

@@ -7,6 +7,23 @@ NOT the cause is what stops the next session re-buying it.
 
 Next, in order:
 
+0zj. **THE "LAS VEGAS 46" HIGHWAY SIGN LOSES PIECES WHILE THE CAMERA MOVES — OPEN,
+    PARKED 2026-10-08 (operator: "will come back to it later").** Ours, since real hardware
+    is clean. Long-standing and minor. From ~70 m, while moving, about 1 frame in 7 shows
+    straight- or torn-edged holes in the panel with the mound, haze and poles visible
+    through them. Never standing still, never up close. **`docs/las-vegas-sign-holes.md`
+    is the whole record.** What is established:
+    - the draw, its state, its textures and its vertex/index bytes are identical in bad
+      frames;
+    - the hole is in the scene before post;
+    - full-precision depth puts the hole's writer ON the panel's plane (to about 5 mm).
+
+    Eleven arms are refuted, among them clears, guards, WORLD DETAIL, the exact stream
+    guard, the mirror, float depth, the pump split, 30 fps, the constant caches and MSAA.
+    **Next:** a draw-ID F9 on a BAD frame, to name the draw that owns the hole pixels. Check
+    the draw-ID ↔ census numbering above ~2,000 first: an unexplained 68k-pixel "horizon
+    band" reads as a crowd zombie there.
+
 0zi. **BUILDINGS AND PROPS SWITCH TO THEIR DETAILED VERSION TOO CLOSE — WORLD DETAIL
     SHIPPED 2026-10-08, OPERATOR-VERIFIED BY A LIVE POKE ("way better").** The title's own
     behaviour. Every zone's static-geometry volume switches by distance, and the vote
