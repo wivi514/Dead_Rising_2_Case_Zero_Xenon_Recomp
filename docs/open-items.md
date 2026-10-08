@@ -57,6 +57,29 @@ Next, in order:
       models, never for crowd zombies. The "Remove headwear" strings at `0x8206B4CC` are a
       dead debug enum (no code reference). `DisableVariantSwap`/`BodyPartHash`
       (`0x8206087C`) are the zombie VOCAL manager, not body parts.
+    * **2026-10-08: THE CLOSE-MODEL RULE IS LOCATED, AND IT LOOKS CORRECT.** A per-mesh table
+      per zombie type (soldier: `BB195410` live, 8 bytes a mesh in model order; row in the
+      type table `BB18E0E0`: close model, mesh count, table ptr) holds variant bits:
+      head1/2/3 = `0x0001xxxx`/`0x0002xxxx`/`0x0004xxxx`, helmet `headwear2` = `0x04000101`,
+      eyes/mouth/body carry no variant bits. Draw time (`sub_827ADD40`, called from
+      `sub_827B8208` <- zombie renderer `sub_825B7C08`) SKIPS a mesh when
+      `entry & mask != 0` for the 64-bit per-zombie hide mask. The mask is copied
+      record <- render struct `+0x10` (`sub_82590240`) <- actor `+0x40` (`sub_823DA720`,
+      `ld r27,0x40(r31)`), and is set at (re)initialisation by `sub_82437600` at
+      `0x82437978`: `actor+0x40 = r24 ? 0x4000 : *(spawn+0x30)`. A live mask
+      `0x001FFFCF767EC602` hides head2, head3 and the helmet and shows head1: a bare-headed
+      close soldier, exactly as drawn. **Meanwhile every far soldier in the census draws the
+      helmet** (334-vertex `zs_Helmet` mesh, three soldiers, three variant pixel shaders), so
+      the far LOD appears to ignore the mask. **THE DECIDING QUESTION IS OWED TO THE
+      OPERATOR, IN XENIA: at a distance, are some soldiers bare-headed or in balaclavas?**
+      Yes -> our far path ignores the mask (fix there). All helmeted -> compare how the 360
+      builds `spawn+0x30`. Not yet located: the far (LOD3/LOD4) per-mesh selection, and the
+      writer of `spawn+0x30`. Method that worked: gdb read/write watchpoints on the table
+      entry and on the mask (`watch -l` on base+va), and live dumps with process_vm_readv
+      (scratch scripts memgrep/ptrgrep/dumpnames; the census->part mapper is
+      `tools/zombie_tex_census.py`). The headless engine log prints
+      `cMissionZombieFactory::CreateZombiesCallback() ... zombie seed`, the RNG stream 4 seed
+      (streams at `0x82A8D1A0`, Park-Miller LCG `0x8276F728`).
     * Next: find the crowd -> close-model promotion and the code that picks the head
       variant (the LCG at `0x19660D`/`0x3C6EF35F` has six sites, `0x343FD` one — unread),
       then log far-variant vs close-variant per zombie. The hypothesis to test is that the

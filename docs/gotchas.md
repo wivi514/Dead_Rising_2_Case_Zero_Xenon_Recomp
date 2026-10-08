@@ -7074,3 +7074,22 @@ From phase C part 18 (the frame rate — and none of it was work):
     an inherited refusal, find which path it was measured on. The cheap alternative, storing
     the entry uncompressed, was refused by THAT loader (in-place decompress, gotcha-5-shaped
     assert). (Case Zero data patches, 2026-10-07; Case West ships the same containers)
+
+626. **A DATA PATCH THAT ADDS A MISSION ACTION CHANGES THE SAVE LAYOUT.** Overlay v7 added one
+    `cMissionSpawnItem` (with a child mount) to missions.txt, and every existing save read as
+    "damaged". The mission manager does not describe its state in the save; it WALKS the
+    missions in definition order and calls every action's own serialize, so an inserted
+    action inserts bytes and an old save reads misaligned. It fails silently: a failed stream
+    read short-circuits the rest, and no assertion fired even with the release kill switch
+    cleared. A one-variable A/B (the same datafile.big with only missions.txt reverted) found
+    it in one launch. The fix keeps the patch and gives the added action a zero-byte
+    serialize. Treat any patch to a serialized definition file as a save-format change.
+    (Case Zero, 2026-10-07; Case West has the same mission serializer)
+
+627. **WHEN A NEAR AND A FAR MODEL DISAGREE, DO NOT ASSUME THE NEAR ONE IS WRONG.** Close
+    zombies "lost" accessories. The census showed the close model obeying a per-zombie
+    64-bit HIDE mask (`actor+0x40`, set from spawn data at 0x82437978; a mesh is skipped when
+    `entry & mask != 0`). Every far soldier, meanwhile, drew the helmet whatever its mask said.
+    The visible change happens at the swap, but the suspect is whichever side ignores the
+    variant data, and the oracle question is about the FAR look ("are some soldiers
+    bare-headed at a distance in Xenia?"), not the near one. (Case Zero, 2026-10-07/08)
