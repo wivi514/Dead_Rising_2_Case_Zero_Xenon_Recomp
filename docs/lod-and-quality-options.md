@@ -154,8 +154,18 @@ A second sighting of the same class, and this one happens while standing still: 
 `061428`. The green highway distance sign outside the safehouse exit, seen from far down
 the street (the sign on the left at about x 495-545, y 240-280 at 1720x720), has 120 green
 pixels in the F8 frame and 0 in each of the next three presented frames. The back panel
-and pole are drawn in all four. So the FACE drops out or loses a depth fight from one frame
-to the next; walking closer does not show it, according to the operator. The pole sign at the gas
+and pole are drawn in all four. ~~So the FACE drops out or loses a depth fight from one frame
+to the next~~. **Retracted the same night against full-resolution dev bursts**
+(`~/DR2CZ-troubleshooting/play/hairfix_1008_0152`, burst 09 frame 170147 against 170146;
+burst 08 frames 169864/169866). The face is not dropped. In one frame of seven,
+RECTANGULAR patches of flat, blurred, foliage-coloured peach cover CORNERS of the sign.
+Each patch has one leaf-shaped edge, and the patches move from corner to corner between
+bad frames. The XenonLive frames were too small to show that shape. The per-draw census of
+170147 against the six good frames of its burst has the SAME draw keys, the same render
+state, and the same texture addresses, sizes, mips and slots. The only unique keys are
+CPU-skinned crowd draws whose first vertex moves every frame. So the bad frame differs in
+the CONTENT of something (a buffer, a snapshot or a cached upload), not in what is drawn.
+Walking closer does not show it, according to the operator. The pole sign at the gas
 station follows the same pattern across bursts (present in `060938`, absent in `060920`).
 The XenonLive capture shrinks burst frames to 860x360/430x180 and carries no per-draw
 census, so it cannot tell a dropped draw from a lost depth fight. The next tests are the
