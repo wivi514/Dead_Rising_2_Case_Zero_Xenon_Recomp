@@ -7093,3 +7093,14 @@ From phase C part 18 (the frame rate — and none of it was work):
     The visible change happens at the swap, but the suspect is whichever side ignores the
     variant data, and the oracle question is about the FAR look ("are some soldiers
     bare-headed at a distance in Xenia?"), not the near one. (Case Zero, 2026-10-07/08)
+
+628. **A PROPERTY DERIVED FROM AN ASSET NAME FAILS WHERE AN ARTIST MISSPELLED IT.** Far
+    soldiers all wore a helmet that only one head variant is meant to have. The variant
+    of each zombie mesh is not stored anywhere: the engine pattern-matches it out of the
+    mesh NAME, and one far model had two meshes named `headwearShape2` where every other
+    model says `headwear2Shape`. Finding it took tracing the hide mask from the draw back
+    to its table, then diffing the near and far tables entry by entry. The census that
+    proved it was the only slip took seconds over the extracted archives (every
+    `<letters>Shape<digit>` name). When a per-asset property is wrong on one asset, diff
+    its table against a sibling asset's and census the inputs the engine parses.
+    (Case Zero, 2026-10-08; Case West ships the same zombie pipeline, so run the census there)

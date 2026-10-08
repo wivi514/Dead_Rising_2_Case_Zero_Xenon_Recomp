@@ -5216,3 +5216,8 @@ CZ_PM4_NO_PREDICATION_FILE=path   CZ_PM4_NO_PREDICATION while the file exists (p
 ```
 `tools/zombie_tex_census.py` maps a census's bound textures to the zombie `_2.tex` part
 they came from, by content, out of the live process.
+CZ_ZOMBIE_NAME_FIX=0         the control for the far-soldier variant fix (78632f1): the two
+                             misnamed LOD3 meshes classify as shipped (helmet on every far
+                             soldier). Default ON; prints `[zvariant]` for each rewritten name.
+CZ_COOP_BIKE_SERIALIZE=1     the control for a3ade42: the CoopOnly bike spawn serializes as
+                             shipped, so pre-v7 saves read as damaged again on v7 data.

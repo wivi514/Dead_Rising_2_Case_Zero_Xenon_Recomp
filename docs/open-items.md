@@ -33,7 +33,18 @@ Next, in order:
     existing save breaks on update — bisect (v6 layer vs v7 layer, same save) before v7
     ships.
 
-0zf. **CLOSE-RANGE ZOMBIES CHANGE HEAD/HEADWEAR AT THE LOD SWAP (operator, 2026-10-07) —
+0zf. **FIXED 2026-10-08 (`78632f1`), OPERATOR-VERIFIED ("went to multiple zombie and worked
+    great").** The far soldier model `zombie_soldier_3.big` has two meshes exported with the
+    variant digit AFTER "Shape" (`headwearShape2Deformed`, `chestupper_neckShape2Deformed`;
+    the only such names in all 12 zombie archives, LOD2/3/4). The per-mesh hide-mask entry
+    is built from the NAME (`sub_827ACF00` -> classifier `sub_827A2E10`), so the far helmet
+    got 0x101 instead of the close model's 0x04000101 and was drawn on every soldier.
+    `runtime/cpu/zombie_variant_names.cpp` hands the classifier `<part><digit>ShapeDeformed`
+    (same length, in place for the call). Measured: LOD3 helmet 0x04000101 / neck 0x00020004
+    with the fix, 0x101 / 0x4 with `CZ_ZOMBIE_NAME_FIX=0` (the control). Shipped data, so
+    Xenia shows the same; the operator chose "far follows the variant". The record below is
+    the derivation.
+    **Original heading:** CLOSE-RANGE ZOMBIES CHANGE HEAD/HEADWEAR AT THE LOD SWAP (operator, 2026-10-07) —
     ~~OURS (Xenia keeps the same face and helmet up close)~~ — RETRACTED 2026-10-08: THE
     TITLE'S OWN BEHAVIOUR. The operator re-ran Xenia (local Wine build, safe flags held by
     `tools/xenia_poke_linux.py`) and reported "They have the same issue on xenia". The first
