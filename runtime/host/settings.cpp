@@ -51,6 +51,16 @@ struct State
                                 // value is right everywhere — see settings.h and
                                 // phase5-notes §6fe §8 for why this is a player choice
                                 // and not a constant.
+    // ZOMBIE DETAIL, in tenths: 5..50 step 5 (operator's spec, 2026-10-08). The crowd
+    // LOD scale; the title's own is 1.0 (cpu/crowd_lod.cpp). 2.0 on the desktop, 1.0 on
+    // the Deck "for performance reason" — twice the close-model zombies is twice their
+    // draws, and the Deck is the GPU that cannot spare them. A setting the player has
+    // saved wins over either default.
+#ifdef CZ_DECK_DEFAULTS
+    int crowdLodX10 = 10;
+#else
+    int crowdLodX10 = 20;
+#endif
     int mouseSens = 5;          // 1..10, the panel's MOUSE SENS row. The mouse
                                 // CAMERA itself is always on now (settings.h).
     int language = 1;           // Xbox console-language ID (1=en 2=ja 4=fr 5=es
@@ -106,13 +116,14 @@ void SaveLocked()
             "aspect=%d\n"          // 0 = 16:9, 1 = 21:9 (applies at next launch)
             "rt_shadows=%d\n"     // 0 = OG, 1 = RT LOW (needs a ray-query device)
             "exposure_x10=%d\n"   // EXPOSURE in tenths: 10..50 step 5, 25 = 2.5
+            "crowd_lod_x10=%d\n"  // ZOMBIE DETAIL in tenths: 5..50 step 5, 20 = 2.0
             "mouse_sens=%d\n"     // 1..10
             "language=%d\n"       // Xbox ID: 1=en 2=ja 4=fr 5=es 6=it 7=ko
             "skip_intro_logos=%d\n", // 1 = jump straight to the title screen
             int(g_state.displayMode), g_state.resW, g_state.resH, g_state.renderScale,
             g_state.vsync ? 1 : 0, g_state.shadowTier, g_state.msaa, g_state.fpsCap,
             g_state.fov, g_state.aspect, g_state.rtShadows, g_state.exposureX10,
-            g_state.mouseSens,
+            g_state.crowdLodX10, g_state.mouseSens,
             g_state.language, g_state.skipIntroLogos ? 1 : 0);
     fclose(f);
 }
@@ -226,6 +237,15 @@ void Settings_Load(const std::string& path)
             else
                 fprintf(stderr, "[settings] exposure_x10=%ld is outside 10..50 — "
                                 "keeping %d\n", v, g_state.exposureX10);
+        }
+        else if (!strcmp(key, "crowd_lod_x10"))
+        {
+            // Clamped and snapped like exposure_x10, loudly, for the same reason.
+            if (v >= 5 && v <= 50)
+                g_state.crowdLodX10 = int(v - (v % 5));
+            else
+                fprintf(stderr, "[settings] crowd_lod_x10=%ld is outside 5..50 — "
+                                "keeping %d\n", v, g_state.crowdLodX10);
         }
         else if (!strcmp(key, "fov"))
         {
@@ -569,6 +589,24 @@ int Settings_OverlaySelection()
 void Settings_SetOverlaySelection(int row)
 {
     g_overlaySelection.store(row, std::memory_order_release);
+}
+
+int Settings_CrowdLodX10()
+{
+    std::lock_guard<std::mutex> lock(g_mutex);
+    return g_state.crowdLodX10;
+}
+
+void Settings_SetCrowdLodX10(int tenths)
+{
+    if (tenths < 5)
+        tenths = 5;
+    if (tenths > 50)
+        tenths = 50;
+    std::lock_guard<std::mutex> lock(g_mutex);
+    g_state.crowdLodX10 = tenths - (tenths % 5);
+    SaveLocked();
+    // Applied LIVE: the crowd renderer looks the scale up every frame (crowd_lod.cpp).
 }
 
 int Settings_ExposureX10()

@@ -7104,3 +7104,18 @@ From phase C part 18 (the frame rate — and none of it was work):
     `<letters>Shape<digit>` name). When a per-asset property is wrong on one asset, diff
     its table against a sibling asset's and census the inputs the engine parses.
     (Case Zero, 2026-10-08; Case West ships the same zombie pipeline, so run the census there)
+
+629. **A 360 BUILD CAN CARRY THE PC PORT'S GRAPHICS OPTIONS, LIVE AND SET TO "MEDIUM".**
+    "Zombies only get their detailed model when you nearly touch them" looked like a bug.
+    It was the 360's choice from a quality table it shares with Dead Rising 2 PC:
+    `ZOMBIE_COUNTS_HALF/ONE/TWOFOLD`, `SHADOW_QUALITY_*`, `COMBINED_BLUR_*`, `TF_ANISOX*`
+    and `MSAA_*`, all compiled in and selected at boot. The crowd LOD read ONE.
+    Two ways in that each took minutes:
+    - the engine's own profile-counter strings (`LOD1 Zombie Count`) led to the LOD code;
+    - a census of `bl <accessor>` with the `li r4,N` before it named every reader of
+      each group.
+
+    Before building a distance knob, look for the option the PC port already exposes, and
+    poke its index live first, which is reversible and costs one memory write.
+    (Case Zero, 2026-10-08; Case West ships the same table)
+

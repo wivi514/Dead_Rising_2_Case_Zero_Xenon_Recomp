@@ -72,6 +72,16 @@ int           Settings_Fov();           // FIELD OF VIEW (part 61): degrees of
 int           Settings_ExposureX10();       // 10..50, step 5; 25 = the 2.5 default
 void          Settings_SetExposureX10(int); // clamped and snapped to the step
 
+// ZOMBIE DETAIL (2026-10-08, operator's spec: default 2.0, up to 5.0). The crowd
+// renderer's LOD quality scale, which the 360 left at 1.0: Q multiplies how many zombies
+// get each model and divides the on-screen size each model needs, so 2.0 is twice the
+// close-model count at twice the distance (cpu/crowd_lod.cpp has the derivation).
+// Stored in TENTHS like EXPOSURE. 0.5..5.0 step 0.5; 1.0 is the title's own. Applies
+// LIVE; CZ_CROWD_LOD wins over it.
+int           Settings_CrowdLodX10();       // 5..50, step 5; default 20 (2.0), 10 on
+                                            // the Deck build (CZ_DECK_DEFAULTS)
+void          Settings_SetCrowdLodX10(int); // clamped and snapped to the step
+
 int           Settings_RtShadows();     // RT tier (part 64): 0 = none (the raster
                                         // cascade), 1/2/3 = RT LOW/MEDIUM/HIGH.
                                         // Env CZ_VK_RT_SHADOWS wins over this.

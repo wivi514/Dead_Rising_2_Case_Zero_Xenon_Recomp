@@ -7,6 +7,24 @@ NOT the cause is what stops the next session re-buying it.
 
 Next, in order:
 
+0zh. **ZOMBIES STAY ON THE FAR MODEL UNTIL CHUCK IS NEARLY TOUCHING THEM — ZOMBIE DETAIL
+    SHIPPED 2026-10-08, OPERATOR-VERIFIED BY EYE ("looks way better").** The title's own
+    behaviour: the crowd renderer gives the close model to at most 30 zombies whose
+    on-screen size clears 0.13, and both numbers are scaled by `ZOMBIE_COUNTS_*`. That is
+    DR2 PC's graphics option, compiled into the 360 build and left at ONE (1.0). The new
+    ZOMBIE DETAIL setting (`runtime/cpu/crowd_lod.cpp`) supplies the scale:
+    - range 0.5..5.0, step 0.5; default 2.0, or 1.0 on the Steam Deck build;
+    - a settings-panel row that applies live;
+    - `CZ_CROWD_LOD=0` is the control.
+
+    `docs/lod-and-quality-options.md` is the derivation, plus the census of the other LOD
+    and quality controls in the image.
+    **Owed:**
+    - a frame-time number at a big crowd at 2.0 and 5.0;
+    - the next live poke the census suggests: `SHADOW_QUALITY` MEDIUM -> HIGH (index 22 at
+      `0x82A52D88 + 0x30`);
+    - the unread prop distances `mVisibleDistance` / `LoadDistance`.
+
 0zg. ~~**A SAVE MADE BEFORE OVERLAY v7 READS AS DAMAGED**~~ — **FIXED THE SAME DAY (`a3ade42`),
     OPERATOR-VERIFIED ("loading the save did work").** Bisected on one binary: a v6-equivalent
     datafile.big (missions.txt the ONLY differing entry) loads the save, v7 does not; the

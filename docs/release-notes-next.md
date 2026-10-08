@@ -30,6 +30,12 @@ Lines owed to the next release since v1.1.2, collected as they land. Fold them i
   show their real variant: some are bare-headed or in a balaclava at any distance
   (`78632f1`, operator-verified 2026-10-08).
 
+- **New setting: ZOMBIE DETAIL** (Settings panel, last row). Zombies now switch to their
+  detailed model from twice as far away, and twice as many get it at once. Before, you had
+  to stand right next to one. The original game's value is 1.0; the default is now 2.0,
+  and it goes up to 5.0. A higher value costs more GPU time in big crowds. The Steam Deck
+  build keeps the original 1.0 for performance. It applies immediately.
+
 ## Install note
 
 - **The patched game data regenerates once on first launch** (overlay version 6 -> 7, for

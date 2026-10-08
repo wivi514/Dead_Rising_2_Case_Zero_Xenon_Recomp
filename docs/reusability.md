@@ -285,3 +285,12 @@ second motorcycle") should be checked there before its co-op ships.
    `<letters>Shape<digit>` name in a `_2/_3/_4` model. Case Zero had exactly two, in
    `zombie_soldier_3.big`. `runtime/cpu/zombie_variant_names.cpp` is the fix, and is generic
    for any name of that shape followed by "Deformed".
+3. **DR2 PC's graphics-options table is in the 360 image and drives the crowd LOD**
+   (gotcha 629, open item 0zh, `docs/lod-and-quality-options.md` §4).
+   - What it is: `ZOMBIE_COUNTS_ONE` scales how many zombies get each model and how close
+     they must be. Case Zero exposes it as ZOMBIE DETAIL, a hook on the accessor
+     `sub_8279A488` for group 2.
+   - For Case West: find the `ZOMBIE_COUNTS_*` strings, then the accessor call with
+     `li r4,2`, then the count and threshold tables. CW's bigger crowds may ship
+     different counts.
+
