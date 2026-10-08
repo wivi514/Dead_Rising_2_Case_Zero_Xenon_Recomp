@@ -31946,6 +31946,26 @@ void DoSwapImpl(uint8_t* base, uint32_t frontBuffer, uint32_t width, uint32_t he
                         const uint8_t rgb[3] = { g, g, g };
                         fwrite(rgb, 1, 3, f);
                     }
+                    // THE FULL-PRECISION COPY (the Las Vegas sign, 2026-10-08). The PPM
+                    // above is 8 bits stretched over the whole frame's range, ~0.00009
+                    // of depth a level here — metres at 70 m — so it could not say
+                    // whether a hole in a sign showed the panel's own depth or the poles
+                    // a few centimetres behind it. `<same name>.f32` is width*height
+                    // little-endian floats, normalised 0..1 exactly as above. Screen-
+                    // sized surfaces only (the 11008x2048 shadow atlas would be 90 MB).
+                    if (uint64_t(snap.image.width) * snap.image.height <= 3440ull * 1440ull)
+                    {
+                        std::string fpath = std::string(path) + ".f32";
+                        if (FILE* ff = fopen(fpath.c_str(), "wb"))
+                        {
+                            for (size_t i = 0; i < n; i += 4)
+                            {
+                                const float v = float(readNorm(i));
+                                fwrite(&v, 4, 1, ff);
+                            }
+                            fclose(ff);
+                        }
+                    }
                     fprintf(stderr, "[vk]   %08X is a DEPTH snapshot (%s), range "
                                     "%.6f..%.6f\n",
                             dest & 0x1FFFFFFF, isFloat ? "D32F" : "D24", lo, hi);
