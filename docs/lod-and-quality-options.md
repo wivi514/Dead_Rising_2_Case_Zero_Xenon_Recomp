@@ -150,6 +150,17 @@ and re-appearing when passing a chunk". It happens at 2.0 and under DR2's rule. 
 been compared at 1.0 on a matched walk, so it may be the title's own streaming at a
 shorter distance.
 
+A second sighting of the same class, and this one happens while standing still: burst
+`061428`. The green highway distance sign outside the safehouse exit, seen from far down
+the street (the sign on the left at about x 495-545, y 240-280 at 1720x720), has 120 green
+pixels in the F8 frame and 0 in each of the next three presented frames. The back panel
+and pole are drawn in all four. So the FACE drops out or loses a depth fight from one frame
+to the next; walking closer does not show it, according to the operator. The pole sign at the gas
+station follows the same pattern across bursts (present in `060938`, absent in `060920`).
+The XenonLive capture shrinks burst frames to 860x360/430x180 and carries no per-draw
+census, so it cannot tell a dropped draw from a lost depth fight. The next tests are the
+same spot at WORLD DETAIL 1.0 (`CZ_WORLD_LOD=0`), and a dev-build burst for the census.
+
 **A dead end recorded so it is not re-bought:** `"Load Distance Factor - %2.2f"`
 (`0x8205F298`, manager field `+0x4108`) looked like the knob, and it read 0.68 live. It is
 the PROP AUDIO loader's: `AudioLoadDistanceType` (prop def `+0xFC`), five squared distances
