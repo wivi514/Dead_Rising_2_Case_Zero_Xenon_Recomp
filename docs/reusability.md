@@ -265,3 +265,23 @@ second motorcycle") should be checked there before its co-op ships.
    Props are found BY NAME, so check that a new name is unused (`Bike2` was taken here).
    `tools/patch_coop_ending_bike.py` is the template, and `RewriteMissions` in
    `overlay_gen.cpp` is its C++ port.
+
+
+## 2026-10-08 addendum — two more Case Zero fixes Case West should check
+
+1. **A missions.txt patch that ADDS an action changes the save layout** (gotcha 626,
+   open item 0zg). The mission manager (`0x8223EBE0` here) serializes each mission by walking
+   its actions in definition order, so an added action makes every older save read as
+   "damaged", silently. Case Zero's fix (`runtime/cpu/coop_bike_save.cpp`) gives the added
+   CoopOnly spawn a zero-byte serialize: hook the shared serializer `sub_823A4878` and key on
+   class (cMissionSpawnItem vtable `0x8204BE3C`) plus the CoopOnly byte `+0x63`. Re-derive the
+   addresses for CW. Test any data patch against an OLD save, headless:
+   `CZ_SAVE_DIR=<copy>`, START x6, A x3, success = `CreateZombiesCallback` in the guest log.
+2. **Zombie variants come from MESH NAMES** (gotcha 628, open item 0zf). A per-zombie 64-bit
+   hide mask (actor `+0x40`) is tested against per-type, per-LOD tables built from mesh names
+   through the wildcard classifier (`sub_827ACF00` -> `sub_827A2E10`). One misnamed far
+   mesh (`headwearShape2Deformed`) makes that part ignore the variant. Case West ships more
+   zombie types, so run the census over its zombie archives first: every
+   `<letters>Shape<digit>` name in a `_2/_3/_4` model. Case Zero had exactly two, in
+   `zombie_soldier_3.big`. `runtime/cpu/zombie_variant_names.cpp` is the fix, and is generic
+   for any name of that shape followed by "Deformed".
