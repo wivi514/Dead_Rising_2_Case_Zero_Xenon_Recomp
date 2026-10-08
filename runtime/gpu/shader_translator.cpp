@@ -82,7 +82,13 @@ std::string RecipeId()
 {
     // Deliberately terse and deliberately NOT a hash: a player reporting a wrong
     // picture can read this file, and a developer bisecting can write it by hand.
-    return std::string("clip=") + (ClipPlanesWanted() ? "1" : "0");
+    //
+    // `vid=c` is not a define but a TRANSLATOR revision, and it belongs here for the
+    // same reason: the per-component vertex-id tracking (2026-10-08, the hair flicker)
+    // changes 12 vertex modules under unchanged names, so a cache built before it has
+    // to be dropped exactly as a define change would. Any future change to what the
+    // translator emits for an existing hash adds a token here.
+    return std::string("clip=") + (ClipPlanesWanted() ? "1" : "0") + " vid=c";
 }
 
 namespace
@@ -160,7 +166,13 @@ static bool ParseUcode(const uint8_t* data, size_t size, UcodeInfo& u, std::stri
 
     uint8_t written[64] = {};  // bit c = component c definitely written
     bool seenTf[32] = {};
-    uint64_t vidRegs = 1;      // bit r = register r still holds the auto vertex index
+    // (register, component) pairs still holding the auto vertex index: bit (4*r + c).
+    // The seed is float4(id, 0, 0, 0), so only r0.x starts set, and a partial write
+    // evicts only the components it names — per register, `r0.yz = tfetch` evicted
+    // r0 and every later fetch through r0.x went dependent (the hair flicker,
+    // 2026-10-08; synth_shader_container.py carries the full derivation).
+    uint8_t vidComps[64] = {};
+    vidComps[0] = 1;
     int regProducer[64];
     for (auto& r : regProducer) r = -1;
 
@@ -222,7 +234,7 @@ static bool ParseUcode(const uint8_t* data, size_t size, UcodeInfo& u, std::stri
                     const uint32_t src = bits(w0, 5, 6);
                     vf.srcReg = src;
                     vf.srcSwz = bits(w0, 30, 2);
-                    vf.indirect = int(!((vidRegs >> src) & 1));
+                    vf.indirect = int(!((vidComps[src] >> vf.srcSwz) & 1));
                     vf.addrAttr = vf.indirect ? regProducer[src] : -1;
                     u.vfetch.push_back(vf);
                     regProducer[bits(w0, 12, 6)] = int(u.vfetch.size()) - 1;
@@ -237,9 +249,14 @@ static bool ParseUcode(const uint8_t* data, size_t size, UcodeInfo& u, std::stri
                     }
                     u.tfetchDim[c] = bits(w2, 14, 2);
                 }
-                // Any write kills the vertex id in that register — including a fetch
-                // writing its own source.
-                vidRegs &= ~(1ull << bits(w0, 12, 6));
+                // A write kills the vertex id in the components it names — including a
+                // fetch writing its own source; predicated or not; Keep (7) is no write.
+                {
+                    const uint32_t fdswz = bits(w1, 0, 12);
+                    for (int c = 0; c < 4; c++)
+                        if (((fdswz >> (3 * c)) & 7) != 7)
+                            vidComps[bits(w0, 12, 6)] &= uint8_t(~(1u << c));
+                }
                 // Destination swizzle: 3 bits per component, 7 = Keep (not a write);
                 // a predicated fetch is not a definite write.
                 if (!bits(w1, 31, 1))
@@ -260,7 +277,8 @@ static bool ParseUcode(const uint8_t* data, size_t size, UcodeInfo& u, std::stri
                 const uint32_t predicated = bits(w1, 28, 1), vop = bits(w2, 24, 5);
                 if (!exp)
                 {
-                    vidRegs &= ~(1ull << vdst);
+                    vidComps[vdst] &= uint8_t(~vmask);
+                    vidComps[sdst] &= uint8_t(~smask);
                     regProducer[vdst] = -1;
                 }
                 // Lanes the vector op consumes: the dot family (and cube/max4/setp/kill)

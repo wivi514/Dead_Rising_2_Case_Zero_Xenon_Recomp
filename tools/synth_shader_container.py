@@ -119,7 +119,18 @@ def parse_ucode(data):
     # bone, four bones selected by srcSwizzle. Translating those as per-vertex
     # attributes reads the palette at gl_VertexIndex, which is the world's
     # garbage geometry. Record enough for the runtime to gather correctly.
-    vid_regs = {0}      # registers currently known to hold the vertex id
+    # PER COMPONENT, like the liveness above (hair flicker, 2026-10-08). The seed is
+    # `float4(vertexId, 0, 0, 0)`, so the id lives in r0.X ONLY, and a partial write
+    # leaves the components it does not name untouched. The per-REGISTER form of this
+    # set evicted r0 on `r0.yz = tfetch...` (destination swizzle Keep on .x), so every
+    # later fetch through r0.x was classified DEPENDENT and decoded in-shader by
+    # XeVfetchDep — while another shader drawing the SAME mesh fetched the same bytes
+    # as a declared attribute through Vulkan's fixed-function conversion. Chuck's hair
+    # is three passes over one skinned mesh with two different vertex shaders, the later
+    # passes depth-tested LEQUAL/EQUAL against the first; a one-ulp disagreement in an
+    # 8-bit bone weight (`b / 255.0` in a shader is not correctly rounded) moved the
+    # skinned depth and the passes z-fought at the nape as the head idled.
+    vid_comps = {(0, 0)}    # (register, component) pairs known to hold the vertex id
     reg_producer = {}   # register -> index into vfetch_slots that last wrote it
     inputs = set()      # regs with a component read before written (PS interp inputs)
     exports = set()     # VS interpolator export indices (o0..o15)
@@ -177,7 +188,7 @@ def parse_ucode(data):
                     vf["srcSwz"] = bits(w0, 30, 2)
                     # int, not bool: the runtime's meta reader is numeric-only
                     # and would silently read `true` as 0.
-                    vf["indirect"] = int(src not in vid_regs)
+                    vf["indirect"] = int((src, vf["srcSwz"]) not in vid_comps)
                     # Which earlier vfetch produced the address. -1 means the
                     # address came from ALU work we do not model; the runtime
                     # must skip the gather rather than guess, and counts it.
@@ -197,9 +208,14 @@ def parse_ucode(data):
                     # translator itself switches on when it picks tfetch2D vs tfetchCube
                     # — the two ends cannot disagree if they read the same field.
                     tfetch_dims[c] = bits(w2, 14, 2)
-                # Any write kills the vertex id in that register -- including a
-                # fetch writing its own source (seen: `dst=r2 src=r2`).
-                vid_regs.discard(bits(w0, 12, 6))
+                # A write kills the vertex id in the components it names -- including
+                # a fetch writing its own source (seen: `dst=r2 src=r2`). Predicated
+                # or not: a write that MAY happen ends the guarantee. Keep (7) does
+                # not write.
+                fdst, fdswz = bits(w0, 12, 6), bits(w1, 0, 12)
+                for c in range(4):
+                    if ((fdswz >> (3 * c)) & 7) != 7:
+                        vid_comps.discard((fdst, c))
                 # The fetch destination swizzle is 3 bits per component; 7 = Keep,
                 # which leaves that component of the register UNTOUCHED (that is
                 # exactly how the ball shader's `tfetch2D r0.__xy` preserves the
@@ -219,8 +235,17 @@ def parse_ucode(data):
                 predicated = bits(w1, 28, 1)
                 vop = bits(w2, 24, 5)
                 if not export:
-                    vid_regs.discard(vdst)
+                    for c in range(4):
+                        if (vmask >> c) & 1:
+                            vid_comps.discard((vdst, c))
                     reg_producer.pop(vdst, None)
+                # The scalar pipe writes sdst under its own mask (on an export, both
+                # pipes write the export named by vdst, so sdst is no GPR); the
+                # per-register form never evicted on the scalar write at all.
+                if not export:
+                    for c in range(4):
+                        if (smask >> c) & 1:
+                            vid_comps.discard((sdst, c))
                 # Vector source reads, precise through the swizzle: operation lane i
                 # reads source component ((swz >> 2i) + i) & 3, over the lanes the
                 # opcode consumes — the dot family (and cube/max4/setp-push/kill)

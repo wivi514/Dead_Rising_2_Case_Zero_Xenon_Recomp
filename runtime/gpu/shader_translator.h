@@ -52,7 +52,7 @@ struct Result
 // and the escape hatch for a device without `shaderClipDistance`.
 bool ClipPlanesWanted();
 
-// A short, stable line naming the recipe this build translates under, e.g. "clip=1".
+// A short, stable line naming the recipe this build translates under, e.g. "clip=1 vid=c".
 // Written into the cache as `shader_recipe.txt` and compared on every boot.
 std::string RecipeId();
 
