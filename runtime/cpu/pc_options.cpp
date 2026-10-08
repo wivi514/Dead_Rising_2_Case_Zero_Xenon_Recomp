@@ -908,12 +908,23 @@ void PcOptions_Pump(PPCContext& ctx, uint8_t* base, uint32_t buttons)
                             double(Settings_CrowdLodX10()) * 0.1);
                     break;
                 }
+                case 10:
+                {
+                    // WORLD DETAIL (operator's spec, 2026-10-08): the scale on every
+                    // static-geometry LOD switch distance, 1.0..4.0 in steps of 0.5,
+                    // clamped (gotcha 377). 1.0 is the title's own; 2.0 the default.
+                    // LIVE: the zone streamer's vote reads it (cpu/world_lod.cpp).
+                    Settings_SetWorldLodX10(Settings_WorldLodX10() + dir * 5);
+                    fprintf(stderr, "[pcopt] world detail %.1f — live\n",
+                            double(Settings_WorldLodX10()) * 0.1);
+                    break;
+                }
             }
         };
         int sel = Settings_OverlaySelection();
         if (pressed & (kUp | kDown))
         {
-            sel = (sel + ((pressed & kDown) ? 1 : 9)) % 10;  // ten rows since ZOMBIE DETAIL
+            sel = (sel + ((pressed & kDown) ? 1 : 10)) % 11; // eleven rows since WORLD DETAIL
             Settings_SetOverlaySelection(sel);
         }
         else if (pressed & (kLeft | kRight))

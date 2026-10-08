@@ -61,6 +61,15 @@ struct State
 #else
     int crowdLodX10 = 20;
 #endif
+    // WORLD DETAIL, in tenths: 10..40 step 5 (operator's spec, 2026-10-08). The scale on
+    // every static-geometry LOD switch distance; the title's own is 1.0
+    // (cpu/world_lod.cpp). 2.0 on the desktop, 1.0 — the title's own — on the Deck, for
+    // the same performance reason as ZOMBIE DETAIL.
+#ifdef CZ_DECK_DEFAULTS
+    int worldLodX10 = 10;
+#else
+    int worldLodX10 = 20;
+#endif
     int mouseSens = 5;          // 1..10, the panel's MOUSE SENS row. The mouse
                                 // CAMERA itself is always on now (settings.h).
     int language = 1;           // Xbox console-language ID (1=en 2=ja 4=fr 5=es
@@ -117,13 +126,14 @@ void SaveLocked()
             "rt_shadows=%d\n"     // 0 = OG, 1 = RT LOW (needs a ray-query device)
             "exposure_x10=%d\n"   // EXPOSURE in tenths: 10..50 step 5, 25 = 2.5
             "crowd_lod_x10=%d\n"  // ZOMBIE DETAIL in tenths: 5..50 step 5, 20 = 2.0
+            "world_lod_x10=%d\n"  // WORLD DETAIL in tenths: 10..40 step 5, 20 = 2.0
             "mouse_sens=%d\n"     // 1..10
             "language=%d\n"       // Xbox ID: 1=en 2=ja 4=fr 5=es 6=it 7=ko
             "skip_intro_logos=%d\n", // 1 = jump straight to the title screen
             int(g_state.displayMode), g_state.resW, g_state.resH, g_state.renderScale,
             g_state.vsync ? 1 : 0, g_state.shadowTier, g_state.msaa, g_state.fpsCap,
             g_state.fov, g_state.aspect, g_state.rtShadows, g_state.exposureX10,
-            g_state.crowdLodX10, g_state.mouseSens,
+            g_state.crowdLodX10, g_state.worldLodX10, g_state.mouseSens,
             g_state.language, g_state.skipIntroLogos ? 1 : 0);
     fclose(f);
 }
@@ -246,6 +256,14 @@ void Settings_Load(const std::string& path)
             else
                 fprintf(stderr, "[settings] crowd_lod_x10=%ld is outside 5..50 — "
                                 "keeping %d\n", v, g_state.crowdLodX10);
+        }
+        else if (!strcmp(key, "world_lod_x10"))
+        {
+            if (v >= 10 && v <= 40)
+                g_state.worldLodX10 = int(v - (v % 5));
+            else
+                fprintf(stderr, "[settings] world_lod_x10=%ld is outside 10..40 — "
+                                "keeping %d\n", v, g_state.worldLodX10);
         }
         else if (!strcmp(key, "fov"))
         {
@@ -607,6 +625,24 @@ void Settings_SetCrowdLodX10(int tenths)
     g_state.crowdLodX10 = tenths - (tenths % 5);
     SaveLocked();
     // Applied LIVE: the crowd renderer looks the scale up every frame (crowd_lod.cpp).
+}
+
+int Settings_WorldLodX10()
+{
+    std::lock_guard<std::mutex> lock(g_mutex);
+    return g_state.worldLodX10;
+}
+
+void Settings_SetWorldLodX10(int tenths)
+{
+    if (tenths < 10)
+        tenths = 10;
+    if (tenths > 40)
+        tenths = 40;
+    std::lock_guard<std::mutex> lock(g_mutex);
+    g_state.worldLodX10 = tenths - (tenths % 5);
+    SaveLocked();
+    // Applied LIVE: the zone streamer's per-volume vote reads it (world_lod.cpp).
 }
 
 int Settings_ExposureX10()

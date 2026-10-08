@@ -694,8 +694,9 @@ const char* Glyph(char c)
 template <typename Rect>
 void EmitSettingsOverlay(int w, int h, Rect&& rect)
 {
-    const int panelW = 640, panelH = 500;   // 500: ten rows since ZOMBIE DETAIL
-                                            // (2026-10-08); was 460 at eight rows — MSAA joined in part
+    const int panelW = 640, panelH = 540;   // 540: eleven rows since WORLD DETAIL
+                                            // (2026-10-08); 500 at ten rows (ZOMBIE
+                                            // DETAIL, the same day); was 460 at eight rows — MSAA joined in part
                                             // 108; the MOUSE CAMERA toggle is retired
                                             // (always on); MOUSE SENS stays (part 64
                                             // had merged the RT tiers INTO the shadow
@@ -807,7 +808,10 @@ void EmitSettingsOverlay(int w, int h, Rect&& rect)
     // ZOMBIE DETAIL (2026-10-08): the crowd LOD scale, 1.0 = the title's own.
     char crowdName[8];
     snprintf(crowdName, sizeof crowdName, "%.1f", double(Settings_CrowdLodX10()) * 0.1);
-    const char* rows[10][2] = {
+    // WORLD DETAIL (2026-10-08): the static-geometry LOD distance scale, 1.0 = the title's.
+    char worldName[8];
+    snprintf(worldName, sizeof worldName, "%.1f", double(Settings_WorldLodX10()) * 0.1);
+    const char* rows[11][2] = {
         { UiText(UiStr::Resolution), resName },
         { UiText(UiStr::DisplayMode), kModeNames[int(Settings_DisplayMode()) % 3] },
         { UiText(UiStr::VSync), kOnOff[Settings_VSync() ? 1 : 0] },
@@ -818,9 +822,10 @@ void EmitSettingsOverlay(int w, int h, Rect&& rect)
         { UiText(UiStr::MouseSens), sensName },
         { UiText(UiStr::Exposure), expName },
         { UiText(UiStr::ZombieDetail), crowdName },
+        { UiText(UiStr::WorldDetail), worldName },
     };
     const int sel = Settings_OverlaySelection();
-    for (int i = 0; i < 10; ++i)
+    for (int i = 0; i < 11; ++i)
     {
         const int y = panelY + 86 + i * 40;
         if (i == sel)

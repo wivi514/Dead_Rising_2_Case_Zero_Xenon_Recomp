@@ -82,6 +82,14 @@ int           Settings_CrowdLodX10();       // 5..50, step 5; default 20 (2.0), 
                                             // the Deck build (CZ_DECK_DEFAULTS)
 void          Settings_SetCrowdLodX10(int); // clamped and snapped to the step
 
+// WORLD DETAIL (2026-10-08, operator's spec: default 2.0, the title's own 1.0 on the
+// Deck). Scales every static-geometry LOD switch distance — when a building, a rooftop
+// prop or a sign's lettering streams in its detailed version (cpu/world_lod.cpp has the
+// derivation). Tenths, 1.0..4.0 step 0.5. Applies LIVE; CZ_WORLD_LOD wins over it.
+int           Settings_WorldLodX10();       // 10..40, step 5; default 20 (2.0), 10 on
+                                            // the Deck build (CZ_DECK_DEFAULTS)
+void          Settings_SetWorldLodX10(int); // clamped and snapped to the step
+
 int           Settings_RtShadows();     // RT tier (part 64): 0 = none (the raster
                                         // cascade), 1/2/3 = RT LOW/MEDIUM/HIGH.
                                         // Env CZ_VK_RT_SHADOWS wins over this.
