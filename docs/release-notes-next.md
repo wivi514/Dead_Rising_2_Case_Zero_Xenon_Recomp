@@ -39,7 +39,7 @@ Lines owed to the next release since v1.1.2, collected as they land. Fold them i
 - **Chuck's hair no longer flickers at the back of the neck** (player issue #2). The
   hair is drawn in several passes, and two of them computed the head's position in
   slightly different ways, so the layers traded places from frame to frame. Other
-  skinned characters drawn the same way are fixed too (operator-verified 2026-10-08).
+  skinned characters drawn the same way were checked as well (operator-verified 2026-10-08).
 
 ## Install note
 

@@ -23019,3 +23019,61 @@ any wide mode rather than discovering it from a player report, and remember that
 class is invisible to a 16:9 test matrix — the defect's threshold is
 `16/9 * margin = 2.1333:1`, so every gate this project runs at 1280x720 or 2560x1440
 passes with it fully present.
+
+## §6fg — Player issue #2: THE HAIR FLICKER WAS TWO VERTEX SHADERS DECODING ONE MESH TWO WAYS (2026-10-08)
+
+**The report**: Chuck's hair flickers at the nape (F9 #2 of 2026-09-13). It was parked in
+0za as "Xenia clean; not alpha-to-mask (A2C on, persists at a 30 fps cap)".
+
+**The evidence, one F8 burst** (`~/DR2CZ-troubleshooting/play/visuals_1008_0144`, 3440x1440,
+10 frames):
+- **The camera held.** `burst_read.py` said "camera moved", but the flicker map's
+  background was solid blue: the 10 distinct camera fingerprints are Chuck's idle sway.
+- **The draw order did not change.** 361 draw keys appear exactly once in every frame,
+  and they come in the same order in all ten.
+- **The nape alternates** between a clean edge and a darker inner layer (jagged 1-px
+  outline) plus a dark wedge.
+
+**The hair's passes** (texture `0A2E4000`, both screen tiles):
+
+| pass | VS | PS | colour control | depth control |
+|---|---|---|---|---|
+| 1 core | `d78d670aa40992aa` | `34524bb64374d20e` | `AA00000A` (alpha EQUAL 1.0) | `087087B7` LEQUAL, write |
+| 2 fringe | `3eaff82ce08df8d2` | `790283523afcaf20` | `AA00000C` (GREATER 0) | `087087B7` LEQUAL, write |
+| 3a | `3eaff82ce08df8d2` | `790283523afcaf20` | `AA000007` | `087087A3` EQUAL, no write |
+| 3b | `3eaff82ce08df8d2` | `790283523afcaf20` | `AA000007` | `087087B3` LEQUAL, no write |
+
+Pass 2 depth-tests against pass 1, which was drawn with a DIFFERENT vertex shader. The two
+shaders' translated HLSL runs the same four-bone skinning in the same order. The one
+difference is the fetch:
+- **Pass 1's shader** reads the 8_8_8_8 weights and indices through `XeVfetchDep` (an
+  in-shader `float(b) / 255.0`; an OpFDiv the GPU need not round correctly).
+- **Pass 2's shader** reads the same bytes as declared `TEXCOORD1/2` attributes (Vulkan's
+  fixed-function UNORM/USCALED).
+
+A one-ulp weight difference moves the skinned depth, and LEQUAL/EQUAL then fail on
+scattered pixels in a pattern that follows the sway.
+
+**Why pass 1 was "dependent"**: its address register is `r0.x`, which still holds the vertex
+id, but the shader's first fetch writes `r0.yz` (destination swizzle Keep on `.x`), and
+`synth_shader_container.py` tracked the id per REGISTER. That is the same class of error
+part 45 fixed for liveness in the same file. Per-component tracking (and the scalar-pipe
+write, which the old form never evicted on) reclassifies **12 of 106 vertex shaders, all
+dependent -> direct, none the other way**.
+
+**Gates**:
+- `--translate-shaders` is byte-identical to the Python pipeline over all 454 dumps.
+- `shader_dim_census` is clean, and `--smoke` passes.
+- `RecipeId()` gains `vid=c`, so a player cache stamped `clip=1` drops its vertex half and
+  rebuilds it. Tested on a fake cache: "0 already present", and the rebuilt modules are
+  byte-identical to the verified arm.
+
+**Verified**: the arm cache (`~/DR2CZ-troubleshooting/shader_spv_vidcomp`, stock plus the 12
+modules), run through `play_session.sh PLAIN=1`:
+- the operator reported *"hair flicker is gone"*;
+- the burst montage (`hairfix_1008_0152`) shows one continuous edge in all ten frames;
+- the operator checked other zombies' and people's hair (the other 11 modules) and
+  reported them fine.
+
+Commit `6ea1ea3`; gotcha 630. **What it was not**, all from 0za: alpha-to-mask, the frame
+cap, and the EQUAL@1.0 alpha-test emulation.

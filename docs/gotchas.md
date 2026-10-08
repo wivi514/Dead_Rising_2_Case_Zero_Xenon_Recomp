@@ -7139,5 +7139,5 @@ From phase C part 18 (the frame rate — and none of it was work):
     The census that found it took minutes: in an F8 burst with the draw order identical
     across frames, read the multi-pass draws' depth functions (`dc=`) and compare the
     VERTEX shaders of passes that depth-test against each other.
-    (Case Zero, 2026-10-08, operator-verified by burst. Case West: same engine, same hair,
+    (Case Zero, 2026-10-08, operator-verified by burst, with the other characters' hair checked fine; `phase5-notes.md` §6fg. Case West: same engine, same hair,
     same translator, so it inherits the fix.)

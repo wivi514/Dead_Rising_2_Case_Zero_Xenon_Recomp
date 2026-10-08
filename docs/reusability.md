@@ -293,4 +293,13 @@ second motorcycle") should be checked there before its co-op ships.
    - For Case West: find the `ZOMBIE_COUNTS_*` strings, then the accessor call with
      `li r4,2`, then the count and threshold tables. CW's bigger crowds may ship
      different counts.
+4. **Multi-pass skinned meshes z-fight if two vertex shaders decode one stream differently**
+   (gotcha 630, open item 0za #2; `phase5-notes.md` §6fg). Chuck's hair flickered at the
+   nape because one pass's bone-weight fetch was classified DEPENDENT and decoded in-shader
+   (`XeVfetchDep`, `b/255.0`) while the next pass, depth-tested LEQUAL/EQUAL against it, used
+   Vulkan's UNORM. The cause was per-REGISTER vertex-id tracking in
+   `synth_shader_container.py`; it is per-component now, in the runtime translator too.
+   **CW inherits this fix by sharing the tool.** It needs no address re-derived; it only
+   has to build its cache with the fixed synthesizer. Any translator change that alters
+   modules under unchanged names must also add a `RecipeId()` token.
 
