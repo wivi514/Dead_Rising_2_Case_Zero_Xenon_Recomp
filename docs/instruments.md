@@ -3972,6 +3972,19 @@ CZ_VK_MSAA=N       TRUE MULTISAMPLED EDRAM (part 93, docs/msaa-plan.md). **DEFAU
                    memory-costing supersample, and removing it would half-cover the
                    title's 4x-declared clears.
 
+## The mods overlay (`assets/game_mods/`, 2026-10-08)
+
+```
+CZ_NO_MODS=1      ignore assets/game_mods/ entirely: the run is the unmodded one, byte for
+                  byte. The layer holds whole replacement files deployed by the DR2 CZ/CW
+                  modding toolkit (`dr2 mod deploy -g cz`, sibling repo DR2_CZ_CW_Modding)
+                  and is checked BEFORE game_bootskip / game_kbm / game_patched (gotcha
+                  634). Every file served from it logs
+                  "VFS: '<guest path>' served from the MODS overlay -> <host path>".
+                  Independent of CZ_NO_PATCHED_ASSETS, so the two layers A/B separately.
+                  `dr2 mod undeploy -g cz` removes exactly what the last deploy wrote.
+```
+
 ## Part 99 — subtitle language and the boot-logo skip
 
 ```

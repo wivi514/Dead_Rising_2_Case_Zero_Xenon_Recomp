@@ -153,6 +153,52 @@ std::string VfsResolveExisting(const std::string& guestPath)
 
     static const bool overlayOff = getenv("CZ_NO_PATCHED_ASSETS") != nullptr;
 
+    // THE MODS OVERLAY (2026-10-08). assets/game_mods/ holds whole replacement files
+    // built by the DR2 CZ/CW modding toolkit (`dr2 mod deploy`, in the sibling
+    // DR2_CZ_CW_Modding repo): a re-packed archive whose texture a player recoloured,
+    // an edited script bank, and so on. The toolkit does all format work (LZX, tiling,
+    // nested archives) and builds each file ON TOP OF game_patched's copy when there is
+    // one, so this layer only ever swaps whole files and can never drop the recomp's
+    // own patches. It is checked FIRST, before the boot-skip / keyboard-prompt /
+    // patched layers: a player who installed a mod expects to see it. A file one of
+    // those toggle layers also carries is shadowed while the mod is installed, and the
+    // toolkit warns about that at deploy time.
+    //
+    // Lookup is exact first, then case-insensitive (the toolkit writes the shipped
+    // files' case; the guest may spell a path differently). Every file served from here
+    // is logged, so "is my mod loaded?" is one grep. CZ_NO_MODS=1 is the off switch:
+    // the layer is never consulted and the run is byte-for-byte the unmodded one.
+    // Independent of CZ_NO_PATCHED_ASSETS, so each can be A/B'd alone.
+    static const bool modsOff = getenv("CZ_NO_MODS") != nullptr;
+    if (!modsOff)
+    {
+        std::string gameRoot;
+        {
+            std::lock_guard lock(g_mutex);
+            auto it = g_mounts.find("game");
+            if (it != g_mounts.end())
+                gameRoot = it->second;
+        }
+        const std::string modsRoot = gameRoot + "_mods";
+        if (!gameRoot.empty() && direct.rfind(gameRoot + "/", 0) == 0 &&
+            fs::is_directory(modsRoot, ec))
+        {
+            const std::string relative = direct.substr(gameRoot.size() + 1);
+            std::string modded = modsRoot + "/" + relative;
+            if (!fs::is_regular_file(modded, ec))
+                modded = CaseInsensitiveResolve(modsRoot, relative);
+            if (!modded.empty() && fs::is_regular_file(modded, ec))
+            {
+                KLOG("VFS: '%s' served from the MODS overlay -> %s "
+                     "(CZ_NO_MODS=1 turns mods off)\n",
+                     guestPath.c_str(), modded.c_str());
+                std::lock_guard lock(g_mutex);
+                g_resolved.emplace(guestPath, modded);
+                return modded;
+            }
+        }
+    }
+
     // THE BOOT-SKIP OVERLAY (part 99). assets/game_bootskip/ holds one file —
     // fecmn.big with intro.txt's logo-timeline keyframes collapsed (see
     // cpu/boot_skip.cpp for why this is a data patch and not a hook). Its own

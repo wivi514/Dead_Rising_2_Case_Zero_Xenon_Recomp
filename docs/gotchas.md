@@ -7169,3 +7169,27 @@ From phase C part 18 (the frame rate — and none of it was work):
     out-of-range indices silently, which is exactly how such a case would hide. Check the
     index stream separately: restart values, indices >= the vertex count, endian. (Case
     Zero, 2026-10-08: clean on 4,574 draws, so the zombie theory died properly.)
+
+634. **A MOD LAYER THAT SERVES WHOLE FILES MUST BE CHECKED FIRST, AND ITS FILES MUST BE
+    BUILT ON TOP OF THE LAYERS BELOW IT — OR INSTALLING A MOD SILENTLY UNDOES A RECOMP
+    PATCH.** `assets/game_mods/` (the DR2 CZ/CW modding toolkit's deploy target,
+    `runtime/kernel/vfs.cpp` "THE MODS OVERLAY") swaps whole files, like every other
+    overlay here. Checked below `game_patched` it could never override a file the recomp
+    patches (`datafile.big`, `fecmn.big`, the string banks); checked above it, a naive mod
+    copy of `datafile.big` would drop the co-op and options patches without a word. The
+    split that works: the runtime checks `game_mods` FIRST and stays a dumb whole-file
+    swap; the toolkit (`dr2 mod deploy`) builds each mod file from `game_patched`'s copy
+    when one exists. The toggle layers (`game_kbm`, `game_bootskip`) can't be built on,
+    because which one is live is a run-time choice, so the toolkit warns when a mod
+    carries one of their files. `CZ_NO_MODS=1` is the off switch (independent of
+    `CZ_NO_PATCHED_ASSETS`), and every served file is logged ("served from the MODS
+    overlay").
+    Verified 2026-10-08 headless (`CZ_NO_WINDOW=1 CZ_VKDRAW=1 CZ_VK_FRAME_DUMP`, START,A,A
+    into a copy of the save): a recoloured `npcs.big/chest_young_chuck.tex/young_cr_shirt_cm`
+    (inside an LZX-COMPRESSED `.tex`, re-encoded by the toolkit's encoder) puts Chuck in a
+    green "04" shirt at frame 12864; the same binary with `CZ_NO_MODS=1` shows the shipped
+    orange one, and its log has no MODS line. That run is also the first proof that the
+    game accepts the toolkit's LZX streams (verbatim blocks only, ~7% larger than the
+    shipped aligned-offset ones) for a normal model `.tex`; `preload4.big`'s boot path,
+    which rejected earlier re-encodes, is still unproven. (Case Zero, 2026-10-08;
+    Case West has the same layer, its gotcha 330.)
