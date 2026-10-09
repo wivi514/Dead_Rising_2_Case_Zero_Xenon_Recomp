@@ -53,7 +53,9 @@
 #include <cstdlib>
 #include <cstring>
 #include <mutex>
+#include <string>
 #include <thread>
+#include <unordered_map>
 #if !defined(_WIN32) && !defined(__APPLE__)
 #include <pthread.h>
 #endif
@@ -68,6 +70,7 @@
 #include "heap.h"
 #include "klog.h"
 #include "memory.h"
+#include "vfs.h"
 
 namespace {
 
@@ -451,6 +454,12 @@ struct XmaHostCtx
     // shown to have engaged).
     uint64_t ringFull = 0;
     bool probed = false;
+    // Audio mods (PCM substitution, below): which replaced stream this context is
+    // playing (-1: none) and the decoded-sample position its next packet should start
+    // at. `substPackets` counts substituted packets for the decode log.
+    int substSound = -1;
+    uint32_t substNext = 0;
+    uint64_t substPackets = 0;
 };
 
 XmaHostCtx g_xmaHost[kXmaContextCount];
@@ -579,6 +588,223 @@ bool XmaLayoutLooksSane(unsigned i, uint32_t va, const XmaCtx& c)
     return false;
 }
 
+// ---------------------------------------------------------------------------
+// AUDIO MODS: PCM SUBSTITUTION (the DR2 CZ/CW modding toolkit, phase 5; gotcha 635)
+// ---------------------------------------------------------------------------
+//
+// A mod can replace a sound with any audio the player has (a .wav/.ogg/... next to the
+// sound's path in the mod). Nobody can redistribute an XMA ENCODER, so the toolkit
+// cannot make the game's own format; but this runtime decodes XMA itself, one 2 KB
+// packet per call, so it can put the mod's samples where the decoded ones would have
+// gone. The game's files, buffers, read offsets, sample counts and timing are exactly
+// the unmodded ones: only the PCM written into the output ring changes.
+//
+// HOW A PACKET IS RECOGNISED. `dr2 mod deploy` writes
+// `<game root>_mods/dr2kit_audio/substitutions.txt`: for every packet of every
+// replaced XMA stream, its 64-bit FNV-1a hash and the decoded-sample position where
+// that packet's output begins (the toolkit decodes the stream packet by packet through
+// the same ffmpeg decoder, so the positions are the ones this decoder produces). Each
+// decoded packet is hashed and looked up; a hit says which replacement samples to
+// output. Because every packet carries its own position, nothing here tracks which
+// file or offset a guest buffer came from: loops, streaming through re-armed buffers,
+// a context reused for another sound and a sound started part-way all just work. A
+// packet that also occurs in some other sound of the game is marked `c` by the
+// toolkit and only CONTINUES a substitution already running on this context at the
+// expected position; only unique (`u`) packets may start one, so an unrelated sound
+// that happens to share a packet is never touched.
+//
+// The PCM files are 16-bit WAVs with the stream's channel count (5.1 sounds are three
+// stereo streams, one context each), already at the sound's rate and exactly its
+// decoded length. A sound whose channel count does not match the context is skipped
+// and logged. CZ_NO_AUDIO_MODS=1 turns this off (so does CZ_NO_MODS=1):
+// the table is never read and the decode path is the unmodded one.
+struct XmaSubstSound
+{
+    int channels = 0;           // 0 = unusable (the file failed to load)
+    uint64_t samples = 0;       // per channel
+    std::string file;
+    std::vector<float> pcm;     // interleaved, samples * channels
+    unsigned starts = 0;        // how many times it (re)started, for rate-limited logs
+};
+
+struct XmaSubstPacket
+{
+    uint32_t sound;
+    uint32_t start;             // decoded-sample position of this packet's output
+    bool canStart;              // 'u' in the table: unique in the whole game
+};
+
+std::vector<XmaSubstSound> g_xmaSubstSounds;
+std::unordered_multimap<uint64_t, XmaSubstPacket> g_xmaSubstPackets;
+
+uint64_t XmaFnv1a64(const uint8_t* p, size_t n)
+{
+    uint64_t h = 0xCBF29CE484222325ull;
+    for (size_t k = 0; k < n; k++)
+        h = (h ^ p[k]) * 0x100000001B3ull;
+    return h;
+}
+
+// A 16-bit PCM WAV -> interleaved floats. Only what the toolkit writes is accepted.
+bool XmaSubstReadWav(const std::string& path, XmaSubstSound& s)
+{
+    FILE* f = fopen(path.c_str(), "rb");
+    if (!f)
+        return false;
+    std::vector<uint8_t> b;
+    uint8_t chunk[65536];
+    size_t n;
+    while ((n = fread(chunk, 1, sizeof chunk, f)) > 0)
+        b.insert(b.end(), chunk, chunk + n);
+    fclose(f);
+    auto rd16 = [&](size_t o) { return uint32_t(b[o]) | (uint32_t(b[o + 1]) << 8); };
+    auto rd32 = [&](size_t o) { return rd16(o) | (rd16(o + 2) << 16); };
+    if (b.size() < 12 || memcmp(b.data(), "RIFF", 4) || memcmp(b.data() + 8, "WAVE", 4))
+        return false;
+    int channels = 0, bits = 0;
+    for (size_t o = 12; o + 8 <= b.size();)
+    {
+        const uint32_t size = rd32(o + 4);
+        if (o + 8 + size > b.size())
+            return false;
+        if (!memcmp(b.data() + o, "fmt ", 4) && size >= 16)
+        {
+            if (rd16(o + 8) != 1)                       // WAVE_FORMAT_PCM
+                return false;
+            channels = int(rd16(o + 10));
+            bits = int(rd16(o + 22));
+        }
+        else if (!memcmp(b.data() + o, "data", 4))
+        {
+            if (bits != 16 || channels != s.channels)
+                return false;
+            const size_t count = size / 2;
+            s.pcm.resize(count);
+            for (size_t k = 0; k < count; k++)
+                s.pcm[k] = float(int16_t(rd16(o + 8 + 2 * k))) / 32768.0f;
+            return s.pcm.size() / size_t(channels) >= s.samples;
+        }
+        o += 8 + size + (size & 1);
+    }
+    return false;
+}
+
+void XmaSubstLoad()
+{
+    if (getenv("CZ_NO_AUDIO_MODS") || getenv("CZ_NO_MODS"))
+        return;
+    const std::string root = VfsTranslate("game:");
+    if (root.empty())
+        return;
+    const std::string dir = root + "_mods/dr2kit_audio/";
+    FILE* f = fopen((dir + "substitutions.txt").c_str(), "r");
+    if (!f)
+        return;                                         // no audio mod deployed
+    char line[1024];
+    unsigned bad = 0, unusable = 0;
+    while (fgets(line, sizeof line, f))
+    {
+        if (char* hash = strchr(line, '#'))
+            *hash = 0;
+        char word[16] = {};
+        if (sscanf(line, "%15s", word) != 1)
+            continue;
+        if (!strcmp(word, "sound"))
+        {
+            unsigned idx = 0, ch = 0;
+            unsigned long long samples = 0;
+            char file[512] = {};
+            if (sscanf(line, "sound %u %u %llu %511s", &idx, &ch, &samples, file) != 4 ||
+                idx != g_xmaSubstSounds.size())
+            {
+                bad++;
+                continue;
+            }
+            XmaSubstSound s;
+            s.channels = int(ch);
+            s.samples = samples;
+            s.file = file;
+            if (!XmaSubstReadWav(dir + file, s))
+            {
+                fprintf(stderr, "[xma] audio mods: %s%s did not load as a %u-channel 16-bit "
+                                "WAV of %llu samples; that sound plays unmodded\n",
+                        dir.c_str(), file, ch, samples);
+                s.channels = 0;
+                s.pcm.clear();
+                unusable++;
+            }
+            g_xmaSubstSounds.push_back(std::move(s));
+            continue;
+        }
+        unsigned long long fp = 0;
+        unsigned idx = 0, start = 0;
+        char flag = 0;
+        if (sscanf(line, "%llx %u %u %c", &fp, &idx, &start, &flag) != 4 ||
+            idx >= g_xmaSubstSounds.size() || (flag != 'u' && flag != 'c'))
+        {
+            bad++;
+            continue;
+        }
+        g_xmaSubstPackets.emplace(uint64_t(fp), XmaSubstPacket{ idx, start, flag == 'u' });
+    }
+    fclose(f);
+    fprintf(stderr, "[xma] audio mods: %zu sound stream(s), %zu packets from %ssubstitutions.txt"
+                    "%s%s (CZ_NO_AUDIO_MODS=1 turns them off)\n",
+            g_xmaSubstSounds.size(), g_xmaSubstPackets.size(), dir.c_str(),
+            bad ? "; MALFORMED LINES SKIPPED: " : "", bad ? std::to_string(bad).c_str() : "");
+    (void)unusable;
+}
+
+// Called after every decode call with the PCM it appended (hc.pcm[before..]).
+void XmaSubstApply(unsigned i, XmaHostCtx& hc, const uint8_t* packet, size_t before)
+{
+    if (g_xmaSubstPackets.empty())
+        return;
+    const uint64_t fp = XmaFnv1a64(packet, kXmaBytesPerPacket);
+    const XmaSubstPacket* pick = nullptr;
+    auto range = g_xmaSubstPackets.equal_range(fp);
+    for (auto it = range.first; it != range.second && !pick; ++it)
+        if (int(it->second.sound) == hc.substSound && it->second.start == hc.substNext)
+            pick = &it->second;                        // the next packet of what's playing
+    for (auto it = range.first; it != range.second && !pick; ++it)
+        if (it->second.canStart)
+            pick = &it->second;
+    if (!pick)
+    {
+        hc.substSound = -1;
+        return;
+    }
+    XmaSubstSound& s = g_xmaSubstSounds[pick->sound];
+    if (s.channels != hc.decChannels)
+    {
+        if (s.channels && s.starts++ < 3)
+            fprintf(stderr, "[xma] audio mods: ctx%u decodes %d channel(s) but %s has %d; "
+                            "playing the original\n", i, hc.decChannels, s.file.c_str(),
+                    s.channels);
+        hc.substSound = -1;
+        return;
+    }
+    if (int(pick->sound) != hc.substSound || pick->start != hc.substNext)
+    {
+        if (s.starts < 3 || s.starts % 100 == 0)
+            fprintf(stderr, "[xma] audio mods: ctx%u plays %s from sample %u "
+                            "(start #%u)\n", i, s.file.c_str(), pick->start, s.starts + 1);
+        s.starts++;
+    }
+    const size_t ch = size_t(s.channels);
+    const size_t frames = (hc.pcm.size() - before) / ch;
+    float* dst = hc.pcm.data() + before;
+    for (size_t f = 0; f < frames; f++)
+    {
+        const uint64_t at = uint64_t(pick->start) + f;
+        for (size_t c = 0; c < ch; c++)
+            dst[f * ch + c] = at < s.samples ? s.pcm[at * ch + c] : 0.0f;
+    }
+    hc.substSound = int(pick->sound);
+    hc.substNext = pick->start + uint32_t(frames);
+    hc.substPackets++;
+}
+
 // Decode one 2 KB packet of the context's CURRENT input buffer. Returns false when
 // there is nothing more to decode, having performed the buffer retirement the
 // hardware would perform — which is the transition sub_8285EFE0 is watching for,
@@ -686,6 +912,7 @@ bool XmaDecodeOnePacket(unsigned i, uint32_t va, XmaHostCtx& hc, XmaCtx& c)
         hc.decRate = rate;
         hc.pcm.clear();
         hc.pcmPos = 0;
+        hc.substSound = -1;
         if (!hc.dec)
             return false;
     }
@@ -718,12 +945,16 @@ bool XmaDecodeOnePacket(unsigned i, uint32_t va, XmaHostCtx& hc, XmaCtx& c)
                      c.isStereo() ? 2 : 1, kXmaSampleRates[c.sampleRateId()]);
     }
 
+    const size_t pcmBefore = hc.pcm.size();
     const int got = Xma_DecodePacket(hc.dec, g_memory.base + src, kXmaBytesPerPacket, hc.pcm);
     hc.decodeCalls++;
     if (got < 0)
         hc.decodeRefused++;
     else
+    {
         hc.samplesOut += uint64_t(got);
+        XmaSubstApply(i, hc, g_memory.base + src, pcmBefore);   // audio mods, see above
+    }
     hc.packets++;
 
     // ADVANCE ALONG THIS STREAM'S OWN PACKET CHAIN, NOT ONE PACKET AT A TIME.
@@ -901,6 +1132,7 @@ void XmaDecodeThread()
 #if !defined(_WIN32) && !defined(__APPLE__)
     pthread_setname_np(pthread_self(), "cz-xma-decode");
 #endif
+    XmaSubstLoad();          // audio mods: game_mods/dr2kit_audio/, if deployed
     uint64_t tick = 0;
     bool declined[kXmaContextCount] = {};
     while (g_xmaDecodeRunning.load())

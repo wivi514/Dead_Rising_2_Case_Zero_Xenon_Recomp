@@ -3985,6 +3985,26 @@ CZ_NO_MODS=1      ignore assets/game_mods/ entirely: the run is the unmodded one
                   `dr2 mod undeploy -g cz` removes exactly what the last deploy wrote.
 ```
 
+## Audio mods (PCM substitution, 2026-10-09)
+
+```
+CZ_NO_AUDIO_MODS=1  never read assets/game_mods/dr2kit_audio/substitutions.txt: every
+                    sound decodes as shipped (CZ_NO_MODS=1 does the same, with the file
+                    layer). The table is written by the DR2 CZ/CW modding toolkit
+                    (`dr2 mod deploy -g cz` with a replace/<sound>.xma.wav override) and
+                    lists every packet of a replaced XMA stream by FNV-1a 64 hash with
+                    the decoded-sample position of its output (gotcha 635). Logs:
+                    "[xma] audio mods: N sound stream(s), M packets from …" at decode-
+                    thread start, "[xma] audio mods: ctxN plays <file> from sample S
+                    (start #K)" when a replaced sound (re)starts (first 3, then every
+                    100th), and a line for a WAV that fails to load or a channel-count
+                    mismatch (that sound then plays unmodded).
+                    Recording what the game outputs without a speaker:
+                    SDL_AUDIODRIVER=disk SDL_DISKAUDIOFILE=/tmp/out.raw (32-bit float
+                    stereo 48 kHz; with sdl2-compat also SDL_AUDIO_DRIVER /
+                    SDL_AUDIO_DISK_OUTPUT_FILE).
+```
+
 ## Part 99 — subtitle language and the boot-logo skip
 
 ```

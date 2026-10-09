@@ -7193,3 +7193,34 @@ From phase C part 18 (the frame rate — and none of it was work):
     shipped aligned-offset ones) for a normal model `.tex`; `preload4.big`'s boot path,
     which rejected earlier re-encodes, is still unproven. (Case Zero, 2026-10-08;
     Case West has the same layer, its gotcha 330.)
+
+635. **AN AUDIO MOD CANNOT BE "WHICH FILE IS THIS BUFFER FROM?" — MAKE EVERY XMA PACKET SAY
+    WHERE IT IS.** The DR2 CZ/CW modding toolkit replaces sounds (no XMA encoder can be
+    shipped), so this runtime substitutes PCM: `runtime/kernel/audio.cpp`, block "AUDIO
+    MODS: PCM SUBSTITUTION", `XmaSubstApply` after each `Xma_DecodePacket`. The plan was to
+    map a context's input buffer back to a `.big` entry by tracking `NtReadFile` handles and
+    offsets in the VFS; that breaks on what this title actually does with audio (music is
+    streamed by re-arming buffer 0 with a new pointer every 128 KB, sound banks are read
+    whole and their data copied, contexts are reused). What works: `dr2 mod deploy` writes
+    `game_mods/dr2kit_audio/substitutions.txt` listing EVERY packet of a replaced stream by
+    its 64-bit FNV-1a hash with the decoded-sample position its output starts at (computed
+    by decoding the stream packet by packet through the same ffmpeg decoder: identical
+    samples to a whole-file decode). Each decoded packet is hashed; a hit says which
+    replacement samples overwrite the PCM it just produced. No VFS state, and loops
+    (the read offset rewinds to 0), streaming and reused contexts need no special case.
+    Packets that also occur in another sound of the game are marked `c` by the toolkit and
+    only continue a substitution already running at the expected position; only unique
+    (`u`) packets start one. Everything the guest sees (buffers, read offsets, sample
+    counts, ring handshakes) is unchanged; only the PCM differs. Off switch
+    `CZ_NO_AUDIO_MODS=1` (and `CZ_NO_MODS=1`): the table is never read. Cost: one FNV-1a
+    over 2 KB per decoded packet while a table is loaded.
+    **Verified 2026-10-09, headless** (`CZ_NO_WINDOW=1 CZ_VKDRAW=1`, no input, 90 s at the
+    title screen, `SDL_AUDIODRIVER=disk` recording the output): `music.big/PressStartPrologue.xma`
+    replaced by `HB_Indemnify`'s audio logs `audio mods: ctx0 plays … from sample 0 (start
+    #1)` and the recording follows HB_Indemnify at the right positions (1 s windows up to
+    0.94 normalised correlation); `CZ_NO_AUDIO_MODS=1` on the same binary logs nothing and
+    the recording follows PressStartPrologue. Same change, same test in Case West: its
+    gotcha 331. Also learned there: an edited `data/audio/Prologue.txt` (the PC-style
+    "music swap") is served from `game_mods/`, fails the digest check (`CZ_DIGEST_PROBE=1`)
+    and faults at once (finding 50's assert path) — script-level remapping is not a mod
+    route on this title.
