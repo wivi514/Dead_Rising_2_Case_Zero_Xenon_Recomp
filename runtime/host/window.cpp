@@ -196,6 +196,10 @@ int Host_DisplayModeList(uint32_t*, int) { return 0; }
 // VK_NULL_HANDLE only exists with the real header.
 #include <vulkan/vulkan.h>
 #include <SDL_vulkan.h>
+#if defined(__APPLE__)
+#include <SDL_metal.h>
+#include <vulkan/vulkan_metal.h>
+#endif
 
 #include "../gpu/vk_renderer.h"
 #include "host_paths.h"
@@ -208,6 +212,12 @@ int Host_DisplayModeList(uint32_t*, int) { return 0; }
 #include "../cpu/native_kbm.h"
 #include "stfs_extract.h"
 #include <filesystem>
+
+#if defined(__APPLE__)
+// The window's CAMetalLayer, made on the main thread at window creation; the renderer
+// thread builds its Vulkan surface from it (Host_VulkanCreateSurface).
+static void* g_metalLayer = nullptr;
+#endif
 
 namespace {
 
@@ -2534,6 +2544,17 @@ bool Host_WindowInit()
         return false;
     }
     ApplyGameIcon(g_window);
+#if defined(__APPLE__)
+    // The Metal view must be made HERE, on the main thread: AppKit views are main-thread
+    // objects, and Host_VulkanCreateSurface runs on the renderer thread.
+    if (g_wantVulkanSwapchain)
+    {
+        if (SDL_MetalView view = SDL_Metal_CreateView(g_window))
+            g_metalLayer = SDL_Metal_GetLayer(view);
+        if (!g_metalLayer)
+            fprintf(stderr, "[host] SDL_Metal_CreateView failed: %s\n", SDL_GetError());
+    }
+#endif
 
     // The persisted EXCLUSIVE fullscreen upgrades the borderless creation flag here,
     // once the window exists to measure its display against (see the flags comment).
@@ -2851,6 +2872,30 @@ bool Host_VulkanCreateSurface(void* instance, uint64_t* outSurface)
 {
     if (!Host_VulkanSwapchainWanted() || !instance || !outSurface)
         return false;
+#if defined(__APPLE__)
+    // macOS: build the surface from the CAMetalLayer the WINDOW THREAD made (see
+    // g_metalLayer). SDL_Vulkan_CreateSurface would create and attach a fresh NSView
+    // here, on the renderer thread, which AppKit does not support: the swapchain filled
+    // correctly (CZ_VK_SWAPCHAIN_DUMP read the title picture back) and the window stayed
+    // black.
+    if (g_metalLayer)
+    {
+        auto create = reinterpret_cast<PFN_vkCreateMetalSurfaceEXT>(vkGetInstanceProcAddr(
+            static_cast<VkInstance>(instance), "vkCreateMetalSurfaceEXT"));
+        VkMetalSurfaceCreateInfoEXT mci{ VK_STRUCTURE_TYPE_METAL_SURFACE_CREATE_INFO_EXT };
+        mci.pLayer = static_cast<const CAMetalLayer*>(g_metalLayer);
+        VkSurfaceKHR ms = VK_NULL_HANDLE;
+        if (create && create(static_cast<VkInstance>(instance), &mci, nullptr, &ms) ==
+                          VK_SUCCESS)
+        {
+            *outSurface = reinterpret_cast<uint64_t>(ms);
+            fprintf(stderr, "[host] Vulkan surface from the main-thread Metal layer\n");
+            return true;
+        }
+        fprintf(stderr, "[host] vkCreateMetalSurfaceEXT failed — falling back to "
+                        "SDL_Vulkan_CreateSurface (expect a black window)\n");
+    }
+#endif
     VkSurfaceKHR surface = VK_NULL_HANDLE;
     if (!SDL_Vulkan_CreateSurface(g_window, static_cast<VkInstance>(instance), &surface))
     {
