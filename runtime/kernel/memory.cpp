@@ -14,6 +14,9 @@
 #else
 #include <sys/mman.h>
 #include <unistd.h>
+#if defined(__APPLE__)
+#include <fcntl.h>
+#endif
 #endif
 
 Memory g_memory;
@@ -170,7 +173,18 @@ void Memory::Init()
 
     // Back all three views with one shared memfd, so a write through any view is
     // visible through the others.
+#if defined(__APPLE__)
+    // macOS has no memfd_create. A POSIX shared-memory object unlinked the moment it
+    // is open is the same thing: an anonymous, fd-backed region nothing else can name.
+    // The pid makes the name unique against a second instance racing this one.
+    char shmName[64];
+    snprintf(shmName, sizeof shmName, "/cz_xbox_physical_%d", int(getpid()));
+    const int fd = shm_open(shmName, O_RDWR | O_CREAT | O_EXCL, 0600);
+    if (fd >= 0)
+        shm_unlink(shmName);
+#else
     const int fd = memfd_create("xbox_physical", MFD_CLOEXEC);
+#endif
     if (fd < 0 || ftruncate(fd, off_t(kPhysSize)) != 0)
     {
         perror("runtime: memfd for physical memory");
@@ -216,7 +230,7 @@ void Memory::Init()
                     "region (CZ_MEM_POISON_ALIAS=1 is the positive control)\n",
             kPhysicalViews[0], kPhysicalViews[1], kPhysicalViews[2]);
 
-#if !defined(_WIN32)
+#if defined(__linux__)
     // HUGE PAGES FOR THE GUEST MAP (perf plan part 117, item 2). The pump thread takes
     // ~34,000 4K page walks a frame at the crowd (the PMU: `ls_l1_d_tlb_miss.
     // tlb_reload_4k_l2_miss`), and the guest threads walk the same map. Transparent
@@ -281,8 +295,15 @@ void Memory::Init()
             fprintf(stderr, "runtime: VirtualProtect null page failed (%lu)\n",
                     GetLastError());
 #else
-        if (mprotect(base, 0x1000, nullMode == 0 ? PROT_NONE : PROT_READ) != 0)
+        // The HOST page decides the granularity, not the guest's 4 KB: Apple Silicon's
+        // pages are 16 KB, so there the trap covers guest 0x0000..0x3FFF. Nothing the
+        // title owns lives below 0x10000, so the wider trap only catches more nulls.
+        const size_t hostPage = size_t(sysconf(_SC_PAGESIZE));
+        if (mprotect(base, hostPage, nullMode == 0 ? PROT_NONE : PROT_READ) != 0)
             perror("runtime: mprotect null page");
+        if (hostPage != 0x1000)
+            fprintf(stderr, "[mem] host page is %zu bytes: the null trap covers guest "
+                            "0..%zX\n", hostPage, hostPage - 1);
 #endif
     }
     fprintf(stderr, "[mem] guest page 0 is %s\n",
