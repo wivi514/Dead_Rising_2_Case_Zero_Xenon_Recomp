@@ -191,7 +191,7 @@ mask; trust the microcode's own swizzles.
     was built, but **two of its eight steps are retired and its item 0 is answered** —
     read `phase5-notes.md` §6ba before following anything in it.
   - **THE LIVE HAND-OFF IS ALWAYS THE HIGHEST-NUMBERED `partNN-kickoff.md`**, and it
-    supersedes every earlier kickoff on "where the port is". **2026-10-08: TWO MORE FIXES, BOTH OPERATOR-VERIFIED, NEITHER IN A RELEASE YET** —
+    supersedes every earlier kickoff on "where the port is". **ALSO 2026-10-08: OPEN ITEM 0zj, THE "LAS VEGAS 46" SIGN THAT GETS HOLES WHILE THE CAMERA MOVES, IS PARKED; `docs/las-vegas-sign-holes.md` is the whole record and its next step (a draw-ID F9 of a bad frame).** **2026-10-08: TWO MORE FIXES, BOTH OPERATOR-VERIFIED, NEITHER IN A RELEASE YET** —
     `a3ade42` keeps the co-op bike spawn out of the save stream (overlay v7 had made every
     older save read as "damaged"; it MUST ship with v7, open item 0zg, gotcha 626) and
     `78632f1` makes far soldier zombies follow their variant (two misnamed LOD3 meshes; the
@@ -835,7 +835,11 @@ mask; trust the microcode's own swizzles.
   can replace) and headless `CZ_VK_FRAME_DUMP` frames. Its `INDEX.md` says what every
   shot showed, INCLUDING the ones that were lost — Spectacle deletes its temp directory
   when the window closes, so most of the first gameplay session's screenshots survive
-  only as descriptions. Save straight into it.
+  only as descriptions. Save straight into it. **It is pruned periodically**
+  (`CLEANUP-2026-09-03.md`: 1.2 TB -> 231 MB; `CLEANUP-2026-10-08.md`: 163 -> 22 GB). The
+  raw intermediates (`.ppm .log .bin .census .f32`) of CLOSED investigations are deleted.
+  PNGs, `INDEX.md`/`README.md`, `ucode-dumps/` and anything open or parked are kept. So a
+  doc's capture path from a closed item may no longer exist; check those files first.
 - `runtime/` — the host runtime. Phases 1 and 3 complete; **phase 4's command
   processor is live too, ahead of the plan's ordering** — do not read the plan's phase
   numbers as the state of the code. There is a window, a present seam and real input;
