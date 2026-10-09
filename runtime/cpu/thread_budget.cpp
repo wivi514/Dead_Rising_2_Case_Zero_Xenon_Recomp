@@ -23,6 +23,9 @@
 #include <sys/resource.h>
 #include <sys/syscall.h>
 #include <unistd.h>
+#elif defined(__APPLE__)
+#include <pthread.h>
+#include <sys/sysctl.h>
 #endif
 
 namespace
@@ -143,6 +146,13 @@ unsigned CountPhysicalCores()
         return unsigned(cores.size());
     if (allowedCpus)
         return allowedCpus;
+#elif defined(__APPLE__)
+    // Apple Silicon has no SMT; hw.physicalcpu counts performance AND efficiency cores
+    // (an M1 is 4 + 4), which is the same question the Linux walk answers.
+    int n = 0;
+    size_t len = sizeof n;
+    if (sysctlbyname("hw.physicalcpu", &n, &len, nullptr, 0) == 0 && n > 0)
+        return unsigned(n);
 #endif
     return 0;
 }
@@ -365,6 +375,8 @@ void ThreadBudget_NameSelf(const char* name)
 #elif defined(_WIN32)
     PinSelfByName(name);   // CZ_GUEST_PIN: the Windows sweep cannot read names, so the
                            // threads that have one pin (or confine) themselves here
+#elif defined(__APPLE__)
+    pthread_setname_np(name);   // macOS names only the calling thread; 63 chars
 #else
     (void)name;
 #endif

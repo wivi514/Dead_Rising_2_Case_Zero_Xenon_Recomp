@@ -50,6 +50,9 @@
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #include <intrin.h>
+#elif defined(__APPLE__)
+#include <sys/sysctl.h>
+#include <sys/utsname.h>
 #else
 #include <sys/sysinfo.h>
 #include <sys/utsname.h>
@@ -124,6 +127,11 @@ std::string CpuBrand()
         __cpuid(regs, int(0x80000002u + i));
         memcpy(brand + i * 16, regs, 16);
     }
+#elif defined(__APPLE__)
+    // No CPUID on Apple Silicon; the kernel publishes the brand ("Apple M1").
+    size_t n = sizeof brand - 1;
+    if (sysctlbyname("machdep.cpu.brand_string", brand, &n, nullptr, 0) != 0)
+        return "unknown";
 #else
     unsigned a, b, c, d;
     for (unsigned i = 0; i < 3; i++)
@@ -175,6 +183,13 @@ std::string OsName()
              display, (unsigned long)v.dwMajorVersion, (unsigned long)v.dwMinorVersion,
              (unsigned long)v.dwBuildNumber);
     return out;
+#elif defined(__APPLE__)
+    char ver[64] = "";
+    size_t n = sizeof ver;
+    sysctlbyname("kern.osproductversion", ver, &n, nullptr, 0);
+    utsname u{};
+    uname(&u);
+    return std::string("macOS ") + ver + " (Darwin " + u.release + ")";
 #else
     std::string pretty;
     std::ifstream f("/etc/os-release");
@@ -201,6 +216,12 @@ uint64_t RamMb()
     m.dwLength = sizeof m;
     GlobalMemoryStatusEx(&m);
     return m.ullTotalPhys / (1024 * 1024);
+#elif defined(__APPLE__)
+    uint64_t bytes = 0;
+    size_t n = sizeof bytes;
+    if (sysctlbyname("hw.memsize", &bytes, &n, nullptr, 0) != 0)
+        return 0;
+    return bytes / (1024 * 1024);
 #else
     struct sysinfo si{};
     if (sysinfo(&si) != 0)
