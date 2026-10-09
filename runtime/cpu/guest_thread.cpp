@@ -24,6 +24,19 @@
 #include "../kernel/kobject.h"
 #include "../kernel/heap.h"
 #include "../kernel/memory.h"
+
+// The host thread id for trace lines. gettid() is Linux's; macOS spells it
+// pthread_threadid_np (a 64-bit id, truncated here because it is only a label).
+static int HostTid()
+{
+#if defined(__APPLE__)
+    uint64_t id = 0;
+    pthread_threadid_np(nullptr, &id);
+    return int(id);
+#else
+    return int(gettid());   // win_compat.h supplies the Windows spelling
+#endif
+}
 #include "thread_budget.h"
 
 constexpr size_t kPcrSize = 0xAB0;
@@ -358,7 +371,7 @@ uint32_t GuestThread::Run(const GuestThreadParams& params)
     // the old binary's remembered numbers.
     if (getenv("CZ_THREAD_TRACE") || getenv("CZ_WAIT_TRACE") || getenv("CZ_CS_TRACE"))
         fprintf(stderr, "[kernel] guest thread tid=%08X entry=%08X host tid=%d cpu=%u\n",
-                GuestThread::GetCurrentThreadId(), params.function, int(gettid()),
+                GuestThread::GetCurrentThreadId(), params.function, HostTid(),
                 cpuNumber);
     bool terminated = false;
     try

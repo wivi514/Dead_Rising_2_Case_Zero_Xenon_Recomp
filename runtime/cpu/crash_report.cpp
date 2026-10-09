@@ -46,8 +46,11 @@
 #include <process.h> // _exit
 #else
 #include <dlfcn.h>
-#include <ucontext.h>
+#include <signal.h> // ucontext_t; macOS refuses <ucontext.h> without _XOPEN_SOURCE
 #include <unistd.h>
+#if defined(__linux__)
+#include <ucontext.h>
+#endif
 #endif
 
 #include "../kernel/guestcall.h"
@@ -484,9 +487,15 @@ LONG CALLBACK UnhandledFilter(EXCEPTION_POINTERS* ep)
 void Handler(int sig, siginfo_t* info, void* ucontext)
 {
     unsigned long long pc = 0;
-#if defined(__x86_64__)
+#if defined(__linux__) && defined(__x86_64__)
     if (ucontext)
         pc = (unsigned long long)((const ucontext_t*)ucontext)->uc_mcontext.gregs[REG_RIP];
+#elif defined(__linux__) && defined(__aarch64__)
+    if (ucontext)
+        pc = (unsigned long long)((const ucontext_t*)ucontext)->uc_mcontext.pc;
+#elif defined(__APPLE__) && defined(__aarch64__)
+    if (ucontext)
+        pc = (unsigned long long)((const ucontext_t*)ucontext)->uc_mcontext->__ss.__pc;
 #endif
     Report(sig, info ? info->si_addr : nullptr, pc);
 }

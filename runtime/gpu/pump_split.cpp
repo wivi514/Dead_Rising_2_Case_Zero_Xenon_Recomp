@@ -123,7 +123,9 @@ uint32_t g_palCover = 0, g_palPartial = 0, g_palCoverBursts = 0, g_palPartialBur
 uint32_t g_palHigh = 0;
 
 Stats g_stats{};
-#if !defined(_WIN32)
+// Another thread's CPU clock: pthread_getcpuclockid is Linux-only (macOS has none), so
+// WalkCpuSeconds reports -1 ("not measured") there, as it does on Windows.
+#if defined(__linux__)
 clockid_t g_wClock;
 bool g_haveWClock = false;
 #endif
@@ -415,7 +417,7 @@ bool Start(uint8_t* base, void (*deliverInterrupt)())
     }
     // D's replica starts as W's file is now (all zero before the first walk).
     memcpy(g_regsD, Pm4_Registers(), sizeof g_regsD);
-#if !defined(_WIN32)
+#if defined(__linux__)
     g_haveWClock = pthread_getcpuclockid(pthread_self(), &g_wClock) == 0;
 #endif
     ThreadBudget_Note("draw", 1,
@@ -603,7 +605,7 @@ uint32_t PaletteHighWater() { return g_palHigh; }
 
 double WalkCpuSeconds()
 {
-#if !defined(_WIN32)
+#if defined(__linux__)
     if (!g_on || !g_haveWClock)
         return -1.0;
     timespec ts{};
