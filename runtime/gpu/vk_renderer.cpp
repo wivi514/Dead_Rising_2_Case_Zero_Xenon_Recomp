@@ -7942,6 +7942,14 @@ bool CreateDevice()
                         "presenting through the readback path instead.\n");
         R->wantSwapchain = false;
     }
+#if defined(__APPLE__)
+    // MoltenVK is a PORTABILITY driver: the loader hides it from vkEnumeratePhysicalDevices
+    // unless the instance opts in, and the failure is "no Vulkan device", not a named
+    // extension. Inserted FIRST because the validation fallbacks below pop_back() the
+    // extensions they added and must not pop this one.
+    instExts.insert(instExts.begin(), VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME);
+    ici.flags |= VK_INSTANCE_CREATE_ENUMERATE_PORTABILITY_BIT_KHR;
+#endif
     VkValidationFeatureEnableEXT syncFeat[] = {
         VK_VALIDATION_FEATURE_ENABLE_SYNCHRONIZATION_VALIDATION_EXT
     };
@@ -8362,6 +8370,10 @@ bool CreateDevice()
     std::vector<const char*> devExts;
     if (R->wantSwapchain)
         devExts.push_back(VK_KHR_SWAPCHAIN_EXTENSION_NAME);
+#if defined(__APPLE__)
+    // The spec REQUIRES enabling VK_KHR_portability_subset on a device that advertises it.
+    devExts.push_back("VK_KHR_portability_subset");
+#endif
     if (R->rtEnabled)
     {
         devExts.push_back("VK_KHR_acceleration_structure");
@@ -34973,6 +34985,12 @@ bool VkRenderer_Diag()
     app.apiVersion = VK_API_VERSION_1_3;
     VkInstanceCreateInfo ici{ VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO };
     ici.pApplicationInfo = &app;
+#if defined(__APPLE__)
+    const char* portExt[] = { VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME };
+    ici.enabledExtensionCount = 1;
+    ici.ppEnabledExtensionNames = portExt;
+    ici.flags |= VK_INSTANCE_CREATE_ENUMERATE_PORTABILITY_BIT_KHR;
+#endif
     VkInstance inst = VK_NULL_HANDLE;
     const VkResult ir = vkCreateInstance(&ici, nullptr, &inst);
     if (ir != VK_SUCCESS)
