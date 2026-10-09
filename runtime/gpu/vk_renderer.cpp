@@ -8159,9 +8159,26 @@ bool CreateDevice()
     // LRU this still needs. CZ_VK_MAX_TEXTURES overrides it — including DOWNWARD, which
     // is the same-binary arm that reproduces the exhaustion on demand.
     {
-        const uint32_t deviceCap =
+        // The heaps are UPDATE_AFTER_BIND sets, and Vulkan gives those their OWN limits
+        // (VkPhysicalDeviceDescriptorIndexingProperties). On NVIDIA/AMD/Intel-Linux both
+        // sets of limits are huge, so reading the ordinary ones never mattered; MoltenVK
+        // reports 256 ordinary sampled images per stage against 1,000,000 update-after-
+        // bind ones, and a 256-slot heap made the title scene re-upload its textures
+        // every frame (240 ms frames on an M1, milestone C). Take the larger reading of
+        // the two families, each limited by its own per-set bound.
+        VkPhysicalDeviceDescriptorIndexingProperties dip{
+            VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_INDEXING_PROPERTIES
+        };
+        VkPhysicalDeviceProperties2 p2di{ VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2 };
+        p2di.pNext = &dip;
+        vkGetPhysicalDeviceProperties2(R->physical, &p2di);
+        const uint32_t ordinaryCap =
             std::min(props.limits.maxPerStageDescriptorSampledImages,
                      props.limits.maxDescriptorSetSampledImages / 4);
+        const uint32_t uabCap =
+            std::min(dip.maxPerStageDescriptorUpdateAfterBindSampledImages,
+                     dip.maxDescriptorSetUpdateAfterBindSampledImages / 4);
+        const uint32_t deviceCap = std::max(ordinaryCap, uabCap);
         uint32_t want = std::min(deviceCap, 65536u);
         if (const char* env = getenv("CZ_VK_MAX_TEXTURES"))
             want = std::min(deviceCap, uint32_t(std::max(16, atoi(env))));
