@@ -53,7 +53,9 @@ extern "C" unsigned int __stdcall timeBeginPeriod(unsigned int uPeriod);
 // The LLVM profiling runtime's flush, resolved only in a -fprofile-instr-generate build
 // (see the SIGTERM handler). Weak, so a normal link leaves it null. GNU-only: the
 // codegen arms are Linux measurements and COFF weak externals are a different mechanism.
-#if !defined(_WIN32)
+// ld64 also rejects an undefined weak reference unless told otherwise, so macOS takes
+// the null spelling too (the PGO arms are Linux measurements).
+#if !defined(_WIN32) && !defined(__APPLE__)
 extern "C" int __llvm_profile_write_file(void) __attribute__((weak));
 #else
 static int (*const __llvm_profile_write_file)(void) = nullptr;
