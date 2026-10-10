@@ -919,12 +919,23 @@ void PcOptions_Pump(PPCContext& ctx, uint8_t* base, uint32_t buttons)
                             double(Settings_WorldLodX10()) * 0.1);
                     break;
                 }
+                case 11:
+                {
+                    // SHADOW BIAS (2026-10-10): the scale on the title's per-cascade
+                    // shadow depth bias, 0.25..1.00 in steps of 0.25, clamped
+                    // (gotcha 377). 1.00 is the title's own; 0.25 the default. LIVE:
+                    // the renderer re-reads it once a frame (gpu/vk_renderer.cpp).
+                    Settings_SetShadowBiasX100(Settings_ShadowBiasX100() + dir * 25);
+                    fprintf(stderr, "[pcopt] shadow bias %.2f — live\n",
+                            double(Settings_ShadowBiasX100()) * 0.01);
+                    break;
+                }
             }
         };
         int sel = Settings_OverlaySelection();
         if (pressed & (kUp | kDown))
         {
-            sel = (sel + ((pressed & kDown) ? 1 : 10)) % 11; // eleven rows since WORLD DETAIL
+            sel = (sel + ((pressed & kDown) ? 1 : 11)) % 12; // twelve rows since SHADOW BIAS
             Settings_SetOverlaySelection(sel);
         }
         else if (pressed & (kLeft | kRight))

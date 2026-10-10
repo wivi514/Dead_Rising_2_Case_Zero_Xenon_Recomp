@@ -3161,6 +3161,12 @@ struct ShaderMeta
     // the key means "reads no constants" (11 modules); an empty list from one that does
     // not means "we do not know". The copy path must not merge them.
     bool aluListKnown = false;
+    // SHADOW BIAS (2026-10-10): the shader samples a shadow CASCADE — it reads c47
+    // (`gShadowMapPackedParams[3]`, the bias, in the register layout DR2 PC's shaders
+    // name and this title's microcode shares) and at least one cascade matrix row
+    // (c28..c39). Only these get the bias scale; set at load from the sidecar's list,
+    // never guessed for a shader whose list is unknown.
+    bool readsShadowBlock = false;
     // Part 88: true when EVERY dynamic expression in the sidecar is `N + a0` with N in
     // [8, 10] — the bone palette. Only these take the write-extent-bounded copy; the
     // one outlier (`vc(209+a0)`) and any sidecar carrying no exprs keep the full copy,
@@ -3390,6 +3396,21 @@ bool LoadShaderMeta(const std::filesystem::path& path, ShaderMeta& meta)
     meta.aluDynamic =
         !(haveAluList && text.find("\"aluDynamic\": false") != std::string::npos);
     meta.aluListKnown = haveAluList;
+    {
+        auto has = [&](uint32_t r) {
+            return std::find(meta.aluConsts.begin(), meta.aluConsts.end(), r) !=
+                   meta.aluConsts.end();
+        };
+        // c47 plus ANY cascade matrix row (c28..c39, three cascades of four rows): a
+        // census of the shipped cache (2026-10-10) found 216 pixel shaders of this shape,
+        // most of them sampling ONE cascade (`c28..31 + c47`, `c36..39 + c44 + c47`), and
+        // only 16 that read the whole block. The 14 that read c47 with only the far
+        // static map's rows (c40..42) are excluded: that path reads c47.w alone.
+        bool cascade = false;
+        for (uint32_t r = 28; r <= 39; ++r)
+            cascade = cascade || has(r);
+        meta.readsShadowBlock = haveAluList && has(47) && cascade;
+    }
     // The dynamic EXPRESSIONS, recorded at cache-build time for exactly this decision
     // (alu_const_sidecar.py's comment says so). Every element must parse as `N + a0`
     // with N in [8, 10] or the shader is NOT a palette shader and keeps the full copy —
@@ -6534,6 +6555,76 @@ float FovHalfRadThisFrame()
         cachedHalfRad = float(deg) * 0.00872664626f;   // pi/360: degrees -> half-radians
     }
     return cachedHalfRad;
+}
+
+// SHADOW BIAS (2026-10-10, open item 0zl). The title's cascaded-shadow test subtracts a
+// PER-CASCADE depth bias before it compares, and the bias is pixel constant c47.xyz —
+// `gShadowMapPackedParams[3]` in DR2 PC's shaders (`CascadedShadowMapFunctions.h`:
+// `dot(gShadowMapPackedParams[3].xyz, cascade_one_hot)` subtracted from the light-space
+// depth), whose register layout this title's microcode shares (c14/15 camera, c28..42
+// cascade matrices, c44..47 the packed params). The title's value eats the shadow a thin
+// caster throws on the surface it is attached to — an awning on its own wall — until the
+// camera is close, and the cascades are refit to the camera every frame, so the shadow
+// grows in GRADUALLY as you walk up (operator, 2026-10-10: Uncle Bill's awning, the
+// DRINKS-TOOLS door canopy). Measured one arm at a time, all operator-run: the distance
+// fade (c44.zw x3) and the shadow-map resolution (CZ_VK_SHADOW_TIER=0) were nulls; the
+// bias at x0.25 brought the shadow back with no acne on walls, road or sidewalk.
+//
+// THE FACTOR ONLY SCALES .xyz — .w is the far static map's depth scale, a different
+// term. It is applied on the PIXEL constant COPY (a memo miss), never in place, so a memo
+// hit re-serves an already-scaled window exactly once; the memo is per frame, so a live
+// change of the setting takes effect on the next frame. Only shaders whose sidecar lists
+// c47 and a cascade matrix (`readsShadowBlock`, 216 of 347 in the shipped cache) are
+// touched.
+//
+// `CZ_SHADOW_BIAS=<factor>` overrides the setting for an A/B; `CZ_SHADOW_BIAS=0` is the
+// control: the title's own bias (factor 1, no scale applied at all).
+float ShadowBiasFactorThisFrame()
+{
+    static const float envFactor = [] {
+        const char* e = Env("CZ_SHADOW_BIAS");
+        if (!e || !*e)
+            return -1.0f;
+        const float f = strtof(e, nullptr);
+        if (f <= 0.0f)
+        {
+            fprintf(stderr, "[vk] CZ_SHADOW_BIAS=0 — the title's own shadow bias, the "
+                            "control\n");
+            return 1.0f;
+        }
+        fprintf(stderr, "[vk] CZ_SHADOW_BIAS=%.2f overrides the SHADOW BIAS setting\n",
+                double(f));
+        return f;
+    }();
+    static uint64_t cachedFrame = ~0ull;
+    static float cached = 1.0f;
+    if (cachedFrame != R->frame)
+    {
+        cachedFrame = R->frame;
+        const float f = envFactor > 0.0f ? envFactor
+                                         : float(Settings_ShadowBiasX100()) * 0.01f;
+        if (f != cached || cachedFrame == 0)
+            fprintf(stderr, "[vk] shadow bias x%.2f (title default 1.00): the cascade "
+                            "depth bias c47.xyz on shadow-sampling pixel shaders\n",
+                    double(f));
+        cached = f;
+    }
+    return cached;
+}
+
+// Scale c47.xyz of a freshly copied pixel window. Shared by the copy and the memo
+// verifier's recompute so the two cannot disagree.
+inline void ApplyShadowBias(uint32_t* window, const ShaderMeta& ps)
+{
+    if (!ps.readsShadowBlock)
+        return;
+    const float f = ShadowBiasFactorThisFrame();
+    if (f == 1.0f)
+        return;
+    float* c = reinterpret_cast<float*>(window);
+    for (int i = 0; i < 3; ++i)
+        c[47 * 4 + i] *= f;
+    COUNT("draw: shadow bias scaled on a pixel constant copy (SHADOW BIAS)");
 }
 
 // The cross-frame store's index, through one seam so the container is a runtime choice.
@@ -24343,6 +24434,7 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
             ProfScope _pcp(&g_prof.constPs);
             uint32_t* dst = reinterpret_cast<uint32_t*>(R->arena.mapped + psConstAt);
             CopyConstWindow(dst, regs + xenos::kAluConstantBase + memoPsBase * 4, ps, false);
+            ApplyShadowBias(dst, ps);
             R->constMemoPsFor = &ps;
             R->constMemoPsValid = true;
             R->constMemoPsVersion = psVersion;
@@ -24369,6 +24461,7 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
             if (AspectPatchActive())
                 PatchWideProjection(scratch.data(),
                                     !NoWideFill() && CoverQuadWindow(scratch.data()));
+            ApplyShadowBias(scratch.data() + 256 * 4, ps);
             if (g_constMemoVerifyPoison)
             {
                 // POISON A REGISTER THE COMPARE ACTUALLY LOOKS AT. Under the gather the

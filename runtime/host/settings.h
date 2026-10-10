@@ -90,6 +90,15 @@ int           Settings_WorldLodX10();       // 10..40, step 5; default 20 (2.0),
                                             // the Deck build (CZ_DECK_DEFAULTS)
 void          Settings_SetWorldLodX10(int); // clamped and snapped to the step
 
+// SHADOW BIAS (2026-10-10, operator-verified at 0.25). Scales the title's per-cascade
+// shadow depth bias (pixel constant c47.xyz, `gShadowMapPackedParams[3]` in DR2 PC's
+// shaders). The title's own value eats the shadow a thin caster throws on the surface it
+// is attached to (an awning on its wall) until the camera is close. Hundredths,
+// 0.25..1.00 step 0.25; 1.00 is the title's own, 0.25 the default. Applies LIVE;
+// CZ_SHADOW_BIAS wins over it (gpu/vk_renderer.cpp, ShadowBiasFactorThisFrame).
+int           Settings_ShadowBiasX100();       // 25..100, step 25; default 25
+void          Settings_SetShadowBiasX100(int); // clamped and snapped to the step
+
 int           Settings_RtShadows();     // RT tier (part 64): 0 = none (the raster
                                         // cascade), 1/2/3 = RT LOW/MEDIUM/HIGH.
                                         // Env CZ_VK_RT_SHADOWS wins over this.

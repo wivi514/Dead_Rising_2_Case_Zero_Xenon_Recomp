@@ -67,6 +67,7 @@ enum class UiStr
     Exposure,
     ZombieDetail,
     WorldDetail,
+    ShadowBias,
     FooterApplyResolution,
     FooterMsaaNextLaunch,
     FooterRtOff,

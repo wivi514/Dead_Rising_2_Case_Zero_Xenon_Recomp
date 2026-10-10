@@ -704,8 +704,9 @@ const char* Glyph(char c)
 template <typename Rect>
 void EmitSettingsOverlay(int w, int h, Rect&& rect)
 {
-    const int panelW = 640, panelH = 540;   // 540: eleven rows since WORLD DETAIL
-                                            // (2026-10-08); 500 at ten rows (ZOMBIE
+    const int panelW = 640, panelH = 580;   // 580: twelve rows since SHADOW BIAS
+                                            // (2026-10-10); 540 at eleven (WORLD
+                                            // DETAIL, 2026-10-08); 500 at ten rows (ZOMBIE
                                             // DETAIL, the same day); was 460 at eight rows — MSAA joined in part
                                             // 108; the MOUSE CAMERA toggle is retired
                                             // (always on); MOUSE SENS stays (part 64
@@ -821,7 +822,11 @@ void EmitSettingsOverlay(int w, int h, Rect&& rect)
     // WORLD DETAIL (2026-10-08): the static-geometry LOD distance scale, 1.0 = the title's.
     char worldName[8];
     snprintf(worldName, sizeof worldName, "%.1f", double(Settings_WorldLodX10()) * 0.1);
-    const char* rows[11][2] = {
+    // SHADOW BIAS (2026-10-10): the scale on the title's cascade depth bias, 1.00 = the
+    // title's own.
+    char biasName[8];
+    snprintf(biasName, sizeof biasName, "%.2f", double(Settings_ShadowBiasX100()) * 0.01);
+    const char* rows[12][2] = {
         { UiText(UiStr::Resolution), resName },
         { UiText(UiStr::DisplayMode), kModeNames[int(Settings_DisplayMode()) % 3] },
         { UiText(UiStr::VSync), kOnOff[Settings_VSync() ? 1 : 0] },
@@ -833,9 +838,10 @@ void EmitSettingsOverlay(int w, int h, Rect&& rect)
         { UiText(UiStr::Exposure), expName },
         { UiText(UiStr::ZombieDetail), crowdName },
         { UiText(UiStr::WorldDetail), worldName },
+        { UiText(UiStr::ShadowBias), biasName },
     };
     const int sel = Settings_OverlaySelection();
-    for (int i = 0; i < 11; ++i)
+    for (int i = 0; i < 12; ++i)
     {
         const int y = panelY + 86 + i * 40;
         if (i == sel)

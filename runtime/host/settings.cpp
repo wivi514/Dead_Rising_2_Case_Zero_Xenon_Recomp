@@ -70,6 +70,10 @@ struct State
 #else
     int worldLodX10 = 20;
 #endif
+    // SHADOW BIAS, in hundredths: 25..100 step 25 (2026-10-10). The scale on the title's
+    // per-cascade shadow depth bias; 100 is the title's own. 25 everywhere, the Deck
+    // included: it changes one multiply per constant copy and costs nothing.
+    int shadowBiasX100 = 25;
     int mouseSens = 5;          // 1..10, the panel's MOUSE SENS row. The mouse
                                 // CAMERA itself is always on now (settings.h).
     int language = 1;           // Xbox console-language ID (1=en 2=ja 4=fr 5=es
@@ -127,13 +131,15 @@ void SaveLocked()
             "exposure_x10=%d\n"   // EXPOSURE in tenths: 10..50 step 5, 25 = 2.5
             "crowd_lod_x10=%d\n"  // ZOMBIE DETAIL in tenths: 5..50 step 5, 20 = 2.0
             "world_lod_x10=%d\n"  // WORLD DETAIL in tenths: 10..40 step 5, 20 = 2.0
+            "shadow_bias_x100=%d\n" // SHADOW BIAS in hundredths: 25..100 step 25, 100 = OG
             "mouse_sens=%d\n"     // 1..10
             "language=%d\n"       // Xbox ID: 1=en 2=ja 4=fr 5=es 6=it 7=ko
             "skip_intro_logos=%d\n", // 1 = jump straight to the title screen
             int(g_state.displayMode), g_state.resW, g_state.resH, g_state.renderScale,
             g_state.vsync ? 1 : 0, g_state.shadowTier, g_state.msaa, g_state.fpsCap,
             g_state.fov, g_state.aspect, g_state.rtShadows, g_state.exposureX10,
-            g_state.crowdLodX10, g_state.worldLodX10, g_state.mouseSens,
+            g_state.crowdLodX10, g_state.worldLodX10, g_state.shadowBiasX100,
+            g_state.mouseSens,
             g_state.language, g_state.skipIntroLogos ? 1 : 0);
     fclose(f);
 }
@@ -264,6 +270,14 @@ void Settings_Load(const std::string& path)
             else
                 fprintf(stderr, "[settings] world_lod_x10=%ld is outside 10..40 — "
                                 "keeping %d\n", v, g_state.worldLodX10);
+        }
+        else if (!strcmp(key, "shadow_bias_x100"))
+        {
+            if (v >= 25 && v <= 100)
+                g_state.shadowBiasX100 = int(v - (v % 25));
+            else
+                fprintf(stderr, "[settings] shadow_bias_x100=%ld is outside 25..100 — "
+                                "keeping %d\n", v, g_state.shadowBiasX100);
         }
         else if (!strcmp(key, "fov"))
         {
@@ -643,6 +657,24 @@ void Settings_SetWorldLodX10(int tenths)
     g_state.worldLodX10 = tenths - (tenths % 5);
     SaveLocked();
     // Applied LIVE: the zone streamer's per-volume vote reads it (world_lod.cpp).
+}
+
+int Settings_ShadowBiasX100()
+{
+    std::lock_guard<std::mutex> lock(g_mutex);
+    return g_state.shadowBiasX100;
+}
+
+void Settings_SetShadowBiasX100(int hundredths)
+{
+    if (hundredths < 25)
+        hundredths = 25;
+    if (hundredths > 100)
+        hundredths = 100;
+    std::lock_guard<std::mutex> lock(g_mutex);
+    g_state.shadowBiasX100 = hundredths - (hundredths % 25);
+    SaveLocked();
+    // Applied LIVE: the renderer re-reads it once a frame (vk_renderer.cpp).
 }
 
 int Settings_ExposureX10()
