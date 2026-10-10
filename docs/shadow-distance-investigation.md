@@ -7,6 +7,13 @@ static town-wide shadow. Reference shots: `~/DR2CZ-troubleshooting/shadow-distan
 (the junkyard — the fence's shadow in front of the junk cars, and a car's own shadow,
 both only visible when Chuck is close).
 
+**2026-10-10 — PART OF THIS REQUEST WAS THE DEPTH BIAS, NOW FIXED (open item 0zl).** A
+shadow that only shows up close and grows in gradually is the title's per-cascade depth bias
+(c47.xyz), not the cascade distances this document scaled; the SHADOW BIAS setting
+(default 0.25) fixes the awning case. Whether anything of the original junkyard report
+remains past it has not been checked. DR2 PC's shader also names the distance fade
+(`c44.zw`, `GetShadowMixRate`); x3 on it was a null for the awning.
+
 **Status: PARKED. Two approaches built, BOTH confirmed NON-WORKING by the operator.**
 The menu row and persisted setting were REVERTED (a setting that does nothing is the
 gamma-slider anti-pattern). What remains committed: the env-only parked experiment

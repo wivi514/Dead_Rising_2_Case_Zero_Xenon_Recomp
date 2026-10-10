@@ -5275,5 +5275,10 @@ CZ_WORLD_LOD=<x>             overrides the WORLD DETAIL setting (the static-geom
                              switch-distance scale; 2.0 default, 1.0 the title's own).
                              CZ_WORLD_LOD=0 is the control: the title's own accessors.
                              Prints `[worldlod]` once per distinct value.
+CZ_SHADOW_BIAS=<x>           overrides the SHADOW BIAS setting (the scale on the title's
+                             per-cascade shadow depth bias c47.xyz; 0.25 default, 1.0 the
+                             title's own). CZ_SHADOW_BIAS=0 is the control: no scale. Prints
+                             `[vk] shadow bias xN` on every change; the draw counter
+                             `shadow bias scaled on a pixel constant copy` shows it engaged.
 CZ_COOP_BIKE_SERIALIZE=1     the control for a3ade42: the CoopOnly bike spawn serializes as
                              shipped, so pre-v7 saves read as damaged again on v7 data.

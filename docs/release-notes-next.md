@@ -55,6 +55,12 @@ Lines owed to the next release since v1.1.2, collected as they land. Fold them i
   wash on macOS; dull on most PCs). Operator-checked on Linux at 3440x1440 and on macOS
   (`2f89cc6`, 2026-10-10).
 
+- **Shadows of awnings and other thin overhangs are visible from a distance.** The game
+  only drew the shadow an awning throws on its own wall once you were nearly under it, and
+  it grew in as you walked up. **New setting: SHADOW BIAS** (Settings panel, last row):
+  the default is now 0.25; 1.00 is the original game's value. It applies immediately
+  (operator-verified 2026-10-10).
+
 ## Install note
 
 - **Some shaders are rebuilt once on first launch** (the shader cache's recipe goes

@@ -7,6 +7,34 @@ NOT the cause is what stops the next session re-buying it.
 
 Next, in order:
 
+0zl. **SHADOWS OF THIN OVERHANGS ON THEIR OWN WALL APPEAR ONLY UP CLOSE — FIXED 2026-10-10,
+    OPERATOR-VERIFIED, NEW SETTING SHADOW BIAS (default 0.25, 1.00 = the title's own).**
+    The operator's report: the shadow of Uncle Bill's awning on the shop wall, and of the
+    DRINKS-TOOLS door canopy, grows in GRADUALLY as Chuck walks up; other shadows are fine.
+    F8 bursts in `~/DR2CZ-troubleshooting/play/{bughunt_1010_1858,shadowfade3x_1010_1916,
+    shadowtier0_1010_1922,shadowbias025b_1010_1939}/`.
+    **THE MECHANISM IS THE TITLE'S OWN, READ OUT OF DR2 PC's SHADER** (`CascadedShadowMap
+    Functions.h` via `tools/d3d9_disasm.py`; the 360 microcode shares the register layout,
+    c14/15 camera, c28..42 cascade matrices, c44..47 `gShadowMapPackedParams`): the
+    cascade test subtracts a per-cascade depth bias, `dot(c47.xyz, cascade_one_hot)`, before
+    comparing. A thin caster against its receiver is exactly where a bias eats the shadow,
+    and the cascades are refit to the camera every frame, so its world-space size changes
+    continuously: a GRADUAL effect, not a cascade pop. Three operator arms, one at a time:
+    * the distance fade `c44.zw` x3 (`CZ_VK_PS_CONST_SCALE=44.z=3,44.w=0.333`): NULL;
+    * the shadow map at the title's native size (`CZ_VK_SHADOW_TIER=0`; ours is 2x at
+      1440p, and the PC filter hard-codes `x1024`): NULL;
+    * the bias at x0.25 (`CZ_VK_PS_CONST_SCALE=47.x=0.25,47.y=0.25,47.z=0.25`): the shadow
+      is there from distance, no acne on brick walls, road, sidewalk or curb (F9 checked).
+    **THE FIX** (`ShadowBiasFactorThisFrame`/`ApplyShadowBias` in `gpu/vk_renderer.cpp`)
+    scales c47.xyz on the PIXEL constant COPY (memo-safe, unlike the in-place arm) for the
+    216 of 347 pixel shaders whose sidecar reads c47 and any cascade row c28..c39; the 14
+    that read c47 with only the far static map's rows (c40..42) are excluded, that path
+    reads c47.w alone. Settings row 12, LIVE (operator stepped 0.25 -> 1.00 and back in one
+    session). `CZ_SHADOW_BIAS=<x>` overrides, `CZ_SHADOW_BIAS=0` is the control. Not
+    compared against Xenia; the bias is the title's constant either way, so this is an
+    enhancement like 0zh/0zi. Also accounts for part of the parked shadow-distance request
+    (`docs/shadow-distance-investigation.md`). Gotcha 640.
+
 0zk. **macOS (milestone C) RUNS AND IS PLAYABLE ON AN M1 — two things are open.**
     **PARKED 2026-10-10 (operator: the MacBook "won't be there for a while").** Resume
     here when `ssh czmac` answers: first read `/tmp/cz_run.log` on the Mac for the freeze

@@ -7261,3 +7261,15 @@ From phase C part 18 (the frame rate — and none of it was work):
     that targets ARM should check every barrier lowering before its first run.
     (Case Zero, macOS, 2026-10-09; `docs/xenonrecomp-upstream-bugs.md`.)
 
+640. **A SHADOW THAT GROWS IN GRADUALLY AS YOU WALK UP IS A BIAS, NOT A CASCADE OR A FADE.**
+    Thin overhangs (awnings) cast onto their own wall only up close. Three suspects, each
+    one operator arm: the shader's distance fade, our 2x shadow map, the title's
+    per-cascade depth bias. Only the bias moved it. A cascade switch POPS; a bias whose
+    world-space size follows a camera-fitted cascade changes smoothly, which is what
+    "gradual" means. The constant's identity came from the same engine's PC shader
+    (readable DX9 with variable names) in minutes, after a parked session had spent two
+    builds scaling cascade DISTANCES that never touched it. Two transferable rules: read
+    the PC shader for the formula before hooking the CPU side, and apply a constant
+    scale where the constants are COPIED, not in place, or a constant cache serves it twice.
+    (Case Zero, 2026-10-10, open item 0zl; Case West ships the same shadow shaders.)
+
