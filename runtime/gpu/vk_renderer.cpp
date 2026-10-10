@@ -10256,10 +10256,14 @@ void CopyFaceIntoCube(VkCommandBuffer cb, const Snapshot& snap, CubeSnapshot& cu
                       uint32_t face)
 {
     const Image& src = snap.image;
-    const uint32_t dstW =
-        std::min(PassY(snap.guestW, snap.builtH), cube.faceExtent);
-    const uint32_t dstH =
-        std::min(PassY(snap.guestH, snap.builtH), cube.faceExtent);
+    // Clamped to the cube IMAGE, which is built at the internal-resolution scale
+    // (RS(faceExtent)). Clamping to `faceExtent` — guest texels — filled only the top-left
+    // 64x64 of an 80x80 face at 1440x900, and the unwritten band was sampled by every
+    // reflection: MAGENTA on MoltenVK (macOS, 2026-10-10, read back face by face with
+    // F9), whatever the driver's uninitialised memory holds elsewhere. Invisible at
+    // 1280x720, where the scale is 1 and the two clamps agree.
+    const uint32_t dstW = std::min(PassY(snap.guestW, snap.builtH), cube.image.width);
+    const uint32_t dstH = std::min(PassY(snap.guestH, snap.builtH), cube.image.height);
     if (!dstW || !dstH || !src.width || !src.height || face >= 6)
         return;
     Barrier(cb, const_cast<Image&>(src), VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
@@ -10359,6 +10363,17 @@ uint32_t CubeSnapshotSlot(const xenos::TextureFetch& t, uint32_t faceStride)
     // the first was `Barrier`'s hardcoded `layerCount = 1`, which left five of the dummy
     // cube's six faces sampled undefined for the whole of phase 5 (open item 00d).
     RunImmediate([&](VkCommandBuffer cb) {
+        // CLEARED, not merely transitioned: a face no resolve has written (or the edge a
+        // smaller guest region leaves) must read as defined black, not as whatever the
+        // allocation held — MoltenVK's uninitialised memory is magenta.
+        Barrier(cb, cube.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                VK_IMAGE_ASPECT_COLOR_BIT);
+        {
+            const VkClearColorValue black{};
+            const VkImageSubresourceRange all{ VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 6 };
+            vkCmdClearColorImage(cb, cube.image.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                                 &black, 1, &all);
+        }
         Barrier(cb, cube.image, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
                 VK_IMAGE_ASPECT_COLOR_BIT);
         for (uint32_t f = 0; f < 6; f++)
