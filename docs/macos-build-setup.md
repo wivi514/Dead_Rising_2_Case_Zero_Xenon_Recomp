@@ -62,10 +62,17 @@ The 228 recompiled TUs take ~6-7 min at -j4.
 - `--smoke` OK (58,289 entries); `--diag` verdict: the renderer CAN run.
 - Title screen headless: ~3,050 draws, **15.7 ms/frame median**, GPU 7.0 ms.
 - Windowed: Cocoa + MoltenVK swapchain 1280x720 FIFO, 1,866 frames in 25 s.
+- **The first windowed runs were BLACK** while `CZ_VK_SWAPCHAIN_DUMP` read the correct title
+  picture back out of the swapchain: `SDL_Vulkan_CreateSurface` makes its NSView on the
+  calling thread, which is the renderer thread. The Metal view is now made on the main
+  thread at window creation and the surface built from its layer with
+  `vkCreateMetalSurfaceEXT`. **Operator-verified 2026-10-10: the title screen shows.**
+  For Case West: any SDL2 + Vulkan port whose renderer thread creates the surface has
+  this bug on macOS only.
 
 ## Owed
 
-- the operator's eye on the windowed picture, then gameplay (input, audio, saves);
+- gameplay on the Mac: input, audio, saves, the crowd's frame time;
 - DXC on macOS (first-sight vertex-shader translation; the cache built on Linux is
   complete for the shipped game, so this is a release item, not a blocker to play);
 - fence park / wait-any on macOS (`os_sync_wait_on_address` or `__ulock_wait`): today
