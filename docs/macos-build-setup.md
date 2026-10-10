@@ -70,6 +70,19 @@ The 228 recompiled TUs take ~6-7 min at -j4.
   For Case West: any SDL2 + Vulkan port whose renderer thread creates the surface has
   this bug on macOS only.
 
+## Purple reflections — a cross-platform bug MoltenVK made visible (2026-10-10)
+
+Every reflection on the Mac had a magenta wash. The arms split it in two runs:
+`CZ_VK_NO_CUBE=1` removed it, then `CZ_VK_NO_CUBE_SNAPSHOT=1` removed it too, with the
+416,548 fetches of SHIPPED cube maps still bound — so it was the cube the title RENDERS.
+F9 (`CZ_VK_SNAP_DUMP`, now also dumping every cube face) showed each 80x80 cube face
+filled only in its top-left 64x64: `CopyFaceIntoCube` clamped to `faceExtent` (guest
+texels) while the image is `RS(faceExtent)`. The unwritten band is whatever the
+allocation held — magenta on MoltenVK. It exists on EVERY platform at any internal
+resolution above 720p; only the colour of the garbage differed. Fixed by clamping to
+the image and clearing the cube at creation. **Operator-verified: "reflections are fine
+now".** For Case West: same engine, same cube path — check the clamp.
+
 ## Owed
 
 - gameplay on the Mac: input, audio, saves, the crowd's frame time;
