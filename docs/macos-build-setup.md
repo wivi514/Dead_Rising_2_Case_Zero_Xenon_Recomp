@@ -46,7 +46,7 @@ ninja -C runtime/build -j4        # NOT more: 8 GB, swap reached 3.4 of 4 GB at 
 ```
 The 228 recompiled TUs take ~6-7 min at -j4.
 
-## What milestone C needed (all on branch `macos-port`)
+## What milestone C needed (branch `macos-port`, merged into master and pushed as `1dfc48d` on 2026-10-10)
 
 | item | what it was |
 |---|---|
@@ -91,4 +91,9 @@ now"; and on Linux at 3440x1440 the same day: "reflection looks fine".** For Cas
 - fence park / wait-any on macOS (`os_sync_wait_on_address` or `__ulock_wait`): today
   they fall back to a paused spin;
 - packaging (`.app`, bundled MoltenVK/SDL/ffmpeg, ad-hoc `codesign` AFTER strip — C.4);
-- the gates on this platform (C.5).
+- the gates on this platform (C.5);
+- the XenonRecomp arm64 commit is LOCAL ONLY (Linux and the Mac's rsynced copy): a Mac
+  build from a fresh clone of the recompiler does not build (the `__rdtsc` clash) and
+  would lack the arm64 barriers, until it is pushed;
+- czwin has not built master since these changes (the heap sizing and the cube clamp
+  change the Windows renderer too).

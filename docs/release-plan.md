@@ -246,6 +246,8 @@ itself on another OS, and this project already owns the reader for it.**
 > update-after-bind limit (gotcha 637). Two defects nobody predicted: a black window from
 > creating the surface off the main thread (638), and XenonRecomp's x86-only barrier
 > lowering (639). Open: a freeze and ~40 fps (`open-items.md` 0zk), then C.4 and C.5.
+> All of it is on master (`1dfc48d`, pushed 2026-10-10). Work is PARKED until the Mac is
+> available again.
 
 **C.0 Finish the spike on real hardware — do this first, it is half a day.**
 §1.3 says what could not be answered here. On a Mac: build `ppc_image` alone for arm64 with no

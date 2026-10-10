@@ -11,8 +11,8 @@ Next, in order:
     **PARKED 2026-10-10 (operator: the MacBook "won't be there for a while").** Resume
     here when `ssh czmac` answers: first read `/tmp/cz_run.log` on the Mac for the freeze
     trace (it may be gone after a reboot), then ask before profiling (b), and ask whether
-    to push `macos-port` and the local XenonRecomp arm64 commit.
-    `docs/macos-build-setup.md` is the record (branch `macos-port`, not pushed). The
+    to push the local XenonRecomp arm64 commit (master is already pushed).
+    `docs/macos-build-setup.md` is the record (merged into master and pushed, `1dfc48d`). The
     operator played Still Creek on 2026-10-10: picture, sound, keyboard and mouse all work,
     and the purple reflections are fixed (gotcha 636). OPEN:
     (a) **A FREEZE after ~15 min left alone:** sound kept playing, 0 fps. A stack sample

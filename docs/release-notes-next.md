@@ -49,6 +49,12 @@ Lines owed to the next release since v1.1.2, collected as they land. Fold them i
   slightly different ways, so the layers traded places from frame to frame. Other
   skinned characters drawn the same way were checked as well (operator-verified 2026-10-08).
 
+- **Reflections are complete at resolutions above 720p.** The reflection map the game
+  draws of its surroundings was only partly filled at higher internal resolutions, so
+  part of every reflection showed leftover memory instead of the scene (found as a purple
+  wash on macOS; dull on most PCs). Operator-checked on Linux at 3440x1440 and on macOS
+  (`2f89cc6`, 2026-10-10).
+
 ## Install note
 
 - **Some shaders are rebuilt once on first launch** (the shader cache's recipe goes
