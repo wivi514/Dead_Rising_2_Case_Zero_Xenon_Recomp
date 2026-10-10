@@ -114,6 +114,18 @@ Next, in order:
     - the unread prop distances `mVisibleDistance` / `LoadDistance` (the BUILDING half of
       this request became WORLD DETAIL, item 0zi; the prop "Load Distance Factor" is
       AUDIO, not this).
+    **2026-10-10, a related report CLOSED AS THE TITLE'S OWN DESIGN:** the fat zombie's grey
+    vest "drops in quality" with distance (operator, F9s in
+    `~/DR2CZ-troubleshooting/play/bughunt_1010_1858/`). `zombie_fat.big` holds three LOD
+    levels, `_2`/`_3`/`_4` (close / middle / far; DR2 Studio's Library labels them
+    "variants", but they are not). The close vest is 893 vertices with `vs=70bb3e`,
+    `ps=ccfc2c`/`6f6e41`, sampling colour + `jeansjacket_nm` + shadow. The `_3` vest is 451
+    vertices with `vs=b677dc`, `ps=034174` (fetch slots 0,2) or `ps=781573` (0,2,3): the
+    title's own LOD shaders do not read a normal map, although `_3`'s material still names
+    `jeansjacket_nm` and `al_jeansjacket_mask`. `_3.tex` is empty (`_3` reuses `_2`'s
+    textures); `_4` is one baked `al_lod4_cm`. Tools: `tools/zombie_tex_census.py <pid>
+    <log> <census> "" --texdir <dir with zombie_fat_2.tex>` maps census textures to names.
+    The lever is ZOMBIE DETAIL (raise it to hold the close model farther out).
 
 0zg. ~~**A SAVE MADE BEFORE OVERLAY v7 READS AS DAMAGED**~~ — **FIXED THE SAME DAY (`a3ade42`),
     OPERATOR-VERIFIED ("loading the save did work").** Bisected on one binary: a v6-equivalent
