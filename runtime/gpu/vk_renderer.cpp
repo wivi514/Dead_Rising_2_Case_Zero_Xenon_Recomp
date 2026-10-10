@@ -32010,6 +32010,45 @@ void DoSwapImpl(uint8_t* base, uint32_t frontBuffer, uint32_t width, uint32_t he
         fprintf(stderr, "[vk] dumped %zu resolve snapshots to %s%s\n",
                 R->snapshots.size(), snapDir,
                 wroteOne ? "" : "  — NONE OF THEM WERE WRITTEN");
+        // AND EVERY FACE OF EVERY ASSEMBLED CUBE SNAPSHOT (macOS, 2026-10-10). The 2D
+        // snapshots above are the SOURCE of a cube's faces; this is the DESTINATION, read
+        // back layer by layer, so one F9 shows whether CopyFaceIntoCube delivered the
+        // face it was given. Reflections went purple on MoltenVK only, and
+        // CZ_VK_NO_CUBE_SNAPSHOT=1 removed it — this is what says which half is wrong.
+        for (const auto& [base, cubeBinding] : R->cubeSnapshots)
+        {
+            const Image& cimg = cubeBinding.image;
+            const size_t n = size_t(cimg.width) * cimg.height * 4;
+            if (n > R->readback.size)
+                continue;
+            for (uint32_t face = 0; face < 6; face++)
+            {
+                RunImmediate([&](VkCommandBuffer cb) {
+                    Image& img = const_cast<Image&>(cimg);
+                    Barrier(cb, img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                            VK_IMAGE_ASPECT_COLOR_BIT);
+                    VkBufferImageCopy c{};
+                    c.imageSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, face, 1 };
+                    c.imageExtent = { img.width, img.height, 1 };
+                    vkCmdCopyImageToBuffer(cb, img.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                                           R->readback.buffer, 1, &c);
+                    Barrier(cb, img, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                            VK_IMAGE_ASPECT_COLOR_BIT);
+                });
+                char path[512];
+                snprintf(path, sizeof path, "%s/f%06llu_cube_%08X_face%u_%ux%u.ppm", snapDir,
+                         (unsigned long long)R->frame, base, face, cimg.width, cimg.height);
+                if (FILE* f = fopen(path, "wb"))
+                {
+                    fprintf(f, "P6\n%u %u\n255\n", cimg.width, cimg.height);
+                    for (size_t i = 0; i < n; i += 4)
+                        fwrite(R->readback.mapped + i, 1, 3, f);
+                    fclose(f);
+                }
+            }
+            fprintf(stderr, "[vk] dumped cube snapshot %08X (%ux%u, faces filled mask %02X)\n",
+                    base, cimg.width, cimg.height, cubeBinding.facesFilled);
+        }
     }
 
     // CZ_VK_DEPTH_HALVES=<guest addr> — EVERY frame, the min/max depth of each half of
