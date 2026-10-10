@@ -25,8 +25,8 @@ Next, in order:
     (b) **~40 fps in Still Creek at 1440x900, MSAA 2x** on 8 GB. Not profiled yet;
     `sample <pid> 5` on the Mac is the tool.
     Also owed: F-keys need Fn on a Mac keyboard; DXC for macOS; the `.app` packaging and
-    signing (release-plan C.4); the gates (C.5); a Linux check of the cube-face fix above
-    720p, since that changes reflections on every platform.
+    signing (release-plan C.4); the gates (C.5). ~~A Linux check of the cube-face fix above
+    720p~~ — DONE 2026-10-10: operator, 3440x1440, stock shaders, "reflection looks fine".
 
 0zj. **THE "LAS VEGAS 46" HIGHWAY SIGN LOSES PIECES WHILE THE CAMERA MOVES — OPEN,
     PARKED 2026-10-08 (operator: "will come back to it later").** Ours, since real hardware

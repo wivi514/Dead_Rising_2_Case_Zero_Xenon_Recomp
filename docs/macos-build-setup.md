@@ -81,7 +81,7 @@ texels) while the image is `RS(faceExtent)`. The unwritten band is whatever the
 allocation held — magenta on MoltenVK. It exists on EVERY platform at any internal
 resolution above 720p; only the colour of the garbage differed. Fixed by clamping to
 the image and clearing the cube at creation. **Operator-verified: "reflections are fine
-now".** For Case West: same engine, same cube path — check the clamp.
+now"; and on Linux at 3440x1440 the same day: "reflection looks fine".** For Case West: same engine, same cube path — check the clamp.
 
 ## Owed
 
