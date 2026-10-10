@@ -238,6 +238,15 @@ itself on another OS, and this project already owns the reader for it.**
 
 ### MILESTONE C — macOS on Apple Silicon (~5 days, plus procurement)
 
+> **STATUS 2026-10-10: C.0-C.3 DONE ON THE OPERATOR'S M1 (`ssh czmac`), the game is
+> PLAYABLE there, and `docs/macos-build-setup.md` is the record.** The hardware was not
+> procured: it is the operator's own MacBook Air. C.0 built all 228 TUs for arm64 with zero
+> errors (~6-7 min at -j4). C.1 (16 KB pages) and C.2 (`shm_open`) were small. C.3's kill did
+> NOT fire: MoltenVK has every REQUIRED feature, but the heap had to read its
+> update-after-bind limit (gotcha 637). Two defects nobody predicted: a black window from
+> creating the surface off the main thread (638), and XenonRecomp's x86-only barrier
+> lowering (639). Open: a freeze and ~40 fps (`open-items.md` 0zk), then C.4 and C.5.
+
 **C.0 Finish the spike on real hardware — do this first, it is half a day.**
 §1.3 says what could not be answered here. On a Mac: build `ppc_image` alone for arm64 with no
 SSE flags, re-run the ten-op SIMDe disassembly natively, and time a full 228-TU build.

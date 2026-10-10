@@ -7224,3 +7224,40 @@ From phase C part 18 (the frame rate — and none of it was work):
     "music swap") is served from `game_mods/`, fails the digest check (`CZ_DIGEST_PROBE=1`)
     and faults at once (finding 50's assert path) — script-level remapping is not a mod
     route on this title.
+
+636. **UNINITIALISED MEMORY HAS A DIFFERENT COLOUR ON EVERY DRIVER, SO A NEW PLATFORM IS A
+    FREE POISON ARM.** Reflections were purple only on the Mac (MoltenVK). The cause was
+    ours and cross-platform: `CopyFaceIntoCube` clamped its destination to the face size in
+    GUEST texels while the cube image is built at the internal-resolution scale, so above
+    720p only the top-left of each face was written. NVIDIA's leftover memory made the band
+    dull and nobody saw it; Metal's is magenta. Any image a shader can sample must be
+    cleared at creation, and a picture that differs only on a new driver deserves a look at
+    every partly-written surface before suspecting the driver. Split with two same-binary
+    arms (`CZ_VK_NO_CUBE`, then `CZ_VK_NO_CUBE_SNAPSHOT`), then F9 read every cube face back.
+    (Case Zero, macOS, 2026-10-10; `docs/macos-build-setup.md`.)
+
+637. **A DRIVER CAN HAVE TWO SETS OF DESCRIPTOR LIMITS, AND AN UPDATE-AFTER-BIND HEAP MUST
+    READ ITS OWN.** The bindless heap was sized from `maxPerStageDescriptorSampledImages`;
+    MoltenVK reports 256 there and 1,000,000 for the update-after-bind limit that actually
+    governs the heap. A 256-slot heap made the title scene recycle and re-upload textures
+    every frame: 240 ms frames on an M1, 15.7 ms after reading
+    `VkPhysicalDeviceDescriptorIndexingProperties`. Every desktop driver reports both limits
+    huge, which is why the wrong one was never noticed. (Case Zero, macOS, 2026-10-09.)
+
+638. **ON macOS, NEVER LET SDL CREATE THE VULKAN SURFACE FROM A WORKER THREAD.**
+    `SDL_Vulkan_CreateSurface` on Cocoa creates and attaches an NSView on the calling
+    thread. Called from the renderer thread, the swapchain filled correctly
+    (`CZ_VK_SWAPCHAIN_DUMP` read the right picture back) and the window stayed BLACK, with
+    no error anywhere. Make the Metal view on the main thread at window creation
+    (`SDL_Metal_CreateView`) and build the surface from its layer with
+    `vkCreateMetalSurfaceEXT`. (Case Zero, macOS, 2026-10-09.)
+
+639. **A RECOMPILER'S BARRIER LOWERING IS A HOST-ARCHITECTURE DECISION.** XenonRecomp
+    lowered the guest's `lwsync`/`eieio` to compiler-only fences, which is right on x86-64
+    only because TSO already gives those orderings in hardware. arm64 is weakly ordered
+    like the guest, so there they must be real fences (`dmb ish`). The lowering is now a
+    macro chosen at host compile time (`PPC_LWSYNC`/`PPC_EIEIO` in `ppc_context.h`), so one
+    generated tree is correct on both and x86 codegen is unchanged. Any recompiled port
+    that targets ARM should check every barrier lowering before its first run.
+    (Case Zero, macOS, 2026-10-09; `docs/xenonrecomp-upstream-bugs.md`.)
+

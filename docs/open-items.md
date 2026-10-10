@@ -7,6 +7,23 @@ NOT the cause is what stops the next session re-buying it.
 
 Next, in order:
 
+0zk. **macOS (milestone C) RUNS AND IS PLAYABLE ON AN M1 — two things are open.**
+    `docs/macos-build-setup.md` is the record (branch `macos-port`, not pushed). The
+    operator played Still Creek on 2026-10-10: picture, sound, keyboard and mouse all work,
+    and the purple reflections are fixed (gotcha 636). OPEN:
+    (a) **A FREEZE after ~15 min left alone:** sound kept playing, 0 fps. A stack sample
+    showed the guest's Draw Thread spinning in the fence wait (`sub_8283C6C8`) while our
+    pump napped with an empty ring and `cz-draw` waited for work, so the fence the guest
+    wanted was never put in the stream. The pump/draw hand-off was read and is correct
+    (seq_cst both sides). The next run carries `CZ_RING_TRACE=1 CZ_WAIT_TRACE=1`; read
+    those lines first if it recurs. Note that the fence park has no primitive on macOS
+    (`ParkOn` returns 1, so it spins) — a suspect, not a finding.
+    (b) **~40 fps in Still Creek at 1440x900, MSAA 2x** on 8 GB. Not profiled yet;
+    `sample <pid> 5` on the Mac is the tool.
+    Also owed: F-keys need Fn on a Mac keyboard; DXC for macOS; the `.app` packaging and
+    signing (release-plan C.4); the gates (C.5); a Linux check of the cube-face fix above
+    720p, since that changes reflections on every platform.
+
 0zj. **THE "LAS VEGAS 46" HIGHWAY SIGN LOSES PIECES WHILE THE CAMERA MOVES — OPEN,
     PARKED 2026-10-08 (operator: "will come back to it later").** Ours, since real hardware
     is clean. Long-standing and minor. From ~70 m, while moving, about 1 frame in 7 shows

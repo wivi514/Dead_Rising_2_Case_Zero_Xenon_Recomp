@@ -422,3 +422,30 @@ renderer does that for 4x surfaces (it scales window coordinates 2x in both
 axes) but not for 2x — and this title's foliage is on a 2x surface, so the arm
 there dithers at pixel granularity and is a diagnostic rather than a default.
 A port adopting this should check which surfaces it sample-expands first.
+
+## XenonRecomp: arm64 — real fences, an overridable `__rdtsc`, a 64-bit FPCR write (2026-10-09, macOS)
+
+Local commit in `~/GithubRepo/XenonRecomp` ("arm64: real fences for lwsync/eieio...").
+
+### Symptom
+The first arm64 build of `ppc/` failed on every TU: `redefinition of 'guest_ticks'`.
+Reading the barrier code to explain it turned up a silent defect that would not have
+failed the build at all.
+
+### Cause
+1. `ppc_context.h` defines its own `__rdtsc()` on arm64. Our force-included timebase
+   (`runtime/cpu/timebase.h`) shadows `__rdtsc` with a function-like macro, which rewrote
+   that DEFINITION into a second definition of our function.
+2. `lwsync` and `eieio` were lowered to `std::atomic_signal_fence` (compiler-only). That is
+   correct on x86-64, where TSO provides those orderings in hardware, and wrong on arm64,
+   where the hardware reorders them (gotcha 639).
+3. `msr fpcr, %0` was given a 32-bit operand; FPCR is a 64-bit register.
+
+### Fix
+1. The arm64 `__rdtsc()` is skipped when `__rdtsc` is already a macro (`!defined(__rdtsc)`).
+2. The recompiler emits `PPC_LWSYNC();` / `PPC_EIEIO();`. `ppc_context.h` defines them as
+   the old signal fence on x86 (codegen unchanged) and as `atomic_thread_fence` (acq_rel /
+   release, i.e. `dmb ish`) on arm64. 51 `lwsync` sites in Case Zero.
+3. `uint64_t(csr)`.
+The Linux `ppc/` still carries the old fence text until it is regenerated; it compiles
+against the new header unchanged.
